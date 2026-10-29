@@ -64,6 +64,20 @@ jobs:
       - run: task build:server
       - run: task build
 
+      - name: Install NSIS
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress -y
+          "${env:ProgramFiles(x86)}\NSIS" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          task build:installer
+          ls -l build/bin/*-setup-*.exe
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-24.04

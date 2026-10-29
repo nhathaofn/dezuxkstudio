@@ -73,6 +73,13 @@ jobs:
           task build VERSION="$VERSION" UPDATE_FEED_URL="$UPDATE_FEED_URL"
           task build:server VERSION="$VERSION" UPDATE_FEED_URL="$UPDATE_FEED_URL"
 
+      - name: Install NSIS
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress -y
+          "${env:ProgramFiles(x86)}\NSIS" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
       - name: Build Windows installer
         if: runner.os == 'Windows'
         shell: bash
@@ -119,7 +126,8 @@ jobs:
           for f in build/bin/* bin/*; do
             name="$(basename "$f")"
             if [ -d "$f" ]; then
-              (cd "$(dirname "$f")" && zip -qry "$GITHUB_WORKSPACE/dist/${name%.app}-${suffix}.zip" "$name")
+              # macOS bundles are named by wails.json (no version), so add it here.
+              (cd "$(dirname "$f")" && zip -qry "$GITHUB_WORKSPACE/dist/${name%.app}-${VERSION}-${suffix}.zip" "$name")
             elif [[ "$name" == *.exe ]]; then
               cp "$f" "dist/${name%.exe}-${suffix}.exe"
             else

@@ -84,11 +84,17 @@ tasks:
       - wails build -clean -trimpath {{if .WAILS_TAGS}}-tags {{.WAILS_TAGS}}{{end}} -ldflags "{{.LDFLAGS}}" -o "{{.APP_NAME}}-{{.VERSION_OR_DEV}}{{exeExt}}"
 
   build:installer:
-    desc: Build the Windows NSIS installer (Windows only)
+    desc: Build the Windows NSIS installer → build/bin/<name>-setup-<version>.exe (Windows only)
     platforms: [windows]
     deps: [generate, version:sync]
+    # Wails silently skips the installer when makensis is missing; fail loudly instead.
+    preconditions:
+      - sh: command -v makensis
+        msg: "makensis not found: install NSIS (https://nsis.sourceforge.io) and add it to PATH"
     cmds:
       - wails build -trimpath -nsis -ldflags "{{.LDFLAGS}}" -o "{{.APP_NAME}}-{{.VERSION_OR_DEV}}{{exeExt}}"
+      # project.nsi writes <name>-<arch>-installer.exe; give it a versioned, stable name.
+      - powershell -NoProfile -Command "Move-Item -Force 'build/bin/{{.APP_NAME}}-amd64-installer.exe' 'build/bin/{{.APP_NAME}}-setup-{{.VERSION_OR_DEV}}.exe'"
 
   build:server:
     desc: Build the headless server into bin

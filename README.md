@@ -5,7 +5,7 @@ Base ứng dụng desktop **Go + Wails v2 + React 18** (Windows / macOS / Linux)
 | Thành phần | Entry point | Lệnh build | Kết quả |
 | :--- | :--- | :--- | :--- |
 | Desktop (all-in-one) | `main.go` | `task build` | `build/bin/DezuxkStudio-<version>[.exe/.app]` |
-| Bộ cài Windows (NSIS) | `main.go` | `task build:installer` | `build/bin/DezuxkStudio-amd64-installer.exe` |
+| Bộ cài Windows (NSIS, cần cài [NSIS](https://nsis.sourceforge.io)) | `main.go` | `task build:installer` | `build/bin/DezuxkStudio-setup-<version>.exe` |
 | Core server headless | `cmd/server` | `task build:server` | `bin/DezuxkStudio-server-<version>[.exe]` |
 
 Ba chế độ chạy (`--mode`): `desktop` (GUI + core loopback nhúng), `client` (GUI nối tới core từ xa), `server` (core headless).
