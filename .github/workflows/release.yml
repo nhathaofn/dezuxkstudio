@@ -1,91 +1,136 @@
-name: Release & Distribute
+name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
 
 permissions:
   contents: write
 
+env:
+  TASK_VERSION: v3.53.1
+  WAILS_VERSION: v2.17.0 # keep equal to github.com/wailsapp/wails/v2 in go.mod
+  NODE_VERSION: '22'
+
 jobs:
-  build-release:
-    name: Build & Publish Release Binary (${{ matrix.os }})
+  build:
+    name: Build & publish (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            artifact_name: DezuxkStudio-windows-amd64.exe
-            build_cmd: wails build -platform windows/amd64 -clean -o DezuxkStudio.exe
-            built_path: build/bin/DezuxkStudio.exe
-          - os: ubuntu-latest
-            artifact_name: DezuxkStudio-linux-amd64
-            build_cmd: wails build -platform linux/amd64 -clean -o DezuxkStudio
-            built_path: build/bin/DezuxkStudio
-          - os: macos-latest
-            artifact_name: DezuxkStudio-darwin-universal.zip
-            build_cmd: wails build -platform darwin/universal -clean
-            built_path: build/bin/DezuxkStudio.app
-
+        os: [windows-latest, ubuntu-24.04, macos-latest]
+    env:
+      # Taskfile reads these; the release feed lets the app find newer releases.
+      VERSION: ${{ github.ref_name }}
+      UPDATE_FEED_URL: https://api.github.com/repos/${{ github.repository }}/releases/latest
+      # Optional signing material. Each signing step is skipped when its secret is absent.
+      WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+      WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+      MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
-          go-version-file: 'go.mod'
+          go-version-file: go.mod
           cache: true
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: 'npm'
-          cache-dependency-path: 'frontend/package-lock.json'
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
-      - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
-
-      - name: Install Linux Build Dependencies
+      - name: Install Linux WebKit dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev build-essential pkg-config
-          sudo apt-get install -y libwebkit2gtk-4.1-dev || sudo apt-get install -y libwebkit2gtk-4.0-dev
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev build-essential pkg-config
 
-      - name: Install Frontend Dependencies
-        working-directory: ./frontend
-        run: npm ci
-
-      - name: Compile Desktop Binary via Wails
-        run: ${{ matrix.build_cmd }}
-
-      - name: Compress macOS Bundle
-        if: runner.os == 'macOS'
-        run: |
-          cd build/bin
-          zip -r ../../${{ matrix.artifact_name }} DezuxkStudio.app
-
-      - name: Rename Artifact (Windows / Linux)
-        if: runner.os != 'macOS'
-        run: |
-          mv ${{ matrix.built_path }} ${{ matrix.artifact_name }}
-
-      - name: Compute Checksum (SHA-256)
+      - name: Install tools
         shell: bash
         run: |
-          shasum -a 256 ${{ matrix.artifact_name }} > ${{ matrix.artifact_name }}.sha256
+          go install github.com/go-task/task/v3/cmd/task@${TASK_VERSION}
+          go install github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}
 
-      - name: Upload Release Asset
-        uses: softprops/action-gh-release@v2
+      - name: Normalise version
+        shell: bash
+        run: echo "VERSION=${VERSION#v}" >> "$GITHUB_ENV"
+
+      - run: task setup
+      - run: task check
+      - name: Build
+        shell: bash
+        run: |
+          task build VERSION="$VERSION" UPDATE_FEED_URL="$UPDATE_FEED_URL"
+          task build:server VERSION="$VERSION" UPDATE_FEED_URL="$UPDATE_FEED_URL"
+
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: bash
+        run: task build:installer VERSION="$VERSION" UPDATE_FEED_URL="$UPDATE_FEED_URL"
+
+      - name: Sign Windows binaries
+        if: runner.os == 'Windows' && env.WINDOWS_CERT_PFX_BASE64 != ''
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'cert.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object FullName -match 'x64' | Select-Object -Last 1
+          Get-ChildItem build/bin, bin -Filter *.exe -Recurse | ForEach-Object {
+            & $signtool.FullName sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 /f $pfx /p $env:WINDOWS_CERT_PASSWORD $_.FullName
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+          Remove-Item $pfx
+
+      - name: Sign and notarise macOS app
+        if: runner.os == 'macOS' && env.MACOS_CERT_P12_BASE64 != ''
+        shell: bash
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/build.keychain"
+          echo "$MACOS_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "" "$KEYCHAIN"
+          security unlock-keychain -p "" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN"
+          security list-keychains -s "$KEYCHAIN"
+          for app in build/bin/*.app; do
+            codesign --force --deep --options runtime --timestamp --sign "$MACOS_SIGN_IDENTITY" "$app"
+            ditto -c -k --keepParent "$app" "$app.zip"
+            xcrun notarytool submit "$app.zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+            xcrun stapler staple "$app"
+            rm "$app.zip"
+          done
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          suffix="${{ runner.os }}-$(uname -m)"
+          for f in build/bin/* bin/*; do
+            name="$(basename "$f")"
+            if [ -d "$f" ]; then
+              (cd "$(dirname "$f")" && zip -qry "$GITHUB_WORKSPACE/dist/${name%.app}-${suffix}.zip" "$name")
+            elif [[ "$name" == *.exe ]]; then
+              cp "$f" "dist/${name%.exe}-${suffix}.exe"
+            else
+              cp "$f" "dist/${name}-${suffix}"
+            fi
+          done
+          cd dist
+          if command -v sha256sum >/dev/null; then sum="sha256sum"; else sum="shasum -a 256"; fi
+          for f in *; do $sum "$f" > "$f.sha256"; done
+          ls -l
+
+      - uses: softprops/action-gh-release@v2
         with:
-          files: |
-            ${{ matrix.artifact_name }}
-            ${{ matrix.artifact_name }}.sha256
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: dist/*

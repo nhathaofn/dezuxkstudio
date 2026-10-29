@@ -1,67 +1,171 @@
 version: '3'
 
+# Single entry point for every build, test and release step (Windows, macOS, Linux).
+# The git tag is the source of the version; override with `task build VERSION=1.2.3`.
+
 vars:
+  GIT_TAG:
+    sh: git describe --tags --abbrev=0 --match "v*" 2>/dev/null || true
+  VERSION: '{{.VERSION | default (trimPrefix "v" .GIT_TAG)}}'
+  VERSION_OR_DEV: '{{.VERSION | default "0.0.0-dev"}}'
+  COMMIT:
+    sh: git rev-parse --short HEAD 2>/dev/null || echo unknown
+  BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" now "UTC"}}'
+  UPDATE_FEED_URL: '{{.UPDATE_FEED_URL | default ""}}'
   APP_NAME:
-    sh: echo ${APP_NAME:-DezuxkStudio}
-  VERSION:
-    sh: git describe --tags --always --dirty 2> $null || echo "1.0.0"
-  GIT_COMMIT:
-    sh: git rev-parse --short HEAD 2> $null || echo "dev"
-  BUILD_DATE:
-    sh: powershell -Command "(Get-Date).ToString('yyyy-MM-ddTHH:mm:ssZ')" 2> $null || echo ""
+    sh: go run ./cmd/buildmeta name
+  BUILDINFO: app/internal/buildinfo
   LDFLAGS: >-
     -s -w
-    -X 'main.AppName={{.APP_NAME}}'
-    -X 'main.AppVersion={{.VERSION}}'
-    -X 'main.GitCommit={{.GIT_COMMIT}}'
-    -X 'main.BuildDate={{.BUILD_DATE}}'
+    -X '{{.BUILDINFO}}.Version={{.VERSION_OR_DEV}}'
+    -X '{{.BUILDINFO}}.Commit={{.COMMIT}}'
+    -X '{{.BUILDINFO}}.BuildDate={{.BUILD_DATE}}'
+    -X '{{.BUILDINFO}}.UpdateFeedURL={{.UPDATE_FEED_URL}}'
+  # Windows Smart App Control blocks test binaries in %TEMP%; build them inside the repo.
+  GOTMPDIR: '{{.ROOT_DIR}}/build/.gotmp'
+  WAILS_TAGS: '{{if eq OS "linux"}}webkit2_41{{end}}'
+
+env:
+  GOTMPDIR: '{{.GOTMPDIR}}'
 
 tasks:
   default:
-    desc: "Hiển thị danh sách các tác vụ có sẵn"
+    cmds: [task --list]
+
+  setup:
+    desc: Install frontend dependencies
+    dir: frontend
+    cmds: [npm ci]
+
+  gotmp:
+    internal: true
     cmds:
-      - task --list
+      - cmd: mkdir -p "{{.GOTMPDIR}}"
+        platforms: [linux, darwin]
+      - cmd: powershell -NoProfile -Command "New-Item -ItemType Directory -Force '{{.GOTMPDIR}}' | Out-Null"
+        platforms: [windows]
+    status:
+      - test -d "{{.GOTMPDIR}}"
+
+  generate:
+    desc: Regenerate frontend/src/contracts/generated.ts from internal/contracts
+    # Skipped when no input changed, so `task dev` does not recompile the generator every time.
+    sources:
+      - cmd/contractgen/*.go
+      - internal/contracts/*.go
+      - internal/apperr/*.go
+      - internal/config/*.go
+      - internal/domain/**/*.go
+    generates:
+      - frontend/src/contracts/generated.ts
+    cmds: [go run ./cmd/contractgen]
+
+  version:sync:
+    desc: Mirror VERSION into wails.json and frontend/package.json
+    cmds:
+      - go run ./cmd/buildmeta sync -version {{.VERSION_OR_DEV}}
 
   dev:
-    desc: "Khởi động môi trường phát triển (Wails Dev + Vite HMR + Go Core)"
+    desc: Run the desktop app with hot reload (dev build tag)
+    deps: [generate]
+    # -skipbindings: the frontend talks to Go through src/lib/bridge.ts typed by the
+    #   generated contracts, so Wails' wailsjs/go bindings (an extra build + run) are unused.
+    # -m: skip `go mod tidy` on every start; `task lint` verifies tidiness instead.
     cmds:
-      - wails dev
-
-  build:
-    desc: "Build ứng dụng desktop: build/bin/{{.APP_NAME}}-{{.VERSION}}.exe"
-    deps: [build:frontend]
-    cmds:
-      - wails build -o "{{.APP_NAME}}-{{.VERSION}}.exe" -ldflags="{{.LDFLAGS}}" -clean
+      - wails dev -skipbindings -m {{if .WAILS_TAGS}}-tags {{.WAILS_TAGS}}{{end}}
 
   build:frontend:
-    desc: "Compile TypeScript và bundle frontend với Vite"
+    desc: Type-check and bundle the frontend
     dir: frontend
+    cmds: [npm run build]
+
+  build:
+    desc: Build the desktop app into build/bin
+    deps: [generate, version:sync]
     cmds:
-      - npm run build
+      - wails build -clean -trimpath {{if .WAILS_TAGS}}-tags {{.WAILS_TAGS}}{{end}} -ldflags "{{.LDFLAGS}}" -o "{{.APP_NAME}}-{{.VERSION_OR_DEV}}{{exeExt}}"
+
+  build:installer:
+    desc: Build the Windows NSIS installer (Windows only)
+    platforms: [windows]
+    deps: [generate, version:sync]
+    cmds:
+      - wails build -trimpath -nsis -ldflags "{{.LDFLAGS}}" -o "{{.APP_NAME}}-{{.VERSION_OR_DEV}}{{exeExt}}"
 
   build:server:
-    desc: "Compile Headless Server: bin/dezuxk-server.exe"
+    desc: Build the headless server into bin
     cmds:
-      - go build -ldflags="{{.LDFLAGS}}" -o bin/dezuxk-server.exe ./cmd/server
+      - go build -trimpath -ldflags "{{.LDFLAGS}}" -o "bin/{{.APP_NAME}}-server-{{.VERSION_OR_DEV}}{{exeExt}}" ./cmd/server
 
   test:
-    desc: "Chạy toàn bộ unit tests và race detector của Go trong thư mục test/"
+    desc: Run all Go and frontend tests
+    deps: [gotmp]
     cmds:
-      - go test -v -race ./test/...
+      - go test ./...
+      - task: test:frontend
+
+  test:race:
+    desc: Run Go tests with the race detector (requires cgo / a C compiler)
+    deps: [gotmp]
+    env: { CGO_ENABLED: '1' }
+    cmds: [go test -race ./...]
+
+  test:frontend:
+    dir: frontend
+    cmds: [npm test]
 
   lint:
-    desc: "Kiểm tra cú pháp và code quality toàn diện (Frontend + Backend)"
+    desc: Static checks for Go and frontend (formatting, vet, contracts, modules, eslint, types)
+    deps: [build:frontend]
     cmds:
-      - cmd: cd frontend && npm run lint
-      - cmd: go vet ./...
+      - go vet ./...
+      - cmd: test -z "$(gofmt -l cmd internal test main.go)" || (gofmt -l cmd internal test main.go; exit 1)
+      - go mod tidy -diff
+      - go run ./cmd/contractgen -check
+      - task: lint:frontend
+
+  lint:frontend:
+    internal: true
+    dir: frontend
+    cmds:
+      - npm run lint
+      - npm run format:check
+
+  audit:
+    desc: Vulnerability scan of Go and npm dependencies
+    cmds:
+      - go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+      - task: audit:frontend
+
+  audit:frontend:
+    internal: true
+    dir: frontend
+    cmds:
+      - npm audit --audit-level=high
+
+  check:
+    desc: Everything CI runs (lint, test, audit)
+    cmds:
+      - task: lint
+      - task: test
+      - task: audit
 
   format:
-    desc: "Định dạng lại source code toàn bộ dự án"
+    desc: Format Go and frontend sources
     cmds:
-      - cmd: cd frontend && npm run format
-      - cmd: go fmt ./...
+      - gofmt -w cmd internal test main.go
+      - task: format:frontend
+
+  format:frontend:
+    internal: true
+    dir: frontend
+    cmds:
+      - npm run format
 
   clean:
-    desc: "Dọn dẹp binary và artifacts build tạm thời"
+    desc: Remove build artifacts
     cmds:
-      - powershell -Command "Remove-Item -Recurse -Force -ErrorAction SilentlyContinue bin, build/bin, frontend/dist"
+      - cmd: rm -rf bin build/bin build/.gotmp frontend/dist
+        platforms: [linux, darwin]
+      - cmd: powershell -NoProfile -Command "Remove-Item -Recurse -Force -ErrorAction SilentlyContinue bin, build/bin, build/.gotmp, frontend/dist"
+        platforms: [windows]

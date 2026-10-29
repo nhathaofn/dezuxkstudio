@@ -1,94 +1,114 @@
+// Package logger builds the structured slog logger used across the application:
+// level filtering, text/JSON output, size-based file rotation and secret redaction.
 package logger
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sync"
+	"strings"
 )
 
-var (
-	once    sync.Once
-	log     *slog.Logger
-	logFile *os.File
-)
+// LogFileName is the active log file inside the log directory.
+const LogFileName = "app.log"
 
-// ParseLevel translates string log levels into slog.Level.
-func ParseLevel(lvl string) slog.Level {
-	switch lvl {
-	case "debug":
-		return slog.LevelDebug
-	case "warn", "warning":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
-	}
+// Options configures New.
+type Options struct {
+	Level        string // debug | info | warn | error
+	Format       string // text | json
+	Dir          string // empty disables file output
+	MaxSizeBytes int64
+	MaxBackups   int
+	Stdout       bool
 }
 
-// GetDefaultLogPath returns a dynamic, OS-appropriate application log path (Zero Hardcode).
-func GetDefaultLogPath(appName string) string {
-	configDir, err := os.UserConfigDir()
+// Logger owns the slog.Logger and the file it writes to.
+type Logger struct {
+	*slog.Logger
+	file *RotatingWriter
+}
+
+// New creates a logger. At least one sink (file or stdout) must be enabled.
+func New(o Options) (*Logger, error) {
+	level, err := ParseLevel(o.Level)
 	if err != nil {
-		configDir = os.TempDir()
+		return nil, err
 	}
-	return filepath.Join(configDir, appName, "logs", "app.log")
+
+	var sinks []io.Writer
+	var rw *RotatingWriter
+	if o.Dir != "" {
+		rw, err = NewRotatingWriter(filepath.Join(o.Dir, LogFileName), o.MaxSizeBytes, o.MaxBackups)
+		if err != nil {
+			return nil, err
+		}
+		sinks = append(sinks, rw)
+	}
+	if o.Stdout {
+		sinks = append(sinks, os.Stdout)
+	}
+	if len(sinks) == 0 {
+		return nil, errors.New("logger: no output enabled (set a log dir or enable stdout)")
+	}
+
+	opts := &slog.HandlerOptions{Level: level, ReplaceAttr: redact}
+	out := io.MultiWriter(sinks...)
+
+	var h slog.Handler
+	switch o.Format {
+	case "json":
+		h = slog.NewJSONHandler(out, opts)
+	case "text":
+		h = slog.NewTextHandler(out, opts)
+	default:
+		if rw != nil {
+			_ = rw.Close()
+		}
+		return nil, fmt.Errorf("logger: unknown format %q", o.Format)
+	}
+	return &Logger{Logger: slog.New(h), file: rw}, nil
 }
 
-// Init initializes the global slog default logger.
-// If filePath is non-empty, logs are written to both os.Stdout and the file.
-func Init(level slog.Level, jsonFormat bool, filePath string) {
-	var writer io.Writer = os.Stdout
+// Fallback returns a stderr logger for use before configuration is available.
+func Fallback() *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{ReplaceAttr: redact}))
+}
 
-	if filePath != "" {
-		dir := filepath.Dir(filePath)
-		if err := os.MkdirAll(dir, 0755); err == nil {
-			f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-			if err == nil {
-				logFile = f
-				writer = io.MultiWriter(os.Stdout, f)
-			} else {
-				fmt.Fprintf(os.Stderr, "[Logger] Warning: failed to open log file %s: %v\n", filePath, err)
-			}
-		} else {
-			fmt.Fprintf(os.Stderr, "[Logger] Warning: failed to create log dir %s: %v\n", dir, err)
+// Close flushes and closes the log file, if any.
+func (l *Logger) Close() error {
+	if l == nil || l.file == nil {
+		return nil
+	}
+	return l.file.Close()
+}
+
+// ParseLevel converts a configuration level name to slog.Level.
+func ParseLevel(s string) (slog.Level, error) {
+	switch strings.ToLower(s) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	}
+	return 0, fmt.Errorf("logger: unknown level %q", s)
+}
+
+// sensitiveKeys are attribute-name fragments whose values are never written to logs.
+var sensitiveKeys = []string{"token", "secret", "password", "authorization", "api_key", "apikey", "cookie"}
+
+func redact(_ []string, a slog.Attr) slog.Attr {
+	key := strings.ToLower(a.Key)
+	for _, s := range sensitiveKeys {
+		if strings.Contains(key, s) {
+			return slog.String(a.Key, "[REDACTED]")
 		}
 	}
-
-	opts := &slog.HandlerOptions{
-		Level:     level,
-		AddSource: false,
-	}
-
-	var handler slog.Handler
-	if jsonFormat {
-		handler = slog.NewJSONHandler(writer, opts)
-	} else {
-		handler = slog.NewTextHandler(writer, opts)
-	}
-
-	log = slog.New(handler)
-	slog.SetDefault(log)
-}
-
-// Close flushes and closes any open log file safely.
-func Close() {
-	if logFile != nil {
-		_ = logFile.Sync()
-		_ = logFile.Close()
-		logFile = nil
-	}
-}
-
-// Get returns the structured logger.
-func Get() *slog.Logger {
-	once.Do(func() {
-		if log == nil {
-			Init(slog.LevelInfo, false, "")
-		}
-	})
-	return log
+	return a
 }

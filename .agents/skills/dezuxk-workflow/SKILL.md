@@ -1,89 +1,47 @@
 ---
 name: dezuxk-workflow
 description: >-
-  Workflows, build procedures, test execution, linting, and development commands
-  for DezuxkStudio desktop and headless server architecture.
+  Build, test, lint and feature-development workflow for DezuxkStudio
+  (Go + Wails desktop app with a shared headless core server).
 ---
 
-# DezuxkStudio Development & Operations Skill
+# DezuxkStudio workflow
 
-Use this skill whenever you need to build, test, lint, format, or run DezuxkStudio components.
+`Taskfile.yml` is the single source of truth for commands (`task --list`).
+On Windows without Task: `powershell -ExecutionPolicy Bypass -File scripts/manage.ps1 <task>`.
 
-## Build Commands
+| Goal | Command |
+| :--- | :--- |
+| Install frontend deps | `task setup` |
+| Desktop dev mode (hot reload) | `task dev` |
+| Everything CI runs | `task check` (= `lint` + `test` + `audit`) |
+| Go + frontend tests | `task test` (race: `task test:race`, needs cgo) |
+| Regenerate TS contracts | `task generate` |
+| Desktop build | `task build` (version from git tag or `VERSION=x.y.z`) |
+| Windows installer | `task build:installer` |
+| Headless server | `task build:server` |
+| Format | `task format` |
 
-Always use `Taskfile.yml` as the single source of truth for build operations:
+## Adding a realtime action (end to end)
 
-- **Desktop Dev Mode (HMR + Go Engine):**
-  ```powershell
-  task dev
-  # hoặc: wails dev
-  ```
-
-- **Compile Frontend:**
-  ```powershell
-  task build:frontend
-  # tương đương: cd frontend; npm run build
-  ```
-
-- **Compile Headless Core Server:**
-  ```powershell
-  task build:server
-  # binary xuất ra tại: bin/dezuxk-server.exe
-  ```
-
-- **Production Desktop App Build:**
-  ```powershell
-  task build
-  # binary xuất ra tại: build/bin/DezuxkStudio-<version>.exe
-  ```
-
-## Quality Assurance & Testing
-
-- **Run Go Unit Tests (với Race Detector):**
-  ```powershell
-  task test
-  # Chạy toàn bộ test trong thư mục cách ly: go test -v -race ./test/...
-  ```
-
-- **Linting:**
-  ```powershell
-  task lint
-  # Kiểm tra code quality: cd frontend && npm run lint; go vet ./...
-  ```
-
-- **Formatting:**
-  ```powershell
-  task format
-  # Định dạng chuẩn: cd frontend && npm run format; go fmt ./...
-  ```
-
-- **Clean Artifacts:**
-  ```powershell
-  task clean
-  ```
-
-## Creating New Realtime Actions
-
-Khi thêm một API/Action realtime mới giữa React Frontend và Go Server:
-
-1. **Go Hub Registration (`internal/realtime/`):**
-   Đăng ký action handler trong Action Registry hoặc dispatcher:
+1. Domain model / rules / repository interface in `internal/domain/<feature>`.
+2. Storage: new migration `internal/storage/sqlite/migrations/NNN_<name>.sql` + repository.
+3. Service in `internal/service/<feature>` (depends on interfaces only; unit-test with an in-memory fake).
+4. Contracts in `internal/contracts`: `Action<Name>` constant, payload/result DTOs (payload may implement `Validate() error`), entry in `Actions()`; events in `Events()`.
+5. Module in `internal/realtime/modules/<feature>.go`:
    ```go
-   registry.Register("domain:action_name", func(ctx context.Context, client *Client, payload json.RawMessage) (interface{}, error) {
-       // logic xử lý non-blocking
-       return result, nil
-   })
+   realtime.Handle(r, contracts.ActionProjectsList,
+       func(ctx context.Context, req *realtime.Request, p contracts.ProjectsListPayload) (contracts.ProjectList, error) {
+           return m.Service.List(ctx, p.Filter)
+       })
    ```
+6. One line in `modules()` in `internal/core/core.go`.
+7. `task generate`, then in the frontend:
+   ```ts
+   const list = await rtClient.request(Actions.PROJECTS_LIST, { filter: "" }, { signal, onProgress });
+   ```
+8. UI strings in `frontend/src/lib/i18n/en.ts` + `vi.ts`; route (if any) in `frontend/src/app/navigation.ts`.
+9. Tests next to the code; end-to-end cases in `test/e2e_test.go`. Run `task check`.
 
-2. **Frontend Schemas & Dispatch (`frontend/src/`):**
-   - Khai báo kiểu request/response trong `frontend/src/schemas/`.
-   - Dispatch bằng:
-     ```ts
-     const res = await useRealtimeStore.getState().sendAction("domain:action_name", payload);
-     ```
-
-## Adding Unit Tests
-
-- Luôn tạo file test mới bên trong thư mục [test/](file:///d:/gehihi/test) (ví dụ: `test/my_feature_test.go`).
-- Package name bắt buộc là `package test`.
-- Import các package từ `app/internal/...` hoặc `app/...`.
+Startup fails if an action is undeclared, registered twice, or declared without a handler;
+CI fails if `generated.ts` is stale.

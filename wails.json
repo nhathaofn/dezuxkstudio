@@ -1,13 +1,20 @@
 {
   "$schema": "https://wails.io/schemas/config.v2.json",
-  "name": "DezuxkStudio",
-  "outputfilename": "DezuxkStudio",
-  "frontend:install": "npm install",
-  "frontend:build": "npm run build",
-  "frontend:dev:watcher": "npm run dev",
-  "frontend:dev:serverUrl": "auto",
   "author": {
-    "name": "dezuxkStudio",
-    "email": ""
-  }
+    "email": "",
+    "name": "dezuxkStudio"
+  },
+  "frontend:build": "npm run build",
+  "frontend:dev:serverUrl": "auto",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:install": "npm install",
+  "info": {
+    "comments": "Native Desktop All-in-One Engine",
+    "companyName": "DezuxkStudio",
+    "copyright": "Copyright 2026 DezuxkStudio",
+    "productName": "DezuxkStudio",
+    "productVersion": "0.0.0"
+  },
+  "name": "DezuxkStudio",
+  "outputfilename": "DezuxkStudio"
 }

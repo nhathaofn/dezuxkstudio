@@ -1,0 +1,152 @@
+package contracts
+
+import (
+	"fmt"
+	"slices"
+
+	"app/internal/apperr"
+	"app/internal/buildinfo"
+	"app/internal/config"
+	"app/internal/domain/preferences"
+)
+
+// Empty is the payload/result of actions that carry no data.
+type Empty struct{}
+
+// PingResult answers system:ping.
+type PingResult struct {
+	ServerTime int64 `json:"server_time"`
+}
+
+// BuildInfo describes the running binary.
+type BuildInfo struct {
+	AppID       string `json:"app_id"`
+	ProductName string `json:"product_name"`
+	Version     string `json:"version"`
+	Commit      string `json:"commit"`
+	BuildDate   string `json:"build_date"`
+	GoVersion   string `json:"go_version"`
+	OS          string `json:"os"`
+	Arch        string `json:"arch"`
+	Dev         bool   `json:"dev"`
+}
+
+// NewBuildInfo converts buildinfo.Info.
+func NewBuildInfo(i buildinfo.Info) BuildInfo { return BuildInfo(i) }
+
+// RuntimeInfo holds process metrics.
+type RuntimeInfo struct {
+	NumCPU        int     `json:"num_cpu"`
+	NumGoroutine  int     `json:"num_goroutine"`
+	AllocMB       float64 `json:"alloc_mb"`
+	SysMB         float64 `json:"sys_mb"`
+	GCCycles      uint32  `json:"gc_cycles"`
+	UptimeSeconds int64   `json:"uptime_seconds"`
+}
+
+// PathsInfo lists the application directories.
+type PathsInfo struct {
+	Config      string `json:"config"`
+	Data        string `json:"data"`
+	Logs        string `json:"logs"`
+	Diagnostics string `json:"diagnostics"`
+}
+
+// SystemInfo answers system:info.
+type SystemInfo struct {
+	Mode    config.Mode `json:"mode"`
+	Build   BuildInfo   `json:"build"`
+	Runtime RuntimeInfo `json:"runtime"`
+	Paths   PathsInfo   `json:"paths"`
+}
+
+// FolderTarget names a folder that system:open_folder may reveal.
+type FolderTarget string
+
+const (
+	FolderLogs        FolderTarget = "logs"
+	FolderData        FolderTarget = "data"
+	FolderConfig      FolderTarget = "config"
+	FolderDiagnostics FolderTarget = "diagnostics"
+)
+
+// FolderTargets lists valid targets.
+func FolderTargets() []FolderTarget {
+	return []FolderTarget{FolderLogs, FolderData, FolderConfig, FolderDiagnostics}
+}
+
+// OpenFolderPayload is the payload of system:open_folder.
+type OpenFolderPayload struct {
+	Target FolderTarget `json:"target"`
+}
+
+// Validate implements payload validation.
+func (p OpenFolderPayload) Validate() error {
+	if !slices.Contains(FolderTargets(), p.Target) {
+		return apperr.Validation(fmt.Sprintf("unknown folder target %q", p.Target))
+	}
+	return nil
+}
+
+// UpdateInfo answers system:check_update.
+type UpdateInfo struct {
+	CurrentVersion string `json:"current_version"`
+	LatestVersion  string `json:"latest_version"`
+	Available      bool   `json:"available"`
+	ReleaseURL     string `json:"release_url"`
+	ReleaseNotes   string `json:"release_notes"`
+	CheckedAt      int64  `json:"checked_at"`
+}
+
+// Preferences mirrors the domain preference document.
+type Preferences struct {
+	Theme    preferences.Theme    `json:"theme"`
+	Language preferences.Language `json:"language"`
+}
+
+// NewPreferences converts the domain model.
+func NewPreferences(p preferences.Preferences) Preferences {
+	return Preferences{Theme: p.Theme, Language: p.Language}
+}
+
+// PreferencesPatch is the payload of preferences:update; omitted fields are unchanged.
+type PreferencesPatch struct {
+	Theme    *preferences.Theme    `json:"theme,omitempty"`
+	Language *preferences.Language `json:"language,omitempty"`
+}
+
+// Validate rejects empty patches.
+func (p PreferencesPatch) Validate() error {
+	if p.Theme == nil && p.Language == nil {
+		return apperr.Validation("patch must change at least one field")
+	}
+	return nil
+}
+
+// ToDomain converts to the domain patch.
+func (p PreferencesPatch) ToDomain() preferences.Patch {
+	return preferences.Patch{Theme: p.Theme, Language: p.Language}
+}
+
+// DiagnosticsBundle answers diagnostics:export.
+type DiagnosticsBundle struct {
+	Path      string `json:"path"`
+	SizeBytes int64  `json:"size_bytes"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+// ActionProgress is the data of action:progress.
+type ActionProgress struct {
+	Percent float64 `json:"percent"` // 0-100
+	Message string  `json:"message"`
+}
+
+// ConnectionInfo tells the frontend how to reach the core (desktop bridge).
+type ConnectionInfo struct {
+	Mode                  config.Mode `json:"mode"`
+	WSURL                 string      `json:"ws_url"`
+	Token                 string      `json:"token"`
+	ActionTimeoutMs       int64       `json:"action_timeout_ms"`
+	PingIntervalMs        int64       `json:"ping_interval_ms"`
+	CheckUpdatesOnStartup bool        `json:"check_updates_on_startup"`
+}
