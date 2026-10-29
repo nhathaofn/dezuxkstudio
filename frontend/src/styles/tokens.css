@@ -1,0 +1,139 @@
+/* ==========================================================================
+   DESIGN TOKENS - DEZUXK STUDIO DESIGN SYSTEM
+   Default: Light Mode. Dark Mode activated via [data-theme="dark"].
+   High-contrast, functional, minimalist.
+   ========================================================================== */
+
+:root {
+  /* 1. Global Typography */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+
+  --text-xs: 11px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 18px;
+  --text-2xl: 22px;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --line-tight: 1.25;
+  --line-normal: 1.5;
+
+  /* 2. Global Spacing (4px grid) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* 3. Global Radii */
+  --radius-none: 0px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-full: 9999px;
+
+  /* 4. Transitions */
+  --transition-fast: 120ms ease;
+  --transition-normal: 200ms ease;
+
+  /* ========================================================================
+     THEME: LIGHT MODE (DEFAULT)
+     High contrast, crisp borders, dark text on white/slate canvas
+     ======================================================================== */
+  --bg-canvas: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-surface-elevated: #f1f5f9;
+  --bg-surface-muted: #e2e8f0;
+  --bg-input: #ffffff;
+
+  --border-subtle: #e2e8f0;
+  --border-default: #cbd5e1;
+  --border-strong: #94a3b8;
+  --border-focus: #0284c7;
+
+  --text-primary: #0f172a;
+  --text-secondary: #334155;
+  --text-muted: #64748b;
+  --text-disabled: #94a3b8;
+  --text-accent: #0284c7;
+
+  --status-connected: #16a34a;
+  --status-connected-bg: #dcfce7;
+  --status-connecting: #d97706;
+  --status-connecting-bg: #fef3c7;
+  --status-disconnected: #dc2626;
+  --status-disconnected-bg: #fee2e2;
+
+  --btn-primary-bg: #0f172a;
+  --btn-primary-text: #ffffff;
+  --btn-primary-hover: #1e293b;
+
+  --btn-secondary-bg: #f8fafc;
+  --btn-secondary-text: #0f172a;
+  --btn-secondary-border: #cbd5e1;
+  --btn-secondary-hover: #f1f5f9;
+
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -2px rgba(0, 0, 0, 0.04);
+
+  --bg-code: #f1f5f9;
+  --alert-error-bg: #fee2e2;
+  --alert-error-border: #fca5a5;
+  --alert-error-text: #991b1b;
+}
+
+/* ==========================================================================
+   THEME: DARK MODE
+   Deep charcoal background, subtle slate borders, crisp contrast
+   ========================================================================== */
+[data-theme="dark"] {
+  --bg-canvas: #090b10;
+  --bg-surface: #12151f;
+  --bg-surface-elevated: #1a1e2b;
+  --bg-surface-muted: #242a3c;
+  --bg-input: #0c0e14;
+
+  --border-subtle: #1e2333;
+  --border-default: #2d344b;
+  --border-strong: #454f6f;
+  --border-focus: #38bdf8;
+
+  --text-primary: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #8391a8;
+  --text-disabled: #4e576c;
+  --text-accent: #38bdf8;
+
+  --status-connected: #22c55e;
+  --status-connected-bg: rgba(34, 197, 94, 0.12);
+  --status-connecting: #f59e0b;
+  --status-connecting-bg: rgba(245, 158, 11, 0.12);
+  --status-disconnected: #ef4444;
+  --status-disconnected-bg: rgba(239, 68, 68, 0.12);
+
+  --btn-primary-bg: #f8fafc;
+  --btn-primary-text: #090b10;
+  --btn-primary-hover: #e2e8f0;
+
+  --btn-secondary-bg: #1a1e2b;
+  --btn-secondary-text: #f8fafc;
+  --btn-secondary-border: #2d344b;
+  --btn-secondary-hover: #242a3c;
+
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px 0 rgba(0, 0, 0, 0.4);
+
+  --bg-code: #080a0f;
+  --alert-error-bg: rgba(239, 68, 68, 0.12);
+  --alert-error-border: rgba(239, 68, 68, 0.35);
+  --alert-error-text: #fca5a5;
+}

@@ -1,0 +1,67 @@
+version: '3'
+
+vars:
+  APP_NAME:
+    sh: echo ${APP_NAME:-DezuxkStudio}
+  VERSION:
+    sh: git describe --tags --always --dirty 2> $null || echo "1.0.0"
+  GIT_COMMIT:
+    sh: git rev-parse --short HEAD 2> $null || echo "dev"
+  BUILD_DATE:
+    sh: powershell -Command "(Get-Date).ToString('yyyy-MM-ddTHH:mm:ssZ')" 2> $null || echo ""
+  LDFLAGS: >-
+    -s -w
+    -X 'main.AppName={{.APP_NAME}}'
+    -X 'main.AppVersion={{.VERSION}}'
+    -X 'main.GitCommit={{.GIT_COMMIT}}'
+    -X 'main.BuildDate={{.BUILD_DATE}}'
+
+tasks:
+  default:
+    desc: "Hiển thị danh sách các tác vụ có sẵn"
+    cmds:
+      - task --list
+
+  dev:
+    desc: "Khởi động môi trường phát triển (Wails Dev + Vite HMR + Go Core)"
+    cmds:
+      - wails dev
+
+  build:
+    desc: "Build ứng dụng desktop: build/bin/{{.APP_NAME}}-{{.VERSION}}.exe"
+    deps: [build:frontend]
+    cmds:
+      - wails build -o "{{.APP_NAME}}-{{.VERSION}}.exe" -ldflags="{{.LDFLAGS}}" -clean
+
+  build:frontend:
+    desc: "Compile TypeScript và bundle frontend với Vite"
+    dir: frontend
+    cmds:
+      - npm run build
+
+  build:server:
+    desc: "Compile Headless Server: bin/dezuxk-server.exe"
+    cmds:
+      - go build -ldflags="{{.LDFLAGS}}" -o bin/dezuxk-server.exe ./cmd/server
+
+  test:
+    desc: "Chạy toàn bộ unit tests và race detector của Go trong thư mục test/"
+    cmds:
+      - go test -v -race ./test/...
+
+  lint:
+    desc: "Kiểm tra cú pháp và code quality toàn diện (Frontend + Backend)"
+    cmds:
+      - cmd: cd frontend && npm run lint
+      - cmd: go vet ./...
+
+  format:
+    desc: "Định dạng lại source code toàn bộ dự án"
+    cmds:
+      - cmd: cd frontend && npm run format
+      - cmd: go fmt ./...
+
+  clean:
+    desc: "Dọn dẹp binary và artifacts build tạm thời"
+    cmds:
+      - powershell -Command "Remove-Item -Recurse -Force -ErrorAction SilentlyContinue bin, build/bin, frontend/dist"
