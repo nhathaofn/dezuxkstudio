@@ -21,12 +21,10 @@ vars:
     -X '{{.BUILDINFO}}.Commit={{.COMMIT}}'
     -X '{{.BUILDINFO}}.BuildDate={{.BUILD_DATE}}'
     -X '{{.BUILDINFO}}.UpdateFeedURL={{.UPDATE_FEED_URL}}'
-  # Windows Smart App Control blocks test binaries in %TEMP%; build them inside the repo.
+  # Test binaries are built here (only by the test tasks, which create it first):
+  # Windows Smart App Control blocks unsigned test executables in %TEMP%.
   GOTMPDIR: '{{.ROOT_DIR}}/build/.gotmp'
   WAILS_TAGS: '{{if eq OS "linux"}}webkit2_41{{end}}'
-
-env:
-  GOTMPDIR: '{{.GOTMPDIR}}'
 
 tasks:
   default:
@@ -100,6 +98,7 @@ tasks:
   test:
     desc: Run all Go and frontend tests
     deps: [gotmp]
+    env: { GOTMPDIR: '{{.GOTMPDIR}}' }
     cmds:
       - go test ./...
       - task: test:frontend
@@ -107,7 +106,7 @@ tasks:
   test:race:
     desc: Run Go tests with the race detector (requires cgo / a C compiler)
     deps: [gotmp]
-    env: { CGO_ENABLED: '1' }
+    env: { CGO_ENABLED: '1', GOTMPDIR: '{{.GOTMPDIR}}' }
     cmds: [go test -race ./...]
 
   test:frontend:
