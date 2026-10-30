@@ -7,6 +7,8 @@ description: >-
 
 # DezuxkStudio workflow
 
+> **Target Platform Memory**: Dự án hiện tại **chỉ hỗ trợ hệ điều hành Windows** (chưa hỗ trợ Linux hay macOS). Mọi tối ưu, tooling, installer (NSIS), đường dẫn `%APPDATA%`/`%LOCALAPPDATA%`, và nhị phân ngoại vi đều phục vụ Windows.
+
 `Taskfile.yml` is the single source of truth for commands (`task --list`).
 On Windows without Task: `powershell -ExecutionPolicy Bypass -File scripts/manage.ps1 <task>`.
 

@@ -66,7 +66,7 @@ export const ActionTester: React.FC = () => {
               onChange={(e) => setAction(e.target.value)}
             />
             <Button variant="primary" onClick={() => void run()} disabled={!connected || busy}>
-              <Send size={13} /> {busy ? t("tester.dispatching") : t("tester.dispatch")}
+              <Send size={13} /> {t("tester.dispatch")}
             </Button>
           </div>
         </div>

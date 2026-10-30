@@ -10,6 +10,7 @@ export const appConfig = {
     manualWsUrl: "dezuxk.manual_ws_url",
     themeHint: "dezuxk.theme_hint",
     languageHint: "dezuxk.language_hint",
+    devMode: "dezuxk.dev_mode",
   },
   /** Reconnect backoff with full jitter. */
   reconnect: {

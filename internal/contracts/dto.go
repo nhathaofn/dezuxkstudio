@@ -1,6 +1,7 @@
 package contracts
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 
@@ -9,6 +10,7 @@ import (
 	"app/internal/config"
 	"app/internal/domain/binaries"
 	"app/internal/domain/preferences"
+	"app/internal/engine"
 )
 
 // Empty is the payload/result of actions that carry no data.
@@ -190,4 +192,46 @@ type BinarySetPathPayload struct {
 // Validate checks payload.
 func (p BinarySetPathPayload) Validate() error {
 	return binaries.ValidateID(p.ID)
+}
+
+// WorkflowSpecsResult returns available node specs.
+type WorkflowSpecsResult struct {
+	Specs []engine.Spec `json:"specs"`
+}
+
+// WorkflowRunNodePayload executes a single node by type.
+type WorkflowRunNodePayload struct {
+	Type  string          `json:"type"`
+	Input json.RawMessage `json:"input"`
+}
+
+// Validate checks node payload.
+func (p WorkflowRunNodePayload) Validate() error {
+	if p.Type == "" {
+		return apperr.Validation("node type is required")
+	}
+	return nil
+}
+
+// WorkflowRunNodeResult wraps single node execution output.
+type WorkflowRunNodeResult struct {
+	Output any `json:"output"`
+}
+
+// WorkflowRunGraphPayload wraps a DAG graph to execute.
+type WorkflowRunGraphPayload struct {
+	Graph engine.Graph `json:"graph"`
+}
+
+// Validate checks graph payload.
+func (p WorkflowRunGraphPayload) Validate() error {
+	if len(p.Graph.Nodes) == 0 {
+		return apperr.Validation("graph must contain at least one node")
+	}
+	return nil
+}
+
+// WorkflowRunGraphResult returns full graph execution results.
+type WorkflowRunGraphResult struct {
+	Result engine.GraphResult `json:"result"`
 }

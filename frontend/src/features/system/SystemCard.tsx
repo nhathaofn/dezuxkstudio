@@ -28,8 +28,10 @@ export const SystemCard: React.FC = () => {
     <Card
       icon={Cpu}
       title={t("system.title")}
+      className="card--flex-fill"
       actions={
         <Button
+          size="sm"
           onClick={() => void loadInfo()}
           title={t("system.refresh")}
           aria-label={t("system.refresh")}
@@ -38,30 +40,32 @@ export const SystemCard: React.FC = () => {
         </Button>
       }
     >
-      {info && (
-        <dl className="kv-grid">
-          <dt>{t("system.version")}</dt>
-          <dd>
-            {info.build.version} <span className="muted-text">({info.build.commit})</span>
-          </dd>
-          <dt>{t("system.mode")}</dt>
-          <dd>{info.mode}</dd>
-          <dt>{t("system.platform")}</dt>
-          <dd>
-            {info.build.os}/{info.build.arch} · {info.build.go_version}
-          </dd>
-          <dt>{t("system.uptime")}</dt>
-          <dd>{formatUptime(info.runtime.uptime_seconds)}</dd>
-        </dl>
-      )}
-      <div className="row row--wrap">
-        {FolderTargetValues.map((target) => (
-          <Button key={target} onClick={() => void open(target)}>
-            <Folder size={13} /> {t(`system.open.${target}`)}
-          </Button>
-        ))}
+      <div className="system-card-content">
+        {info && (
+          <dl className="kv-grid" style={{ marginBottom: 0 }}>
+            <dt>{t("system.version")}</dt>
+            <dd>
+              {info.build.version} <span className="muted-text">({info.build.commit})</span>
+            </dd>
+            <dt>{t("system.mode")}</dt>
+            <dd>{info.mode}</dd>
+            <dt>{t("system.platform")}</dt>
+            <dd>
+              {info.build.os}/{info.build.arch} · {info.build.go_version}
+            </dd>
+            <dt>{t("system.uptime")}</dt>
+            <dd>{formatUptime(info.runtime.uptime_seconds)}</dd>
+          </dl>
+        )}
+        <div className="system-folder-buttons">
+          {FolderTargetValues.map((target) => (
+            <Button key={target} size="sm" onClick={() => void open(target)}>
+              <Folder size={12} /> {t(`system.open.${target}`)}
+            </Button>
+          ))}
+        </div>
+        <ErrorText error={infoError ?? openError} />
       </div>
-      <ErrorText error={infoError ?? openError} />
     </Card>
   );
 };

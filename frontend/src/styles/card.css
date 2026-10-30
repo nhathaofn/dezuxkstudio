@@ -1,15 +1,14 @@
 .system-card {
-  max-width: 520px;
   width: 100%;
   background-color: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  padding: var(--space-8);
+  padding: var(--space-4) var(--space-5);
   box-shadow: var(--shadow-sm);
 }
 
 .system-card--wide {
-  max-width: 640px;
+  width: 100%;
 }
 
 .card-header-row {
@@ -17,18 +16,26 @@
   justify-content: space-between;
   align-items: center;
   margin-bottom: var(--space-3);
+  min-height: 32px;
+}
+
+.card-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.card-title h2 {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  margin: 0;
+  color: var(--text-primary);
+  line-height: 1.2;
 }
 
 .card-actions-row {
   display: flex;
   gap: var(--space-2);
-}
-
-.system-card h2 {
-  font-size: var(--text-xl);
-  font-weight: var(--weight-semibold);
-  margin-bottom: var(--space-2);
-  color: var(--text-primary);
 }
 
 .subtitle {

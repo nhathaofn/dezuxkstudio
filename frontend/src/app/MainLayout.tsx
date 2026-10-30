@@ -8,9 +8,7 @@ export const MainLayout: React.FC = () => (
   <div className="app-layout">
     <AppHeader />
     <main className="app-content">
-      <div className="cards-stack">
-        <StatusBanner />
-      </div>
+      <StatusBanner />
       <Suspense fallback={<LoadingSkeleton />}>
         <Outlet />
       </Suspense>

@@ -1,5 +1,5 @@
 import type React from "react";
-import { LayoutDashboard, Terminal, Wrench, type LucideIcon } from "lucide-react";
+import { LayoutDashboard, Sparkles, type LucideIcon } from "lucide-react";
 import type { MessageKey } from "../lib/i18n";
 
 export interface NavRoute {
@@ -19,15 +19,15 @@ export const navRoutes: NavRoute[] = [
     load: () => import("../features/system/OverviewView"),
   },
   {
-    path: "/logs",
-    label: "nav.logs",
-    icon: Terminal,
-    load: () => import("../features/logs/LiveLogView"),
-  },
-  {
-    path: "/tools",
-    label: "nav.tools",
-    icon: Wrench,
-    load: () => import("../features/binaries/BinariesView"),
+    path: "/watermark",
+    label: "nav.watermark",
+    icon: Sparkles,
+    load: () => import("../features/watermark/WatermarkView"),
   },
 ];
+
+export const settingsRoute = {
+  path: "/settings",
+  label: "header.settings" as MessageKey,
+  load: () => import("../features/preferences/SettingsView"),
+};

@@ -7,6 +7,7 @@ interface CardProps {
   subtitle?: string;
   actions?: React.ReactNode;
   wide?: boolean;
+  className?: string;
   children?: React.ReactNode;
 }
 
@@ -17,9 +18,12 @@ export const Card: React.FC<CardProps> = ({
   subtitle,
   actions,
   wide,
+  className,
   children,
 }) => (
-  <section className={`system-card${wide ? " system-card--wide" : ""}`}>
+  <section
+    className={`system-card${wide ? " system-card--wide" : ""}${className ? ` ${className}` : ""}`}
+  >
     <div className="card-header-row">
       <div className="card-title">
         <Icon size={18} className="card-title__icon" />

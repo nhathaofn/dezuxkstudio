@@ -27,6 +27,10 @@ const (
 	ActionBinariesProbe    = "binaries:probe"
 	ActionBinariesSetPath  = "binaries:set_path"
 	ActionBinariesDownload = "binaries:download"
+
+	ActionWorkflowSpecs    = "workflow:specs"
+	ActionWorkflowRunNode  = "workflow:run_node"
+	ActionWorkflowRunGraph = "workflow:run_graph"
 )
 
 // Server-pushed event names (WebSocket).
@@ -88,6 +92,9 @@ func Actions() []ActionSpec {
 		{ActionBinariesProbe, "Probe a specific external binary to verify and extract version.", t[BinaryIDPayload](), t[BinaryInfo]()},
 		{ActionBinariesSetPath, "Set or clear custom executable path for a binary.", t[BinarySetPathPayload](), t[BinaryInfo]()},
 		{ActionBinariesDownload, "Download and install official static build of binary (cancellable, reports progress).", t[BinaryIDPayload](), t[BinaryInfo]()},
+		{ActionWorkflowSpecs, "Returns the catalogue of registered workflow node types.", t[Empty](), t[WorkflowSpecsResult]()},
+		{ActionWorkflowRunNode, "Runs one node standalone by type with JSON input.", t[WorkflowRunNodePayload](), t[WorkflowRunNodeResult]()},
+		{ActionWorkflowRunGraph, "Runs a full workflow DAG graph in dependency order.", t[WorkflowRunGraphPayload](), t[WorkflowRunGraphResult]()},
 	}
 }
 
@@ -114,6 +121,7 @@ func Bridge() []BridgeMethod {
 		{Name: "GetBuildInfo", Summary: "Returns build metadata.", Result: t[BuildInfo]()},
 		{Name: "SetRemoteToken", Summary: "Client mode: stores the remote token in the OS credential store.", Params: []reflect.Type{t[string]()}},
 		{Name: "BrowseExecutable", Summary: "Opens a native file picker to select an executable file.", Params: []reflect.Type{t[string]()}, Result: t[string]()},
+		{Name: "BrowseImage", Summary: "Opens a native file picker to select an image file.", Params: []reflect.Type{t[string]()}, Result: t[string]()},
 	}
 }
 

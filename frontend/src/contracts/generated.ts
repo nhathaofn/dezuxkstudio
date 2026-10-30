@@ -96,7 +96,17 @@ export interface DiagnosticsBundle {
   created_at: number;
 }
 
+export interface Edge {
+  from: Endpoint;
+  to: Endpoint;
+}
+
 export type Empty = Record<string, never>;
+
+export interface Endpoint {
+  node: string;
+  port: string;
+}
 
 export interface ErrorBody {
   code: ErrorCode;
@@ -112,8 +122,42 @@ export interface EventMessage {
   timestamp: number;
 }
 
+export interface Graph {
+  requestId?: string;
+  nodes: GraphNode[];
+  edges: Edge[];
+}
+
+export interface GraphNode {
+  id: string;
+  type: string;
+  params?: unknown;
+}
+
+export interface GraphResult {
+  order: string[];
+  nodes: Record<string, NodeRun>;
+}
+
+export interface NodeRun {
+  status: string;
+  output?: unknown;
+  error?: string;
+  code?: ErrorCode;
+  jobIds?: string[];
+}
+
 export interface OpenFolderPayload {
   target: FolderTarget;
+}
+
+export interface Param {
+  name: string;
+  label: string;
+  kind: string;
+  optionsFrom?: string;
+  min?: number;
+  max?: number;
 }
 
 export interface PathsInfo {
@@ -125,6 +169,14 @@ export interface PathsInfo {
 
 export interface PingResult {
   server_time: number;
+}
+
+export interface Port {
+  name: string;
+  label: string;
+  type: string;
+  multiple: boolean;
+  optional: boolean;
 }
 
 export interface Preferences {
@@ -154,6 +206,16 @@ export interface RuntimeInfo {
   uptime_seconds: number;
 }
 
+export interface Spec {
+  type: string;
+  provider: string;
+  label: string;
+  description: string;
+  inputs: Port[];
+  outputs: Port[];
+  params: Param[];
+}
+
 export interface SystemInfo {
   mode: AppMode;
   build: BuildInfo;
@@ -168,6 +230,27 @@ export interface UpdateInfo {
   release_url: string;
   release_notes: string;
   checked_at: number;
+}
+
+export interface WorkflowRunGraphPayload {
+  graph: Graph;
+}
+
+export interface WorkflowRunGraphResult {
+  result: GraphResult;
+}
+
+export interface WorkflowRunNodePayload {
+  type: string;
+  input: unknown;
+}
+
+export interface WorkflowRunNodeResult {
+  output: unknown;
+}
+
+export interface WorkflowSpecsResult {
+  specs: Spec[];
 }
 
 export const Actions = {
@@ -195,6 +278,12 @@ export const Actions = {
   BINARIES_SET_PATH: "binaries:set_path",
   /** Download and install official static build of binary (cancellable, reports progress). */
   BINARIES_DOWNLOAD: "binaries:download",
+  /** Returns the catalogue of registered workflow node types. */
+  WORKFLOW_SPECS: "workflow:specs",
+  /** Runs one node standalone by type with JSON input. */
+  WORKFLOW_RUN_NODE: "workflow:run_node",
+  /** Runs a full workflow DAG graph in dependency order. */
+  WORKFLOW_RUN_GRAPH: "workflow:run_graph",
 } as const;
 export type ActionName = (typeof Actions)[keyof typeof Actions];
 
@@ -211,6 +300,9 @@ export interface ActionMap {
   "binaries:probe": { payload: BinaryIDPayload; result: BinaryInfo };
   "binaries:set_path": { payload: BinarySetPathPayload; result: BinaryInfo };
   "binaries:download": { payload: BinaryIDPayload; result: BinaryInfo };
+  "workflow:specs": { payload: Empty; result: WorkflowSpecsResult };
+  "workflow:run_node": { payload: WorkflowRunNodePayload; result: WorkflowRunNodeResult };
+  "workflow:run_graph": { payload: WorkflowRunGraphPayload; result: WorkflowRunGraphResult };
 }
 
 export const Events = {
@@ -249,4 +341,6 @@ export interface BridgeApi {
   SetRemoteToken(arg1: string): Promise<void>;
   /** Opens a native file picker to select an executable file. */
   BrowseExecutable(arg1: string): Promise<string>;
+  /** Opens a native file picker to select an image file. */
+  BrowseImage(arg1: string): Promise<string>;
 }

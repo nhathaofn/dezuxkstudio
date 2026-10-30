@@ -1,6 +1,6 @@
 # DezuxkStudio
 
-Base ứng dụng desktop **Go + Wails v2 + React 18** (Windows / macOS / Linux) kèm một **core server headless** dùng chung mã nguồn.
+Base ứng dụng desktop **Go + Wails v2 + React 18** (hiện tại **chỉ hỗ trợ Windows**, chưa hỗ trợ Linux hay macOS) kèm một **core server headless** dùng chung mã nguồn.
 
 | Thành phần | Entry point | Lệnh build | Kết quả |
 | :--- | :--- | :--- | :--- |

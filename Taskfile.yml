@@ -11,7 +11,7 @@ vars:
   COMMIT:
     sh: git rev-parse --short HEAD 2>/dev/null || echo unknown
   BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" now "UTC"}}'
-  UPDATE_FEED_URL: '{{.UPDATE_FEED_URL | default ""}}'
+  UPDATE_FEED_URL: '{{.UPDATE_FEED_URL | default "https://api.github.com/repos/nhathaofn/dezuxkstudio/releases/latest"}}'
   APP_NAME:
     sh: go run ./cmd/buildmeta name
   BUILDINFO: app/internal/buildinfo

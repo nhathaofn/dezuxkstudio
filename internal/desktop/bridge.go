@@ -108,6 +108,36 @@ func (b *Bridge) BrowseExecutable(title string) (string, error) {
 	return selected, nil
 }
 
+// BrowseImage opens a native file picker to select an image file.
+func (b *Bridge) BrowseImage(title string) (string, error) {
+	b.mu.RLock()
+	ctx := b.wailsCtx
+	b.mu.RUnlock()
+	if ctx == nil {
+		return "", apperr.Unavailable("desktop window is not ready")
+	}
+	filters := []wailsruntime.FileFilter{
+		{DisplayName: "Images (*.png;*.jpg;*.jpeg;*.webp)", Pattern: "*.png;*.jpg;*.jpeg;*.webp"},
+		{DisplayName: "All Files (*.*)", Pattern: "*.*"},
+	}
+	if runtime.GOOS != "windows" {
+		filters = []wailsruntime.FileFilter{
+			{DisplayName: "All Files (*)", Pattern: "*"},
+		}
+	}
+	if title == "" {
+		title = "Select Image"
+	}
+	selected, err := wailsruntime.OpenFileDialog(ctx, wailsruntime.OpenDialogOptions{
+		Title:   title,
+		Filters: filters,
+	})
+	if err != nil {
+		return "", apperr.Wrap(apperr.CodeInternal, "failed to open file dialog", err)
+	}
+	return selected, nil
+}
+
 func (b *Bridge) setWailsContext(ctx context.Context) {
 	b.mu.Lock()
 	b.wailsCtx = ctx

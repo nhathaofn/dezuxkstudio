@@ -137,12 +137,12 @@ export const BinariesView: React.FC = () => {
   };
 
   return (
-    <div className="cards-stack">
+    <div className="cards-stack flex-full-height">
       <Card
         icon={Wrench}
         title={t("tools.title")}
-        subtitle={t("tools.subtitle")}
         wide
+        className="card--flex-fill"
         actions={
           <Button
             onClick={() => void fetchBinaries()}
@@ -156,238 +156,189 @@ export const BinariesView: React.FC = () => {
       >
         {error && <ErrorText error={error} />}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
-          {binaries.map((bin: BinaryInfo) => {
-            const isProbing = Boolean(probingIds[bin.id]);
-            const progress = downloadProgress[bin.id];
-            const isDownloading = progress !== null && progress !== undefined;
-            const currentInput = customPathInputs[bin.id] ?? (bin.custom_path || "");
-            const isDirty = currentInput !== (bin.custom_path || "");
-            const badge = getStatusBadge(bin.status, t);
+        <div className="scrollable-pane">
+          <div className="tools-binary-list">
+            {binaries.map((bin: BinaryInfo) => {
+              const isProbing = Boolean(probingIds[bin.id]);
+              const progress = downloadProgress[bin.id];
+              const isDownloading = progress !== null && progress !== undefined;
+              const currentInput = customPathInputs[bin.id] ?? (bin.custom_path || "");
+              const isDirty = currentInput !== (bin.custom_path || "");
+              const badge = getStatusBadge(bin.status, t);
 
-            return (
-              <div
-                key={bin.id}
-                style={{
-                  border: "1px solid var(--border-subtle)",
-                  borderRadius: "var(--radius-md)",
-                  padding: "var(--space-5)",
-                  backgroundColor: "var(--bg-surface-elevated)",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "var(--space-3)",
-                }}
-              >
-                {/* Header row: Name, Executable, Status Badge */}
-                <div
-                  style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-                    <Cpu size={16} style={{ color: "var(--text-secondary)" }} />
-                    <span
-                      style={{ fontWeight: "var(--weight-semibold)", fontSize: "var(--text-base)" }}
-                    >
-                      {bin.name}
-                    </span>
-                    <Badge>{bin.executable}</Badge>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-                    {badge.icon}
-                    <span
-                      style={{
-                        fontSize: "var(--text-xs)",
-                        fontWeight: "var(--weight-medium)",
-                        color: badge.color,
-                      }}
-                    >
-                      {badge.label}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Description */}
-                <p style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", margin: 0 }}>
-                  {bin.description}
-                </p>
-
-                {/* Metadata Details */}
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "100px 1fr",
-                    gap: "var(--space-1) var(--space-3)",
-                    fontSize: "var(--text-xs)",
-                    backgroundColor: "var(--bg-surface)",
-                    padding: "var(--space-3)",
-                    borderRadius: "var(--radius-sm)",
-                    border: "1px solid var(--border-subtle)",
-                  }}
-                >
-                  <span style={{ color: "var(--text-muted)", fontWeight: "var(--weight-medium)" }}>
-                    {t("tools.version")}:
-                  </span>
-                  <span style={{ fontFamily: "var(--font-mono)", color: "var(--text-primary)" }}>
-                    {bin.version || "—"}
-                  </span>
-
-                  <span style={{ color: "var(--text-muted)", fontWeight: "var(--weight-medium)" }}>
-                    {t("tools.location")}:
-                  </span>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "var(--space-2)",
-                      overflow: "hidden",
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        color: bin.resolved_path ? "var(--text-primary)" : "var(--text-muted)",
-                        wordBreak: "break-all",
-                      }}
-                    >
-                      {bin.resolved_path || t("tools.source.none")}
-                    </span>
-                    {bin.source !== "none" && (
-                      <Badge className="text-xs">{t(`tools.source.${bin.source}`)}</Badge>
-                    )}
-                  </div>
-                </div>
-
-                {/* Progress bar during download */}
-                {isDownloading && progress && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-1)" }}>
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        fontSize: "var(--text-xs)",
-                        color: "var(--text-secondary)",
-                      }}
-                    >
-                      <span>{progress.message || t("tools.downloading")}</span>
-                      <span>{progress.percent.toFixed(1)}%</span>
+              return (
+                <div key={bin.id} className="binary-card-item">
+                  {/* Header: Name, Executable, Status, Source, and Primary Actions */}
+                  <div className="binary-card-header">
+                    <div className="binary-header-left">
+                      <Cpu size={16} style={{ color: "var(--text-secondary)", flexShrink: 0 }} />
+                      <span
+                        style={{
+                          fontWeight: "var(--weight-semibold)",
+                          fontSize: "var(--text-sm)",
+                          color: "var(--text-primary)",
+                        }}
+                      >
+                        {bin.name}
+                      </span>
+                      <Badge>{bin.executable}</Badge>
+                      <div
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "var(--space-1)",
+                          marginLeft: "var(--space-1)",
+                        }}
+                      >
+                        {badge.icon}
+                        <span
+                          style={{
+                            fontSize: "var(--text-xs)",
+                            fontWeight: "var(--weight-medium)",
+                            color: badge.color,
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {badge.label}
+                        </span>
+                      </div>
+                      {bin.source !== "none" && <Badge>{t(`tools.source.${bin.source}`)}</Badge>}
                     </div>
+
+                    <div className="binary-header-actions">
+                      {isDownloading ? (
+                        <Button size="sm" onClick={() => handleCancelDownload(bin.id)}>
+                          <X size={12} />
+                          {t("tools.cancel")}
+                        </Button>
+                      ) : (
+                        <>
+                          {bin.status !== "available" && bin.can_download && (
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              onClick={() => void handleDownload(bin.id)}
+                              disabled={isProbing}
+                            >
+                              <Download size={12} />
+                              {t("tools.download")}
+                            </Button>
+                          )}
+                          <Button
+                            size="sm"
+                            onClick={() => void handleProbe(bin.id)}
+                            disabled={isProbing || isDownloading}
+                          >
+                            <RefreshCw size={12} className={isProbing ? "animate-spin" : ""} />
+                            {t("tools.probe")}
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Progress bar during download */}
+                  {isDownloading && progress && (
                     <div
-                      style={{
-                        height: "6px",
-                        backgroundColor: "var(--bg-surface)",
-                        borderRadius: "var(--radius-full)",
-                        overflow: "hidden",
-                        border: "1px solid var(--border-subtle)",
-                      }}
+                      style={{ display: "flex", flexDirection: "column", gap: "var(--space-1)" }}
                     >
                       <div
                         style={{
-                          height: "100%",
-                          width: `${Math.min(100, Math.max(0, progress.percent))}%`,
-                          backgroundColor: "var(--primary, #3b82f6)",
-                          transition: "width 200ms ease",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          fontSize: "var(--text-xs)",
+                          color: "var(--text-secondary)",
                         }}
-                      />
+                      >
+                        <span>{progress.message || t("tools.downloading")}</span>
+                        <span>{progress.percent.toFixed(1)}%</span>
+                      </div>
+                      <div
+                        style={{
+                          height: "6px",
+                          backgroundColor: "var(--bg-surface-elevated)",
+                          borderRadius: "var(--radius-full)",
+                          overflow: "hidden",
+                          border: "1px solid var(--border-subtle)",
+                        }}
+                      >
+                        <div
+                          style={{
+                            height: "100%",
+                            width: `${Math.min(100, Math.max(0, progress.percent))}%`,
+                            backgroundColor: "var(--primary, #3b82f6)",
+                            transition: "width 200ms ease",
+                          }}
+                        />
+                      </div>
                     </div>
+                  )}
+
+                  {/* Metadata Details */}
+                  <div className="binary-meta-box">
+                    <span className="binary-meta-label">{t("tools.version")}:</span>
+                    <span className="binary-meta-value">{bin.version || "—"}</span>
+
+                    <span className="binary-meta-label">{t("tools.location")}:</span>
+                    <span
+                      className="binary-meta-value"
+                      title={bin.resolved_path || t("tools.source.none")}
+                    >
+                      {bin.resolved_path || t("tools.source.none")}
+                    </span>
                   </div>
-                )}
 
-                {/* Custom Path Override Input & Actions */}
-                <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center" }}>
-                  <input
-                    type="text"
-                    value={currentInput}
-                    onChange={(e) =>
-                      setCustomPathInputs((prev) => ({ ...prev, [bin.id]: e.target.value }))
-                    }
-                    placeholder={t("tools.customPathPlaceholder")}
-                    disabled={isDownloading || isProbing}
-                    style={{
-                      flex: 1,
-                      padding: "4px var(--space-2)",
-                      fontSize: "var(--text-xs)",
-                      fontFamily: "var(--font-mono)",
-                      borderRadius: "var(--radius-sm)",
-                      border: "1px solid var(--border-subtle)",
-                      backgroundColor: "var(--bg-surface)",
-                      color: "var(--text-primary)",
-                    }}
-                  />
-                  {isDesktop() && (
-                    <Button
-                      size="sm"
-                      onClick={() => void handleBrowse(bin.id, bin.name)}
+                  {/* Path Override Controls */}
+                  <div className="binary-input-row">
+                    <input
+                      type="text"
+                      className="binary-path-input"
+                      value={currentInput}
+                      onChange={(e) =>
+                        setCustomPathInputs((prev) => ({ ...prev, [bin.id]: e.target.value }))
+                      }
+                      placeholder={t("tools.customPathPlaceholder")}
                       disabled={isDownloading || isProbing}
-                      title={t("tools.browse")}
-                    >
-                      <FolderOpen size={12} />
-                      {t("tools.browse")}
-                    </Button>
-                  )}
-                  {isDirty && (
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      onClick={() => void handleSaveCustomPath(bin.id)}
-                      disabled={isDownloading || isProbing}
-                    >
-                      <Save size={12} />
-                      {t("tools.savePath")}
-                    </Button>
-                  )}
-                  {Boolean(bin.custom_path) && !isDirty && (
-                    <Button
-                      size="sm"
-                      onClick={() => void handleResetCustomPath(bin.id)}
-                      disabled={isDownloading || isProbing}
-                      title={t("tools.clearPath")}
-                    >
-                      <RotateCcw size={12} />
-                      {t("tools.clearPath")}
-                    </Button>
-                  )}
-                </div>
-
-                {/* Main Action Buttons */}
-                <div
-                  style={{
-                    display: "flex",
-                    gap: "var(--space-2)",
-                    justifyContent: "flex-end",
-                    marginTop: "var(--space-1)",
-                  }}
-                >
-                  {isDownloading ? (
-                    <Button size="sm" onClick={() => handleCancelDownload(bin.id)}>
-                      <X size={12} />
-                      {t("tools.cancel")}
-                    </Button>
-                  ) : (
-                    <>
-                      {bin.status !== "available" && bin.can_download && (
-                        <Button
-                          variant="primary"
-                          size="sm"
-                          onClick={() => void handleDownload(bin.id)}
-                          disabled={isProbing}
-                        >
-                          <Download size={12} />
-                          {t("tools.download")}
-                        </Button>
-                      )}
+                    />
+                    {isDesktop() && (
                       <Button
                         size="sm"
-                        onClick={() => void handleProbe(bin.id)}
-                        disabled={isProbing || isDownloading}
+                        onClick={() => void handleBrowse(bin.id, bin.name)}
+                        disabled={isDownloading || isProbing}
+                        title={t("tools.browse")}
                       >
-                        <RefreshCw size={12} className={isProbing ? "animate-spin" : ""} />
-                        {isProbing ? t("tools.probing") : t("tools.probe")}
+                        <FolderOpen size={12} />
+                        {t("tools.browse")}
                       </Button>
-                    </>
-                  )}
+                    )}
+                    {isDirty && (
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => void handleSaveCustomPath(bin.id)}
+                        disabled={isDownloading || isProbing}
+                        title={t("tools.savePath")}
+                      >
+                        <Save size={12} />
+                        {t("tools.savePath")}
+                      </Button>
+                    )}
+                    {Boolean(bin.custom_path) && !isDirty && (
+                      <Button
+                        size="sm"
+                        onClick={() => void handleResetCustomPath(bin.id)}
+                        disabled={isDownloading || isProbing}
+                        title={t("tools.clearPath")}
+                      >
+                        <RotateCcw size={12} />
+                        {t("tools.clearPath")}
+                      </Button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       </Card>
     </div>

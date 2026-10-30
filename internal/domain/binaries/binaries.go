@@ -130,21 +130,6 @@ var Registry = map[BinaryID]BinarySpec{
 				ArchiveFormat: "zip",
 				ExtractFile:   "bin/ffmpeg.exe",
 			},
-			"linux_amd64": {
-				URL:           "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
-				ArchiveFormat: "tar.xz",
-				ExtractFile:   "ffmpeg",
-			},
-			"darwin_arm64": {
-				URL:           "https://evermeet.cx/ffmpeg/getrelease/zip",
-				ArchiveFormat: "zip",
-				ExtractFile:   "ffmpeg",
-			},
-			"darwin_amd64": {
-				URL:           "https://evermeet.cx/ffmpeg/getrelease/zip",
-				ArchiveFormat: "zip",
-				ExtractFile:   "ffmpeg",
-			},
 		},
 	},
 	IDFFprobe: {
@@ -165,16 +150,6 @@ var Registry = map[BinaryID]BinarySpec{
 				ArchiveFormat: "zip",
 				ExtractFile:   "bin/ffprobe.exe",
 			},
-			"darwin_arm64": {
-				URL:           "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip",
-				ArchiveFormat: "zip",
-				ExtractFile:   "ffprobe",
-			},
-			"darwin_amd64": {
-				URL:           "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip",
-				ArchiveFormat: "zip",
-				ExtractFile:   "ffprobe",
-			},
 		},
 	},
 	IDYtDlp: {
@@ -194,21 +169,6 @@ var Registry = map[BinaryID]BinarySpec{
 				URL:           "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe",
 				ArchiveFormat: "raw",
 				ExtractFile:   "yt-dlp.exe",
-			},
-			"linux_amd64": {
-				URL:           "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux",
-				ArchiveFormat: "raw",
-				ExtractFile:   "yt-dlp",
-			},
-			"darwin_arm64": {
-				URL:           "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos",
-				ArchiveFormat: "raw",
-				ExtractFile:   "yt-dlp",
-			},
-			"darwin_amd64": {
-				URL:           "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos",
-				ArchiveFormat: "raw",
-				ExtractFile:   "yt-dlp",
 			},
 		},
 	},

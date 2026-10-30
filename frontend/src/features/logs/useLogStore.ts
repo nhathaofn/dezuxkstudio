@@ -23,8 +23,8 @@ export const useLogStore = create<LogState>((set) => ({
   entries: [],
   add: (level, message) =>
     set((s) => {
-      const next = [...s.entries, { id: ++seq, timestamp: Date.now(), level, message }];
-      return { entries: next.slice(-appConfig.logBufferSize) };
+      const next = [{ id: ++seq, timestamp: Date.now(), level, message }, ...s.entries];
+      return { entries: next.slice(0, appConfig.logBufferSize) };
     }),
   clear: () => set({ entries: [] }),
 }));

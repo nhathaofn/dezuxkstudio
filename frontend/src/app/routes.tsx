@@ -1,9 +1,10 @@
 import React, { lazy } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { MainLayout } from "./MainLayout";
-import { navRoutes } from "./navigation";
+import { navRoutes, settingsRoute } from "./navigation";
 
 const pages = navRoutes.map((r) => ({ path: r.path, Page: lazy(r.load) }));
+const SettingsPage = lazy(settingsRoute.load);
 
 export const AppRoutes: React.FC = () => (
   <Routes>
@@ -11,6 +12,10 @@ export const AppRoutes: React.FC = () => (
       {pages.map(({ path, Page }) => (
         <Route key={path} path={path} element={<Page />} />
       ))}
+      <Route path={settingsRoute.path} element={<SettingsPage />} />
+      {/* Backward-compatible redirects */}
+      <Route path="/tools" element={<Navigate to="/settings?tab=tools" replace />} />
+      <Route path="/logs" element={<Navigate to="/settings?tab=logs" replace />} />
       <Route path="*" element={<Navigate to={navRoutes[0].path} replace />} />
     </Route>
   </Routes>

@@ -66,13 +66,16 @@ func ConfigDir(appID string) (string, error) {
 
 // Ensure creates every directory with owner-only permissions.
 func (p Paths) Ensure() error {
-	for _, dir := range []string{p.Config, p.Data, p.Logs, p.Backups(), p.Diagnostics()} {
+	for _, dir := range []string{p.Config, p.Data, p.Logs, p.Backups(), p.Diagnostics(), p.Media()} {
 		if err := os.MkdirAll(dir, dirPerm); err != nil {
 			return fmt.Errorf("paths: create %s: %w", dir, err)
 		}
 	}
 	return nil
 }
+
+// Media returns the directory where generated and processed images and videos are stored.
+func (p Paths) Media() string { return filepath.Join(p.Data, "media") }
 
 // Backups is where database snapshots are kept before schema migrations.
 func (p Paths) Backups() string { return filepath.Join(p.Data, "backups") }

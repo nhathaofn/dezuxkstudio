@@ -3,6 +3,7 @@
 
 # Secrets & local configuration
 AGENTS.md
+/.agents/teamwork/
 /config.json
 *.env
 .env

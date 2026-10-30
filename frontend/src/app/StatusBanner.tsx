@@ -16,6 +16,8 @@ export const StatusBanner: React.FC = () => {
   if (status === "reconnecting") notice = t("connection.lost");
   else if (resolved && !hasEndpoint) notice = t("connection.noEndpoint");
 
+  if (!notice && !prefsError) return null;
+
   return (
     <div className="status-banner">
       {notice && (

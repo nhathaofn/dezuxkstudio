@@ -1,12 +1,10 @@
 import React from "react";
 import { NavLink } from "react-router-dom";
-import { Badge } from "../components/ui/Badge";
-import { LatencyBadge } from "../features/connection/LatencyBadge";
+import { Settings } from "lucide-react";
 import { StatusIndicator } from "../features/connection/StatusIndicator";
-import { LanguageSelect, ThemeToggle } from "../features/preferences/PreferenceControls";
 import { useSystemStore } from "../features/system/useSystemStore";
 import { useT } from "../lib/i18n";
-import { navRoutes } from "./navigation";
+import { navRoutes, settingsRoute } from "./navigation";
 
 export const AppHeader: React.FC = () => {
   const t = useT();
@@ -16,7 +14,6 @@ export const AppHeader: React.FC = () => {
     <header className="app-header">
       <div className="header-left">
         <span className="logo">{build?.product_name ?? document.title}</span>
-        {build && <Badge>v{build.version}</Badge>}
         <nav className="header-nav" aria-label="Main">
           {navRoutes.map(({ path, label, icon: Icon }) => (
             <NavLink
@@ -34,9 +31,16 @@ export const AppHeader: React.FC = () => {
       </div>
       <div className="header-right">
         <StatusIndicator />
-        <LatencyBadge />
-        <LanguageSelect />
-        <ThemeToggle />
+        <NavLink
+          to={settingsRoute.path}
+          className={({ isActive }) =>
+            `ds-button ds-button--sm ${isActive ? "ds-button--primary" : "ds-button--secondary"}`
+          }
+          title={t(settingsRoute.label)}
+          aria-label={t(settingsRoute.label)}
+        >
+          <Settings size={14} />
+        </NavLink>
       </div>
     </header>
   );

@@ -8,4 +8,6 @@
   background-color: var(--bg-surface-elevated);
   border: 1px solid var(--border-subtle);
   color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
 }

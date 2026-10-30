@@ -20,7 +20,7 @@ export const UpdateCard: React.FC = () => {
       title={t("update.title")}
       actions={
         <Button onClick={() => void check()} disabled={checking}>
-          {checking ? t("update.checking") : t("update.check")}
+          {t("update.check")}
         </Button>
       }
     >

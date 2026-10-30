@@ -25,6 +25,7 @@ import (
 	"app/internal/service/preferences"
 	"app/internal/service/system"
 	"app/internal/service/update"
+	"app/internal/service/workflow"
 	"app/internal/storage/sqlite"
 )
 
@@ -172,11 +173,20 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 
 	binSvc := binariessvc.New(sqlite.NewBinariesRepository(c.db), o.Paths.Tools(), o.Logger)
 
+	wfSvc, err := workflow.New(workflow.Options{
+		Paths:  o.Paths,
+		Logger: o.Logger,
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	return []realtime.Module{
 		modules.System{Info: sysSvc, Update: updSvc},
 		modules.Preferences{Service: prefSvc},
 		modules.Diagnostics{Service: diagSvc},
 		modules.Binaries{Service: binSvc},
+		modules.Workflow{Service: wfSvc},
 	}, nil
 }
 

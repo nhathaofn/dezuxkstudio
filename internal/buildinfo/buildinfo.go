@@ -32,7 +32,7 @@ var (
 
 	// UpdateFeedURL is the default release feed (GitHub "latest release" API format).
 	// Empty disables update checks unless overridden by configuration.
-	UpdateFeedURL = ""
+	UpdateFeedURL = "https://api.github.com/repos/nhathaofn/dezuxkstudio/releases/latest"
 )
 
 // Info is a serialisable snapshot of the build metadata.
