@@ -1,5 +1,5 @@
 import type React from "react";
-import { LayoutDashboard, Terminal, type LucideIcon } from "lucide-react";
+import { LayoutDashboard, Terminal, Wrench, type LucideIcon } from "lucide-react";
 import type { MessageKey } from "../lib/i18n";
 
 export interface NavRoute {
@@ -23,5 +23,11 @@ export const navRoutes: NavRoute[] = [
     label: "nav.logs",
     icon: Terminal,
     load: () => import("../features/logs/LiveLogView"),
+  },
+  {
+    path: "/tools",
+    label: "nav.tools",
+    icon: Wrench,
+    load: () => import("../features/binaries/BinariesView"),
   },
 ];

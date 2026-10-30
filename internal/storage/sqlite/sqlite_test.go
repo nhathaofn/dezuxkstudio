@@ -115,3 +115,39 @@ func TestPreferencesRepository(t *testing.T) {
 		t.Fatalf("corrupt doc should load as legacy: %+v %v %v", got, found, err)
 	}
 }
+
+func TestBinariesRepository(t *testing.T) {
+	db := open(t, t.TempDir())
+	defer db.Close()
+	repo := NewBinariesRepository(db)
+	ctx := context.Background()
+
+	// Initially empty
+	p, err := repo.GetCustomPath(ctx, "ffmpeg")
+	if err != nil || p != "" {
+		t.Fatalf("expected empty custom path, got %q, err: %v", p, err)
+	}
+
+	all, err := repo.GetAllCustomPaths(ctx)
+	if err != nil || len(all) != 0 {
+		t.Fatalf("expected empty map, got %v, err: %v", all, err)
+	}
+
+	// Set custom path
+	if err := repo.SetCustomPath(ctx, "ffmpeg", "C:\\tools\\ffmpeg.exe"); err != nil {
+		t.Fatal(err)
+	}
+	p, err = repo.GetCustomPath(ctx, "ffmpeg")
+	if err != nil || p != "C:\\tools\\ffmpeg.exe" {
+		t.Fatalf("expected C:\\tools\\ffmpeg.exe, got %q, err: %v", p, err)
+	}
+
+	// Update custom path
+	if err := repo.SetCustomPath(ctx, "ffmpeg", "C:\\new\\ffmpeg.exe"); err != nil {
+		t.Fatal(err)
+	}
+	p, err = repo.GetCustomPath(ctx, "ffmpeg")
+	if err != nil || p != "C:\\new\\ffmpeg.exe" {
+		t.Fatalf("expected C:\\new\\ffmpeg.exe, got %q, err: %v", p, err)
+	}
+}

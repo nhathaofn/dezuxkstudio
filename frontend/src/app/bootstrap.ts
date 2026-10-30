@@ -1,4 +1,5 @@
 import { Events, NativeEvents } from "../contracts/generated";
+import { useBinariesStore } from "../features/binaries/useBinariesStore";
 import { useConnectionStore } from "../features/connection/useConnectionStore";
 import { uiLog } from "../features/logs/useLogStore";
 import { usePreferencesStore } from "../features/preferences/usePreferencesStore";
@@ -31,6 +32,7 @@ export function bootstrap(): void {
     if (status !== "connected") return;
     void usePreferencesStore.getState().load();
     void useSystemStore.getState().loadInfo();
+    void useBinariesStore.getState().fetchBinaries();
     if (firstConnect && useConnectionStore.getState().endpoint?.checkUpdatesOnStartup) {
       void useSystemStore.getState().checkUpdate();
     }

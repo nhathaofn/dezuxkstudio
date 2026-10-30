@@ -22,9 +22,44 @@ export type FolderTarget = (typeof FolderTargetValues)[number];
 export const AppModeValues = ["desktop", "client", "server"] as const;
 export type AppMode = (typeof AppModeValues)[number];
 
+export const BinaryIDValues = ["ffmpeg", "ffprobe", "yt_dlp"] as const;
+export type BinaryID = (typeof BinaryIDValues)[number];
+
+export const BinaryStatusValues = ["available", "missing", "invalid"] as const;
+export type BinaryStatus = (typeof BinaryStatusValues)[number];
+
+export const BinarySourceValues = ["tools", "custom", "system", "none"] as const;
+export type BinarySource = (typeof BinarySourceValues)[number];
+
 export interface ActionProgress {
   percent: number;
   message: string;
+}
+
+export interface BinaryIDPayload {
+  id: BinaryID;
+}
+
+export interface BinaryInfo {
+  id: BinaryID;
+  name: string;
+  description: string;
+  executable: string;
+  resolved_path: string;
+  custom_path: string;
+  source: BinarySource;
+  version: string;
+  status: BinaryStatus;
+  can_download: boolean;
+}
+
+export interface BinaryListResult {
+  binaries: BinaryInfo[];
+}
+
+export interface BinarySetPathPayload {
+  id: BinaryID;
+  custom_path: string;
 }
 
 export interface BuildInfo {
@@ -152,6 +187,14 @@ export const Actions = {
   PREFERENCES_UPDATE: "preferences:update",
   /** Writes a diagnostics bundle (reports progress, cancellable). */
   DIAGNOSTICS_EXPORT: "diagnostics:export",
+  /** List all managed external binaries and their statuses. */
+  BINARIES_LIST: "binaries:list",
+  /** Probe a specific external binary to verify and extract version. */
+  BINARIES_PROBE: "binaries:probe",
+  /** Set or clear custom executable path for a binary. */
+  BINARIES_SET_PATH: "binaries:set_path",
+  /** Download and install official static build of binary (cancellable, reports progress). */
+  BINARIES_DOWNLOAD: "binaries:download",
 } as const;
 export type ActionName = (typeof Actions)[keyof typeof Actions];
 
@@ -164,6 +207,10 @@ export interface ActionMap {
   "preferences:get": { payload: Empty; result: Preferences };
   "preferences:update": { payload: PreferencesPatch; result: Preferences };
   "diagnostics:export": { payload: Empty; result: DiagnosticsBundle };
+  "binaries:list": { payload: Empty; result: BinaryListResult };
+  "binaries:probe": { payload: BinaryIDPayload; result: BinaryInfo };
+  "binaries:set_path": { payload: BinarySetPathPayload; result: BinaryInfo };
+  "binaries:download": { payload: BinaryIDPayload; result: BinaryInfo };
 }
 
 export const Events = {
@@ -200,4 +247,6 @@ export interface BridgeApi {
   GetBuildInfo(): Promise<BuildInfo>;
   /** Client mode: stores the remote token in the OS credential store. */
   SetRemoteToken(arg1: string): Promise<void>;
+  /** Opens a native file picker to select an executable file. */
+  BrowseExecutable(arg1: string): Promise<string>;
 }

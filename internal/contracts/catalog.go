@@ -6,6 +6,7 @@ import (
 
 	"app/internal/apperr"
 	"app/internal/config"
+	"app/internal/domain/binaries"
 	"app/internal/domain/preferences"
 )
 
@@ -21,6 +22,11 @@ const (
 	ActionPreferencesUpdate = "preferences:update"
 
 	ActionDiagnosticsExport = "diagnostics:export"
+
+	ActionBinariesList     = "binaries:list"
+	ActionBinariesProbe    = "binaries:probe"
+	ActionBinariesSetPath  = "binaries:set_path"
+	ActionBinariesDownload = "binaries:download"
 )
 
 // Server-pushed event names (WebSocket).
@@ -78,6 +84,10 @@ func Actions() []ActionSpec {
 		{ActionPreferencesGet, "Returns the current user preferences.", t[Empty](), t[Preferences]()},
 		{ActionPreferencesUpdate, "Applies a partial update and returns the result.", t[PreferencesPatch](), t[Preferences]()},
 		{ActionDiagnosticsExport, "Writes a diagnostics bundle (reports progress, cancellable).", t[Empty](), t[DiagnosticsBundle]()},
+		{ActionBinariesList, "List all managed external binaries and their statuses.", t[Empty](), t[BinaryListResult]()},
+		{ActionBinariesProbe, "Probe a specific external binary to verify and extract version.", t[BinaryIDPayload](), t[BinaryInfo]()},
+		{ActionBinariesSetPath, "Set or clear custom executable path for a binary.", t[BinarySetPathPayload](), t[BinaryInfo]()},
+		{ActionBinariesDownload, "Download and install official static build of binary (cancellable, reports progress).", t[BinaryIDPayload](), t[BinaryInfo]()},
 	}
 }
 
@@ -103,6 +113,7 @@ func Bridge() []BridgeMethod {
 		{Name: "GetConnectionInfo", Summary: "Waits for the core and returns how to connect.", Result: t[ConnectionInfo]()},
 		{Name: "GetBuildInfo", Summary: "Returns build metadata.", Result: t[BuildInfo]()},
 		{Name: "SetRemoteToken", Summary: "Client mode: stores the remote token in the OS credential store.", Params: []reflect.Type{t[string]()}},
+		{Name: "BrowseExecutable", Summary: "Opens a native file picker to select an executable file.", Params: []reflect.Type{t[string]()}, Result: t[string]()},
 	}
 }
 
@@ -115,6 +126,9 @@ func Enums() []EnumSpec {
 		{"Language", t[preferences.Language](), stringsOf(preferences.Languages())},
 		{"FolderTarget", t[FolderTarget](), stringsOf(FolderTargets())},
 		{"AppMode", t[config.Mode](), stringsOf(config.Modes())},
+		{"BinaryID", t[binaries.BinaryID](), stringsOf(binaries.AllIDs())},
+		{"BinaryStatus", t[binaries.Status](), stringsOf([]binaries.Status{binaries.StatusAvailable, binaries.StatusMissing, binaries.StatusInvalid})},
+		{"BinarySource", t[binaries.Source](), stringsOf([]binaries.Source{binaries.SourceTools, binaries.SourceCustom, binaries.SourceSystem, binaries.SourceNone})},
 	}
 }
 

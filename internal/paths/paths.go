@@ -25,6 +25,11 @@ type Paths struct {
 	Logs   string `json:"logs"`
 }
 
+// Tools returns the directory where downloaded external binaries are stored.
+func (p Paths) Tools() string {
+	return filepath.Join(p.Data, "tools")
+}
+
 // Overrides lets configuration relocate the data and log directories.
 type Overrides struct {
 	DataDir string

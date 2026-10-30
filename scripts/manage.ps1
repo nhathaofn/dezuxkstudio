@@ -12,9 +12,9 @@ $ErrorActionPreference = "Stop"
 $TaskVersion = "v3.53.1"
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
-$task = Get-Command task -ErrorAction SilentlyContinue
-if ($task) {
-    & $task.Source $Task @Rest
+$taskCmd = Get-Command task -ErrorAction SilentlyContinue
+if ($taskCmd) {
+    & $taskCmd.Source $Task @Rest
 } else {
     & go run "github.com/go-task/task/v3/cmd/task@$TaskVersion" $Task @Rest
 }

@@ -7,6 +7,7 @@ export const en = {
 
   "nav.overview": "Overview",
   "nav.logs": "Live logs",
+  "nav.tools": "Tools",
 
   "status.idle": "Offline",
   "status.connecting": "Connecting",
@@ -75,6 +76,29 @@ export const en = {
   "logs.subtitle": "Most recent {max} entries.",
   "logs.empty": "No entries yet.",
   "logs.clear": "Clear",
+
+  "tools.title": "External Tools & Binaries",
+  "tools.subtitle":
+    "Manage external command-line engines (FFmpeg, yt-dlp, etc.) for media workflows.",
+  "tools.refresh": "Refresh",
+  "tools.status.available": "Available",
+  "tools.status.missing": "Missing",
+  "tools.status.invalid": "Invalid",
+  "tools.source.tools": "App directory",
+  "tools.source.custom": "Custom path",
+  "tools.source.system": "System PATH",
+  "tools.source.none": "Not found",
+  "tools.probe": "Check",
+  "tools.probing": "Checking…",
+  "tools.download": "Download",
+  "tools.downloading": "Downloading…",
+  "tools.cancel": "Cancel",
+  "tools.browse": "Browse…",
+  "tools.savePath": "Save",
+  "tools.clearPath": "Reset",
+  "tools.customPathPlaceholder": "Path to executable (or leave blank to auto-detect)",
+  "tools.version": "Version",
+  "tools.location": "Location",
 
   "errors.ERR_BAD_REQUEST": "The request was malformed.",
   "errors.ERR_VALIDATION": "Some input is invalid.",

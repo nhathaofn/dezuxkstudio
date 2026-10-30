@@ -7,6 +7,7 @@ import (
 	"app/internal/apperr"
 	"app/internal/buildinfo"
 	"app/internal/config"
+	"app/internal/domain/binaries"
 	"app/internal/domain/preferences"
 )
 
@@ -149,4 +150,44 @@ type ConnectionInfo struct {
 	ActionTimeoutMs       int64       `json:"action_timeout_ms"`
 	PingIntervalMs        int64       `json:"ping_interval_ms"`
 	CheckUpdatesOnStartup bool        `json:"check_updates_on_startup"`
+}
+
+// BinaryInfo represents an external binary status.
+type BinaryInfo struct {
+	ID           binaries.BinaryID `json:"id"`
+	Name         string            `json:"name"`
+	Description  string            `json:"description"`
+	Executable   string            `json:"executable"`
+	ResolvedPath string            `json:"resolved_path"`
+	CustomPath   string            `json:"custom_path"`
+	Source       binaries.Source   `json:"source"`
+	Version      string            `json:"version"`
+	Status       binaries.Status   `json:"status"`
+	CanDownload  bool              `json:"can_download"`
+}
+
+// BinaryListResult answers binaries:list.
+type BinaryListResult struct {
+	Binaries []BinaryInfo `json:"binaries"`
+}
+
+// BinaryIDPayload targets a specific binary.
+type BinaryIDPayload struct {
+	ID binaries.BinaryID `json:"id"`
+}
+
+// Validate checks binary id.
+func (p BinaryIDPayload) Validate() error {
+	return binaries.ValidateID(p.ID)
+}
+
+// BinarySetPathPayload sets a custom executable path.
+type BinarySetPathPayload struct {
+	ID         binaries.BinaryID `json:"id"`
+	CustomPath string            `json:"custom_path"`
+}
+
+// Validate checks payload.
+func (p BinarySetPathPayload) Validate() error {
+	return binaries.ValidateID(p.ID)
 }

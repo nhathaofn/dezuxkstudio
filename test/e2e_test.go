@@ -275,3 +275,50 @@ func TestBroadcastEndpointWhenEnabled(t *testing.T) {
 		t.Fatalf("event not delivered: %+v", evt)
 	}
 }
+
+func TestBinariesRealtimeActions(t *testing.T) {
+	h := startCore(t, nil)
+	ws := h.dial()
+
+	// 1. binaries:list
+	res, _ := ws.call(contracts.ActionBinariesList, contracts.Empty{})
+	if !res.Success {
+		t.Fatalf("binaries:list failed: %+v", res.Error)
+	}
+	var list contracts.BinaryListResult
+	if err := json.Unmarshal(res.Data, &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Binaries) == 0 {
+		t.Fatal("expected at least one binary in list")
+	}
+
+	// 2. binaries:probe
+	probeRes, _ := ws.call(contracts.ActionBinariesProbe, contracts.BinaryIDPayload{ID: "ffmpeg"})
+	if !probeRes.Success {
+		t.Fatalf("binaries:probe failed: %+v", probeRes.Error)
+	}
+	var info contracts.BinaryInfo
+	if err := json.Unmarshal(probeRes.Data, &info); err != nil {
+		t.Fatal(err)
+	}
+	if info.ID != "ffmpeg" {
+		t.Fatalf("expected id ffmpeg, got %s", info.ID)
+	}
+
+	// 3. binaries:set_path
+	setRes, _ := ws.call(contracts.ActionBinariesSetPath, contracts.BinarySetPathPayload{
+		ID:         "ffmpeg",
+		CustomPath: "C:\\custom\\ffmpeg.exe",
+	})
+	if !setRes.Success {
+		t.Fatalf("binaries:set_path failed: %+v", setRes.Error)
+	}
+	var updated contracts.BinaryInfo
+	if err := json.Unmarshal(setRes.Data, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.CustomPath != "C:\\custom\\ffmpeg.exe" {
+		t.Fatalf("expected custom_path C:\\custom\\ffmpeg.exe, got %q", updated.CustomPath)
+	}
+}

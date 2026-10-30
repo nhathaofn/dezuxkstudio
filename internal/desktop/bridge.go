@@ -3,9 +3,13 @@
 package desktop
 
 import (
+	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"time"
+
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"app/internal/apperr"
 	"app/internal/buildinfo"
@@ -25,6 +29,7 @@ type Bridge struct {
 	mu        sync.RWMutex
 	info      contracts.ConnectionInfo
 	err       error
+	wailsCtx  context.Context
 }
 
 func newBridge(cfg *config.Config, store secrets.Store) *Bridge {
@@ -71,6 +76,42 @@ func (b *Bridge) SetRemoteToken(token string) error {
 		return apperr.Wrap(apperr.CodeUnavailable, "could not write the credential store", err)
 	}
 	return nil
+}
+
+// BrowseExecutable opens a native file picker to select an executable file.
+func (b *Bridge) BrowseExecutable(title string) (string, error) {
+	b.mu.RLock()
+	ctx := b.wailsCtx
+	b.mu.RUnlock()
+	if ctx == nil {
+		return "", apperr.Unavailable("desktop window is not ready")
+	}
+	filters := []wailsruntime.FileFilter{
+		{DisplayName: "Executables (*.exe)", Pattern: "*.exe"},
+		{DisplayName: "All Files (*.*)", Pattern: "*.*"},
+	}
+	if runtime.GOOS != "windows" {
+		filters = []wailsruntime.FileFilter{
+			{DisplayName: "All Files (*)", Pattern: "*"},
+		}
+	}
+	if title == "" {
+		title = "Select Executable"
+	}
+	selected, err := wailsruntime.OpenFileDialog(ctx, wailsruntime.OpenDialogOptions{
+		Title:   title,
+		Filters: filters,
+	})
+	if err != nil {
+		return "", apperr.Wrap(apperr.CodeInternal, "failed to open file dialog", err)
+	}
+	return selected, nil
+}
+
+func (b *Bridge) setWailsContext(ctx context.Context) {
+	b.mu.Lock()
+	b.wailsCtx = ctx
+	b.mu.Unlock()
 }
 
 func (b *Bridge) succeed(info contracts.ConnectionInfo) {

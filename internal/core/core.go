@@ -20,6 +20,7 @@ import (
 	"app/internal/realtime"
 	"app/internal/realtime/modules"
 	"app/internal/server"
+	binariessvc "app/internal/service/binaries"
 	"app/internal/service/diagnostics"
 	"app/internal/service/preferences"
 	"app/internal/service/system"
@@ -169,10 +170,13 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		return nil, err
 	}
 
+	binSvc := binariessvc.New(sqlite.NewBinariesRepository(c.db), o.Paths.Tools(), o.Logger)
+
 	return []realtime.Module{
 		modules.System{Info: sysSvc, Update: updSvc},
 		modules.Preferences{Service: prefSvc},
 		modules.Diagnostics{Service: diagSvc},
+		modules.Binaries{Service: binSvc},
 	}, nil
 }
 

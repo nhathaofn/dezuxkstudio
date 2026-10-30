@@ -85,6 +85,7 @@ func Run(o Options) error {
 
 func (s *shell) startup(ctx context.Context) {
 	s.ctx.Store(&ctx)
+	s.bridge.setWailsContext(ctx)
 	if s.o.StartupError != nil {
 		s.fatal(s.o.StartupError)
 		return
