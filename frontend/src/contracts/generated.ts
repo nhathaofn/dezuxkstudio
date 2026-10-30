@@ -343,4 +343,8 @@ export interface BridgeApi {
   BrowseExecutable(arg1: string): Promise<string>;
   /** Opens a native file picker to select an image file. */
   BrowseImage(arg1: string): Promise<string>;
+  /** Opens a native file picker to select multiple image files. */
+  BrowseImages(arg1: string): Promise<string[]>;
+  /** Opens a native directory picker to select a folder. */
+  BrowseDirectory(arg1: string): Promise<string>;
 }

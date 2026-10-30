@@ -124,6 +124,8 @@ describe("resolveEndpoint", () => {
       SetRemoteToken: () => Promise.resolve(),
       BrowseExecutable: () => Promise.resolve(""),
       BrowseImage: () => Promise.resolve(""),
+      BrowseImages: () => Promise.resolve([]),
+      BrowseDirectory: () => Promise.resolve(""),
     };
     const ep = await resolveEndpoint(env({ bridge }));
     expect(ep).toMatchObject({
@@ -141,6 +143,8 @@ describe("resolveEndpoint", () => {
       SetRemoteToken: () => Promise.resolve(),
       BrowseExecutable: () => Promise.resolve(""),
       BrowseImage: () => Promise.resolve(""),
+      BrowseImages: () => Promise.resolve([]),
+      BrowseDirectory: () => Promise.resolve(""),
     };
     await expect(resolveEndpoint(env({ bridge }))).rejects.toMatchObject({
       code: "ERR_UNAVAILABLE",

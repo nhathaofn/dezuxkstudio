@@ -122,6 +122,8 @@ func Bridge() []BridgeMethod {
 		{Name: "SetRemoteToken", Summary: "Client mode: stores the remote token in the OS credential store.", Params: []reflect.Type{t[string]()}},
 		{Name: "BrowseExecutable", Summary: "Opens a native file picker to select an executable file.", Params: []reflect.Type{t[string]()}, Result: t[string]()},
 		{Name: "BrowseImage", Summary: "Opens a native file picker to select an image file.", Params: []reflect.Type{t[string]()}, Result: t[string]()},
+		{Name: "BrowseImages", Summary: "Opens a native file picker to select multiple image files.", Params: []reflect.Type{t[string]()}, Result: t[[]string]()},
+		{Name: "BrowseDirectory", Summary: "Opens a native directory picker to select a folder.", Params: []reflect.Type{t[string]()}, Result: t[string]()},
 	}
 }
 

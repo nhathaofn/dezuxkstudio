@@ -116,6 +116,21 @@
   color: var(--text-disabled);
 }
 
+select.input-control {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: var(--select-chevron-icon);
+  background-repeat: no-repeat;
+  background-position: right var(--select-arrow-offset, 13px) center;
+  padding-right: var(--select-padding-right, 36px);
+  cursor: pointer;
+}
+
+select.input-control::-ms-expand {
+  display: none;
+}
+
 .textarea-control {
   width: 100%;
   background-color: var(--bg-input);

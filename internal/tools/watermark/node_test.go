@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -111,5 +112,41 @@ func TestWatermarkRemoverNode_InEngineDAG(t *testing.T) {
 	runRes, ok := res.Nodes["wm1"]
 	if !ok || runRes.Status != engine.RunDone {
 		t.Fatalf("node wm1 failed or not found: %+v", runRes)
+	}
+}
+
+func TestWatermarkRemoverNode_BatchMultiThreaded(t *testing.T) {
+	tempDir := t.TempDir()
+	img1 := createTestPNG(t, tempDir, "batch1.png")
+	img2 := createTestPNG(t, tempDir, "batch2.png")
+	img3 := createTestPNG(t, tempDir, "batch3.png")
+
+	node := watermark.NewNode(watermark.Options{OutputDir: tempDir})
+
+	inputJSON := fmt.Sprintf(`{
+		"images": ["%s", "%s", "%s"],
+		"workers": 4,
+		"corner": "bottom-right"
+	}`, filepath.ToSlash(img1), filepath.ToSlash(img2), filepath.ToSlash(img3))
+
+	outRaw, err := node.Run(context.Background(), json.RawMessage(inputJSON))
+	if err != nil {
+		t.Fatalf("batch run failed: %v", err)
+	}
+
+	outBytes, _ := json.Marshal(outRaw)
+	var out watermark.NodeOutput
+	if err := json.Unmarshal(outBytes, &out); err != nil {
+		t.Fatalf("unmarshal batch output: %v", err)
+	}
+
+	if out.TotalCount != 3 {
+		t.Fatalf("expected total_count=3, got %d", out.TotalCount)
+	}
+	if len(out.Images) != 3 {
+		t.Fatalf("expected 3 images in output, got %d", len(out.Images))
+	}
+	if len(out.Results) != 3 {
+		t.Fatalf("expected 3 item results, got %d", len(out.Results))
 	}
 }

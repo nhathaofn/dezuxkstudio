@@ -138,6 +138,56 @@ func (b *Bridge) BrowseImage(title string) (string, error) {
 	return selected, nil
 }
 
+// BrowseImages opens a native file picker to select multiple image files.
+func (b *Bridge) BrowseImages(title string) ([]string, error) {
+	b.mu.RLock()
+	ctx := b.wailsCtx
+	b.mu.RUnlock()
+	if ctx == nil {
+		return nil, apperr.Unavailable("desktop window is not ready")
+	}
+	filters := []wailsruntime.FileFilter{
+		{DisplayName: "Images (*.png;*.jpg;*.jpeg;*.webp)", Pattern: "*.png;*.jpg;*.jpeg;*.webp"},
+		{DisplayName: "All Files (*.*)", Pattern: "*.*"},
+	}
+	if runtime.GOOS != "windows" {
+		filters = []wailsruntime.FileFilter{
+			{DisplayName: "All Files (*)", Pattern: "*"},
+		}
+	}
+	if title == "" {
+		title = "Select Images"
+	}
+	selected, err := wailsruntime.OpenMultipleFilesDialog(ctx, wailsruntime.OpenDialogOptions{
+		Title:   title,
+		Filters: filters,
+	})
+	if err != nil {
+		return nil, apperr.Wrap(apperr.CodeInternal, "failed to open multiple files dialog", err)
+	}
+	return selected, nil
+}
+
+// BrowseDirectory opens a native directory picker to select a folder.
+func (b *Bridge) BrowseDirectory(title string) (string, error) {
+	b.mu.RLock()
+	ctx := b.wailsCtx
+	b.mu.RUnlock()
+	if ctx == nil {
+		return "", apperr.Unavailable("desktop window is not ready")
+	}
+	if title == "" {
+		title = "Select Folder"
+	}
+	selected, err := wailsruntime.OpenDirectoryDialog(ctx, wailsruntime.OpenDialogOptions{
+		Title: title,
+	})
+	if err != nil {
+		return "", apperr.Wrap(apperr.CodeInternal, "failed to open directory dialog", err)
+	}
+	return selected, nil
+}
+
 func (b *Bridge) setWailsContext(ctx context.Context) {
 	b.mu.Lock()
 	b.wailsCtx = ctx

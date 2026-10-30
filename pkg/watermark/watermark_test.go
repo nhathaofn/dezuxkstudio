@@ -2,6 +2,8 @@ package watermark_test
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -202,5 +204,114 @@ func TestRealGoogleFlowLiveImage(t *testing.T) {
 	}
 	if before.Width != after.Width || before.Height != after.Height {
 		t.Fatalf("size changed: %dx%d -> %dx%d", before.Width, before.Height, after.Width, after.Height)
+	}
+}
+
+func TestBatchProcessingConcurrency(t *testing.T) {
+	const count = 12
+	items := make([]watermark.BatchItem, count)
+	origs := make([]*image.RGBA, count)
+
+	for i := 0; i < count; i++ {
+		orig := texture(600, 600)
+		origs[i] = orig
+		marked := image.NewRGBA(orig.Bounds())
+		draw.Draw(marked, marked.Bounds(), orig, image.Point{}, draw.Src)
+		// stamp at 48px mark (bottom-right: margin 75)
+		stamp(t, marked, 600-75-48, 600-75-48, 0.62)
+		items[i] = watermark.BatchItem{
+			ID:   filepath.Base(t.Name()) + string(rune('A'+i)),
+			Data: encode(t, marked),
+		}
+	}
+
+	eng := watermark.New(watermark.Config{
+		Workers: 4,
+	})
+
+	results := eng.ProcessBatch(context.Background(), items, 4)
+	if len(results) != count {
+		t.Fatalf("expected %d results, got %d", count, len(results))
+	}
+
+	for i, res := range results {
+		if res.ID != items[i].ID {
+			t.Fatalf("result index %d ID mismatch: got %s, want %s", i, res.ID, items[i].ID)
+		}
+		if res.Err != nil {
+			t.Fatalf("result %d error: %v", i, res.Err)
+		}
+		if !res.Detected {
+			t.Fatalf("result %d: expected watermark to be detected", i)
+		}
+		if len(res.Output) == 0 {
+			t.Fatalf("result %d: empty output", i)
+		}
+	}
+}
+
+func TestStreamProcessing(t *testing.T) {
+	orig := texture(600, 600)
+	marked := image.NewRGBA(orig.Bounds())
+	draw.Draw(marked, marked.Bounds(), orig, image.Point{}, draw.Src)
+	stamp(t, marked, 600-75-48, 600-75-48, 0.6)
+	data := encode(t, marked)
+
+	inCh := make(chan watermark.BatchItem, 3)
+	for i := 0; i < 3; i++ {
+		inCh <- watermark.BatchItem{ID: fmt.Sprintf("stream-%d", i), Data: data}
+	}
+	close(inCh)
+
+	eng := watermark.Default()
+	outCh := eng.ProcessStream(context.Background(), inCh, 2)
+
+	var received int
+	for res := range outCh {
+		if res.Err != nil {
+			t.Fatalf("stream item error: %v", res.Err)
+		}
+		if !res.Detected {
+			t.Fatalf("expected detected=true in stream item %s", res.ID)
+		}
+		received++
+	}
+	if received != 3 {
+		t.Fatalf("expected 3 stream results, got %d", received)
+	}
+}
+
+func TestZeroHardcodeCornerAny(t *testing.T) {
+	orig := texture(600, 600)
+	marked := image.NewRGBA(orig.Bounds())
+	draw.Draw(marked, marked.Bounds(), orig, image.Point{}, draw.Src)
+
+	// Stamp at bottom-left corner
+	// margin = 75, so x = 75, y = 600 - 75 - 48
+	x0, y0 := 75, 600-75-48
+	stamp(t, marked, x0, y0, 0.65)
+	data := encode(t, marked)
+
+	// Engine with CornerBottomRight should not find it
+	engBR := watermark.New(watermark.Config{Corner: watermark.CornerBottomRight})
+	present, _, _, err := engBR.Detect(data)
+	if err != nil {
+		t.Fatalf("detect error: %v", err)
+	}
+	if present {
+		t.Fatalf("CornerBottomRight should not detect bottom-left watermark")
+	}
+
+	// Engine with CornerAny or CornerBottomLeft should find it
+	engAny := watermark.New(watermark.Config{Corner: watermark.CornerAny})
+	present, _, info, err := engAny.Detect(data)
+	if err != nil {
+		t.Fatalf("detect error: %v", err)
+	}
+	if !present {
+		t.Fatalf("CornerAny should detect bottom-left watermark")
+	}
+	if info.Position.Min != image.Pt(x0, y0) {
+		t.Fatalf("expected position %v, got %v", image.Pt(x0, y0), info.Position.Min)
 	}
 }

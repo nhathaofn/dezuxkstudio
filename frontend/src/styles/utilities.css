@@ -62,11 +62,22 @@
 
 .select-control {
   font-size: var(--text-xs);
-  padding: 2px var(--space-2);
-  background: var(--bg-surface-elevated);
+  padding: 2px 24px 2px var(--space-2);
+  background-color: var(--bg-surface-elevated);
+  background-image: var(--select-chevron-icon);
+  background-repeat: no-repeat;
+  background-position: right 7px center;
   color: var(--text-primary);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  cursor: pointer;
+}
+
+.select-control::-ms-expand {
+  display: none;
 }
 
 .progress {
