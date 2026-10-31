@@ -151,3 +151,89 @@ func TestBinariesRepository(t *testing.T) {
 		t.Fatalf("expected C:\\new\\ffmpeg.exe, got %q, err: %v", p, err)
 	}
 }
+
+func TestMigration003DynamicProvidersSchema(t *testing.T) {
+	db := open(t, t.TempDir())
+	defer db.Close()
+	ctx := context.Background()
+
+	// Verify all 7 tables exist
+	tables := []string{
+		"dynamic_providers",
+		"accounts",
+		"account_secrets",
+		"provider_features",
+		"dynamic_endpoints",
+		"payload_templates",
+		"cookie_partition_rules",
+	}
+
+	for _, tbl := range tables {
+		var name string
+		err := db.sql.QueryRowContext(ctx, "SELECT name FROM sqlite_master WHERE type='table' AND name=?", tbl).Scan(&name)
+		if err != nil {
+			t.Fatalf("table %s not found: %v", tbl, err)
+		}
+	}
+
+	// Verify foreign key cascades and inserts work properly
+	// 1. Insert dynamic provider
+	_, err := db.sql.ExecContext(ctx, `
+		INSERT INTO dynamic_providers (id, name, base_url, auth_domain, allowed_domains_json, probe_rules_json)
+		VALUES ('flow', 'Google Flow', 'https://flow.google.com', '.google.com', '["flow.google.com"]', '{"token":"sn"}')
+	`)
+	if err != nil {
+		t.Fatalf("insert provider: %v", err)
+	}
+
+	// 2. Insert account
+	_, err = db.sql.ExecContext(ctx, `
+		INSERT INTO accounts (id, provider_id, label, identity, profile_dir)
+		VALUES ('acc-1', 'flow', 'Default Account', 'user@gmail.com', 'C:\\profiles\\acc-1')
+	`)
+	if err != nil {
+		t.Fatalf("insert account: %v", err)
+	}
+
+	// 3. Insert account_secrets (testing BLOB storage)
+	cookieBlob := []byte{0x01, 0x02, 0x03, 0x04}
+	tokenBlob := []byte{0xaa, 0xbb, 0xcc}
+	_, err = db.sql.ExecContext(ctx, `
+		INSERT INTO account_secrets (account_id, encrypted_cookies_blob, encrypted_tokens_blob, cookie_hash)
+		VALUES ('acc-1', ?, ?, 'hash123')
+	`, cookieBlob, tokenBlob)
+	if err != nil {
+		t.Fatalf("insert account_secrets: %v", err)
+	}
+
+	// 4. Verify read back
+	var readCookie, readToken []byte
+	var readHash string
+	err = db.sql.QueryRowContext(ctx, `
+		SELECT encrypted_cookies_blob, encrypted_tokens_blob, cookie_hash
+		FROM account_secrets WHERE account_id = 'acc-1'
+	`).Scan(&readCookie, &readToken, &readHash)
+	if err != nil {
+		t.Fatalf("read account_secrets: %v", err)
+	}
+	if len(readCookie) != 4 || len(readToken) != 3 || readHash != "hash123" {
+		t.Fatalf("unexpected secrets data: cookie=%v, token=%v, hash=%s", readCookie, readToken, readHash)
+	}
+
+	// 5. Test CASCADE delete when provider is deleted
+	_, err = db.sql.ExecContext(ctx, "DELETE FROM dynamic_providers WHERE id = 'flow'")
+	if err != nil {
+		t.Fatalf("delete provider: %v", err)
+	}
+
+	var count int
+	_ = db.sql.QueryRowContext(ctx, "SELECT COUNT(*) FROM accounts WHERE provider_id = 'flow'").Scan(&count)
+	if count != 0 {
+		t.Fatalf("expected accounts to be cascade deleted, got count %d", count)
+	}
+
+	_ = db.sql.QueryRowContext(ctx, "SELECT COUNT(*) FROM account_secrets WHERE account_id = 'acc-1'").Scan(&count)
+	if count != 0 {
+		t.Fatalf("expected account_secrets to be cascade deleted, got count %d", count)
+	}
+}
