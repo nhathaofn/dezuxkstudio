@@ -2,23 +2,19 @@
 package binaries
 
 import (
-	"archive/zip"
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"app/internal/apperr"
 	domainbinaries "app/internal/domain/binaries"
-	"app/internal/fsutil"
 	"app/internal/runner"
 )
 
@@ -110,14 +106,13 @@ func (s *Service) Resolve(ctx context.Context, id domainbinaries.BinaryID) (reso
 		}
 	}
 
-	// 3. Portable tools directory next to the executable (./tools)
-	portableTools := filepath.Join(".", "tools", spec.ExecutableName())
-	if fileExists(portableTools) {
-		absPortable, err := filepath.Abs(portableTools)
-		if err == nil {
-			return absPortable, domainbinaries.SourceTools, customPath, nil
+	// 3. Portable tools directory next to the executable
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		portableTools := filepath.Join(exeDir, "tools", spec.ExecutableName())
+		if fileExists(portableTools) {
+			return portableTools, domainbinaries.SourceTools, customPath, nil
 		}
-		return portableTools, domainbinaries.SourceTools, customPath, nil
 	}
 
 	// 4. System PATH
@@ -185,156 +180,6 @@ func (s *Service) Probe(ctx context.Context, id domainbinaries.BinaryID) (domain
 	return info, nil
 }
 
-// Download downloads the static build of the binary, extracts it into toolsDir, and verifies it.
-func (s *Service) Download(ctx context.Context, id domainbinaries.BinaryID, onProgress func(pct float64, msg string)) (domainbinaries.BinaryInfo, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	spec, ok := domainbinaries.Registry[id]
-	if !ok {
-		return domainbinaries.BinaryInfo{}, apperr.Validation(fmt.Sprintf("unknown binary %q", id))
-	}
-	dlSpec, hasDL := spec.CurrentDownloadSpec()
-	if !hasDL || dlSpec.URL == "" {
-		return domainbinaries.BinaryInfo{}, apperr.New(apperr.CodeBadRequest, fmt.Sprintf("no automated download available for %s on %s/%s", spec.Name, runtime.GOOS, runtime.GOARCH))
-	}
-
-	if err := os.MkdirAll(s.toolsDir, 0755); err != nil {
-		return domainbinaries.BinaryInfo{}, fmt.Errorf("binaries: create tools dir: %w", err)
-	}
-
-	if onProgress != nil {
-		onProgress(0, fmt.Sprintf("Connecting to download %s...", spec.Name))
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, dlSpec.URL, nil)
-	if err != nil {
-		return domainbinaries.BinaryInfo{}, fmt.Errorf("binaries: request download: %w", err)
-	}
-	// Add user-agent header
-	req.Header.Set("User-Agent", "DezuxkStudio-Downloader/1.0")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return domainbinaries.BinaryInfo{}, fmt.Errorf("binaries: download failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return domainbinaries.BinaryInfo{}, fmt.Errorf("binaries: download server returned status %d", resp.StatusCode)
-	}
-
-	totalSize := resp.ContentLength
-	targetPath := filepath.Join(s.toolsDir, spec.ExecutableName())
-
-	var downloaded int64
-	var lastPct float64
-	var lastReport time.Time
-
-	// Progress tracking reader wrapper
-	progressReader := io.Reader(readerFunc(func(p []byte) (int, error) {
-		n, err := resp.Body.Read(p)
-		downloaded += int64(n)
-		if onProgress != nil && totalSize > 0 {
-			pct := (float64(downloaded) / float64(totalSize)) * 100
-			now := time.Now()
-			if pct-lastPct >= 0.5 || now.Sub(lastReport) > 200*time.Millisecond || err == io.EOF {
-				lastPct = pct
-				lastReport = now
-				msg := fmt.Sprintf("Downloaded %.1f / %.1f MB", float64(downloaded)/(1024*1024), float64(totalSize)/(1024*1024))
-				onProgress(pct, msg)
-			}
-		}
-		return n, err
-	}))
-
-	switch dlSpec.ArchiveFormat {
-	case "zip":
-		if onProgress != nil {
-			onProgress(lastPct, "Downloading archive...")
-		}
-		tempZip := filepath.Join(s.toolsDir, fmt.Sprintf(".%s-download.zip", id))
-		defer os.Remove(tempZip)
-
-		// Download to temp zip
-		zipFile, err := os.Create(tempZip)
-		if err != nil {
-			return domainbinaries.BinaryInfo{}, fmt.Errorf("binaries: create temp zip: %w", err)
-		}
-		if _, err := io.Copy(zipFile, progressReader); err != nil {
-			zipFile.Close()
-			return domainbinaries.BinaryInfo{}, fmt.Errorf("binaries: save temp zip: %w", err)
-		}
-		zipFile.Close()
-
-		if onProgress != nil {
-			onProgress(95, "Extracting binary...")
-		}
-
-		if err := extractFileFromZip(tempZip, dlSpec.ExtractFile, targetPath); err != nil {
-			return domainbinaries.BinaryInfo{}, fmt.Errorf("binaries: extract from zip: %w", err)
-		}
-
-	case "raw":
-		if onProgress != nil {
-			onProgress(lastPct, "Writing executable...")
-		}
-		err = fsutil.WriteAtomic(targetPath, 0755, func(w io.Writer) error {
-			_, err := io.Copy(w, progressReader)
-			return err
-		})
-		if err != nil {
-			return domainbinaries.BinaryInfo{}, fmt.Errorf("binaries: write executable: %w", err)
-		}
-
-	default:
-		return domainbinaries.BinaryInfo{}, fmt.Errorf("binaries: unsupported archive format %q", dlSpec.ArchiveFormat)
-	}
-
-	// Ensure executable permissions
-	_ = os.Chmod(targetPath, 0755)
-
-	if onProgress != nil {
-		onProgress(100, fmt.Sprintf("%s installed. Probing...", spec.Name))
-	}
-
-	return s.Probe(ctx, id)
-}
-
-// extractFileFromZip extracts a specific entry from a zip archive into targetPath atomically.
-func extractFileFromZip(zipPath, targetEntry, targetPath string) error {
-	r, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-
-	var matchedFile *zip.File
-	for _, f := range r.File {
-		cleanName := strings.ReplaceAll(f.Name, "\\", "/")
-		targetClean := strings.ReplaceAll(targetEntry, "\\", "/")
-		if cleanName == targetClean || strings.HasSuffix(cleanName, "/"+filepath.Base(targetClean)) || filepath.Base(cleanName) == filepath.Base(targetClean) {
-			matchedFile = f
-			break
-		}
-	}
-
-	if matchedFile == nil {
-		return fmt.Errorf("entry %q not found in zip archive", targetEntry)
-	}
-
-	rc, err := matchedFile.Open()
-	if err != nil {
-		return err
-	}
-	defer rc.Close()
-
-	return fsutil.WriteAtomic(targetPath, 0755, func(w io.Writer) error {
-		_, err := io.Copy(w, rc)
-		return err
-	})
-}
-
 func fileExists(p string) bool {
 	info, err := os.Stat(p)
 	if err != nil {
@@ -342,7 +187,3 @@ func fileExists(p string) bool {
 	}
 	return !info.IsDir()
 }
-
-type readerFunc func(p []byte) (int, error)
-
-func (rf readerFunc) Read(p []byte) (int, error) { return rf(p) }

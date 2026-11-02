@@ -43,6 +43,7 @@ func fields(c *Config) []field {
 
 		{key: "realtime.max_concurrent_actions", usage: "max actions executing at once", val: intValue{&c.Realtime.MaxConcurrentActions}},
 		{key: "realtime.action_timeout", usage: "max duration of one action", val: durationValue{&c.Realtime.ActionTimeout}},
+		{key: "realtime.long_action_timeout", usage: "max duration of long-running actions (downloads, workflows)", val: durationValue{&c.Realtime.LongActionTimeout}},
 		{key: "realtime.queue_timeout", usage: "max wait for a free action slot", val: durationValue{&c.Realtime.QueueTimeout}},
 		{key: "realtime.client_buffer_size", usage: "outbound message queue per client", val: intValue{&c.Realtime.ClientBufferSize}},
 		{key: "realtime.max_message_bytes", usage: "max inbound WebSocket message size", val: int64Value{&c.Realtime.MaxMessageBytes}},

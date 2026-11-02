@@ -4,7 +4,7 @@
 export const PROTOCOL_VERSION = "dezuxk.v1";
 export const AUTH_SUBPROTOCOL_PREFIX = "auth.";
 
-export const ErrorCodeValues = ["ERR_BAD_REQUEST", "ERR_VALIDATION", "ERR_UNAUTHORIZED", "ERR_NOT_FOUND", "ERR_CONFLICT", "ERR_UNKNOWN_ACTION", "ERR_CONCURRENCY_LIMIT", "ERR_TIMEOUT", "ERR_CANCELLED", "ERR_UNAVAILABLE", "ERR_INTERNAL"] as const;
+export const ErrorCodeValues = ["ERR_BAD_REQUEST", "ERR_VALIDATION", "ERR_UNAUTHORIZED", "ERR_NOT_FOUND", "ERR_CONFLICT", "ERR_UNKNOWN_ACTION", "ERR_CONCURRENCY_LIMIT", "ERR_TIMEOUT", "ERR_CANCELLED", "ERR_UNAVAILABLE", "ERR_INTEGRITY", "ERR_INTERNAL"] as const;
 export type ErrorCode = (typeof ErrorCodeValues)[number];
 
 export const MessageTypeValues = ["action", "cancel", "response", "event"] as const;
@@ -182,11 +182,15 @@ export interface Port {
 export interface Preferences {
   theme: Theme;
   language: Language;
+  gatewayUrl: string;
+  hasGatewayApiKey: boolean;
 }
 
 export interface PreferencesPatch {
   theme?: Theme;
   language?: Language;
+  gatewayUrl?: string;
+  gatewayApiKey?: string;
 }
 
 export interface ResponseMessage {

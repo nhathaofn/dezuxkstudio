@@ -1,6 +1,16 @@
 import React from "react";
 import { useSearchParams } from "react-router-dom";
-import { Code2, Globe, Monitor, Moon, Sliders, Sun, Terminal, Wrench, Zap } from "lucide-react";
+import {
+  Code2,
+  Globe,
+  Monitor,
+  Moon,
+  Sliders,
+  Sun,
+  Terminal,
+  Wrench,
+  Zap,
+} from "lucide-react";
 import { ThemeValues, LanguageValues, type Language, type Theme } from "../../contracts/generated";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -13,6 +23,7 @@ import { ActionTester } from "../system/ActionTester";
 import { SystemCard } from "../system/SystemCard";
 import { useT } from "../../lib/i18n";
 import { usePreferencesStore } from "./usePreferencesStore";
+import { GatewaySettingsCard } from "./GatewaySettingsCard";
 
 const TABS = ["general", "tools", "logs", "devtools"] as const;
 type TabKey = (typeof TABS)[number];
@@ -41,7 +52,7 @@ export const SettingsView: React.FC = () => {
       <div className="settings-header-row">
         <h1 className="settings-title">{t("settings.title")}</h1>
 
-        <nav className="settings-nav" aria-label="Settings navigation">
+        <nav className="settings-nav" aria-label={t("settings.nav.ariaLabel")}>
           <button
             type="button"
             className={`settings-nav-btn ${effectiveTab === "general" ? "active" : ""}`}
@@ -151,7 +162,9 @@ export const SettingsView: React.FC = () => {
                         }}
                       >
                         <span className="settings-row-title">{t("settings.devMode")}</span>
-                        <Badge>{devMode ? "ON" : "OFF"}</Badge>
+                        <Badge>
+                          {devMode ? t("settings.devMode.on") : t("settings.devMode.off")}
+                        </Badge>
                       </div>
                       <span className="settings-row-desc">{t("settings.devMode.desc")}</span>
                     </div>
@@ -161,11 +174,14 @@ export const SettingsView: React.FC = () => {
                       onClick={() => toggleDevMode()}
                     >
                       <Zap size={13} />
-                      {devMode ? "Disable" : "Enable"}
+                      {devMode ? t("settings.devMode.disable") : t("settings.devMode.enable")}
                     </Button>
                   </div>
                 </div>
               </Card>
+
+              {/* Gateway Configuration Card */}
+              <GatewaySettingsCard />
 
               {/* System Runtime Card */}
               <SystemCard />

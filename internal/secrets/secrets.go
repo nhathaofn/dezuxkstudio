@@ -6,6 +6,7 @@ package secrets
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/zalando/go-keyring"
@@ -20,6 +21,8 @@ type Key string
 const (
 	// KeyRemoteAuthToken is the token used by client mode to reach a remote server.
 	KeyRemoteAuthToken Key = "remote_auth_token"
+	// KeyGatewayAPIKey is the API key for authenticating with the Dezuxk Gateway server.
+	KeyGatewayAPIKey Key = "gateway_api_key"
 )
 
 // Store is the credential storage abstraction used by services.
@@ -100,3 +103,121 @@ func (m *Memory) Delete(key Key) error {
 	delete(m.data, key)
 	return nil
 }
+
+// HybridStore combines a primary store with a fallback store.
+type HybridStore struct {
+	primary  Store
+	fallback Store
+}
+
+// NewHybridStore constructs a store that tries primary first, falling back to fallback if unavailable or failing.
+func NewHybridStore(primary, fallback Store) *HybridStore {
+	return &HybridStore{primary: primary, fallback: fallback}
+}
+
+func (h *HybridStore) Get(key Key) (string, error) {
+	if h.primary != nil {
+		v, err := h.primary.Get(key)
+		if err == nil {
+			return v, nil
+		}
+		if errors.Is(err, ErrNotFound) {
+			if h.fallback != nil {
+				return h.fallback.Get(key)
+			}
+			return "", ErrNotFound
+		}
+		// Primary failed with operational error (e.g. OS keyring unavailable)
+		if h.fallback != nil {
+			return h.fallback.Get(key)
+		}
+		return "", err
+	}
+	if h.fallback != nil {
+		return h.fallback.Get(key)
+	}
+	return "", ErrNotFound
+}
+
+func (h *HybridStore) Set(key Key, value string) error {
+	var primaryErr error
+	if h.primary != nil {
+		primaryErr = h.primary.Set(key, value)
+		if primaryErr == nil {
+			if h.fallback != nil {
+				_ = h.fallback.Set(key, value)
+			}
+			return nil
+		}
+	}
+	if h.fallback != nil {
+		return h.fallback.Set(key, value)
+	}
+	return primaryErr
+}
+
+func (h *HybridStore) Delete(key Key) error {
+	var primaryErr error
+	if h.primary != nil {
+		primaryErr = h.primary.Delete(key)
+	}
+	if h.fallback != nil {
+		_ = h.fallback.Delete(key)
+	}
+	if primaryErr != nil && !errors.Is(primaryErr, ErrNotFound) {
+		if h.fallback != nil {
+			return nil
+		}
+		return primaryErr
+	}
+	return nil
+}
+
+// EnvStore reads key from an environment variable, with a fallback Store for writes and other keys.
+type EnvStore struct {
+	envVar   string
+	key      Key
+	fallback Store
+}
+
+// NewEnvStore creates a store that reads the specified key from envVar, delegating all else to fallback.
+func NewEnvStore(key Key, envVar string, fallback Store) *EnvStore {
+	return &EnvStore{key: key, envVar: envVar, fallback: fallback}
+}
+
+func (e *EnvStore) Get(key Key) (string, error) {
+	if key == e.key && e.envVar != "" {
+		if val := os.Getenv(e.envVar); val != "" {
+			return val, nil
+		}
+	}
+	if e.fallback != nil {
+		return e.fallback.Get(key)
+	}
+	return "", ErrNotFound
+}
+
+func (e *EnvStore) Set(key Key, value string) error {
+	if e.fallback != nil {
+		return e.fallback.Set(key, value)
+	}
+	return nil
+}
+
+func (e *EnvStore) Delete(key Key) error {
+	if e.fallback != nil {
+		return e.fallback.Delete(key)
+	}
+	return nil
+}
+
+// NewDesktopStore creates an OS Keyring store with an in-memory fallback.
+func NewDesktopStore(service string) Store {
+	return NewHybridStore(NewKeyring(service), NewMemory())
+}
+
+// NewServerStore creates an environment-aware store (checking DEZUXK_GATEWAY_API_KEY) with in-memory fallback.
+func NewServerStore() Store {
+	return NewEnvStore(KeyGatewayAPIKey, "DEZUXK_GATEWAY_API_KEY", NewMemory())
+}
+

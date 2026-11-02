@@ -8,12 +8,6 @@ import { useSystemStore } from "./useSystemStore";
 import { UpdateCard } from "./UpdateCard";
 import { useT } from "../../lib/i18n";
 
-const formatUptime = (sec: number): string => {
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  return h > 0 ? `${h}h ${m}m` : `${m}m ${sec % 60}s`;
-};
-
 export const OverviewView: React.FC = () => {
   const t = useT();
   const navigate = useNavigate();
@@ -21,6 +15,12 @@ export const OverviewView: React.FC = () => {
   const info = useSystemStore((s) => s.info);
   const status = useConnectionStore((s) => s.status);
   const devMode = usePreferencesStore((s) => s.devMode);
+
+  const formatUptime = (sec: number): string => {
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    return h > 0 ? t("system.uptime.hm", { h, m }) : t("system.uptime.ms", { m, s: sec % 60 });
+  };
 
   return (
     <div className="dashboard-layout">

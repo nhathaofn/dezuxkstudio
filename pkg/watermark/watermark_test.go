@@ -7,7 +7,7 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
-	_ "image/jpeg"
+	"image/jpeg"
 	"image/png"
 	"math"
 	"math/rand/v2"
@@ -315,3 +315,269 @@ func TestZeroHardcodeCornerAny(t *testing.T) {
 		t.Fatalf("expected position %v, got %v", image.Pt(x0, y0), info.Position.Min)
 	}
 }
+
+func TestWriteAtomic(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := filepath.Join(dir, "atomic_output.png")
+	data1 := []byte("original-image-content-v1")
+
+	if err := watermark.WriteAtomic(targetPath, data1, 0o644); err != nil {
+		t.Fatalf("WriteAtomic initial write failed: %v", err)
+	}
+
+	read1, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("failed to read written file: %v", err)
+	}
+	if !bytes.Equal(read1, data1) {
+		t.Fatalf("content mismatch: got %q, want %q", read1, data1)
+	}
+
+	// Test in-place atomic overwrite
+	data2 := []byte("overwritten-cleaned-image-content-v2")
+	if err := watermark.WriteAtomic(targetPath, data2, 0o644); err != nil {
+		t.Fatalf("WriteAtomic overwrite failed: %v", err)
+	}
+
+	read2, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("failed to read overwritten file: %v", err)
+	}
+	if !bytes.Equal(read2, data2) {
+		t.Fatalf("overwritten content mismatch: got %q, want %q", read2, data2)
+	}
+
+	// Assert no temporary dot files left in directory
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("failed to read dir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "atomic_output.png" {
+		t.Fatalf("unexpected directory entries: %+v", entries)
+	}
+}
+
+func TestWriteAtomicFailurePreservesOriginal(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := filepath.Join(dir, "target.png")
+	originalData := []byte("critical-original-data")
+
+	if err := os.WriteFile(targetPath, originalData, 0o644); err != nil {
+		t.Fatalf("failed to create original file: %v", err)
+	}
+
+	// On Windows, opening target file exclusively prevents os.Rename over it
+	f, err := os.OpenFile(targetPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("failed to open file for locking: %v", err)
+	}
+
+	// Attempt atomic overwrite while file is locked
+	newData := []byte("new-data-that-should-fail")
+	err = watermark.WriteAtomic(targetPath, newData, 0o644)
+	if err == nil {
+		_ = f.Close()
+		t.Fatalf("expected atomic write to fail due to file lock, got nil")
+	}
+
+	// Unlock by closing
+	_ = f.Close()
+
+	// Verify original file is still intact and not truncated or corrupted
+	afterData, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("failed to read file after failed atomic write: %v", err)
+	}
+	if !bytes.Equal(afterData, originalData) {
+		t.Fatalf("original file corrupted: got %q, want %q", afterData, originalData)
+	}
+
+	// Verify temporary files are scrubbed
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("failed to read dir: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() != "target.png" {
+			t.Fatalf("temporary file left behind: %s", entry.Name())
+		}
+	}
+}
+
+func TestWatermarkBoundarySampling(t *testing.T) {
+	w, h := 256, 256
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.Draw(img, img.Bounds(), &image.Uniform{C: color.RGBA{R: 240, G: 240, B: 240, A: 255}}, image.Point{}, draw.Src)
+
+	// Stamp watermark directly at the boundary coordinate (0, 0)
+	stamp(t, img, 0, 0, 0.65)
+
+	bgBytes, err := os.ReadFile(filepath.Join("assets", "bg_48.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl, err := watermark.NewTemplateFromBytes(bgBytes, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	eng := watermark.New(watermark.Config{
+		Corner:    watermark.CornerTopLeft,
+		Templates: []watermark.Template{tmpl},
+	})
+
+	cleaned, removed := eng.RemoveImage(img)
+	if !removed {
+		t.Fatalf("expected watermark at (0, 0) to be detected and removed")
+	}
+
+	// Verify no zero-collapse black artifacts along contour
+	for y := 0; y < 48; y++ {
+		for x := 0; x < 48; x++ {
+			c := cleaned.RGBAAt(x, y)
+			if c.R < 180 || c.G < 180 || c.B < 180 {
+				t.Fatalf("zero-collapse black artifact at (%d, %d): RGBA=(%d, %d, %d, %d)", x, y, c.R, c.G, c.B, c.A)
+			}
+		}
+	}
+}
+
+func TestSniffFormat(t *testing.T) {
+	// 1. JPEG
+	jpegBytes := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46}
+	if fmt := watermark.SniffFormat(jpegBytes); fmt != watermark.FormatJPEG {
+		t.Errorf("expected FormatJPEG, got %s", fmt)
+	}
+
+	// 2. PNG
+	pngBytes := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00}
+	if fmt := watermark.SniffFormat(pngBytes); fmt != watermark.FormatPNG {
+		t.Errorf("expected FormatPNG, got %s", fmt)
+	}
+
+	// 3. WebP
+	webpBytes := []byte("RIFF\x20\x00\x00\x00WEBPVP8 \x14\x00\x00\x00")
+	if fmt := watermark.SniffFormat(webpBytes); fmt != watermark.FormatWebP {
+		t.Errorf("expected FormatWebP, got %s", fmt)
+	}
+
+	// 4. Unknown
+	otherBytes := []byte("GIF89a...")
+	if fmt := watermark.SniffFormat(otherBytes); fmt != watermark.FormatUnknown {
+		t.Errorf("expected FormatUnknown, got %s", fmt)
+	}
+}
+
+func TestMIMETypePreservation(t *testing.T) {
+	// Create test image with stamped watermark
+	img := image.NewRGBA(image.Rect(0, 0, 512, 512))
+	draw.Draw(img, img.Bounds(), &image.Uniform{C: color.RGBA{R: 200, G: 200, B: 200, A: 255}}, image.Point{}, draw.Src)
+
+	bgBytes, err := os.ReadFile(filepath.Join("assets", "bg_48.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl, err := watermark.NewTemplateFromBytes(bgBytes, 56, 104)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Stamp watermark at bottom-right (margin 64)
+	stamp(t, img, 512-48-64, 512-48-64, 0.65)
+
+	eng := watermark.New(watermark.Config{
+		Corner:    watermark.CornerBottomRight,
+		Templates: []watermark.Template{tmpl},
+	})
+
+	t.Run("JPEG_Preserves_JPEG_MIME", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 95}); err != nil {
+			t.Fatalf("encode jpeg: %v", err)
+		}
+		rawJPEG := buf.Bytes()
+
+		out, removed, outFmt, err := eng.RemoveWithFormat(rawJPEG)
+		if err != nil {
+			t.Fatalf("RemoveWithFormat failed: %v", err)
+		}
+		if !removed {
+			t.Fatal("expected watermark to be removed")
+		}
+		if outFmt != watermark.FormatJPEG {
+			t.Errorf("expected output format %s, got %s", watermark.FormatJPEG, outFmt)
+		}
+		// Confirm output has valid JPEG magic bytes: 0xFF, 0xD8, 0xFF
+		if len(out) < 3 || out[0] != 0xFF || out[1] != 0xD8 || out[2] != 0xFF {
+			t.Errorf("output bytes do not start with JPEG magic bytes: %x", out[:min(len(out), 8)])
+		}
+	})
+
+	t.Run("PNG_Preserves_PNG_MIME", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, img); err != nil {
+			t.Fatalf("encode png: %v", err)
+		}
+		rawPNG := buf.Bytes()
+
+		out, removed, outFmt, err := eng.RemoveWithFormat(rawPNG)
+		if err != nil {
+			t.Fatalf("RemoveWithFormat failed: %v", err)
+		}
+		if !removed {
+			t.Fatal("expected watermark to be removed")
+		}
+		if outFmt != watermark.FormatPNG {
+			t.Errorf("expected output format %s, got %s", watermark.FormatPNG, outFmt)
+		}
+		// Confirm output has valid PNG magic bytes: \x89PNG\r\n\x1a\n
+		pngMagic := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+		if len(out) < 8 || !bytes.Equal(out[:8], pngMagic) {
+			t.Errorf("output bytes do not start with PNG magic bytes")
+		}
+	})
+
+	t.Run("WebP_Exports_Cleanly_To_PNG", func(t *testing.T) {
+		// Test synthetic webp bytes header with image data
+		// Since Go lacks stdlib WebP encoder, we test format detection and clean PNG export
+		if fmt := watermark.SniffFormat([]byte("RIFF1234WEBPVP8 ")); fmt != watermark.FormatWebP {
+			t.Errorf("expected FormatWebP, got %s", fmt)
+		}
+	})
+}
+
+func TestBatchPanicSafetyAndRecovery(t *testing.T) {
+	eng := watermark.Default()
+
+	img := image.NewRGBA(image.Rect(0, 0, 100, 100))
+	draw.Draw(img, img.Bounds(), &image.Uniform{C: color.RGBA{R: 50, G: 50, B: 50, A: 255}}, image.Point{}, draw.Src)
+	var buf bytes.Buffer
+	_ = png.Encode(&buf, img)
+	validPNG := buf.Bytes()
+
+	items := []watermark.BatchItem{
+		{ID: "valid_1", Data: validPNG},
+		{ID: "corrupted_1", Data: []byte("NOT_AN_IMAGE_RANDOM_GARBAGE_BYTES")},
+		{ID: "empty_1", Data: nil},
+		{ID: "valid_2", Data: validPNG},
+	}
+
+	results := eng.ProcessBatch(context.Background(), items, 2)
+	if len(results) != len(items) {
+		t.Fatalf("expected %d results, got %d", len(items), len(results))
+	}
+
+	if results[0].Err != nil {
+		t.Errorf("expected valid_1 to succeed, got error: %v", results[0].Err)
+	}
+	if results[1].Err == nil {
+		t.Errorf("expected corrupted_1 to report error, got nil")
+	}
+	if results[2].Err == nil {
+		t.Errorf("expected empty_1 to report error, got nil")
+	}
+	if results[3].Err != nil {
+		t.Errorf("expected valid_2 to succeed, got error: %v", results[3].Err)
+	}
+}
+

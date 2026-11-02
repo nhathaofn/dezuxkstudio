@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"path/filepath"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"app/internal/paths"
 	"app/internal/realtime"
 	"app/internal/realtime/modules"
+	"app/internal/secrets"
 	"app/internal/server"
 	binariessvc "app/internal/service/binaries"
 	"app/internal/service/diagnostics"
@@ -37,7 +39,8 @@ type Options struct {
 	AuthToken      string // effective access token (desktop: per-session random)
 	AllowAnonymous bool   // server mode on loopback without token
 	OpenDirectory  func(dir string) error
-	HTTPClient     update.Doer
+	HTTPClient     *http.Client
+	Secrets        secrets.Store
 }
 
 func (o Options) validate() error {
@@ -62,6 +65,9 @@ type Core struct {
 func New(ctx context.Context, o Options) (_ *Core, err error) {
 	if err := o.validate(); err != nil {
 		return nil, err
+	}
+	if o.Secrets == nil {
+		o.Secrets = secrets.NewMemory()
 	}
 	cfg := o.Config
 	c := &Core{log: o.Logger, shutdown: cfg.Server.ShutdownTimeout, startedAt: time.Now()}
@@ -88,6 +94,7 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 		AllowedOrigins:       cfg.Server.AllowedOrigins,
 		MaxConcurrentActions: cfg.Realtime.MaxConcurrentActions,
 		ActionTimeout:        cfg.Realtime.ActionTimeout,
+		LongActionTimeout:    cfg.Realtime.LongActionTimeout,
 		QueueTimeout:         cfg.Realtime.QueueTimeout,
 		ClientBufferSize:     cfg.Realtime.ClientBufferSize,
 		MaxMessageBytes:      cfg.Realtime.MaxMessageBytes,
@@ -143,18 +150,25 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 
 	sysSvc := system.New(cfg.Mode, o.Paths, o.OpenDirectory)
 
+	updateClient := &http.Client{Timeout: cfg.Update.Timeout}
 	updSvc, err := update.New(update.Options{
 		FeedURL:        cfg.Update.FeedURL,
 		CurrentVersion: buildinfo.Version,
 		UserAgent:      buildinfo.ProductName + "/" + buildinfo.Version,
-		Client:         o.HTTPClient,
+		Client:         updateClient,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	prefSvc, err := preferences.New(sqlite.NewPreferencesRepository(c.db), func(p domainprefs.Preferences) {
-		c.hub.Publish(contracts.EventPreferencesUpdated, contracts.NewPreferences(p))
+	prefSvc, err := preferences.New(sqlite.NewPreferencesRepository(c.db), o.Secrets, func(p domainprefs.Preferences) {
+		hasKey := false
+		if o.Secrets != nil {
+			if k, _ := o.Secrets.Get(secrets.KeyGatewayAPIKey); k != "" {
+				hasKey = true
+			}
+		}
+		c.hub.Publish(contracts.EventPreferencesUpdated, contracts.NewPreferences(p, hasKey))
 	})
 	if err != nil {
 		return nil, err
@@ -174,8 +188,11 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 	binSvc := binariessvc.New(sqlite.NewBinariesRepository(c.db), o.Paths.Tools(), o.Logger)
 
 	wfSvc, err := workflow.New(workflow.Options{
-		Paths:  o.Paths,
-		Logger: o.Logger,
+		Paths:          o.Paths,
+		Logger:         o.Logger,
+		HTTPClient:     o.HTTPClient,
+		GetPreferences: prefSvc.Get,
+		Secrets:        o.Secrets,
 	})
 	if err != nil {
 		return nil, err

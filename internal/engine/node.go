@@ -92,7 +92,7 @@ func (n typedNode[In, Out]) Run(ctx context.Context, input json.RawMessage) (any
 	var in In
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &in); err != nil {
-			return nil, Invalid(fmt.Sprintf("Dữ liệu đầu vào của node %s không hợp lệ: %v", n.spec.Type, err))
+			return nil, Invalid(fmt.Sprintf("Invalid input data for node %s: %v", n.spec.Type, err))
 		}
 	}
 	return n.run(ctx, in)

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"app/internal/engine"
+	"app/internal/fsutil"
 	"app/pkg/watermark"
 )
 
@@ -23,6 +24,7 @@ const NodeType = "tool.watermark_remover"
 type Options struct {
 	MediaDir  string // Application media storage directory
 	OutputDir string // Default folder to save cleaned images
+	Templates []watermark.Template
 }
 
 // FlexibleImagePort accepts either an engine.MediaRef object or a plain string path.
@@ -88,7 +90,7 @@ func (f *FlexibleImagesPort) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	return fmt.Errorf("không thể giải mã danh sách ảnh: %s", string(data))
+	return fmt.Errorf("cannot decode image list: %s", string(data))
 }
 
 // NodeInput is the input payload for the watermark remover node.
@@ -130,20 +132,20 @@ func NewNode(opts Options) engine.Node {
 		Type:        NodeType,
 		Provider:    "tool",
 		Label:       "Watermark Remover",
-		Description: "Tự động phát hiện và xóa watermark Google Flow / Imagen / Gemini khỏi ảnh (Hỗ trợ xử lý đa luồng)",
+		Description: "Automatically detect and remove Google Flow / Imagen / Gemini watermarks from images (Multi-threaded)",
 		Inputs: []engine.Port{
-			{Name: "image", Label: "Ảnh đơn (Tùy chọn)", Type: engine.PortImage, Multiple: false, Optional: true},
-			{Name: "images", Label: "Danh sách ảnh đa luồng", Type: engine.PortImage, Multiple: true, Optional: true},
+			{Name: "image", Label: "Single image (Optional)", Type: engine.PortImage, Multiple: false, Optional: true},
+			{Name: "images", Label: "Batch images (Multi-threaded)", Type: engine.PortImage, Multiple: true, Optional: true},
 		},
 		Outputs: []engine.Port{
-			{Name: "image", Label: "Ảnh sau khi xóa (Đơn)", Type: engine.PortImage, Multiple: false},
-			{Name: "images", Label: "Danh sách ảnh sau khi xóa (Batch)", Type: engine.PortImage, Multiple: true},
+			{Name: "image", Label: "Cleaned image (Single)", Type: engine.PortImage, Multiple: false},
+			{Name: "images", Label: "Cleaned images (Batch)", Type: engine.PortImage, Multiple: true},
 		},
 		Params: []engine.Param{
-			{Name: "inplace", Label: "Ghi đè file gốc", Kind: engine.ParamToggle},
-			{Name: "output_dir", Label: "Thư mục xuất", Kind: engine.ParamText},
-			{Name: "workers", Label: "Số luồng CPU (0 = Tự động)", Kind: engine.ParamInteger, Min: 0, Max: 64},
-			{Name: "corner", Label: "Vị trí quét (bottom-right / bottom-left / top-right / top-left / any)", Kind: engine.ParamSelect},
+			{Name: "inplace", Label: "Overwrite original file", Kind: engine.ParamToggle},
+			{Name: "output_dir", Label: "Output directory", Kind: engine.ParamText},
+			{Name: "workers", Label: "CPU worker threads (0 = Auto)", Kind: engine.ParamInteger, Min: 0, Max: 64},
+			{Name: "corner", Label: "Scan corner (bottom-right / bottom-left / top-right / top-left / any)", Kind: engine.ParamSelect},
 		},
 	}
 
@@ -159,17 +161,22 @@ func NewNode(opts Options) engine.Node {
 		}
 
 		if len(rawPaths) == 0 {
-			return NodeOutput{}, engine.Invalid("Cổng 'image' hoặc 'images' của Watermark Remover không nhận được đường dẫn file")
+			return NodeOutput{}, engine.Invalid("Watermark Remover input port 'image' or 'images' received no file path")
 		}
 
 		cfg := watermark.Config{
-			Corner:   watermark.Corner(in.Corner),
-			Workers:  in.Workers,
-			MinScore: in.MinScore,
-			MinGain:  in.MinGain,
-			MaxGain:  in.MaxGain,
+			Corner:    watermark.Corner(in.Corner),
+			Workers:   in.Workers,
+			MinScore:  in.MinScore,
+			MinGain:   in.MinGain,
+			MaxGain:   in.MaxGain,
+			Templates: opts.Templates,
 		}
 		eng := watermark.New(cfg)
+
+		if ctx.Err() != nil {
+			return NodeOutput{}, ctx.Err()
+		}
 
 		resolvedPaths := make([]string, len(rawPaths))
 		items := make([]watermark.BatchItem, 0, len(rawPaths))
@@ -177,6 +184,9 @@ func NewNode(opts Options) engine.Node {
 		readErrors := make([]error, len(rawPaths))
 
 		for i, p := range rawPaths {
+			if ctx.Err() != nil {
+				return NodeOutput{}, ctx.Err()
+			}
 			resPath := resolveFilePath(p, opts.MediaDir)
 			resolvedPaths[i] = resPath
 			data, err := os.ReadFile(resPath)
@@ -190,6 +200,9 @@ func NewNode(opts Options) engine.Node {
 		}
 
 		batchResults := eng.ProcessBatch(ctx, items, in.Workers)
+		if ctx.Err() != nil {
+			return NodeOutput{}, ctx.Err()
+		}
 		batchResultMap := make(map[int]watermark.BatchResult, len(batchResults))
 		for _, br := range batchResults {
 			if idx, ok := itemIdxMap[br.ID]; ok {
@@ -198,8 +211,10 @@ func NewNode(opts Options) engine.Node {
 		}
 
 		itemResults := make([]ItemResult, len(rawPaths))
-		outMediaRefs := make([]engine.MediaRef, len(rawPaths))
+		outMediaRefs := make([]engine.MediaRef, 0, len(rawPaths))
 		detectedCount := 0
+		failedCount := 0
+		var firstErr string
 
 		targetDir := in.OutputDir
 		if targetDir == "" {
@@ -211,59 +226,95 @@ func NewNode(opts Options) engine.Node {
 			outPath := resPath
 
 			if readErr := readErrors[i]; readErr != nil {
+				failedCount++
+				if firstErr == "" {
+					firstErr = fmt.Sprintf("failed to read %s: %v", rawPath, readErr)
+				}
 				itemResults[i] = ItemResult{
 					Path:  rawPath,
-					Error: fmt.Sprintf("đọc file thất bại: %v", readErr),
+					Error: fmt.Sprintf("failed to read file: %v", readErr),
 				}
-				outMediaRefs[i] = engine.RefFor(outPath, engine.MediaImage)
 				continue
 			}
 
 			br := batchResultMap[i]
 			if br.Err != nil {
+				failedCount++
+				if firstErr == "" {
+					firstErr = fmt.Sprintf("processing %s: %v", rawPath, br.Err)
+				}
 				itemResults[i] = ItemResult{
 					Path:  rawPath,
-					Error: fmt.Sprintf("xử lý thất bại: %v", br.Err),
+					Error: fmt.Sprintf("processing failed: %v", br.Err),
 				}
-				outMediaRefs[i] = engine.RefFor(outPath, engine.MediaImage)
 				continue
 			}
 
 			if br.Detected {
 				detectedCount++
+				ext := filepath.Ext(resPath)
+				base := strings.TrimSuffix(filepath.Base(resPath), ext)
+
+				// Determine output extension according to output format:
+				// WebP converted to standard PNG must use .png extension.
+				outExt := ext
+				if br.OutputFormat == watermark.FormatPNG && (strings.EqualFold(ext, ".webp") || strings.EqualFold(ext, "")) {
+					outExt = ".png"
+				} else if br.OutputFormat == watermark.FormatJPEG && !strings.EqualFold(ext, ".jpg") && !strings.EqualFold(ext, ".jpeg") {
+					outExt = ".jpg"
+				}
+
 				if in.InPlace {
-					outPath = resPath
+					if outExt != ext {
+						outPath = filepath.Join(filepath.Dir(resPath), base+outExt)
+					} else {
+						outPath = resPath
+					}
 				} else {
 					destDir := targetDir
 					if destDir == "" {
 						destDir = filepath.Dir(resPath)
 					}
 					if err := os.MkdirAll(destDir, 0o755); err != nil {
+						failedCount++
+						if firstErr == "" {
+							firstErr = fmt.Sprintf("failed to create directory %q: %v", destDir, err)
+						}
 						itemResults[i] = ItemResult{
 							Path:     rawPath,
 							Detected: true,
 							Score:    br.Score,
 							Size:     br.Info.Size,
-							Error:    fmt.Sprintf("tạo thư mục %q thất bại: %v", destDir, err),
+							Error:    fmt.Sprintf("failed to create directory %q: %v", destDir, err),
 						}
-						outMediaRefs[i] = engine.RefFor(outPath, engine.MediaImage)
 						continue
 					}
-					ext := filepath.Ext(resPath)
-					base := strings.TrimSuffix(filepath.Base(resPath), ext)
-					outPath = filepath.Join(destDir, base+"_nowm"+ext)
+					outPath = filepath.Join(destDir, base+"_nowm"+outExt)
 				}
 
-				if err := os.WriteFile(outPath, br.Output, 0o644); err != nil {
+				perm := os.FileMode(0o644)
+				if in.InPlace {
+					if fi, err := os.Stat(resPath); err == nil {
+						perm = fi.Mode().Perm()
+					}
+				}
+
+				if err := fsutil.WriteFileAtomic(outPath, br.Output, perm); err != nil {
+					failedCount++
+					if firstErr == "" {
+						firstErr = fmt.Sprintf("failed to write file %q: %v", outPath, err)
+					}
 					itemResults[i] = ItemResult{
 						Path:     rawPath,
 						Detected: true,
 						Score:    br.Score,
 						Size:     br.Info.Size,
-						Error:    fmt.Sprintf("ghi file %q thất bại: %v", outPath, err),
+						Error:    fmt.Sprintf("failed to write file %q: %v", outPath, err),
 					}
-					outMediaRefs[i] = engine.RefFor(outPath, engine.MediaImage)
 					continue
+				}
+				if in.InPlace && outPath != resPath {
+					_ = os.Remove(resPath)
 				}
 			}
 
@@ -274,12 +325,23 @@ func NewNode(opts Options) engine.Node {
 				Score:    br.Score,
 				Size:     br.Info.Size,
 			}
-			outMediaRefs[i] = engine.RefFor(outPath, engine.MediaImage)
+			outMediaRefs = append(outMediaRefs, engine.RefFor(outPath, engine.MediaImage))
 		}
 
 		var primaryRef engine.MediaRef
 		if len(outMediaRefs) > 0 {
 			primaryRef = outMediaRefs[0]
+		}
+
+		if failedCount == len(rawPaths) && len(rawPaths) > 0 {
+			return NodeOutput{
+				Image:         primaryRef,
+				Images:        outMediaRefs,
+				Detected:      detectedCount > 0,
+				TotalCount:    len(rawPaths),
+				DetectedCount: detectedCount,
+				Results:       itemResults,
+			}, fmt.Errorf("watermark removal failed for all %d images: %s", len(rawPaths), firstErr)
 		}
 
 		return NodeOutput{
@@ -299,18 +361,22 @@ func resolveFilePath(p, mediaDir string) string {
 		return cleaned
 	}
 
+	target := cleaned
 	trimmed := strings.TrimPrefix(p, "/")
 	trimmed = strings.TrimPrefix(trimmed, "\\")
 	if strings.HasPrefix(trimmed, "media/") || strings.HasPrefix(trimmed, "media\\") {
 		trimmed = strings.TrimPrefix(trimmed, "media/")
 		trimmed = strings.TrimPrefix(trimmed, "media\\")
-		if mediaDir != "" {
-			return filepath.Join(mediaDir, trimmed)
-		}
+		target = filepath.Clean(trimmed)
 	}
 
 	if mediaDir != "" {
-		return filepath.Join(mediaDir, cleaned)
+		joined := filepath.Join(mediaDir, target)
+		rel, err := filepath.Rel(mediaDir, joined)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, "..") {
+			return ""
+		}
+		return joined
 	}
 	return cleaned
 }

@@ -14,7 +14,7 @@ export const AppHeader: React.FC = () => {
     <header className="app-header">
       <div className="header-left">
         <span className="logo">{build?.product_name ?? document.title}</span>
-        <nav className="header-nav" aria-label="Main">
+        <nav className="header-nav" aria-label={t("header.nav.ariaLabel")}>
           {navRoutes.map(({ path, label, icon: Icon }) => (
             <NavLink
               key={path}

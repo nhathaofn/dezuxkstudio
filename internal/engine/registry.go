@@ -55,7 +55,7 @@ func (r *Registry) Specs() []Spec {
 func (r *Registry) Run(ctx context.Context, nodeType string, input json.RawMessage) (any, error) {
 	n, ok := r.node(nodeType)
 	if !ok {
-		return nil, Invalid(fmt.Sprintf("Không có node %q.", nodeType))
+		return nil, Invalid(fmt.Sprintf("Unknown node type %q.", nodeType))
 	}
 	return n.Run(ctx, input)
 }

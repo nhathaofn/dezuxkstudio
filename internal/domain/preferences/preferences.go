@@ -41,17 +41,24 @@ type Preferences struct {
 	SchemaVersion int      `json:"schema_version"`
 	Theme         Theme    `json:"theme"`
 	Language      Language `json:"language"`
+	GatewayURL    string   `json:"gatewayUrl"`
 }
 
 // Patch updates a subset of fields; nil means "unchanged".
 type Patch struct {
-	Theme    *Theme
-	Language *Language
+	Theme      *Theme
+	Language   *Language
+	GatewayURL *string
 }
 
 // Defaults returns the preferences of a fresh installation.
 func Defaults() Preferences {
-	return Preferences{SchemaVersion: SchemaVersion, Theme: ThemeLight, Language: LanguageEnglish}
+	return Preferences{
+		SchemaVersion: SchemaVersion,
+		Theme:         ThemeLight,
+		Language:      LanguageEnglish,
+		GatewayURL:    "http://127.0.0.1:8080",
+	}
 }
 
 // Validate checks every field.
@@ -75,6 +82,9 @@ func (p Preferences) Apply(patch Patch) (Preferences, error) {
 	if patch.Language != nil {
 		p.Language = *patch.Language
 	}
+	if patch.GatewayURL != nil {
+		p.GatewayURL = *patch.GatewayURL
+	}
 	return p, p.Validate()
 }
 
@@ -94,9 +104,14 @@ func Migrate(p Preferences) (Preferences, error) {
 		if slices.Contains(Languages(), p.Language) {
 			d.Language = p.Language
 		}
+		if p.GatewayURL != "" {
+			d.GatewayURL = p.GatewayURL
+		}
 		return d, nil
 	}
-	// Future: add `case p.SchemaVersion == 1:` steps here when SchemaVersion becomes 2.
+	if p.GatewayURL == "" {
+		p.GatewayURL = "http://127.0.0.1:8080"
+	}
 	return p, p.Validate()
 }
 

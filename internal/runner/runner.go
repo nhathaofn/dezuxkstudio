@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"sync"
 	"time"
+
+	"app/internal/domain/binaries"
+	"app/internal/safego"
 )
 
 // ProgressCallback receives percentage (0-100) and an optional status message.
@@ -72,9 +74,14 @@ func RunWithOptions(ctx context.Context, executable string, args []string, opts 
 	var stdoutBuf, stderrBuf bytes.Buffer
 	var wg sync.WaitGroup
 
-	readLines := func(r io.Reader, buf *bytes.Buffer, onLine func(string), checkProgress bool) {
+	readLines := func(r io.Reader, buf *bytes.Buffer, onLine func(string), checkProgress bool) error {
 		defer wg.Done()
+		defer func() {
+			_, _ = io.Copy(io.Discard, r)
+		}()
+
 		scanner := bufio.NewScanner(r)
+		scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
 		// Custom split that handles both \n and \r (progress indicators like yt-dlp or ffmpeg often use \r)
 		scanner.Split(scanLinesOrCarriageReturn)
 		for scanner.Scan() {
@@ -91,18 +98,27 @@ func RunWithOptions(ctx context.Context, executable string, args []string, opts 
 				}
 			}
 		}
+		if err := scanner.Err(); err != nil {
+			return fmt.Errorf("scanner error: %w", err)
+		}
+		return nil
 	}
 
+	var stdoutErr, stderrErr error
 	wg.Add(2)
-	go readLines(stdoutPipe, &stdoutBuf, opts.OnStdoutLine, true)
-	go readLines(stderrPipe, &stderrBuf, opts.OnStderrLine, true)
+	safego.Go("runner.stdout", func() {
+		stdoutErr = readLines(stdoutPipe, &stdoutBuf, opts.OnStdoutLine, true)
+	})
+	safego.Go("runner.stderr", func() {
+		stderrErr = readLines(stderrPipe, &stderrBuf, opts.OnStderrLine, true)
+	})
 
 	// Wait in a goroutine so we can observe context cancellation
 	done := make(chan error, 1)
-	go func() {
+	safego.Go("runner.wait", func() {
 		wg.Wait()
 		done <- cmd.Wait()
-	}()
+	})
 
 	select {
 	case <-ctx.Done():
@@ -131,6 +147,9 @@ func RunWithOptions(ctx context.Context, executable string, args []string, opts 
 		}
 		if err != nil {
 			return res, fmt.Errorf("runner: command failed with code %d: %w", exitCode, err)
+		}
+		if scanErr := errors.Join(stdoutErr, stderrErr); scanErr != nil {
+			return res, fmt.Errorf("runner: pipe read error: %w", scanErr)
 		}
 		return res, nil
 	}
@@ -163,13 +182,13 @@ type FFmpegProgressParser struct {
 }
 
 var (
-	ffmpegTimeRe  = regexp.MustCompile(`time=(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)`)
-	ffmpegSpeedRe = regexp.MustCompile(`speed=\s*([^\s]+)`)
+	ffmpegTimeRe  = binaries.FFmpegTimeRe
+	ffmpegSpeedRe = binaries.FFmpegSpeedRe
 )
 
 // ParseLine implements LineParser for FFmpeg.
 func (p *FFmpegProgressParser) ParseLine(line string) (float64, string, bool) {
-	matches := ffmpegTimeRe.FindStringSubmatch(line)
+	matches := binaries.FFmpegTimeRe.FindStringSubmatch(line)
 	if len(matches) < 4 {
 		return 0, "", false
 	}
@@ -179,7 +198,7 @@ func (p *FFmpegProgressParser) ParseLine(line string) (float64, string, bool) {
 
 	currentTime := time.Duration(h)*time.Hour + time.Duration(m)*time.Minute + time.Duration(s*float64(time.Second))
 	speed := ""
-	if sm := ffmpegSpeedRe.FindStringSubmatch(line); len(sm) > 1 {
+	if sm := binaries.FFmpegSpeedRe.FindStringSubmatch(line); len(sm) > 1 {
 		speed = sm[1]
 	}
 
@@ -201,11 +220,11 @@ func (p *FFmpegProgressParser) ParseLine(line string) (float64, string, bool) {
 // YtDlpProgressParser parses progress from yt-dlp stdout output.
 type YtDlpProgressParser struct{}
 
-var ytDlpProgressRe = regexp.MustCompile(`\[download\]\s+(\d+\.?\d*)%\s+of\s+([^\s]+)\s+at\s+([^\s]+)`)
+var ytDlpProgressRe = binaries.YtDlpProgressRe
 
 // ParseLine implements LineParser for yt-dlp.
 func (p *YtDlpProgressParser) ParseLine(line string) (float64, string, bool) {
-	matches := ytDlpProgressRe.FindStringSubmatch(line)
+	matches := binaries.YtDlpProgressRe.FindStringSubmatch(line)
 	if len(matches) < 4 {
 		return 0, "", false
 	}

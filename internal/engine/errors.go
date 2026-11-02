@@ -6,17 +6,9 @@ import (
 	"app/internal/apperr"
 )
 
-// Error is a node failure that keeps the result code the UI shows.
-type Error struct {
-	Code    apperr.Code
-	Message string
-}
-
-func (e *Error) Error() string { return e.Message }
-
 // Invalid reports a request the node cannot run as given.
 func Invalid(message string) error {
-	return &Error{Code: apperr.CodeValidation, Message: message}
+	return apperr.Validation(message)
 }
 
 // PendingError ends a node whose provider accepted the work but has not finished it yet.
@@ -34,9 +26,12 @@ func Pending(message string, jobIDs []string) error {
 
 // CodeOf extracts the error code or returns CodeInternal.
 func CodeOf(err error) apperr.Code {
-	var coded *Error
-	if errors.As(err, &coded) {
-		return coded.Code
+	if err == nil {
+		return ""
+	}
+	var ae *apperr.Error
+	if errors.As(err, &ae) {
+		return ae.Code
 	}
 	var pending *PendingError
 	if errors.As(err, &pending) {

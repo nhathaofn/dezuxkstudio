@@ -50,9 +50,28 @@ func (m *testModule) Register(r *Registry) {
 	Handle(r, "t:notfound", func(context.Context, *Request, contracts.Empty) (contracts.Empty, error) {
 		return contracts.Empty{}, apperr.NotFound("no such thing")
 	})
+	Handle(r, "t:validation", func(context.Context, *Request, contracts.Empty) (contracts.Empty, error) {
+		return contracts.Empty{}, apperr.Validation("invalid input parameter")
+	})
+	Handle(r, "t:heartbeat", func(ctx context.Context, req *Request, _ contracts.Empty) (contracts.Empty, error) {
+		for i := 1; i <= 3; i++ {
+			time.Sleep(30 * time.Millisecond)
+			if ctx.Err() != nil {
+				return contracts.Empty{}, ctx.Err()
+			}
+			req.Progress(float64(i*30), "progressing")
+		}
+		return contracts.Empty{}, nil
+	})
+	Handle(r, contracts.ActionBinariesDownload, func(ctx context.Context, req *Request, _ contracts.Empty) (contracts.Empty, error) {
+		return contracts.Empty{}, nil
+	})
 }
 
-var testActions = []string{"t:echo", "t:slow", "t:panic", "t:fail", "t:notfound"}
+var testActions = []string{
+	"t:echo", "t:slow", "t:panic", "t:fail", "t:notfound",
+	"t:validation", "t:heartbeat", contracts.ActionBinariesDownload,
+}
 
 func newTestHub(t *testing.T, mutate func(*Options)) (*Hub, *httptest.Server, *testModule) {
 	t.Helper()
@@ -390,3 +409,50 @@ type moduleFunc func(r *Registry)
 
 func (moduleFunc) Name() string           { return "func" }
 func (m moduleFunc) Register(r *Registry) { m(r) }
+
+func TestValidationSurfacesCleanly(t *testing.T) {
+	_, srv, _ := newTestHub(t, nil)
+	c := mustDial(t, srv)
+	c.action("1", "t:validation", nil)
+	f, _ := c.response("1")
+	if f.Error == nil {
+		t.Fatalf("expected error, got nil response")
+	}
+	if f.Error.Code != apperr.CodeValidation {
+		t.Fatalf("expected CodeValidation (%s), got: %s", apperr.CodeValidation, f.Error.Code)
+	}
+	if f.Error.Message != "invalid input parameter" {
+		t.Fatalf("expected exact message 'invalid input parameter', got: %q", f.Error.Message)
+	}
+}
+
+func TestHeartbeatExtendsDeadline(t *testing.T) {
+	// Set ActionTimeout to 60ms.
+	// t:heartbeat takes 3 * 30ms = ~90ms, emitting progress every 30ms.
+	// Without heartbeat reset, it would exceed the 60ms deadline and fail.
+	_, srv, _ := newTestHub(t, func(o *Options) {
+		o.ActionTimeout = 60 * time.Millisecond
+	})
+	c := mustDial(t, srv)
+	c.action("hb1", "t:heartbeat", nil)
+	f, _ := c.response("hb1")
+	if f.Error != nil {
+		t.Fatalf("expected heartbeat action to succeed via deadline extensions, failed with: %+v", f.Error)
+	}
+}
+
+func TestTieredActionTimeout(t *testing.T) {
+	h, _, _ := newTestHub(t, func(o *Options) {
+		o.ActionTimeout = 50 * time.Millisecond
+		o.LongActionTimeout = 300 * time.Millisecond
+	})
+	if d := h.actionTimeout("t:slow"); d != 50*time.Millisecond {
+		t.Fatalf("expected 50ms for standard action, got %v", d)
+	}
+	if d := h.actionTimeout(contracts.ActionBinariesDownload); d != 300*time.Millisecond {
+		t.Fatalf("expected 300ms for binaries download, got %v", d)
+	}
+	if d := h.actionTimeout(contracts.ActionWorkflowRunGraph); d != 300*time.Millisecond {
+		t.Fatalf("expected 300ms for workflow run graph, got %v", d)
+	}
+}

@@ -56,6 +56,27 @@ export function toActionError(err: unknown): ActionError {
     }
     return new ActionError("ERR_INTERNAL", err);
   }
-  if (err instanceof Error) return new ActionError("ERR_INTERNAL", err.message);
+  if (err instanceof Error) {
+    try {
+      const parsed: unknown = JSON.parse(err.message);
+      if (isErrorBody(parsed)) return ActionError.fromBody(parsed);
+    } catch {
+      // not JSON
+    }
+    return new ActionError("ERR_INTERNAL", err.message);
+  }
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    "message" in err &&
+    typeof (err as { message: unknown }).message === "string"
+  ) {
+    return new ActionError(
+      "code" in err && typeof (err as { code: unknown }).code === "string"
+        ? normalizeCode((err as { code: string }).code)
+        : "ERR_INTERNAL",
+      (err as { message: string }).message
+    );
+  }
   return new ActionError("ERR_INTERNAL", String(err));
 }

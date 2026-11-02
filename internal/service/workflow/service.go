@@ -7,16 +7,25 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 
+	"app/internal/domain/preferences"
 	"app/internal/engine"
 	"app/internal/paths"
+	"app/internal/secrets"
+	"app/internal/tools/gateway"
 	"app/internal/tools/watermark"
 )
 
 // Options configures the workflow service.
 type Options struct {
-	Paths  paths.Paths
-	Logger *slog.Logger
+	Paths          paths.Paths
+	Logger         *slog.Logger
+	GatewayURL     string
+	GatewayAPIKey  string
+	HTTPClient     *http.Client
+	GetPreferences func(ctx context.Context) (preferences.Preferences, error)
+	Secrets        secrets.Store
 }
 
 // Service manages DezuxkStudio's workflow runtime and registered nodes.
@@ -40,6 +49,19 @@ func New(o Options) (*Service, error) {
 	})
 	if err := reg.Register(wmNode); err != nil {
 		return nil, fmt.Errorf("workflow: register watermark node: %w", err)
+	}
+
+	// Register built-in AI image generator node
+	gwNode := gateway.NewNode(gateway.Options{
+		MediaDir:       o.Paths.Media(),
+		GatewayURL:     o.GatewayURL,
+		GatewayAPIKey:  o.GatewayAPIKey,
+		HTTPClient:     o.HTTPClient,
+		GetPreferences: o.GetPreferences,
+		Secrets:        o.Secrets,
+	})
+	if err := reg.Register(gwNode); err != nil {
+		return nil, fmt.Errorf("workflow: register gateway node: %w", err)
 	}
 
 	return &Service{
@@ -66,7 +88,7 @@ func (s *Service) RunNode(ctx context.Context, nodeType string, input json.RawMe
 }
 
 // RunGraph executes a complete workflow graph.
-func (s *Service) RunGraph(ctx context.Context, g engine.Graph) (engine.GraphResult, error) {
+func (s *Service) RunGraph(ctx context.Context, g engine.Graph, onProgress ...func(percent float64, message string)) (engine.GraphResult, error) {
 	s.log.Info("workflow: running graph", "nodes_count", len(g.Nodes), "edges_count", len(g.Edges))
-	return s.registry.RunGraph(ctx, g)
+	return s.registry.RunGraph(ctx, g, onProgress...)
 }

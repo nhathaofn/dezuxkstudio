@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -78,8 +79,14 @@ func Run(o Options) error {
 			UniqueId:               "com." + strings.ToLower(buildinfo.AppID) + ".desktop",
 			OnSecondInstanceLaunch: s.secondInstance,
 		},
-		ErrorFormatter: func(err error) any { return contracts.NewErrorBody(err) },
-		Bind:           []any{s.bridge},
+		ErrorFormatter: func(err error) any {
+			body := contracts.NewErrorBody(err)
+			if b, marshalErr := json.Marshal(body); marshalErr == nil {
+				return string(b)
+			}
+			return err.Error()
+		},
+		Bind: []any{s.bridge},
 	})
 }
 
@@ -118,6 +125,7 @@ func (s *shell) startCore(ctx context.Context) error {
 		AuthToken:     token,
 		OpenDirectory: platform.OpenDirectory,
 		HTTPClient:    s.o.HTTPClient,
+		Secrets:       s.o.Secrets,
 	})
 	if err != nil {
 		return err

@@ -21,6 +21,7 @@ import (
 
 	"app/internal/apperr"
 	"app/internal/contracts"
+	"app/internal/safego"
 	"app/internal/security"
 )
 
@@ -31,6 +32,7 @@ type Options struct {
 	AllowedOrigins       []string
 	MaxConcurrentActions int
 	ActionTimeout        time.Duration
+	LongActionTimeout    time.Duration
 	QueueTimeout         time.Duration
 	ClientBufferSize     int
 	MaxMessageBytes      int64
@@ -49,7 +51,7 @@ func (o Options) validate() error {
 	if o.MaxConcurrentActions <= 0 || o.ClientBufferSize <= 0 || o.MaxMessageBytes <= 0 {
 		errs = append(errs, errors.New("limits must be > 0"))
 	}
-	if o.ActionTimeout <= 0 || o.QueueTimeout <= 0 || o.PingInterval <= 0 || o.WriteTimeout <= 0 {
+	if o.ActionTimeout <= 0 || o.QueueTimeout <= 0 || o.PingInterval <= 0 || o.WriteTimeout <= 0 || o.LongActionTimeout <= 0 {
 		errs = append(errs, errors.New("timeouts must be > 0"))
 	}
 	if o.Logger == nil {
@@ -77,6 +79,9 @@ type Hub struct {
 
 // New validates options and creates a hub.
 func New(o Options) (*Hub, error) {
+	if o.LongActionTimeout <= 0 {
+		o.LongActionTimeout = 15 * time.Minute
+	}
 	if err := o.validate(); err != nil {
 		return nil, fmt.Errorf("realtime: %w", err)
 	}
@@ -242,10 +247,23 @@ func (h *Hub) execute(ctx context.Context, req *Request, handler HandlerFunc, pa
 	return handler(ctx, req, payload)
 }
 
+func (h *Hub) actionTimeout(action string) time.Duration {
+	switch action {
+	case contracts.ActionBinariesDownload, contracts.ActionWorkflowRunGraph:
+		if h.opts.LongActionTimeout > 0 {
+			return h.opts.LongActionTimeout
+		}
+		return 15 * time.Minute
+	default:
+		return h.opts.ActionTimeout
+	}
+}
+
 func (h *Hub) classify(ctx context.Context, req *Request, err error) error {
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return apperr.Wrap(apperr.CodeTimeout, fmt.Sprintf("action timed out after %s", h.opts.ActionTimeout), err)
+		timeout := h.actionTimeout(req.Action)
+		return apperr.Wrap(apperr.CodeTimeout, fmt.Sprintf("action timed out after %s", timeout), err)
 	case errors.Is(ctx.Err(), context.Canceled):
 		return apperr.Wrap(apperr.CodeCancelled, "action cancelled", err)
 	}
@@ -268,7 +286,7 @@ func (h *Hub) Close(ctx context.Context) error {
 	}
 
 	done := make(chan struct{})
-	go func() { h.wg.Wait(); close(done) }()
+	safego.Go("realtime.hub.close", func() { h.wg.Wait(); close(done) })
 	select {
 	case <-done:
 		return nil

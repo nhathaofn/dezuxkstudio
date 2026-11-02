@@ -25,6 +25,7 @@ const (
 	CodeTimeout          Code = "ERR_TIMEOUT"
 	CodeCancelled        Code = "ERR_CANCELLED"
 	CodeUnavailable      Code = "ERR_UNAVAILABLE"
+	CodeIntegrity        Code = "ERR_INTEGRITY"
 	CodeInternal         Code = "ERR_INTERNAL"
 )
 
@@ -33,7 +34,7 @@ func Codes() []Code {
 	return []Code{
 		CodeBadRequest, CodeValidation, CodeUnauthorized, CodeNotFound, CodeConflict,
 		CodeUnknownAction, CodeConcurrencyLimit, CodeTimeout, CodeCancelled,
-		CodeUnavailable, CodeInternal,
+		CodeUnavailable, CodeIntegrity, CodeInternal,
 	}
 }
 
@@ -80,6 +81,9 @@ func NotFound(message string) *Error { return New(CodeNotFound, message) }
 
 // Unavailable is shorthand for a CodeUnavailable error.
 func Unavailable(message string) *Error { return New(CodeUnavailable, message) }
+
+// Integrity is shorthand for a CodeIntegrity error.
+func Integrity(message string) *Error { return New(CodeIntegrity, message) }
 
 // Internal wraps an unexpected failure; the cause is logged, never shown.
 func Internal(cause error) *Error { return Wrap(CodeInternal, "internal error", cause) }

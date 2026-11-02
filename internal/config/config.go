@@ -78,6 +78,7 @@ type ClientConfig struct {
 type RealtimeConfig struct {
 	MaxConcurrentActions int
 	ActionTimeout        time.Duration
+	LongActionTimeout    time.Duration
 	QueueTimeout         time.Duration
 	ClientBufferSize     int
 	MaxMessageBytes      int64
@@ -163,6 +164,7 @@ func Default(mode Mode) *Config {
 		Realtime: RealtimeConfig{
 			MaxConcurrentActions: 64,
 			ActionTimeout:        30 * time.Second,
+			LongActionTimeout:    15 * time.Minute,
 			QueueTimeout:         5 * time.Second,
 			ClientBufferSize:     256,
 			MaxMessageBytes:      1 << 20,

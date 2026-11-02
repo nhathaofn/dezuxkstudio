@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"syscall"
+	"time"
 
 	"app/internal/buildinfo"
 	"app/internal/config"
@@ -21,6 +22,7 @@ import (
 	"app/internal/paths"
 	"app/internal/platform"
 	"app/internal/safego"
+	"app/internal/secrets"
 )
 
 func main() { os.Exit(run()) }
@@ -103,6 +105,16 @@ func run() (code int) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	streamingClient := &http.Client{
+		Timeout: 0,
+		Transport: &http.Transport{
+			Proxy:               http.ProxyFromEnvironment,
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     90 * time.Second,
+		},
+	}
+
 	c, err := core.New(ctx, core.Options{
 		Config:         cfg,
 		Paths:          appPaths,
@@ -110,7 +122,8 @@ func run() (code int) {
 		AuthToken:      cfg.Server.AuthToken,
 		AllowAnonymous: cfg.Server.AuthToken == "",
 		OpenDirectory:  platform.OpenDirectory,
-		HTTPClient:     &http.Client{Timeout: cfg.Update.Timeout},
+		HTTPClient:     streamingClient,
+		Secrets:        secrets.NewServerStore(),
 	})
 	if err != nil {
 		lg.Error("startup failed", "error", err)

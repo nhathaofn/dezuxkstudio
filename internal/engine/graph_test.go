@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"app/internal/apperr"
 )
 
 type textsIn struct {
@@ -119,7 +121,74 @@ func TestGraphRunOrderAndCycleDetection(t *testing.T) {
 		},
 	}
 	_, err = regCycle.RunGraph(context.Background(), cycleValidTypes)
-	if err == nil || !strings.Contains(err.Error(), "vòng lặp") {
+	if err == nil || !strings.Contains(err.Error(), "cycle") {
 		t.Fatalf("expected cycle error, got: %v", err)
+	}
+}
+
+func TestGraphValidationErrorsReturnCodeValidation(t *testing.T) {
+	reg := NewRegistry()
+	_ = reg.Register(
+		Typed(Spec{
+			Type:    "nodeA",
+			Inputs:  []Port{{Name: "in", Type: PortImage, Optional: true}},
+			Outputs: []Port{{Name: "out", Type: PortImage}},
+		}, func(_ context.Context, in map[string]any) (map[string]any, error) {
+			return in, nil
+		}),
+	)
+
+	// 1. Cycle detection
+	cycleGraph := Graph{
+		Nodes: []GraphNode{
+			{ID: "n1", Type: "nodeA"},
+			{ID: "n2", Type: "nodeA"},
+		},
+		Edges: []Edge{
+			{From: Endpoint{Node: "n1", Port: "out"}, To: Endpoint{Node: "n2", Port: "in"}},
+			{From: Endpoint{Node: "n2", Port: "out"}, To: Endpoint{Node: "n1", Port: "in"}},
+		},
+	}
+	_, err := reg.RunGraph(context.Background(), cycleGraph)
+	if err == nil {
+		t.Fatal("expected cycle error")
+	}
+	if !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected CodeValidation for cycle error, got: %v", CodeOf(err))
+	}
+	if CodeOf(err) != apperr.CodeValidation {
+		t.Fatalf("expected CodeOf to return CodeValidation, got: %v", CodeOf(err))
+	}
+
+	// 2. Unknown node type
+	unknownGraph := Graph{
+		Nodes: []GraphNode{
+			{ID: "n1", Type: "unknown_type"},
+		},
+	}
+	_, err = reg.RunGraph(context.Background(), unknownGraph)
+	if err == nil {
+		t.Fatal("expected unknown node type error")
+	}
+	if !apperr.IsCode(err, apperr.CodeValidation) || CodeOf(err) != apperr.CodeValidation {
+		t.Fatalf("expected CodeValidation for unknown node, got: %v", CodeOf(err))
+	}
+
+	// 3. Missing / non-existent port
+	missingPortGraph := Graph{
+		Nodes: []GraphNode{
+			{ID: "n1", Type: "nodeA"},
+			{ID: "n2", Type: "nodeA"},
+		},
+		Edges: []Edge{
+			{From: Endpoint{Node: "n1", Port: "non_existent_port"}, To: Endpoint{Node: "n2", Port: "in"}},
+		},
+	}
+	_, err = reg.RunGraph(context.Background(), missingPortGraph)
+	if err == nil {
+		t.Fatal("expected missing port error")
+	}
+	if !apperr.IsCode(err, apperr.CodeValidation) || CodeOf(err) != apperr.CodeValidation {
+		t.Fatalf("expected CodeValidation for missing port, got: %v", CodeOf(err))
 	}
 }

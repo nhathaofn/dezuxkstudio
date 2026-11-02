@@ -8,12 +8,6 @@ import { useT } from "../../lib/i18n";
 import type { ActionError } from "../../lib/rtClient";
 import { useSystemStore } from "./useSystemStore";
 
-const formatUptime = (sec: number): string => {
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  return h > 0 ? `${h}h ${m}m` : `${m}m ${sec % 60}s`;
-};
-
 export const SystemCard: React.FC = () => {
   const t = useT();
   const info = useSystemStore((s) => s.info);
@@ -21,6 +15,12 @@ export const SystemCard: React.FC = () => {
   const loadInfo = useSystemStore((s) => s.loadInfo);
   const openFolder = useSystemStore((s) => s.openFolder);
   const [openError, setOpenError] = useState<ActionError | null>(null);
+
+  const formatUptime = (sec: number): string => {
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    return h > 0 ? t("system.uptime.hm", { h, m }) : t("system.uptime.ms", { m, s: sec % 60 });
+  };
 
   const open = async (target: FolderTarget) => setOpenError(await openFolder(target));
 

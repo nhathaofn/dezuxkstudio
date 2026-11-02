@@ -7,6 +7,7 @@ import (
 
 	"app/internal/apperr"
 	"app/internal/domain/preferences"
+	"app/internal/secrets"
 )
 
 type memRepo struct {
@@ -35,7 +36,7 @@ func ptr[T any](v T) *T { return &v }
 
 func TestGetReturnsDefaultsWithoutSaving(t *testing.T) {
 	repo := &memRepo{}
-	svc, _ := New(repo, nil)
+	svc, _ := New(repo, nil, nil)
 	p, err := svc.Get(context.Background())
 	if err != nil || p != preferences.Defaults() || repo.saves != 0 {
 		t.Fatalf("p=%+v err=%v saves=%d", p, err, repo.saves)
@@ -45,7 +46,7 @@ func TestGetReturnsDefaultsWithoutSaving(t *testing.T) {
 func TestUpdatePersistsAndNotifiesOnlyOnChange(t *testing.T) {
 	repo := &memRepo{}
 	var notified []preferences.Preferences
-	svc, _ := New(repo, func(p preferences.Preferences) { notified = append(notified, p) })
+	svc, _ := New(repo, nil, func(p preferences.Preferences) { notified = append(notified, p) })
 	ctx := context.Background()
 
 	p, err := svc.Update(ctx, preferences.Patch{Theme: ptr(preferences.ThemeDark)})
@@ -61,7 +62,7 @@ func TestUpdatePersistsAndNotifiesOnlyOnChange(t *testing.T) {
 }
 
 func TestUpdateRejectsInvalidValues(t *testing.T) {
-	svc, _ := New(&memRepo{}, nil)
+	svc, _ := New(&memRepo{}, nil, nil)
 	_, err := svc.Update(context.Background(), preferences.Patch{Theme: ptr(preferences.Theme("neon"))})
 	if !apperr.IsCode(err, apperr.CodeValidation) {
 		t.Fatalf("err = %v", err)
@@ -70,7 +71,7 @@ func TestUpdateRejectsInvalidValues(t *testing.T) {
 
 func TestLegacyDocumentIsMigratedAndSaved(t *testing.T) {
 	repo := &memRepo{doc: &preferences.Preferences{Theme: preferences.ThemeLight, Language: "xx"}}
-	svc, _ := New(repo, nil)
+	svc, _ := New(repo, nil, nil)
 	p, err := svc.Get(context.Background())
 	if err != nil || p.Theme != preferences.ThemeLight || p.Language != preferences.LanguageEnglish || p.SchemaVersion != preferences.SchemaVersion {
 		t.Fatalf("p=%+v err=%v", p, err)
@@ -82,7 +83,7 @@ func TestLegacyDocumentIsMigratedAndSaved(t *testing.T) {
 
 func TestNewerDocumentIsRefused(t *testing.T) {
 	repo := &memRepo{doc: &preferences.Preferences{SchemaVersion: preferences.SchemaVersion + 1}}
-	svc, _ := New(repo, nil)
+	svc, _ := New(repo, nil, nil)
 	if _, err := svc.Get(context.Background()); !apperr.IsCode(err, apperr.CodeConflict) {
 		t.Fatalf("err = %v", err)
 	}
@@ -90,11 +91,40 @@ func TestNewerDocumentIsRefused(t *testing.T) {
 
 func TestRepositoryErrorsPropagate(t *testing.T) {
 	boom := errors.New("disk")
-	svc, _ := New(&memRepo{loadErr: boom}, nil)
+	svc, _ := New(&memRepo{loadErr: boom}, nil, nil)
 	if _, err := svc.Get(context.Background()); !errors.Is(err, boom) {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := New(nil, nil); err == nil {
+	if _, err := New(nil, nil, nil); err == nil {
 		t.Fatal("nil repo accepted")
+	}
+}
+
+func TestServiceSecretsIntegration(t *testing.T) {
+	repo := &memRepo{}
+	memSec := secrets.NewMemory()
+	svc, err := New(repo, memSec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if svc.HasGatewayAPIKey() {
+		t.Fatal("expected HasGatewayAPIKey to be false initially")
+	}
+
+	if err := svc.SetGatewayAPIKey("sk-test-secret"); err != nil {
+		t.Fatalf("failed to set gateway API key: %v", err)
+	}
+
+	if !svc.HasGatewayAPIKey() {
+		t.Fatal("expected HasGatewayAPIKey to be true after set")
+	}
+
+	if err := svc.SetGatewayAPIKey(""); err != nil {
+		t.Fatalf("failed to delete gateway API key: %v", err)
+	}
+
+	if svc.HasGatewayAPIKey() {
+		t.Fatal("expected HasGatewayAPIKey to be false after empty set")
 	}
 }

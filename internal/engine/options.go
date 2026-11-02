@@ -36,7 +36,7 @@ func (r *Registry) Options(ctx context.Context, source string, selected map[stri
 	fn, ok := r.options[source]
 	r.mu.RUnlock()
 	if !ok {
-		return nil, Invalid(fmt.Sprintf("Không có nguồn lựa chọn %q.", source))
+		return nil, Invalid(fmt.Sprintf("Option source %q not found.", source))
 	}
 	if selected == nil {
 		selected = map[string]string{}

@@ -1,6 +1,9 @@
 # Patterns that name directories are anchored with a leading "/" so they never
 # hide source folders that happen to share the name (e.g. src/features/logs).
 
+# Standalone AI Reverse Gateway
+/dezuxk/
+
 # Secrets & local configuration
 AGENTS.md
 /.agents/teamwork/
@@ -33,6 +36,7 @@ AGENTS.md
 *.sha256
 
 # Frontend
+node_modules/
 /frontend/node_modules/
 /frontend/dist/
 /frontend/package.json.md5

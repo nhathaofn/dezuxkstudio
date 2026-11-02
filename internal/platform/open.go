@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+
+	"app/internal/safego"
 )
 
 // OpenDirectory reveals an existing local directory in the native file manager.
@@ -37,6 +39,6 @@ func OpenDirectory(dir string) error {
 		return fmt.Errorf("platform: open %s: %w", dir, err)
 	}
 	// Reap the child so it does not linger as a zombie on Unix.
-	go func() { _ = cmd.Wait() }()
+	safego.Go("platform.open.reap", func() { _ = cmd.Wait() })
 	return nil
 }

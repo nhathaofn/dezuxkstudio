@@ -32,8 +32,8 @@ func (m Workflow) Register(r *realtime.Registry) {
 		})
 
 	realtime.Handle(r, contracts.ActionWorkflowRunGraph,
-		func(ctx context.Context, _ *realtime.Request, p contracts.WorkflowRunGraphPayload) (contracts.WorkflowRunGraphResult, error) {
-			res, err := m.Service.RunGraph(ctx, p.Graph)
+		func(ctx context.Context, req *realtime.Request, p contracts.WorkflowRunGraphPayload) (contracts.WorkflowRunGraphResult, error) {
+			res, err := m.Service.RunGraph(ctx, p.Graph, req.Progress)
 			if err != nil {
 				return contracts.WorkflowRunGraphResult{}, err
 			}

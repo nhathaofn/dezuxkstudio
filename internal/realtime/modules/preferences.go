@@ -19,12 +19,28 @@ func (m Preferences) Register(r *realtime.Registry) {
 	realtime.Handle(r, contracts.ActionPreferencesGet,
 		func(ctx context.Context, _ *realtime.Request, _ contracts.Empty) (contracts.Preferences, error) {
 			p, err := m.Service.Get(ctx)
-			return contracts.NewPreferences(p), err
+			if err != nil {
+				return contracts.Preferences{}, err
+			}
+			return contracts.NewPreferences(p, m.Service.HasGatewayAPIKey()), nil
 		})
 
 	realtime.Handle(r, contracts.ActionPreferencesUpdate,
 		func(ctx context.Context, _ *realtime.Request, patch contracts.PreferencesPatch) (contracts.Preferences, error) {
+			keyChanged := false
+			if patch.GatewayAPIKey != nil {
+				if err := m.Service.SetGatewayAPIKey(*patch.GatewayAPIKey); err != nil {
+					return contracts.Preferences{}, err
+				}
+				keyChanged = true
+			}
 			p, err := m.Service.Update(ctx, patch.ToDomain())
-			return contracts.NewPreferences(p), err
+			if err != nil {
+				return contracts.Preferences{}, err
+			}
+			if keyChanged {
+				m.Service.NotifyChange(p)
+			}
+			return contracts.NewPreferences(p, m.Service.HasGatewayAPIKey()), nil
 		})
 }

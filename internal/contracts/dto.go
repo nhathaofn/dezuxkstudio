@@ -103,24 +103,33 @@ type UpdateInfo struct {
 
 // Preferences mirrors the domain preference document.
 type Preferences struct {
-	Theme    preferences.Theme    `json:"theme"`
-	Language preferences.Language `json:"language"`
+	Theme            preferences.Theme    `json:"theme"`
+	Language         preferences.Language `json:"language"`
+	GatewayURL       string               `json:"gatewayUrl"`
+	HasGatewayApiKey bool                 `json:"hasGatewayApiKey"`
 }
 
 // NewPreferences converts the domain model.
-func NewPreferences(p preferences.Preferences) Preferences {
-	return Preferences{Theme: p.Theme, Language: p.Language}
+func NewPreferences(p preferences.Preferences, hasKey bool) Preferences {
+	return Preferences{
+		Theme:            p.Theme,
+		Language:         p.Language,
+		GatewayURL:       p.GatewayURL,
+		HasGatewayApiKey: hasKey,
+	}
 }
 
 // PreferencesPatch is the payload of preferences:update; omitted fields are unchanged.
 type PreferencesPatch struct {
-	Theme    *preferences.Theme    `json:"theme,omitempty"`
-	Language *preferences.Language `json:"language,omitempty"`
+	Theme         *preferences.Theme    `json:"theme,omitempty"`
+	Language      *preferences.Language `json:"language,omitempty"`
+	GatewayURL    *string               `json:"gatewayUrl,omitempty"`
+	GatewayAPIKey *string               `json:"gatewayApiKey,omitempty"`
 }
 
 // Validate rejects empty patches.
 func (p PreferencesPatch) Validate() error {
-	if p.Theme == nil && p.Language == nil {
+	if p.Theme == nil && p.Language == nil && p.GatewayURL == nil && p.GatewayAPIKey == nil {
 		return apperr.Validation("patch must change at least one field")
 	}
 	return nil
@@ -128,7 +137,11 @@ func (p PreferencesPatch) Validate() error {
 
 // ToDomain converts to the domain patch.
 func (p PreferencesPatch) ToDomain() preferences.Patch {
-	return preferences.Patch{Theme: p.Theme, Language: p.Language}
+	return preferences.Patch{
+		Theme:      p.Theme,
+		Language:   p.Language,
+		GatewayURL: p.GatewayURL,
+	}
 }
 
 // DiagnosticsBundle answers diagnostics:export.

@@ -79,21 +79,30 @@ type plannedNode struct {
 }
 
 // RunGraph checks a graph and runs it one node at a time in dependency order.
-func (r *Registry) RunGraph(ctx context.Context, g Graph) (GraphResult, error) {
+func (r *Registry) RunGraph(ctx context.Context, g Graph, onProgress ...func(percent float64, message string)) (GraphResult, error) {
 	plan, order, err := r.plan(g)
 	if err != nil {
 		return GraphResult{}, err
 	}
+	var progress func(float64, string)
+	if len(onProgress) > 0 && onProgress[0] != nil {
+		progress = onProgress[0]
+	}
 	res := GraphResult{Order: order, Nodes: make(map[string]NodeRun, len(order))}
 	outputs := make(map[string]map[string]json.RawMessage, len(order))
-	for _, id := range order {
+	total := len(order)
+	for idx, id := range order {
 		p := plan[id]
+		if progress != nil && total > 0 {
+			pct := float64(idx) / float64(total) * 100.0
+			progress(pct, fmt.Sprintf("Running node %s (%s)", id, p.GraphNode.Type))
+		}
 		if ctx.Err() != nil {
-			res.Nodes[id] = NodeRun{Status: RunCancelled, Error: "Đã dừng trước khi chạy."}
+			res.Nodes[id] = NodeRun{Status: RunCancelled, Error: "Cancelled before execution."}
 			continue
 		}
 		if blocked := r.blockedBy(p, res.Nodes); blocked != "" {
-			res.Nodes[id] = NodeRun{Status: RunSkipped, Error: fmt.Sprintf("Bỏ qua vì node %s chưa có kết quả.", blocked)}
+			res.Nodes[id] = NodeRun{Status: RunSkipped, Error: fmt.Sprintf("Skipped because upstream node %s has no result.", blocked)}
 			continue
 		}
 		input, err := assemble(p, outputs)
@@ -109,6 +118,10 @@ func (r *Registry) RunGraph(ctx context.Context, g Graph) (GraphResult, error) {
 		res.Nodes[id] = run
 		if out != nil {
 			outputs[id] = out
+		}
+		if progress != nil && total > 0 {
+			pct := float64(idx+1) / float64(total) * 100.0
+			progress(pct, fmt.Sprintf("Completed node %s", id))
 		}
 	}
 	return res, nil
@@ -143,7 +156,7 @@ func runNode(ctx context.Context, p plannedNode, input json.RawMessage) (NodeRun
 	}
 	ports := map[string]json.RawMessage{}
 	if err := json.Unmarshal(raw, &ports); err != nil {
-		return NodeRun{Status: RunFailed, Error: fmt.Sprintf("Node %s không trả kết quả theo đúng cổng: %v", p.Type, err), Code: apperr.CodeInternal}, nil
+		return NodeRun{Status: RunFailed, Error: fmt.Sprintf("Node %s did not produce expected port outputs: %v", p.Type, err), Code: apperr.CodeInternal}, nil
 	}
 	return NodeRun{Status: RunDone, Output: raw}, ports
 }
@@ -180,9 +193,9 @@ func assemble(p plannedNode, outputs map[string]map[string]json.RawMessage) (jso
 			input[port] = values[0]
 		case len(values) == 0 && in.Optional:
 		case len(values) == 0:
-			return nil, fmt.Errorf("Cổng %s của node %s không nhận được giá trị nào.", port, p.ID)
+			return nil, fmt.Errorf("Port %s of node %s received no value.", port, p.ID)
 		default:
-			return nil, fmt.Errorf("Cổng %s của node %s chỉ nhận một giá trị nhưng có %d.", port, p.ID, len(values))
+			return nil, fmt.Errorf("Port %s of node %s expects a single value but received %d.", port, p.ID, len(values))
 		}
 	}
 	return json.Marshal(input)
@@ -195,10 +208,10 @@ func checkMedia(in Port, values []json.RawMessage) error {
 	for _, v := range values {
 		var ref MediaRef
 		if err := json.Unmarshal(v, &ref); err != nil || ref.LocalURL == "" {
-			return fmt.Errorf("Cổng %s cần tệp media.", in.Name)
+			return fmt.Errorf("Port %s requires a media file.", in.Name)
 		}
 		if !ref.Accepts(in.Type) {
-			return fmt.Errorf("Cổng %s không nhận tệp %s (%s).", in.Name, ref.Kind, ref.LocalURL)
+			return fmt.Errorf("Port %s does not accept %s file (%s).", in.Name, ref.Kind, ref.LocalURL)
 		}
 	}
 	return nil
@@ -215,25 +228,25 @@ func findPort(ports []Port, name string) (Port, bool) {
 
 func (r *Registry) plan(g Graph) (map[string]plannedNode, []string, error) {
 	if len(g.Nodes) == 0 {
-		return nil, nil, Invalid("Đồ thị chưa có node nào.")
+		return nil, nil, Invalid("Graph does not contain any nodes.")
 	}
 	plan := make(map[string]plannedNode, len(g.Nodes))
 	ids := make([]string, 0, len(g.Nodes))
 	for _, gn := range g.Nodes {
 		if gn.ID == "" {
-			return nil, nil, Invalid("Có node chưa có mã định danh ID.")
+			return nil, nil, Invalid("A graph node is missing an identifier (ID).")
 		}
 		if _, dup := plan[gn.ID]; dup {
-			return nil, nil, Invalid(fmt.Sprintf("Mã node %q bị trùng.", gn.ID))
+			return nil, nil, Invalid(fmt.Sprintf("Duplicate node ID %q.", gn.ID))
 		}
 		n, ok := r.node(gn.Type)
 		if !ok {
-			return nil, nil, Invalid(fmt.Sprintf("Không có node %q.", gn.Type))
+			return nil, nil, Invalid(fmt.Sprintf("Unknown node type %q.", gn.Type))
 		}
 		params := map[string]json.RawMessage{}
 		if len(gn.Params) > 0 && string(gn.Params) != "null" {
 			if err := json.Unmarshal(gn.Params, &params); err != nil {
-				return nil, nil, Invalid(fmt.Sprintf("Cài đặt của node %s không hợp lệ: %v", gn.ID, err))
+				return nil, nil, Invalid(fmt.Sprintf("Invalid parameters for node %s: %v", gn.ID, err))
 			}
 		}
 		plan[gn.ID] = plannedNode{GraphNode: gn, node: n, params: params, inputs: map[string][]Edge{}}
@@ -245,21 +258,21 @@ func (r *Registry) plan(g Graph) (map[string]plannedNode, []string, error) {
 		from, okFrom := plan[e.From.Node]
 		to, okTo := plan[e.To.Node]
 		if !okFrom || !okTo {
-			return nil, nil, Invalid(fmt.Sprintf("Dây nối %s -> %s chỉ tới node không tồn tại.", e.From.Node, e.To.Node))
+			return nil, nil, Invalid(fmt.Sprintf("Edge %s -> %s references a non-existent node.", e.From.Node, e.To.Node))
 		}
 		out, ok := findPort(from.node.Spec().Outputs, e.From.Port)
 		if !ok {
-			return nil, nil, Invalid(fmt.Sprintf("Node %s không có cổng ra %q.", e.From.Node, e.From.Port))
+			return nil, nil, Invalid(fmt.Sprintf("Node %s does not have output port %q.", e.From.Node, e.From.Port))
 		}
 		in, ok := findPort(to.node.Spec().Inputs, e.To.Port)
 		if !ok {
-			return nil, nil, Invalid(fmt.Sprintf("Node %s không có cổng vào %q.", e.To.Node, e.To.Port))
+			return nil, nil, Invalid(fmt.Sprintf("Node %s does not have input port %q.", e.To.Node, e.To.Port))
 		}
 		if !Compatible(out.Type, in.Type) {
-			return nil, nil, Invalid(fmt.Sprintf("Không nối được %s.%s (%s) vào %s.%s (%s).", e.From.Node, out.Name, out.Type, e.To.Node, in.Name, in.Type))
+			return nil, nil, Invalid(fmt.Sprintf("Cannot connect incompatible ports %s.%s (%s) -> %s.%s (%s).", e.From.Node, out.Name, out.Type, e.To.Node, in.Name, in.Type))
 		}
 		if !in.Multiple && len(to.inputs[in.Name]) > 0 {
-			return nil, nil, Invalid(fmt.Sprintf("Cổng %s.%s chỉ nhận một dây nối.", e.To.Node, in.Name))
+			return nil, nil, Invalid(fmt.Sprintf("Port %s.%s only accepts a single incoming connection.", e.To.Node, in.Name))
 		}
 		to.inputs[in.Name] = append(to.inputs[in.Name], e)
 		next[e.From.Node] = append(next[e.From.Node], e.To.Node)
@@ -271,7 +284,7 @@ func (r *Registry) plan(g Graph) (map[string]plannedNode, []string, error) {
 			_, wired := p.inputs[in.Name]
 			_, set := p.params[in.Name]
 			if !in.Optional && !wired && !set {
-				return nil, nil, Invalid(fmt.Sprintf("Cổng %s của node %s chưa có giá trị.", in.Name, id))
+				return nil, nil, Invalid(fmt.Sprintf("Required input port %s of node %s has no value.", in.Name, id))
 			}
 		}
 	}
@@ -294,7 +307,7 @@ func (r *Registry) plan(g Graph) (map[string]plannedNode, []string, error) {
 		}
 	}
 	if len(order) != len(ids) {
-		return nil, nil, Invalid("Đồ thị có vòng lặp (cycle detected).")
+		return nil, nil, Invalid("Cycle detected in graph (cycle detected).")
 	}
 	return plan, order, nil
 }

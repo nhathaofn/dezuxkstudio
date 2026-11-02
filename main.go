@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"time"
 
 	"app/internal/buildinfo"
 	"app/internal/config"
@@ -109,13 +110,23 @@ func run() (code int) {
 		return 1
 	}
 
+	streamingClient := &http.Client{
+		Timeout: 0,
+		Transport: &http.Transport{
+			Proxy:               http.ProxyFromEnvironment,
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     90 * time.Second,
+		},
+	}
+
 	err = desktop.Run(desktop.Options{
 		Config:       cfg,
 		Paths:        appPaths,
 		Logger:       lg.Logger,
 		Assets:       dist,
-		Secrets:      secrets.NewKeyring(buildinfo.AppID),
-		HTTPClient:   &http.Client{Timeout: cfg.Update.Timeout},
+		Secrets:      secrets.NewDesktopStore(buildinfo.AppID),
+		HTTPClient:   streamingClient,
 		StartupError: cfgErr,
 	})
 	if err != nil {

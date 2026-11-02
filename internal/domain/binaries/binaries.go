@@ -63,6 +63,7 @@ type DownloadSpec struct {
 	URL           string // URL to binary or archive
 	ArchiveFormat string // "zip" or "raw"
 	ExtractFile   string // file name inside zip if applicable
+	SHA256        string // Expected hex-encoded SHA256 checksum
 }
 
 // BinarySpec declares a registered binary tool.
@@ -73,6 +74,7 @@ type BinarySpec struct {
 	ExecutableBase string
 	ProbeArgs      []string
 	VersionRegex   string
+	VersionRe      *regexp.Regexp
 	Downloads      map[string]DownloadSpec // key: "<os>_<arch>" e.g. "windows_amd64"
 }
 
@@ -91,8 +93,18 @@ func (s BinarySpec) CurrentDownloadSpec() (DownloadSpec, bool) {
 	return spec, ok
 }
 
-// ExtractVersion extracts a version string from output using the spec's VersionRegex.
+// ExtractVersion extracts a version string from output using the spec's precompiled or compiled regex.
 func (s BinarySpec) ExtractVersion(output string) string {
+	if s.VersionRe != nil {
+		matches := s.VersionRe.FindStringSubmatch(output)
+		if len(matches) > 1 {
+			return matches[1]
+		}
+		if len(matches) == 1 {
+			return matches[0]
+		}
+		return ""
+	}
 	if s.VersionRegex == "" {
 		return ""
 	}
@@ -110,68 +122,28 @@ func (s BinarySpec) ExtractVersion(output string) string {
 	return ""
 }
 
-// Registry holds the official binary specifications.
+// Registry holds the official binary specifications, derived from the centralized Manifest.
 var Registry = map[BinaryID]BinarySpec{
-	IDFFmpeg: {
-		ID:             IDFFmpeg,
-		Name:           "FFmpeg",
-		Description:    "Universal media converter, transcoder, and video filter engine.",
-		ExecutableBase: "ffmpeg",
-		ProbeArgs:      []string{"-version"},
-		VersionRegex:   `ffmpeg version ([^\s]+)`,
-		Downloads: map[string]DownloadSpec{
-			"windows_amd64": {
-				URL:           "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip",
-				ArchiveFormat: "zip",
-				ExtractFile:   "bin/ffmpeg.exe",
-			},
-			"windows_arm64": {
-				URL:           "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip",
-				ArchiveFormat: "zip",
-				ExtractFile:   "bin/ffmpeg.exe",
-			},
-		},
-	},
-	IDFFprobe: {
-		ID:             IDFFprobe,
-		Name:           "FFprobe",
-		Description:    "Multimedia stream analyzer and container metadata extractor.",
-		ExecutableBase: "ffprobe",
-		ProbeArgs:      []string{"-version"},
-		VersionRegex:   `ffprobe version ([^\s]+)`,
-		Downloads: map[string]DownloadSpec{
-			"windows_amd64": {
-				URL:           "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip",
-				ArchiveFormat: "zip",
-				ExtractFile:   "bin/ffprobe.exe",
-			},
-			"windows_arm64": {
-				URL:           "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip",
-				ArchiveFormat: "zip",
-				ExtractFile:   "bin/ffprobe.exe",
-			},
-		},
-	},
-	IDYtDlp: {
-		ID:             IDYtDlp,
-		Name:           "yt-dlp",
-		Description:    "Video and audio stream downloader and extractor from web platforms.",
-		ExecutableBase: "yt-dlp",
-		ProbeArgs:      []string{"--version"},
-		VersionRegex:   `(\d{4}\.\d{2}\.\d{2}(?:\.\d+)?)`,
-		Downloads: map[string]DownloadSpec{
-			"windows_amd64": {
-				URL:           "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe",
-				ArchiveFormat: "raw",
-				ExtractFile:   "yt-dlp.exe",
-			},
-			"windows_arm64": {
-				URL:           "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe",
-				ArchiveFormat: "raw",
-				ExtractFile:   "yt-dlp.exe",
-			},
-		},
-	},
+	IDFFmpeg:  toBinarySpec(Manifest[IDFFmpeg]),
+	IDFFprobe: toBinarySpec(Manifest[IDFFprobe]),
+	IDYtDlp:   toBinarySpec(Manifest[IDYtDlp]),
+}
+
+func toBinarySpec(entry ManifestEntry) BinarySpec {
+	var versionRegexStr string
+	if entry.VersionRegex != nil {
+		versionRegexStr = entry.VersionRegex.String()
+	}
+	return BinarySpec{
+		ID:             entry.ID,
+		Name:           entry.Name,
+		Description:    entry.Description,
+		ExecutableBase: entry.Executable,
+		ProbeArgs:      entry.ProbeArgs,
+		VersionRegex:   versionRegexStr,
+		VersionRe:      entry.VersionRegex,
+		Downloads:      entry.Downloads,
+	}
 }
 
 // ValidateID checks if an ID is valid and registered.

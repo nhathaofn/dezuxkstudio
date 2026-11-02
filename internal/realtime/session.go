@@ -164,7 +164,8 @@ func (s *session) handleAction(msg contracts.ClientMessage) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(s.ctx, s.hub.opts.ActionTimeout)
+	timeout := s.hub.actionTimeout(msg.Action)
+	ctx, resetTimeout, cancel := newHeartbeatContext(s.ctx, timeout)
 	if !s.trackInflight(msg.ID, cancel) {
 		cancel()
 		s.hub.release()
@@ -176,7 +177,10 @@ func (s *session) handleAction(msg contracts.ClientMessage) {
 		ID:       msg.ID,
 		Action:   msg.Action,
 		ClientID: s.id,
-		progress: func(p contracts.ActionProgress) { s.emit(contracts.EventActionProgress, msg.ID, p) },
+		progress: func(p contracts.ActionProgress) {
+			resetTimeout()
+			s.emit(contracts.EventActionProgress, msg.ID, p)
+		},
 	}
 
 	// The session still holds a WaitGroup slot here, so Add cannot race with Hub.Close's Wait.
@@ -236,3 +240,112 @@ func (s *session) close(code websocket.StatusCode, reason string) {
 		s.hub.log.Debug("realtime: close connection", "client_id", s.id, "error", err)
 	}
 }
+
+type heartbeatContext struct {
+	parent     context.Context
+	timeout    time.Duration
+	mu         sync.Mutex
+	timer      *time.Timer
+	deadline   time.Time
+	done       chan struct{}
+	err        error
+	generation uint64
+	stopParent func() bool
+}
+
+func newHeartbeatContext(parent context.Context, timeout time.Duration) (*heartbeatContext, func(), func()) {
+	c := &heartbeatContext{
+		parent:   parent,
+		timeout:  timeout,
+		done:     make(chan struct{}),
+		deadline: time.Now().Add(timeout),
+	}
+	if parentErr := parent.Err(); parentErr != nil {
+		c.err = parentErr
+		close(c.done)
+		return c, func() {}, func() {}
+	}
+
+	c.timer = time.AfterFunc(timeout, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.generation == 0 && c.err == nil {
+			c.err = context.DeadlineExceeded
+			close(c.done)
+		}
+	})
+
+	c.stopParent = context.AfterFunc(parent, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.err == nil {
+			if c.timer != nil {
+				c.timer.Stop()
+			}
+			c.err = parent.Err()
+			close(c.done)
+		}
+	})
+
+	reset := func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.err == nil {
+			c.generation++
+			gen := c.generation
+			c.deadline = time.Now().Add(c.timeout)
+			if c.timer != nil {
+				c.timer.Stop()
+			}
+			c.timer = time.AfterFunc(c.timeout, func() {
+				c.mu.Lock()
+				defer c.mu.Unlock()
+				if c.generation == gen && c.err == nil {
+					c.err = context.DeadlineExceeded
+					close(c.done)
+				}
+			})
+		}
+	}
+
+	cancel := func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.stopParent != nil {
+			c.stopParent()
+		}
+		if c.timer != nil {
+			c.timer.Stop()
+		}
+		if c.err == nil {
+			c.err = context.Canceled
+			close(c.done)
+		}
+	}
+
+	return c, reset, cancel
+}
+
+func (c *heartbeatContext) Deadline() (time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if pd, ok := c.parent.Deadline(); ok && pd.Before(c.deadline) {
+		return pd, true
+	}
+	return c.deadline, true
+}
+
+func (c *heartbeatContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *heartbeatContext) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
+}
+
+func (c *heartbeatContext) Value(key any) any {
+	return c.parent.Value(key)
+}
+

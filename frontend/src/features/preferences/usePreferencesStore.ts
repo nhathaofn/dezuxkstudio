@@ -18,7 +18,7 @@ const pick = <T extends string>(values: readonly T[], v: string | null, fallback
 
 /** Hints cached locally so the first paint already uses the user's theme/language. */
 function initialPrefs(): Preferences {
-  const { theme, language } = appConfig.initialPreferences;
+  const { theme, language, gatewayUrl, hasGatewayApiKey } = appConfig.initialPreferences;
   return {
     theme: pick<Theme>(ThemeValues, safeStorage.get(appConfig.storageKeys.themeHint), theme),
     language: pick<Language>(
@@ -26,6 +26,8 @@ function initialPrefs(): Preferences {
       safeStorage.get(appConfig.storageKeys.languageHint),
       language
     ),
+    gatewayUrl,
+    hasGatewayApiKey,
   };
 }
 
@@ -44,6 +46,10 @@ function commit(p: Preferences): void {
 
 interface PreferencesState {
   prefs: Preferences;
+  gatewayUrl: string;
+  hasGatewayApiKey: boolean;
+  setGatewayUrl: (url: string) => Promise<void>;
+  setGatewayApiKey: (apiKey: string) => Promise<void>;
   /** True while a local change has not been saved to the core yet. */
   dirty: boolean;
   error: ActionError | null;
@@ -68,7 +74,13 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => {
     try {
       const saved = await rtClient.request(Actions.PREFERENCES_UPDATE, patch);
       commit(saved);
-      set({ prefs: saved, dirty: false, error: null });
+      set({
+        prefs: saved,
+        gatewayUrl: saved.gatewayUrl,
+        hasGatewayApiKey: saved.hasGatewayApiKey,
+        dirty: false,
+        error: null,
+      });
     } catch (err) {
       // Keep the local choice; it is retried on the next successful connection.
       set({ error: toActionError(err) });
@@ -77,9 +89,19 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => {
 
   return {
     prefs,
+    gatewayUrl: prefs.gatewayUrl,
+    hasGatewayApiKey: prefs.hasGatewayApiKey,
     dirty: false,
     error: null,
     devMode,
+
+    setGatewayUrl: async (gatewayUrl: string) => {
+      await get().update({ gatewayUrl });
+    },
+
+    setGatewayApiKey: async (gatewayApiKey: string) => {
+      await get().update({ gatewayApiKey });
+    },
 
     toggleDevMode: () => {
       const next = !get().devMode;
@@ -94,29 +116,50 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => {
 
     load: async () => {
       if (get().dirty) {
-        const { theme, language } = get().prefs;
-        await persist({ theme, language });
+        const { theme, language, gatewayUrl } = get().prefs;
+        await persist({ theme, language, gatewayUrl });
         return;
       }
       try {
         const p = await rtClient.request(Actions.PREFERENCES_GET, {});
         commit(p);
-        set({ prefs: p, error: null });
+        set({
+          prefs: p,
+          gatewayUrl: p.gatewayUrl,
+          hasGatewayApiKey: p.hasGatewayApiKey,
+          error: null,
+        });
       } catch (err) {
         set({ error: toActionError(err) });
       }
     },
 
     update: async (patch) => {
-      const next: Preferences = { ...get().prefs, ...patch };
+      const { gatewayApiKey, ...safePatch } = patch;
+      const next: Preferences = {
+        ...get().prefs,
+        ...safePatch,
+        hasGatewayApiKey:
+          gatewayApiKey !== undefined ? Boolean(gatewayApiKey) : get().prefs.hasGatewayApiKey,
+      };
       commit(next);
-      set({ prefs: next, dirty: true, error: null });
+      set({
+        prefs: next,
+        gatewayUrl: next.gatewayUrl,
+        hasGatewayApiKey: next.hasGatewayApiKey,
+        dirty: true,
+        error: null,
+      });
       if (rtClient.getStatus() === "connected") await persist(patch);
     },
 
     receive: (p) => {
       commit(p);
-      set({ prefs: p });
+      set({
+        prefs: p,
+        gatewayUrl: p.gatewayUrl,
+        hasGatewayApiKey: p.hasGatewayApiKey,
+      });
     },
   };
 });
