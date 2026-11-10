@@ -127,6 +127,9 @@ func TestValidationRules(t *testing.T) {
 		"zero diagnostics keep":     func(c *Config) { c.Diagnostics.Keep = 0 },
 		"zero ready timeout":        func(c *Config) { c.Desktop.ReadyTimeout = 0 },
 		"size smaller than minimum": func(c *Config) { c.Desktop.Width = c.Desktop.MinWidth - 1 },
+		"negative window width":     func(c *Config) { c.Desktop.Width = -1 },
+		"height below minimum":      func(c *Config) { c.Desktop.Height = 100 },
+		"height smaller than min":   func(c *Config) { c.Desktop.Height = c.Desktop.MinHeight - 1 },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

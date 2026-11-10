@@ -10,13 +10,15 @@ export const FatalScreen: React.FC<{ error: ActionError }> = ({ error }) => {
   return (
     <div className="app-layout">
       <main className="app-content">
-        <Card icon={AlertTriangle} title={t("app.fatal.title")} subtitle={t("app.fatal.hint")}>
-          <pre className="code-viewer">
-            <code>
-              [{error.code}] {error.message}
-            </code>
-          </pre>
-        </Card>
+        <div className="fatal-shell">
+          <Card icon={AlertTriangle} title={t("app.fatal.title")} subtitle={t("app.fatal.hint")}>
+            <pre className="code-viewer">
+              <code>
+                [{error.code}] {error.message}
+              </code>
+            </pre>
+          </Card>
+        </div>
       </main>
     </div>
   );

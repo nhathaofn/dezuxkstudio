@@ -17,9 +17,6 @@ func TestDefaults(t *testing.T) {
 	if d.Language != preferences.LanguageEnglish {
 		t.Fatalf("expected language en, got %s", d.Language)
 	}
-	if d.GatewayURL != "http://127.0.0.1:8080" {
-		t.Fatalf("expected default gateway URL http://127.0.0.1:8080, got %s", d.GatewayURL)
-	}
 	if err := d.Validate(); err != nil {
 		t.Fatalf("defaults must be valid: %v", err)
 	}
@@ -43,12 +40,10 @@ func TestApply(t *testing.T) {
 	p := preferences.Defaults()
 	darkTheme := preferences.ThemeDark
 	viLang := preferences.LanguageVietnamese
-	newURL := "http://ai.example.com:9000"
 
 	patch := preferences.Patch{
-		Theme:      &darkTheme,
-		Language:   &viLang,
-		GatewayURL: &newURL,
+		Theme:    &darkTheme,
+		Language: &viLang,
 	}
 
 	updated, err := p.Apply(patch)
@@ -60,9 +55,6 @@ func TestApply(t *testing.T) {
 	}
 	if updated.Language != viLang {
 		t.Fatalf("expected language %s, got %s", viLang, updated.Language)
-	}
-	if updated.GatewayURL != newURL {
-		t.Fatalf("expected gateway URL %s, got %s", newURL, updated.GatewayURL)
 	}
 }
 
@@ -82,7 +74,6 @@ func TestMigrate(t *testing.T) {
 		SchemaVersion: 0,
 		Theme:         preferences.ThemeDark,
 		Language:      preferences.LanguageVietnamese,
-		GatewayURL:    "http://custom-host:8080",
 	}
 	migrated, err := preferences.Migrate(legacyPref)
 	if err != nil {
@@ -93,23 +84,5 @@ func TestMigrate(t *testing.T) {
 	}
 	if migrated.Theme != preferences.ThemeDark || migrated.Language != preferences.LanguageVietnamese {
 		t.Fatalf("expected valid theme/lang preserved: %+v", migrated)
-	}
-	if migrated.GatewayURL != "http://custom-host:8080" {
-		t.Fatalf("expected custom gateway url preserved: %+v", migrated)
-	}
-
-	// Case 3: Schema version 1 without gateway URL falls back to default gateway URL
-	v1Pref := preferences.Preferences{
-		SchemaVersion: 1,
-		Theme:         preferences.ThemeLight,
-		Language:      preferences.LanguageEnglish,
-		GatewayURL:    "",
-	}
-	migratedV1, err := preferences.Migrate(v1Pref)
-	if err != nil {
-		t.Fatalf("v1 migrate failed: %v", err)
-	}
-	if migratedV1.GatewayURL != "http://127.0.0.1:8080" {
-		t.Fatalf("expected gateway URL default http://127.0.0.1:8080, got %s", migratedV1.GatewayURL)
 	}
 }

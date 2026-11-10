@@ -12,35 +12,37 @@ export const AppHeader: React.FC = () => {
 
   return (
     <header className="app-header">
-      <div className="header-left">
-        <span className="logo">{build?.product_name ?? document.title}</span>
-        <nav className="header-nav" aria-label={t("header.nav.ariaLabel")}>
-          {navRoutes.map(({ path, label, icon: Icon }) => (
-            <NavLink
-              key={path}
-              to={path}
-              end
-              className={({ isActive }) =>
-                `ds-button ds-button--sm ${isActive ? "ds-button--primary" : "ds-button--secondary"}`
-              }
-            >
-              <Icon size={14} /> {t(label)}
-            </NavLink>
-          ))}
-        </nav>
-      </div>
-      <div className="header-right">
-        <StatusIndicator />
-        <NavLink
-          to={settingsRoute.path}
-          className={({ isActive }) =>
-            `ds-button ds-button--sm ${isActive ? "ds-button--primary" : "ds-button--secondary"}`
-          }
-          title={t(settingsRoute.label)}
-          aria-label={t(settingsRoute.label)}
-        >
-          <Settings size={14} />
-        </NavLink>
+      <div className="app-header-inner">
+        <div className="header-left">
+          <span className="logo">{build?.product_name ?? document.title}</span>
+          <nav className="header-nav" aria-label={t("header.nav.ariaLabel")}>
+            {navRoutes.map(({ path, label, icon: Icon }) => (
+              <NavLink
+                key={path}
+                to={path}
+                end
+                className={({ isActive }) =>
+                  `ds-button ds-button--sm ${isActive ? "ds-button--primary" : "ds-button--secondary"}`
+                }
+              >
+                <Icon size={14} /> {t(label)}
+              </NavLink>
+            ))}
+          </nav>
+        </div>
+        <div className="header-right">
+          <StatusIndicator />
+          <NavLink
+            to={settingsRoute.path}
+            className={({ isActive }) =>
+              `ds-button ds-button--sm ds-button--icon ${isActive ? "ds-button--primary" : "ds-button--secondary"}`
+            }
+            title={t(settingsRoute.label)}
+            aria-label={t(settingsRoute.label)}
+          >
+            <Settings size={14} />
+          </NavLink>
+        </div>
       </div>
     </header>
   );

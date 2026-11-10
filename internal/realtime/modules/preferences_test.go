@@ -8,7 +8,6 @@ import (
 	domainprefs "app/internal/domain/preferences"
 	"app/internal/realtime"
 	"app/internal/realtime/modules"
-	"app/internal/secrets"
 	"app/internal/service/preferences"
 )
 
@@ -28,32 +27,23 @@ func (m *memRepo) Save(_ context.Context, p domainprefs.Preferences) error {
 	return nil
 }
 
-func TestPreferencesModule_SecretIsolation(t *testing.T) {
+func TestPreferencesModule_GetAndUpdate(t *testing.T) {
 	repo := &memRepo{}
-	memSec := secrets.NewMemory()
 
 	var updated []contracts.Preferences
-	prefSvc, err := preferences.New(repo, memSec, func(p domainprefs.Preferences) {
-		hasKey := false
-		if k, _ := memSec.Get(secrets.KeyGatewayAPIKey); k != "" {
-			hasKey = true
-		}
-		updated = append(updated, contracts.NewPreferences(p, hasKey))
+	prefSvc, err := preferences.New(repo, func(p domainprefs.Preferences) {
+		updated = append(updated, contracts.NewPreferences(p))
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	mod := modules.Preferences{Service: prefSvc}
-	actionSpecs := contracts.Actions()
-	actionNames := make([]string, len(actionSpecs))
-	for i, a := range actionSpecs {
-		actionNames[i] = a.Name
-	}
+	actionNames := contracts.ActionNames()
 	reg := realtime.NewRegistry(actionNames)
 	mod.Register(reg)
 
-	// 1. Initial preferences:get returns hasGatewayApiKey: false
+	// 1. Initial preferences:get returns default theme and language
 	hGet, ok := reg.Lookup(contracts.ActionPreferencesGet)
 	if !ok || hGet == nil {
 		t.Fatal("handler for ActionPreferencesGet not found")
@@ -66,17 +56,16 @@ func TestPreferencesModule_SecretIsolation(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected contracts.Preferences, got %T", res)
 	}
-	if prefsRes.HasGatewayApiKey {
-		t.Fatal("expected HasGatewayApiKey to be false initially")
+	if prefsRes.Theme != domainprefs.ThemeLight || prefsRes.Language != domainprefs.LanguageEnglish {
+		t.Fatalf("unexpected defaults: %+v", prefsRes)
 	}
 
-	// 2. preferences:update with gatewayApiKey
+	// 2. preferences:update updates theme and language and notifies listener
 	hUpdate, ok := reg.Lookup(contracts.ActionPreferencesUpdate)
 	if !ok || hUpdate == nil {
 		t.Fatal("handler for ActionPreferencesUpdate not found")
 	}
-	newKey := "sk-super-secret-key"
-	res, err = hUpdate(context.Background(), &realtime.Request{}, []byte(`{"gatewayApiKey":"`+newKey+`"}`))
+	res, err = hUpdate(context.Background(), &realtime.Request{}, []byte(`{"theme":"dark","language":"vi"}`))
 	if err != nil {
 		t.Fatalf("ActionPreferencesUpdate failed: %v", err)
 	}
@@ -84,36 +73,10 @@ func TestPreferencesModule_SecretIsolation(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected contracts.Preferences, got %T", res)
 	}
-	if !updateRes.HasGatewayApiKey {
-		t.Fatal("expected HasGatewayApiKey to be true after update")
+	if updateRes.Theme != domainprefs.ThemeDark || updateRes.Language != domainprefs.LanguageVietnamese {
+		t.Fatalf("unexpected updated preferences: %+v", updateRes)
 	}
-
-	// Verify key was saved to secrets store
-	storedKey, err := memSec.Get(secrets.KeyGatewayAPIKey)
-	if err != nil || storedKey != newKey {
-		t.Fatalf("expected secret in memSec %q, got %q, err=%v", newKey, storedKey, err)
-	}
-
-	// Verify key is NOT in domain preferences document
-	loadedDoc, _, _ := repo.Load(context.Background())
-	// domainprefs.Preferences has no GatewayAPIKey field, verified at compile time!
-	_ = loadedDoc
-
-	// 3. preferences:update with empty key removes it
-	res, err = hUpdate(context.Background(), &realtime.Request{}, []byte(`{"gatewayApiKey":""}`))
-	if err != nil {
-		t.Fatalf("ActionPreferencesUpdate with empty key failed: %v", err)
-	}
-	emptyRes, ok := res.(contracts.Preferences)
-	if !ok {
-		t.Fatalf("expected contracts.Preferences, got %T", res)
-	}
-	if emptyRes.HasGatewayApiKey {
-		t.Fatal("expected HasGatewayApiKey to be false after empty update")
-	}
-
-	_, err = memSec.Get(secrets.KeyGatewayAPIKey)
-	if err == nil {
-		t.Fatal("expected secret to be removed from memSec")
+	if len(updated) != 1 || updated[0] != updateRes {
+		t.Fatalf("expected 1 onChange notification matching %+v, got %+v", updateRes, updated)
 	}
 }

@@ -182,15 +182,11 @@ export interface Port {
 export interface Preferences {
   theme: Theme;
   language: Language;
-  gatewayUrl: string;
-  hasGatewayApiKey: boolean;
 }
 
 export interface PreferencesPatch {
   theme?: Theme;
   language?: Language;
-  gatewayUrl?: string;
-  gatewayApiKey?: string;
 }
 
 export interface ResponseMessage {

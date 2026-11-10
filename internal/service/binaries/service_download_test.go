@@ -818,4 +818,3 @@ func TestDownload_SHA256_Success(t *testing.T) {
 		t.Errorf("expected info.ID %s, got %s", domainbinaries.IDYtDlp, info.ID)
 	}
 }
-

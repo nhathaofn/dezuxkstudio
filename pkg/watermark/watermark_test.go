@@ -580,4 +580,3 @@ func TestBatchPanicSafetyAndRecovery(t *testing.T) {
 		t.Errorf("expected valid_2 to succeed, got error: %v", results[3].Err)
 	}
 }
-

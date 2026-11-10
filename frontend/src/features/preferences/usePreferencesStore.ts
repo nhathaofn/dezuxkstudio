@@ -18,7 +18,7 @@ const pick = <T extends string>(values: readonly T[], v: string | null, fallback
 
 /** Hints cached locally so the first paint already uses the user's theme/language. */
 function initialPrefs(): Preferences {
-  const { theme, language, gatewayUrl, hasGatewayApiKey } = appConfig.initialPreferences;
+  const { theme, language } = appConfig.initialPreferences;
   return {
     theme: pick<Theme>(ThemeValues, safeStorage.get(appConfig.storageKeys.themeHint), theme),
     language: pick<Language>(
@@ -26,8 +26,6 @@ function initialPrefs(): Preferences {
       safeStorage.get(appConfig.storageKeys.languageHint),
       language
     ),
-    gatewayUrl,
-    hasGatewayApiKey,
   };
 }
 
@@ -46,10 +44,6 @@ function commit(p: Preferences): void {
 
 interface PreferencesState {
   prefs: Preferences;
-  gatewayUrl: string;
-  hasGatewayApiKey: boolean;
-  setGatewayUrl: (url: string) => Promise<void>;
-  setGatewayApiKey: (apiKey: string) => Promise<void>;
   /** True while a local change has not been saved to the core yet. */
   dirty: boolean;
   error: ActionError | null;
@@ -76,8 +70,6 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => {
       commit(saved);
       set({
         prefs: saved,
-        gatewayUrl: saved.gatewayUrl,
-        hasGatewayApiKey: saved.hasGatewayApiKey,
         dirty: false,
         error: null,
       });
@@ -89,19 +81,9 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => {
 
   return {
     prefs,
-    gatewayUrl: prefs.gatewayUrl,
-    hasGatewayApiKey: prefs.hasGatewayApiKey,
     dirty: false,
     error: null,
     devMode,
-
-    setGatewayUrl: async (gatewayUrl: string) => {
-      await get().update({ gatewayUrl });
-    },
-
-    setGatewayApiKey: async (gatewayApiKey: string) => {
-      await get().update({ gatewayApiKey });
-    },
 
     toggleDevMode: () => {
       const next = !get().devMode;
@@ -116,8 +98,8 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => {
 
     load: async () => {
       if (get().dirty) {
-        const { theme, language, gatewayUrl } = get().prefs;
-        await persist({ theme, language, gatewayUrl });
+        const { theme, language } = get().prefs;
+        await persist({ theme, language });
         return;
       }
       try {
@@ -125,8 +107,6 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => {
         commit(p);
         set({
           prefs: p,
-          gatewayUrl: p.gatewayUrl,
-          hasGatewayApiKey: p.hasGatewayApiKey,
           error: null,
         });
       } catch (err) {
@@ -135,18 +115,13 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => {
     },
 
     update: async (patch) => {
-      const { gatewayApiKey, ...safePatch } = patch;
       const next: Preferences = {
         ...get().prefs,
-        ...safePatch,
-        hasGatewayApiKey:
-          gatewayApiKey !== undefined ? Boolean(gatewayApiKey) : get().prefs.hasGatewayApiKey,
+        ...patch,
       };
       commit(next);
       set({
         prefs: next,
-        gatewayUrl: next.gatewayUrl,
-        hasGatewayApiKey: next.hasGatewayApiKey,
         dirty: true,
         error: null,
       });
@@ -155,11 +130,7 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => {
 
     receive: (p) => {
       commit(p);
-      set({
-        prefs: p,
-        gatewayUrl: p.gatewayUrl,
-        hasGatewayApiKey: p.hasGatewayApiKey,
-      });
+      set({ prefs: p });
     },
   };
 });

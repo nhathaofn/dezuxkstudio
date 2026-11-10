@@ -190,8 +190,8 @@ func Default(mode Mode) *Config {
 			CheckOnStartup: true,
 		},
 		Desktop: DesktopConfig{
-			Width:        1024,
-			Height:       680,
+			Width:        0, // 0 = auto (80% of primary screen)
+			Height:       0, // 0 = auto (80% of primary screen)
 			MinWidth:     720,
 			MinHeight:    480,
 			Background:   "#0f1117",

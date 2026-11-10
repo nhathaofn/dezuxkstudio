@@ -43,18 +43,31 @@ export const BinariesView: React.FC = () => {
         {error && <ErrorText error={error} />}
 
         <div className="scrollable-pane">
-          <div className="tools-binary-list">
-            {binaries.map((bin: BinaryInfo) => (
-              <BinaryCard
-                key={bin.id}
-                binary={bin}
-                onProbe={probe}
-                onDownload={download}
-                onSetCustomPath={setCustomPath}
-                disabled={!connected}
-              />
-            ))}
-          </div>
+          {binaries.length === 0 ? (
+            <div className="empty-state">
+              <Wrench size={28} className="empty-state__icon" />
+              <div className="empty-state__title">
+                {loading
+                  ? t("app.loading")
+                  : connected
+                    ? t("tools.status.missing")
+                    : t("status.connecting")}
+              </div>
+            </div>
+          ) : (
+            <div className="tools-binary-list">
+              {binaries.map((bin: BinaryInfo) => (
+                <BinaryCard
+                  key={bin.id}
+                  binary={bin}
+                  onProbe={probe}
+                  onDownload={download}
+                  onSetCustomPath={setCustomPath}
+                  disabled={!connected}
+                />
+              ))}
+            </div>
+          )}
         </div>
       </Card>
     </div>

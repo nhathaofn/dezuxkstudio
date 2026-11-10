@@ -348,4 +348,3 @@ func (c *heartbeatContext) Err() error {
 func (c *heartbeatContext) Value(key any) any {
 	return c.parent.Value(key)
 }
-

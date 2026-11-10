@@ -26,6 +26,21 @@
   height: 36px;
 }
 
+.ds-button--icon.ds-button--sm {
+  width: 28px;
+  padding: 0;
+}
+
+.ds-button--icon.ds-button--md {
+  width: 36px;
+  padding: 0;
+}
+
+.ds-button:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
 .ds-button--primary {
   background-color: var(--btn-primary-bg);
   color: var(--btn-primary-text);

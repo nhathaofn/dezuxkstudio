@@ -32,6 +32,7 @@ export const SystemCard: React.FC = () => {
       actions={
         <Button
           size="sm"
+          iconOnly
           onClick={() => void loadInfo()}
           title={t("system.refresh")}
           aria-label={t("system.refresh")}
@@ -41,22 +42,36 @@ export const SystemCard: React.FC = () => {
       }
     >
       <div className="system-card-content">
-        {info && (
-          <dl className="kv-grid" style={{ marginBottom: 0 }}>
-            <dt>{t("system.version")}</dt>
-            <dd>
-              {info.build.version} <span className="muted-text">({info.build.commit})</span>
-            </dd>
-            <dt>{t("system.mode")}</dt>
-            <dd>{info.mode}</dd>
-            <dt>{t("system.platform")}</dt>
-            <dd>
-              {info.build.os}/{info.build.arch} · {info.build.go_version}
-            </dd>
-            <dt>{t("system.uptime")}</dt>
-            <dd>{formatUptime(info.runtime.uptime_seconds)}</dd>
-          </dl>
-        )}
+        <dl className="kv-grid">
+          <dt>{t("system.version")}</dt>
+          <dd>
+            {info ? (
+              <>
+                {info.build.version} <span className="muted-text">({info.build.commit})</span>
+              </>
+            ) : (
+              <span className="muted-text">—</span>
+            )}
+          </dd>
+          <dt>{t("system.mode")}</dt>
+          <dd>{info ? info.mode : <span className="muted-text">—</span>}</dd>
+          <dt>{t("system.platform")}</dt>
+          <dd>
+            {info ? (
+              `${info.build.os}/${info.build.arch} · ${info.build.go_version}`
+            ) : (
+              <span className="muted-text">—</span>
+            )}
+          </dd>
+          <dt>{t("system.uptime")}</dt>
+          <dd>
+            {info ? (
+              formatUptime(info.runtime.uptime_seconds)
+            ) : (
+              <span className="muted-text">—</span>
+            )}
+          </dd>
+        </dl>
         <div className="system-folder-buttons">
           {FolderTargetValues.map((target) => (
             <Button key={target} size="sm" onClick={() => void open(target)}>
@@ -64,7 +79,11 @@ export const SystemCard: React.FC = () => {
             </Button>
           ))}
         </div>
-        <ErrorText error={infoError ?? openError} />
+        {(infoError ?? openError) && (
+          <div className="system-card-error">
+            <ErrorText error={infoError ?? openError} />
+          </div>
+        )}
       </div>
     </Card>
   );

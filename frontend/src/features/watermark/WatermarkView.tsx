@@ -17,21 +17,19 @@ export const WatermarkView: React.FC = () => {
   const totalFiles = inputPaths.length > 0 ? inputPaths.length : inputPath ? 1 : 0;
 
   return (
-    <div className="dashboard-layout" style={{ maxWidth: 1280 }}>
+    <div className="dashboard-layout watermark-layout">
       {/* Header Bar */}
-      <div className="dashboard-hero" style={{ padding: "var(--space-3) var(--space-5)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
-          <h1 className="dashboard-hero-title" style={{ margin: 0, fontSize: "var(--text-xl)" }}>
-            {t("watermark.title")}
-          </h1>
-          <div className="dashboard-hero-meta" style={{ gap: "var(--space-2)" }}>
+      <div className="dashboard-hero watermark-hero">
+        <div className="watermark-hero-title-group">
+          <h1 className="dashboard-hero-title watermark-hero-title">{t("watermark.title")}</h1>
+          <div className="dashboard-hero-meta">
             <Badge>{t("watermark.badge.model")}</Badge>
             <Badge>{t("watermark.badge.multiThreaded")}</Badge>
           </div>
         </div>
 
         {/* Global Action Bar */}
-        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+        <div className="watermark-hero-actions">
           {(totalFiles > 0 || result) && (
             <Button size="sm" onClick={reset} disabled={loading}>
               <RotateCcw size={13} />
@@ -62,15 +60,8 @@ export const WatermarkView: React.FC = () => {
 
       <ErrorText error={error} />
 
-      {/* Main 2-Column Balanced Grid */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "360px 1fr",
-          gap: "var(--space-4)",
-          alignItems: "start",
-        }}
-      >
+      {/* Main 2-Column Responsive Workspace */}
+      <div className="watermark-grid">
         <WatermarkConfigCard />
         <WatermarkResultsCard />
       </div>

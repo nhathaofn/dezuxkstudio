@@ -20,7 +20,7 @@ export const UpdateCard: React.FC = () => {
       title={t("update.title")}
       actions={
         <Button onClick={() => void check()} disabled={checking}>
-          {t("update.check")}
+          {checking ? t("update.checking") : t("update.check")}
         </Button>
       }
     >
@@ -28,7 +28,7 @@ export const UpdateCard: React.FC = () => {
         <p className="muted-text">{t("update.upToDate", { version: update.current_version })}</p>
       )}
       {update?.available && (
-        <div className="row">
+        <div className="row row--wrap">
           <strong>{t("update.available", { version: update.latest_version })}</strong>
           {update.release_url && (
             <Button variant="primary" onClick={() => openExternal(update.release_url)}>

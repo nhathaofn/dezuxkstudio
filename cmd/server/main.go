@@ -22,7 +22,6 @@ import (
 	"app/internal/paths"
 	"app/internal/platform"
 	"app/internal/safego"
-	"app/internal/secrets"
 )
 
 func main() { os.Exit(run()) }
@@ -123,7 +122,6 @@ func run() (code int) {
 		AllowAnonymous: cfg.Server.AuthToken == "",
 		OpenDirectory:  platform.OpenDirectory,
 		HTTPClient:     streamingClient,
-		Secrets:        secrets.NewServerStore(),
 	})
 	if err != nil {
 		lg.Error("startup failed", "error", err)
