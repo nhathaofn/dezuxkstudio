@@ -74,6 +74,9 @@ func Run(o Options) error {
 			Assets:     o.Assets,
 			Middleware: securityHeaders(cfg),
 		},
+		DragAndDrop: &options.DragAndDrop{
+			EnableFileDrop: true,
+		},
 		OnStartup:  s.startup,
 		OnShutdown: s.shutdown,
 		SingleInstanceLock: &options.SingleInstanceLock{

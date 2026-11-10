@@ -1,14 +1,15 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Sparkles, UploadCloud, Crosshair, Cpu, FolderOpen } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
-import { getBridge } from "../../lib/bridge";
+import { getBridge, isDesktop, onFileDrop } from "../../lib/bridge";
 import { useT } from "../../lib/i18n";
 import { useWatermarkStore } from "./useWatermarkStore";
 
 export const WatermarkConfigCard: React.FC = () => {
   const t = useT();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const dropzoneRef = useRef<HTMLDivElement>(null);
   const [dragActive, setDragActive] = useState(false);
 
   const {
@@ -25,6 +26,38 @@ export const WatermarkConfigCard: React.FC = () => {
     setWorkers,
     setCorner,
   } = useWatermarkStore();
+
+  useEffect(() => {
+    const isImageFile = (p: string) => /\.(png|jpe?g|webp)$/i.test(p);
+
+    const unsub = onFileDrop((x, y, paths) => {
+      setDragActive(false);
+      const target = document.elementFromPoint(x, y);
+      const rect = dropzoneRef.current?.getBoundingClientRect();
+      const isInsideRect =
+        rect !== undefined &&
+        x >= rect.left &&
+        x <= rect.right &&
+        y >= rect.top &&
+        y <= rect.bottom;
+      const isInsideDropzone =
+        isInsideRect ||
+        (dropzoneRef.current !== null &&
+          target !== null &&
+          (dropzoneRef.current === target || dropzoneRef.current.contains(target)));
+
+      if (isInsideDropzone) {
+        const validPaths = paths.filter(isImageFile);
+        if (validPaths.length > 0) {
+          setInputPaths(validPaths);
+        }
+      }
+    }, false);
+
+    return () => {
+      unsub();
+    };
+  }, [setInputPaths]);
 
   const handleBrowse = async () => {
     const bridge = getBridge();
@@ -96,6 +129,11 @@ export const WatermarkConfigCard: React.FC = () => {
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragActive(false);
+    if (isDesktop()) {
+      // In desktop mode (Windows WebView2), DOM DragEvent loses absolute paths.
+      // Native Wails onFileDrop handles setting input paths with absolute paths.
+      return;
+    }
     const paths = extractPathsFromFileList(e.dataTransfer.files);
     if (paths.length > 0) {
       setInputPaths(paths);
@@ -116,6 +154,7 @@ export const WatermarkConfigCard: React.FC = () => {
       <div className="watermark-config-stack">
         {/* Compact Dropzone */}
         <div
+          ref={dropzoneRef}
           role="button"
           tabIndex={0}
           onDragOver={handleDragOver}

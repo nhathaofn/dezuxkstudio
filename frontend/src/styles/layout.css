@@ -667,6 +667,7 @@
 }
 
 .watermark-dropzone {
+  --wails-drop-target: drop;
   border: 1.5px dashed var(--border-default);
   border-radius: var(--radius-md);
   padding: var(--space-3);
@@ -683,6 +684,7 @@
   background-color: var(--bg-surface-elevated);
 }
 
+.watermark-dropzone.wails-drop-target-active,
 .watermark-dropzone--active {
   border-color: var(--border-focus);
   background-color: var(--accent-soft);

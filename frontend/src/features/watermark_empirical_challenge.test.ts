@@ -424,4 +424,17 @@ describe("useWatermarkStore Actions & Edge Case Robustness", () => {
     expect(state.error).toBeNull();
     expect(state.loading).toBe(false);
   });
+
+  it("handles absolute file paths in useWatermarkStore correctly without truncation", () => {
+    const windowsAbsPaths = [
+      "D:\\Photos\\Vacation 2026\\IMG_001.png",
+      "D:\\Photos\\Vacation 2026\\IMG_002.jpg",
+    ];
+
+    useWatermarkStore.getState().setInputPaths(windowsAbsPaths);
+
+    const state = useWatermarkStore.getState();
+    expect(state.inputPaths).toEqual(windowsAbsPaths);
+    expect(state.inputPath).toBe("D:\\Photos\\Vacation 2026\\IMG_001.png");
+  });
 });
