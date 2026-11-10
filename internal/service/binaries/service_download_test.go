@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"app/internal/apperr"
+	"app/internal/buildinfo"
 	domainbinaries "app/internal/domain/binaries"
 )
 
@@ -101,8 +102,9 @@ func TestDownload_ZipArchive_Success(t *testing.T) {
 	zipBytes := createDummyZip(t, "bin/ffmpeg.exe", dummyExecutableContent)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-Agent") != "DezuxkStudio-Downloader/1.0" {
-			t.Errorf("expected User-Agent DezuxkStudio-Downloader/1.0, got %q", r.Header.Get("User-Agent"))
+		expectedUA := fmt.Sprintf("%s-Downloader/%s", buildinfo.ProductName, buildinfo.Version)
+		if r.Header.Get("User-Agent") != expectedUA {
+			t.Errorf("expected User-Agent %s, got %q", expectedUA, r.Header.Get("User-Agent"))
 		}
 		w.Header().Set("Content-Type", "application/zip")
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(zipBytes)))
@@ -198,8 +200,9 @@ func TestDownload_RawBinary_Success(t *testing.T) {
 	dummyYtDlpContent := []byte("MZ-dummy-yt-dlp-standalone-binary-data")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-Agent") != "DezuxkStudio-Downloader/1.0" {
-			t.Errorf("expected User-Agent DezuxkStudio-Downloader/1.0, got %q", r.Header.Get("User-Agent"))
+		expectedUA := fmt.Sprintf("%s-Downloader/%s", buildinfo.ProductName, buildinfo.Version)
+		if r.Header.Get("User-Agent") != expectedUA {
+			t.Errorf("expected User-Agent %s, got %q", expectedUA, r.Header.Get("User-Agent"))
 		}
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(dummyYtDlpContent)))

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"app/internal/apperr"
+	"app/internal/buildinfo"
 	domainbinaries "app/internal/domain/binaries"
 	"app/internal/fsutil"
 )
@@ -50,7 +51,7 @@ func (s *Service) Download(ctx context.Context, id domainbinaries.BinaryID, onPr
 		return domainbinaries.BinaryInfo{}, fmt.Errorf("binaries: request download: %w", err)
 	}
 	// Add user-agent header
-	req.Header.Set("User-Agent", "DezuxkStudio-Downloader/1.0")
+	req.Header.Set("User-Agent", fmt.Sprintf("%s-Downloader/%s", buildinfo.ProductName, buildinfo.Version))
 
 	resp, err := s.client.Do(req)
 	if err != nil {

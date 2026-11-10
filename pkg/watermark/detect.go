@@ -33,6 +33,8 @@ func getScanRegions(w, h int, tmpl Template, corner Corner) []scanRegion {
 		case CornerTopLeft:
 			minX, maxX = tmpl.MinMargin, tmpl.MaxMargin
 			minY, maxY = tmpl.MinMargin, tmpl.MaxMargin
+		default:
+			return
 		}
 
 		minX = max(0, minX)

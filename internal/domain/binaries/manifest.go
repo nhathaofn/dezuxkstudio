@@ -18,7 +18,7 @@ const (
 const (
 	FFmpegDownloadURL  = "https://github.com/GyanD/codexffmpeg/releases/download/" + FFmpegVersion + "/ffmpeg-" + FFmpegVersion + "-essentials_build.zip"
 	FFprobeDownloadURL = "https://github.com/GyanD/codexffmpeg/releases/download/" + FFprobeVersion + "/ffmpeg-" + FFprobeVersion + "-essentials_build.zip"
-	YtDlpDownloadURL   = "https://github.com/yt-dlp/yt-dlp/releases/download/2025.01.26/yt-dlp.exe"
+	YtDlpDownloadURL   = "https://github.com/yt-dlp/yt-dlp/releases/download/" + YtDlpVersion + "/yt-dlp.exe"
 )
 
 // Verified SHA256 checksums for binary release packages.
