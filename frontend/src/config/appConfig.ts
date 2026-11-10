@@ -21,6 +21,7 @@ export const appConfig = {
   /** Used when no ConnectionInfo is available (browser thin-client mode). */
   fallback: {
     actionTimeoutMs: 30_000,
+    longActionTimeoutMs: 15 * 60 * 1000,
     pingIntervalMs: 30_000,
   },
   /** Preferences shown before the server's stored preferences arrive (first paint only). */

@@ -119,6 +119,7 @@ func TestValidationRules(t *testing.T) {
 		"db file with path":         func(c *Config) { c.Storage.DBFile = "../x.db" },
 		"http update feed":          func(c *Config) { c.Update.FeedURL = "http://example.com/feed" },
 		"zero timeout":              func(c *Config) { c.Realtime.ActionTimeout = 0 },
+		"zero long action timeout":  func(c *Config) { c.Realtime.LongActionTimeout = 0 },
 		"unknown log level":         func(c *Config) { c.Log.Level = "loud" },
 		"port out of range":         func(c *Config) { c.Server.Port = 70000 },
 		"tiny max message":          func(c *Config) { c.Realtime.MaxMessageBytes = 10 },

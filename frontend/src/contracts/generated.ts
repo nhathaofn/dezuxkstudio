@@ -86,6 +86,7 @@ export interface ConnectionInfo {
   ws_url: string;
   token: string;
   action_timeout_ms: number;
+  long_action_timeout_ms: number;
   ping_interval_ms: number;
   check_updates_on_startup: boolean;
 }

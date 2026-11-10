@@ -70,6 +70,22 @@ describe("PendingRequests", () => {
     expect(reject).toHaveBeenCalledOnce();
     expect(p.size).toBe(0);
   });
+
+  it("resets timeout timer on progress so long-running operations do not abort", () => {
+    vi.useFakeTimers();
+    const p = new PendingRequests();
+    const reject = vi.fn();
+    const onTimeout = vi.fn();
+    p.add("a", 50, { resolve: vi.fn(), reject }, onTimeout);
+    vi.advanceTimersByTime(30);
+    p.progress("a", { percent: 20, message: "downloading" });
+    vi.advanceTimersByTime(30); // 60ms total elapsed, but only 30ms since last progress
+    expect(onTimeout).not.toHaveBeenCalled();
+    expect(reject).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(25); // 55ms since last progress -> now times out
+    expect(onTimeout).toHaveBeenCalledOnce();
+    expect(reject.mock.calls[0][0].code).toBe("ERR_TIMEOUT");
+  });
 });
 
 describe("parseServerFrame", () => {
@@ -117,6 +133,7 @@ describe("resolveEndpoint", () => {
           ws_url: "ws://127.0.0.1:1/ws",
           token: "t",
           action_timeout_ms: 10,
+          long_action_timeout_ms: 50,
           ping_interval_ms: 20,
           check_updates_on_startup: true,
         }),
@@ -133,6 +150,7 @@ describe("resolveEndpoint", () => {
       token: "t",
       source: "bridge",
       actionTimeoutMs: 10,
+      longActionTimeoutMs: 50,
     });
   });
 

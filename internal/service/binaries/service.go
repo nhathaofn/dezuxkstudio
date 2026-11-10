@@ -33,7 +33,7 @@ func New(repo domainbinaries.Repository, toolsDir string, logger *slog.Logger) *
 		repo:     repo,
 		toolsDir: toolsDir,
 		logger:   logger,
-		client:   &http.Client{Timeout: 10 * time.Minute},
+		client:   &http.Client{},
 	}
 }
 

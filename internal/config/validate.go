@@ -51,14 +51,15 @@ func (c *Config) Validate() error {
 			}
 		}
 		positiveDurations(add, map[string]time.Duration{
-			"server.read_header_timeout": c.Server.ReadHeaderTimeout,
-			"server.idle_timeout":        c.Server.IdleTimeout,
-			"server.shutdown_timeout":    c.Server.ShutdownTimeout,
-			"realtime.action_timeout":    c.Realtime.ActionTimeout,
-			"realtime.queue_timeout":     c.Realtime.QueueTimeout,
-			"realtime.ping_interval":     c.Realtime.PingInterval,
-			"realtime.write_timeout":     c.Realtime.WriteTimeout,
-			"storage.busy_timeout":       c.Storage.BusyTimeout,
+			"server.read_header_timeout":   c.Server.ReadHeaderTimeout,
+			"server.idle_timeout":          c.Server.IdleTimeout,
+			"server.shutdown_timeout":      c.Server.ShutdownTimeout,
+			"realtime.action_timeout":      c.Realtime.ActionTimeout,
+			"realtime.long_action_timeout": c.Realtime.LongActionTimeout,
+			"realtime.queue_timeout":       c.Realtime.QueueTimeout,
+			"realtime.ping_interval":       c.Realtime.PingInterval,
+			"realtime.write_timeout":       c.Realtime.WriteTimeout,
+			"storage.busy_timeout":         c.Storage.BusyTimeout,
 		})
 		positiveInts(add, map[string]int{
 			"realtime.max_concurrent_actions": c.Realtime.MaxConcurrentActions,

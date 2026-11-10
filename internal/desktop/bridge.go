@@ -216,6 +216,7 @@ func connectionInfo(cfg *config.Config, wsURL, token string) contracts.Connectio
 		WSURL:                 wsURL,
 		Token:                 token,
 		ActionTimeoutMs:       cfg.Realtime.ActionTimeout.Milliseconds(),
+		LongActionTimeoutMs:   cfg.Realtime.LongActionTimeout.Milliseconds(),
 		PingIntervalMs:        cfg.Realtime.PingInterval.Milliseconds(),
 		CheckUpdatesOnStartup: cfg.Update.CheckOnStartup && cfg.Update.FeedURL != "",
 	}

@@ -9,6 +9,7 @@ export interface Endpoint {
   token: string;
   mode: AppMode | "browser";
   actionTimeoutMs: number;
+  longActionTimeoutMs: number;
   pingIntervalMs: number;
   checkUpdatesOnStartup: boolean;
   source: "bridge" | "query" | "manual" | "runtime-config" | "location";
@@ -28,6 +29,7 @@ const browserEndpoint = (url: string, source: Endpoint["source"]): Endpoint => (
   token: "",
   mode: "browser",
   actionTimeoutMs: appConfig.fallback.actionTimeoutMs,
+  longActionTimeoutMs: appConfig.fallback.longActionTimeoutMs,
   pingIntervalMs: appConfig.fallback.pingIntervalMs,
   checkUpdatesOnStartup: false,
   source,
@@ -47,6 +49,7 @@ export async function resolveEndpoint(env: EndpointEnv): Promise<Endpoint | null
         token: info.token,
         mode: info.mode,
         actionTimeoutMs: info.action_timeout_ms,
+        longActionTimeoutMs: info.long_action_timeout_ms ?? appConfig.fallback.longActionTimeoutMs,
         pingIntervalMs: info.ping_interval_ms,
         checkUpdatesOnStartup: info.check_updates_on_startup,
         source: "bridge",
