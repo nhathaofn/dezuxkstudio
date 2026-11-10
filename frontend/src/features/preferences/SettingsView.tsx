@@ -1,16 +1,6 @@
 import React from "react";
 import { useSearchParams } from "react-router-dom";
-import {
-  Code2,
-  Globe,
-  Monitor,
-  Moon,
-  Sliders,
-  Sun,
-  Terminal,
-  Wrench,
-  Zap,
-} from "lucide-react";
+import { Code2, Globe, Monitor, Moon, Sliders, Sun, Terminal, Wrench, Zap } from "lucide-react";
 import { ThemeValues, LanguageValues, type Language, type Theme } from "../../contracts/generated";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -23,7 +13,6 @@ import { ActionTester } from "../system/ActionTester";
 import { SystemCard } from "../system/SystemCard";
 import { useT } from "../../lib/i18n";
 import { usePreferencesStore } from "./usePreferencesStore";
-import { GatewaySettingsCard } from "./GatewaySettingsCard";
 
 const TABS = ["general", "tools", "logs", "devtools"] as const;
 type TabKey = (typeof TABS)[number];
@@ -58,7 +47,7 @@ export const SettingsView: React.FC = () => {
             className={`settings-nav-btn ${effectiveTab === "general" ? "active" : ""}`}
             onClick={() => setTab("general")}
           >
-            <Sliders size={15} />
+            <Sliders size={14} />
             {t("settings.tabs.general")}
           </button>
 
@@ -67,7 +56,7 @@ export const SettingsView: React.FC = () => {
             className={`settings-nav-btn ${effectiveTab === "tools" ? "active" : ""}`}
             onClick={() => setTab("tools")}
           >
-            <Wrench size={15} />
+            <Wrench size={14} />
             {t("settings.tabs.tools")}
           </button>
 
@@ -76,7 +65,7 @@ export const SettingsView: React.FC = () => {
             className={`settings-nav-btn ${effectiveTab === "logs" ? "active" : ""}`}
             onClick={() => setTab("logs")}
           >
-            <Terminal size={15} />
+            <Terminal size={14} />
             {t("settings.tabs.logs")}
           </button>
 
@@ -86,7 +75,7 @@ export const SettingsView: React.FC = () => {
               className={`settings-nav-btn ${effectiveTab === "devtools" ? "active" : ""}`}
               onClick={() => setTab("devtools")}
             >
-              <Code2 size={15} />
+              <Code2 size={14} />
               {t("settings.tabs.devtools")}
             </button>
           )}
@@ -154,13 +143,7 @@ export const SettingsView: React.FC = () => {
                   {/* Developer Mode row */}
                   <div className="settings-row">
                     <div className="settings-row-info">
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "var(--space-2)",
-                        }}
-                      >
+                      <div className="settings-row-title-row">
                         <span className="settings-row-title">{t("settings.devMode")}</span>
                         <Badge>
                           {devMode ? t("settings.devMode.on") : t("settings.devMode.off")}
@@ -180,9 +163,6 @@ export const SettingsView: React.FC = () => {
                 </div>
               </Card>
 
-              {/* Gateway Configuration Card */}
-              <GatewaySettingsCard />
-
               {/* System Runtime Card */}
               <SystemCard />
             </div>
@@ -196,8 +176,10 @@ export const SettingsView: React.FC = () => {
         {effectiveTab === "devtools" && devMode && (
           <div className="scrollable-pane">
             <div className="cards-stack">
-              <ConnectionCard />
-              <DiagnosticsCard />
+              <div className="devtools-top-grid">
+                <ConnectionCard />
+                <DiagnosticsCard />
+              </div>
               <ActionTester />
             </div>
           </div>

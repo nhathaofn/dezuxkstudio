@@ -22,21 +22,21 @@ function getStatusBadge(status: BinaryStatus, t: (k: MessageKey) => string) {
   switch (status) {
     case "available":
       return {
-        color: "var(--status-connected, #10b981)",
-        icon: <CheckCircle2 size={13} style={{ color: "var(--status-connected, #10b981)" }} />,
+        color: "var(--status-connected)",
+        icon: <CheckCircle2 size={13} style={{ color: "var(--status-connected)" }} />,
         label: t("tools.status.available"),
       };
     case "missing":
       return {
-        color: "var(--status-connecting, #f59e0b)",
-        icon: <Search size={13} style={{ color: "var(--status-connecting, #f59e0b)" }} />,
+        color: "var(--status-connecting)",
+        icon: <Search size={13} style={{ color: "var(--status-connecting)" }} />,
         label: t("tools.status.missing"),
       };
     case "invalid":
     default:
       return {
-        color: "var(--status-disconnected, #ef4444)",
-        icon: <XCircle size={13} style={{ color: "var(--status-disconnected, #ef4444)" }} />,
+        color: "var(--status-disconnected)",
+        icon: <XCircle size={13} style={{ color: "var(--status-disconnected)" }} />,
         label: t("tools.status.invalid"),
       };
   }
@@ -159,37 +159,15 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
       {/* Header: Name, Executable, Status, Source, and Primary Actions */}
       <div className="binary-card-header">
         <div className="binary-header-left">
-          <Cpu size={16} style={{ color: "var(--text-secondary)", flexShrink: 0 }} />
-          <span
-            style={{
-              fontWeight: "var(--weight-semibold)",
-              fontSize: "var(--text-sm)",
-              color: "var(--text-primary)",
-            }}
-          >
-            {binary.name}
-          </span>
+          <Cpu size={16} className="binary-header-icon" />
+          <span className="binary-name">{binary.name}</span>
           <Badge>{binary.executable}</Badge>
-          <div
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "var(--space-1)",
-              marginLeft: "var(--space-1)",
-            }}
-          >
+          <span className="binary-status-inline">
             {badge.icon}
-            <span
-              style={{
-                fontSize: "var(--text-xs)",
-                fontWeight: "var(--weight-medium)",
-                color: badge.color,
-                whiteSpace: "nowrap",
-              }}
-            >
+            <span className="binary-status-label" style={{ color: badge.color }}>
               {badge.label}
             </span>
-          </div>
+          </span>
           {binary.source !== "none" && <Badge>{t(`tools.source.${binary.source}`)}</Badge>}
         </div>
 
@@ -227,33 +205,16 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
 
       {/* Progress bar during download */}
       {isDownloading && downloadProgress && (
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-1)" }}>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              fontSize: "var(--text-xs)",
-              color: "var(--text-secondary)",
-            }}
-          >
+        <div className="binary-progress-wrap">
+          <div className="binary-progress-meta">
             <span>{downloadProgress.message || t("tools.downloading")}</span>
             <span>{downloadProgress.percent.toFixed(1)}%</span>
           </div>
-          <div
-            style={{
-              height: "6px",
-              backgroundColor: "var(--bg-surface-elevated)",
-              borderRadius: "var(--radius-full)",
-              overflow: "hidden",
-              border: "1px solid var(--border-subtle)",
-            }}
-          >
+          <div className="progress">
             <div
+              className="progress__bar"
               style={{
-                height: "100%",
                 width: `${Math.min(100, Math.max(0, downloadProgress.percent))}%`,
-                backgroundColor: "var(--primary, #3b82f6)",
-                transition: "width 200ms ease",
               }}
             />
           </div>
@@ -266,10 +227,7 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
         <span className="binary-meta-value">{binary.version || "—"}</span>
 
         <span className="binary-meta-label">{t("tools.location")}:</span>
-        <span
-          className="binary-meta-value"
-          title={binary.resolved_path || t("tools.source.none")}
-        >
+        <span className="binary-meta-value" title={binary.resolved_path || t("tools.source.none")}>
           {binary.resolved_path || t("tools.source.none")}
         </span>
       </div>

@@ -59,7 +59,7 @@ export const ActionTester: React.FC = () => {
       <div className="stack">
         <div className="form-group">
           <label className="field-label">{t("tester.action")}</label>
-          <div className="row">
+          <div className="row--responsive">
             <input
               className="input-control"
               value={action}

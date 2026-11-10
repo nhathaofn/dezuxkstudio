@@ -1,9 +1,10 @@
 .system-card {
   width: 100%;
+  min-width: 0;
   background-color: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  padding: var(--space-4) var(--space-5);
+  padding: var(--space-4);
   box-shadow: var(--shadow-sm);
 }
 
@@ -15,34 +16,39 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
   margin-bottom: var(--space-3);
-  min-height: 32px;
+  min-height: 28px;
 }
 
 .card-title {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  min-width: 0;
 }
 
 .card-title h2 {
-  font-size: var(--text-lg);
+  font-size: var(--text-base);
   font-weight: var(--weight-semibold);
   margin: 0;
   color: var(--text-primary);
-  line-height: 1.2;
+  line-height: 1.25;
 }
 
 .card-actions-row {
   display: flex;
+  align-items: center;
   gap: var(--space-2);
+  flex-wrap: wrap;
 }
 
 .subtitle {
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   color: var(--text-secondary);
   line-height: var(--line-normal);
-  margin-bottom: var(--space-6);
+  margin: 0 0 var(--space-3) 0;
 }
 
 .server-config {
@@ -65,6 +71,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  min-width: 0;
   background-color: var(--bg-surface-elevated);
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
@@ -73,13 +82,21 @@
 
 .url-display code {
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   color: var(--text-primary);
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .url-edit {
   display: flex;
   gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.url-edit .input-control {
+  flex: 1;
+  min-width: 180px;
 }
 
 /* ==========================================================================
@@ -93,17 +110,24 @@
 
 .input-control {
   width: 100%;
+  min-width: 0;
+  height: 34px;
   background-color: var(--bg-input);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   color: var(--text-primary);
-  padding: var(--space-2) var(--space-3);
+  padding: 0 var(--space-3);
   font-family: var(--font-sans);
   font-size: var(--text-sm);
   transition:
     border-color var(--transition-fast),
     box-shadow var(--transition-fast),
     background-color var(--transition-fast);
+}
+
+.input-control--mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
 }
 
 .input-control:focus {

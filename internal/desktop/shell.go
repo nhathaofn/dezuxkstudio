@@ -59,13 +59,14 @@ func Run(o Options) error {
 		return err
 	}
 	s := &shell{o: o, bridge: newBridge(cfg, o.Secrets)}
+	winW, winH, minW, minH := defaultWindowSize(cfg.Desktop)
 
 	return wails.Run(&options.App{
 		Title:            cfg.WindowTitle(),
-		Width:            cfg.Desktop.Width,
-		Height:           cfg.Desktop.Height,
-		MinWidth:         cfg.Desktop.MinWidth,
-		MinHeight:        cfg.Desktop.MinHeight,
+		Width:            winW,
+		Height:           winH,
+		MinWidth:         minW,
+		MinHeight:        minH,
 		Frameless:        cfg.Desktop.Frameless,
 		StartHidden:      cfg.Desktop.StartHidden,
 		BackgroundColour: &options.RGBA{R: bg.R, G: bg.G, B: bg.B, A: bg.A},
@@ -125,7 +126,6 @@ func (s *shell) startCore(ctx context.Context) error {
 		AuthToken:     token,
 		OpenDirectory: platform.OpenDirectory,
 		HTTPClient:    s.o.HTTPClient,
-		Secrets:       s.o.Secrets,
 	})
 	if err != nil {
 		return err

@@ -22,25 +22,15 @@ func (m Preferences) Register(r *realtime.Registry) {
 			if err != nil {
 				return contracts.Preferences{}, err
 			}
-			return contracts.NewPreferences(p, m.Service.HasGatewayAPIKey()), nil
+			return contracts.NewPreferences(p), nil
 		})
 
 	realtime.Handle(r, contracts.ActionPreferencesUpdate,
 		func(ctx context.Context, _ *realtime.Request, patch contracts.PreferencesPatch) (contracts.Preferences, error) {
-			keyChanged := false
-			if patch.GatewayAPIKey != nil {
-				if err := m.Service.SetGatewayAPIKey(*patch.GatewayAPIKey); err != nil {
-					return contracts.Preferences{}, err
-				}
-				keyChanged = true
-			}
 			p, err := m.Service.Update(ctx, patch.ToDomain())
 			if err != nil {
 				return contracts.Preferences{}, err
 			}
-			if keyChanged {
-				m.Service.NotifyChange(p)
-			}
-			return contracts.NewPreferences(p, m.Service.HasGatewayAPIKey()), nil
+			return contracts.NewPreferences(p), nil
 		})
 }

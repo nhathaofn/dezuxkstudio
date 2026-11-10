@@ -7,26 +7,24 @@ import (
 	"sync"
 
 	"app/internal/domain/preferences"
-	"app/internal/secrets"
 )
 
 // Service reads and updates user preferences. It is safe for concurrent use.
 type Service struct {
 	repo     preferences.Repository
-	secrets  secrets.Store
 	onChange func(preferences.Preferences)
 	mu       sync.Mutex
 }
 
 // New creates the service. onChange (optional) is called after every successful update.
-func New(repo preferences.Repository, sec secrets.Store, onChange func(preferences.Preferences)) (*Service, error) {
+func New(repo preferences.Repository, onChange func(preferences.Preferences)) (*Service, error) {
 	if repo == nil {
 		return nil, errors.New("preferences: repository is required")
 	}
 	if onChange == nil {
 		onChange = func(preferences.Preferences) {}
 	}
-	return &Service{repo: repo, secrets: sec, onChange: onChange}, nil
+	return &Service{repo: repo, onChange: onChange}, nil
 }
 
 // Get returns the stored preferences, migrated to the current schema, or the defaults.
@@ -81,34 +79,4 @@ func (s *Service) load(ctx context.Context) (preferences.Preferences, error) {
 		}
 	}
 	return migrated, nil
-}
-
-// HasGatewayAPIKey reports whether a non-empty gateway API key is stored.
-func (s *Service) HasGatewayAPIKey() bool {
-	if s.secrets == nil {
-		return false
-	}
-	v, err := s.secrets.Get(secrets.KeyGatewayAPIKey)
-	return err == nil && v != ""
-}
-
-// SetGatewayAPIKey saves or deletes the gateway API key in the secrets store.
-func (s *Service) SetGatewayAPIKey(key string) error {
-	if s.secrets == nil {
-		return errors.New("preferences: secret store not configured")
-	}
-	if key == "" {
-		return s.secrets.Delete(secrets.KeyGatewayAPIKey)
-	}
-	return s.secrets.Set(secrets.KeyGatewayAPIKey, key)
-}
-
-// NotifyChange invokes onChange callback with current preferences and key state.
-func (s *Service) NotifyChange(p preferences.Preferences) {
-	s.mu.Lock()
-	fn := s.onChange
-	s.mu.Unlock()
-	if fn != nil {
-		fn(p)
-	}
 }

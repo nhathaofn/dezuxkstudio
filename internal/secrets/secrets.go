@@ -21,8 +21,6 @@ type Key string
 const (
 	// KeyRemoteAuthToken is the token used by client mode to reach a remote server.
 	KeyRemoteAuthToken Key = "remote_auth_token"
-	// KeyGatewayAPIKey is the API key for authenticating with the Dezuxk Gateway server.
-	KeyGatewayAPIKey Key = "gateway_api_key"
 )
 
 // Store is the credential storage abstraction used by services.
@@ -215,9 +213,3 @@ func (e *EnvStore) Delete(key Key) error {
 func NewDesktopStore(service string) Store {
 	return NewHybridStore(NewKeyring(service), NewMemory())
 }
-
-// NewServerStore creates an environment-aware store (checking DEZUXK_GATEWAY_API_KEY) with in-memory fallback.
-func NewServerStore() Store {
-	return NewEnvStore(KeyGatewayAPIKey, "DEZUXK_GATEWAY_API_KEY", NewMemory())
-}
-

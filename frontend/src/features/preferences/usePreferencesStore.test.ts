@@ -59,23 +59,19 @@ describe("usePreferencesStore devMode", () => {
   });
 });
 
-describe("usePreferencesStore gateway settings", () => {
-  it("initializes with default gatewayUrl and hasGatewayApiKey", () => {
+describe("usePreferencesStore theme and language", () => {
+  it("initializes with default theme and language", () => {
     const state = usePreferencesStore.getState();
-    expect(state.gatewayUrl).toBe("http://127.0.0.1:8080");
-    expect(state.hasGatewayApiKey).toBe(false);
-    expect(state.prefs.gatewayUrl).toBe("http://127.0.0.1:8080");
-    expect(state.prefs.hasGatewayApiKey).toBe(false);
+    expect(state.prefs.theme).toBe("light");
+    expect(state.prefs.language).toBe("en");
   });
 
-  it("updates gatewayUrl and gatewayApiKey via setters", async () => {
-    const { setGatewayUrl, setGatewayApiKey } = usePreferencesStore.getState();
-    await setGatewayUrl("http://custom-gw:9000");
-    expect(usePreferencesStore.getState().gatewayUrl).toBe("http://custom-gw:9000");
-    expect(usePreferencesStore.getState().prefs.gatewayUrl).toBe("http://custom-gw:9000");
-
-    await setGatewayApiKey("sk-secret-key-123");
-    expect(usePreferencesStore.getState().hasGatewayApiKey).toBe(true);
-    expect(usePreferencesStore.getState().prefs.hasGatewayApiKey).toBe(true);
+  it("updates theme and language locally via update()", async () => {
+    await usePreferencesStore.getState().update({ theme: "dark", language: "vi" });
+    const state = usePreferencesStore.getState();
+    expect(state.prefs.theme).toBe("dark");
+    expect(state.prefs.language).toBe("vi");
+    expect(safeStorage.get(appConfig.storageKeys.themeHint)).toBe("dark");
+    expect(safeStorage.get(appConfig.storageKeys.languageHint)).toBe("vi");
   });
 });

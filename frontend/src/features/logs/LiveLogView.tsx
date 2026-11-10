@@ -21,14 +21,15 @@ export const LiveLogView: React.FC = () => {
         icon={Terminal}
         title={t("logs.title")}
         actions={
-          <Button onClick={clear}>
+          <Button onClick={clear} disabled={entries.length === 0}>
             <Trash2 size={13} /> {t("logs.clear")}
           </Button>
         }
       >
         {entries.length === 0 ? (
-          <div className="url-display">
-            <code>{t("logs.empty")}</code>
+          <div className="empty-state">
+            <Terminal size={28} className="empty-state__icon" />
+            <div className="empty-state__title">{t("logs.empty")}</div>
           </div>
         ) : (
           <VirtualList<LogEntry>
@@ -40,7 +41,7 @@ export const LiveLogView: React.FC = () => {
             renderItem={(e) => (
               <div className={`log-item log-item--${e.level}`}>
                 <span className="log-time">{new Date(e.timestamp).toLocaleTimeString()}</span>
-                <span>{e.message}</span>
+                <span className="log-message">{e.message}</span>
               </div>
             )}
           />

@@ -2,29 +2,48 @@
   background-color: var(--bg-input);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  padding: var(--space-2);
+  padding: var(--space-1);
   flex: 1;
   min-height: 0;
   box-sizing: border-box;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 .virtual-list-container::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
+  width: 6px;
+  height: 6px;
+}
+
+.virtual-list-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.virtual-list-container::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: var(--radius-full);
+}
+
+.virtual-list-container::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
 }
 
 .log-item {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
+  padding: 5px var(--space-2);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
+  line-height: 1.45;
   border-bottom: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
   color: var(--text-secondary);
+  transition: background-color var(--transition-fast);
+}
+
+.log-item:hover {
+  background-color: var(--bg-surface-elevated);
 }
 
 .log-item:last-child {
@@ -45,5 +64,13 @@
 
 .log-time {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.log-message {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }

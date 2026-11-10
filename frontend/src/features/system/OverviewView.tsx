@@ -1,11 +1,12 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowRight, Code2, Cpu, Radio, Settings, Terminal, Wrench } from "lucide-react";
+import { ArrowRight, Code2, Cpu, Radio, Settings, Sparkles, Terminal, Wrench } from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
 import { useConnectionStore } from "../connection/useConnectionStore";
 import { usePreferencesStore } from "../preferences/usePreferencesStore";
-import { useSystemStore } from "./useSystemStore";
+import { SystemCard } from "./SystemCard";
 import { UpdateCard } from "./UpdateCard";
+import { useSystemStore } from "./useSystemStore";
 import { useT } from "../../lib/i18n";
 
 export const OverviewView: React.FC = () => {
@@ -22,6 +23,13 @@ export const OverviewView: React.FC = () => {
     return h > 0 ? t("system.uptime.hm", { h, m }) : t("system.uptime.ms", { m, s: sec % 60 });
   };
 
+  const handleShortcutKeyDown = (e: React.KeyboardEvent, to: string) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      navigate(to);
+    }
+  };
+
   return (
     <div className="dashboard-layout">
       {/* Welcome & Status Hero */}
@@ -36,129 +44,136 @@ export const OverviewView: React.FC = () => {
               </span>
             )}
             {info?.runtime && (
-              <span style={{ display: "inline-flex", alignItems: "center", gap: "var(--space-1)" }}>
+              <span className="dashboard-hero-meta-item">
                 <Cpu size={13} />
                 {t("system.uptime")}: {formatUptime(info.runtime.uptime_seconds)}
               </span>
             )}
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+        <div className="dashboard-hero-badges">
           <Badge>
-            <Radio size={12} style={{ marginRight: "var(--space-1)" }} />
+            <Radio size={12} className="dashboard-badge-icon" />
             {t(`status.${status}`)}
           </Badge>
           {devMode && <Badge>{t("settings.devMode.badge")}</Badge>}
         </div>
       </div>
 
-      {/* Software Updates */}
-      <UpdateCard />
-
-      {/* Quick Action Shortcuts */}
-      <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-        <h2
-          style={{
-            fontSize: "var(--text-lg)",
-            fontWeight: "var(--weight-semibold)",
-            color: "var(--text-primary)",
-            margin: 0,
-          }}
-        >
-          {t("overview.quickActions")}
-        </h2>
-
-        <div className="dashboard-grid">
-          {/* Tools Shortcut */}
-          <div
-            className="dashboard-action-card"
-            role="button"
-            tabIndex={0}
-            onClick={() => navigate("/settings?tab=tools")}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") navigate("/settings?tab=tools");
-            }}
-          >
-            <div className="dashboard-action-header">
-              <span className="dashboard-action-icon">
-                <Wrench size={18} />
-              </span>
-              <ArrowRight size={16} style={{ color: "var(--text-muted)" }} />
-            </div>
-            <div>
-              <h3 className="dashboard-action-title">{t("overview.action.tools")}</h3>
-              <p className="dashboard-action-desc">{t("overview.action.toolsDesc")}</p>
-            </div>
-          </div>
-
-          {/* Logs Shortcut */}
-          <div
-            className="dashboard-action-card"
-            role="button"
-            tabIndex={0}
-            onClick={() => navigate("/settings?tab=logs")}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") navigate("/settings?tab=logs");
-            }}
-          >
-            <div className="dashboard-action-header">
-              <span className="dashboard-action-icon">
-                <Terminal size={18} />
-              </span>
-              <ArrowRight size={16} style={{ color: "var(--text-muted)" }} />
-            </div>
-            <div>
-              <h3 className="dashboard-action-title">{t("overview.action.logs")}</h3>
-              <p className="dashboard-action-desc">{t("overview.action.logsDesc")}</p>
-            </div>
-          </div>
-
-          {/* Settings Shortcut */}
-          <div
-            className="dashboard-action-card"
-            role="button"
-            tabIndex={0}
-            onClick={() => navigate("/settings?tab=general")}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") navigate("/settings?tab=general");
-            }}
-          >
-            <div className="dashboard-action-header">
-              <span className="dashboard-action-icon">
-                <Settings size={18} />
-              </span>
-              <ArrowRight size={16} style={{ color: "var(--text-muted)" }} />
-            </div>
-            <div>
-              <h3 className="dashboard-action-title">{t("overview.action.settings")}</h3>
-              <p className="dashboard-action-desc">{t("overview.action.settingsDesc")}</p>
-            </div>
-          </div>
-
-          {/* DevTools Shortcut (visible if devMode enabled) */}
-          {devMode && (
+      {/* Main Balanced Bento Layout */}
+      <div className="overview-bento">
+        {/* Left: Quick Action Shortcuts */}
+        <section className="overview-shortcuts-section" aria-label={t("overview.quickActions")}>
+          <div className="dashboard-grid">
+            {/* Watermark Remover Shortcut */}
             <div
               className="dashboard-action-card"
               role="button"
               tabIndex={0}
-              onClick={() => navigate("/settings?tab=devtools")}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") navigate("/settings?tab=devtools");
-              }}
+              onClick={() => navigate("/watermark")}
+              onKeyDown={(e) => handleShortcutKeyDown(e, "/watermark")}
             >
               <div className="dashboard-action-header">
                 <span className="dashboard-action-icon">
-                  <Code2 size={18} />
+                  <Sparkles size={18} />
                 </span>
-                <ArrowRight size={16} style={{ color: "var(--text-muted)" }} />
+                <ArrowRight size={16} className="dashboard-action-arrow" />
               </div>
               <div>
-                <h3 className="dashboard-action-title">{t("settings.tabs.devtools")}</h3>
-                <p className="dashboard-action-desc">{t("settings.devMode.desc")}</p>
+                <h3 className="dashboard-action-title">{t("overview.action.watermark")}</h3>
+                <p className="dashboard-action-desc">{t("overview.action.watermarkDesc")}</p>
               </div>
             </div>
-          )}
-        </div>
+
+            {/* Tools Shortcut */}
+            <div
+              className="dashboard-action-card"
+              role="button"
+              tabIndex={0}
+              onClick={() => navigate("/settings?tab=tools")}
+              onKeyDown={(e) => handleShortcutKeyDown(e, "/settings?tab=tools")}
+            >
+              <div className="dashboard-action-header">
+                <span className="dashboard-action-icon">
+                  <Wrench size={18} />
+                </span>
+                <ArrowRight size={16} className="dashboard-action-arrow" />
+              </div>
+              <div>
+                <h3 className="dashboard-action-title">{t("overview.action.tools")}</h3>
+                <p className="dashboard-action-desc">{t("overview.action.toolsDesc")}</p>
+              </div>
+            </div>
+
+            {/* Logs Shortcut */}
+            <div
+              className="dashboard-action-card"
+              role="button"
+              tabIndex={0}
+              onClick={() => navigate("/settings?tab=logs")}
+              onKeyDown={(e) => handleShortcutKeyDown(e, "/settings?tab=logs")}
+            >
+              <div className="dashboard-action-header">
+                <span className="dashboard-action-icon">
+                  <Terminal size={18} />
+                </span>
+                <ArrowRight size={16} className="dashboard-action-arrow" />
+              </div>
+              <div>
+                <h3 className="dashboard-action-title">{t("overview.action.logs")}</h3>
+                <p className="dashboard-action-desc">{t("overview.action.logsDesc")}</p>
+              </div>
+            </div>
+
+            {/* Settings Shortcut */}
+            <div
+              className="dashboard-action-card"
+              role="button"
+              tabIndex={0}
+              onClick={() => navigate("/settings?tab=general")}
+              onKeyDown={(e) => handleShortcutKeyDown(e, "/settings?tab=general")}
+            >
+              <div className="dashboard-action-header">
+                <span className="dashboard-action-icon">
+                  <Settings size={18} />
+                </span>
+                <ArrowRight size={16} className="dashboard-action-arrow" />
+              </div>
+              <div>
+                <h3 className="dashboard-action-title">{t("overview.action.settings")}</h3>
+                <p className="dashboard-action-desc">{t("overview.action.settingsDesc")}</p>
+              </div>
+            </div>
+
+            {/* DevTools Shortcut (spans full width cleanly when devMode enabled) */}
+            {devMode && (
+              <div
+                className="dashboard-action-card dashboard-action-card--wide"
+                role="button"
+                tabIndex={0}
+                onClick={() => navigate("/settings?tab=devtools")}
+                onKeyDown={(e) => handleShortcutKeyDown(e, "/settings?tab=devtools")}
+              >
+                <div className="dashboard-action-body">
+                  <span className="dashboard-action-icon">
+                    <Code2 size={18} />
+                  </span>
+                  <div>
+                    <h3 className="dashboard-action-title">{t("settings.tabs.devtools")}</h3>
+                    <p className="dashboard-action-desc">{t("settings.devMode.desc")}</p>
+                  </div>
+                </div>
+                <ArrowRight size={16} className="dashboard-action-arrow" />
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* Right: Runtime Telemetry & Updates */}
+        <aside className="overview-side-stack">
+          <SystemCard />
+          <UpdateCard />
+        </aside>
       </div>
     </div>
   );

@@ -111,13 +111,19 @@ func (c *Config) Validate() error {
 	// desktop window
 	if c.Mode != ModeServer {
 		d := c.Desktop
-		sizes := map[string]int{"desktop.width": d.Width, "desktop.height": d.Height, "desktop.min_width": d.MinWidth, "desktop.min_height": d.MinHeight}
-		for _, name := range slices.Sorted(maps.Keys(sizes)) {
-			if v := sizes[name]; v < minWindowSize || v > maxWindowSize {
+		mins := map[string]int{"desktop.min_width": d.MinWidth, "desktop.min_height": d.MinHeight}
+		for _, name := range slices.Sorted(maps.Keys(mins)) {
+			if v := mins[name]; v < minWindowSize || v > maxWindowSize {
 				add("%s must be %d-%d, got %d", name, minWindowSize, maxWindowSize, v)
 			}
 		}
-		if d.Width < d.MinWidth || d.Height < d.MinHeight {
+		dims := map[string]int{"desktop.width": d.Width, "desktop.height": d.Height}
+		for _, name := range slices.Sorted(maps.Keys(dims)) {
+			if v := dims[name]; v != 0 && (v < minWindowSize || v > maxWindowSize) {
+				add("%s must be %d-%d (or 0 for auto), got %d", name, minWindowSize, maxWindowSize, v)
+			}
+		}
+		if (d.Width != 0 && d.Width < d.MinWidth) || (d.Height != 0 && d.Height < d.MinHeight) {
 			add("desktop size %dx%d is smaller than minimum %dx%d", d.Width, d.Height, d.MinWidth, d.MinHeight)
 		}
 		if _, err := ParseHexColor(d.Background); err != nil {

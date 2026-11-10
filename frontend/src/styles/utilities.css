@@ -9,7 +9,8 @@
 }
 
 .card-title__icon {
-  color: var(--btn-primary-bg);
+  color: var(--accent);
+  flex-shrink: 0;
 }
 
 .system-card--loading {
@@ -28,7 +29,18 @@
 
 .row--wrap {
   flex-wrap: wrap;
-  margin-top: var(--space-3);
+}
+
+.row--responsive {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.row--responsive .input-control {
+  flex: 1;
+  min-width: 180px;
 }
 
 .stack {
@@ -42,12 +54,28 @@
   color: var(--text-muted);
 }
 
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.field-label.watermark-label-with-icon {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .kv-grid {
   display: grid;
-  grid-template-columns: max-content 1fr;
+  grid-template-columns: max-content minmax(0, 1fr);
   gap: var(--space-1) var(--space-4);
   font-size: var(--text-sm);
-  margin-bottom: var(--space-3);
+  margin: 0;
 }
 
 .kv-grid dt {
@@ -58,6 +86,7 @@
   margin: 0;
   color: var(--text-primary);
   overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
 }
 
 .select-control {
@@ -84,24 +113,84 @@
   height: 6px;
   width: 100%;
   background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-full);
   overflow: hidden;
 }
 
 .progress__bar {
   height: 100%;
-  background: var(--btn-primary-bg);
+  background: var(--accent);
   transition: width var(--transition-fast);
 }
 
 .ds-button svg {
-  vertical-align: text-bottom;
+  flex-shrink: 0;
 }
 
 .header-nav a {
   text-decoration: none;
 }
 
+.status-banner {
+  width: 100%;
+  max-width: var(--layout-max-width);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
 .status-banner:empty {
   display: none;
+}
+
+.empty-state {
+  flex: 1;
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: var(--space-6) var(--space-4);
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-md);
+  background-color: var(--bg-canvas);
+  color: var(--text-muted);
+  gap: var(--space-1);
+}
+
+.empty-state__icon {
+  color: var(--text-disabled);
+  margin-bottom: var(--space-1);
+}
+
+.empty-state__title {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+}
+
+.empty-state__desc {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  max-width: 340px;
+}
+
+@keyframes ds-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin {
+  animation: ds-spin 0.85s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-spin {
+    animation-duration: 2.5s;
+  }
 }

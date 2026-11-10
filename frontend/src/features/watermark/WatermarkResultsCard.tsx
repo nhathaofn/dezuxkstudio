@@ -29,15 +29,10 @@ export const WatermarkResultsCard: React.FC = () => {
     <Card
       icon={Layers}
       title={t("watermark.card.output")}
+      className="card--flex-fill"
       actions={
         result ? (
-          <Badge
-            style={{
-              backgroundColor: "var(--status-connected-bg)",
-              color: "var(--status-connected)",
-              fontWeight: "var(--weight-semibold)",
-            }}
-          >
+          <Badge className="watermark-badge-connected">
             {t("watermark.stat.detected")}: {detectedCount}/{totalProcessed}
           </Badge>
         ) : totalFiles > 0 ? (
@@ -47,72 +42,21 @@ export const WatermarkResultsCard: React.FC = () => {
     >
       {/* State 1: Nothing selected yet */}
       {totalFiles === 0 && !result && (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "var(--space-8) var(--space-4)",
-            color: "var(--text-muted)",
-            textAlign: "center",
-          }}
-        >
-          <FileImage size={36} style={{ marginBottom: "var(--space-2)", opacity: 0.3 }} />
-          <div style={{ fontSize: "var(--text-sm)", fontWeight: "var(--weight-medium)" }}>
-            {t("watermark.emptyQueue")}
-          </div>
-          <div style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)", marginTop: 2 }}>
-            {t("watermark.emptyQueueDesc")}
-          </div>
+        <div className="empty-state">
+          <FileImage size={34} className="empty-state__icon" />
+          <div className="empty-state__title">{t("watermark.emptyQueue")}</div>
+          <div className="empty-state__desc">{t("watermark.emptyQueueDesc")}</div>
         </div>
       )}
 
       {/* State 2: Files queued, not yet processed */}
       {totalFiles > 0 && !result && !loading && (
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-          <div
-            style={{
-              fontSize: "var(--text-xs)",
-              color: "var(--text-muted)",
-              marginBottom: "var(--space-1)",
-            }}
-          >
-            {t("watermark.readyFiles", { count: totalFiles })}
-          </div>
-          <div
-            style={{
-              maxHeight: 320,
-              overflowY: "auto",
-              display: "flex",
-              flexDirection: "column",
-              gap: "var(--space-1)",
-            }}
-          >
+        <div className="watermark-results-body">
+          <div className="muted-text">{t("watermark.readyFiles", { count: totalFiles })}</div>
+          <div className="watermark-scroll-list">
             {currentFilesList.map((p, idx) => (
-              <div
-                key={idx}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "var(--space-2) var(--space-3)",
-                  borderRadius: "var(--radius-sm)",
-                  backgroundColor: "var(--bg-canvas)",
-                  border: "1px solid var(--border-subtle)",
-                  fontSize: "var(--text-xs)",
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    color: "var(--text-primary)",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                    marginRight: "var(--space-2)",
-                  }}
-                >
+              <div key={`${p}-${idx}`} className="watermark-file-row">
+                <span className="watermark-file-path" title={p}>
                   {p}
                 </span>
                 <Badge>{t("watermark.status.ready")}</Badge>
@@ -124,125 +68,49 @@ export const WatermarkResultsCard: React.FC = () => {
 
       {/* State 3: Processing loading */}
       {loading && (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "var(--space-8) var(--space-4)",
-            gap: "var(--space-2)",
-          }}
-        >
-          <Loader2 size={28} className="animate-spin" style={{ color: "var(--text-accent)" }} />
-          <div style={{ fontSize: "var(--text-sm)", fontWeight: "var(--weight-medium)" }}>
-            {t("watermark.processing")}
-          </div>
+        <div className="empty-state">
+          <Loader2 size={28} className="animate-spin" style={{ color: "var(--accent)" }} />
+          <div className="empty-state__title">{t("watermark.processing")}</div>
         </div>
       )}
 
       {/* State 4: Results ready */}
       {result && !loading && (
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+        <div className="watermark-results-body">
           {/* Mini KPI Metric Stats */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(3, 1fr)",
-              gap: "var(--space-2)",
-            }}
-          >
-            <div
-              style={{
-                padding: "var(--space-2) var(--space-3)",
-                borderRadius: "var(--radius-sm)",
-                backgroundColor: "var(--bg-canvas)",
-                border: "1px solid var(--border-subtle)",
-              }}
-            >
-              <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
-                {t("watermark.stat.total")}
-              </div>
-              <div style={{ fontSize: "var(--text-lg)", fontWeight: "var(--weight-bold)" }}>
-                {totalProcessed}
-              </div>
+          <div className="watermark-kpi-grid">
+            <div className="watermark-kpi-card">
+              <div className="watermark-kpi-label">{t("watermark.stat.total")}</div>
+              <div className="watermark-kpi-value">{totalProcessed}</div>
             </div>
 
-            <div
-              style={{
-                padding: "var(--space-2) var(--space-3)",
-                borderRadius: "var(--radius-sm)",
-                backgroundColor: "var(--status-connected-bg)",
-                border: "1px solid var(--border-subtle)",
-              }}
-            >
-              <div style={{ fontSize: "var(--text-xs)", color: "var(--status-connected)" }}>
-                {t("watermark.stat.detected")}
-              </div>
-              <div
-                style={{
-                  fontSize: "var(--text-lg)",
-                  fontWeight: "var(--weight-bold)",
-                  color: "var(--status-connected)",
-                }}
-              >
-                {detectedCount}
-              </div>
+            <div className="watermark-kpi-card watermark-kpi-card--accent">
+              <div className="watermark-kpi-label">{t("watermark.stat.detected")}</div>
+              <div className="watermark-kpi-value">{detectedCount}</div>
             </div>
 
-            <div
-              style={{
-                padding: "var(--space-2) var(--space-3)",
-                borderRadius: "var(--radius-sm)",
-                backgroundColor: "var(--bg-canvas)",
-                border: "1px solid var(--border-subtle)",
-              }}
-            >
-              <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
-                {t("watermark.stat.clean")}
-              </div>
-              <div style={{ fontSize: "var(--text-lg)", fontWeight: "var(--weight-bold)" }}>
-                {cleanCount}
-              </div>
+            <div className="watermark-kpi-card">
+              <div className="watermark-kpi-label">{t("watermark.stat.clean")}</div>
+              <div className="watermark-kpi-value">{cleanCount}</div>
             </div>
           </div>
 
           {/* Single File Result Display */}
           {(!result.results || result.results.length <= 1) && result.image && (
-            <div
-              style={{
-                padding: "var(--space-3)",
-                borderRadius: "var(--radius-sm)",
-                backgroundColor: "var(--bg-canvas)",
-                border: "1px solid var(--border-subtle)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: "var(--space-2)",
-              }}
-            >
-              <div style={{ overflow: "hidden", minWidth: 0 }}>
-                <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
-                  {t("watermark.result.path")}
-                </div>
-                <div
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: "var(--text-xs)",
-                    color: "var(--text-primary)",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
+            <div className="watermark-file-row">
+              <div className="watermark-file-meta">
+                <div className="muted-text">{t("watermark.result.path")}</div>
+                <div className="watermark-file-path" title={result.image.localUrl}>
                   {result.image.localUrl}
                 </div>
               </div>
 
               <Button
                 size="sm"
+                iconOnly
                 onClick={() => handleCopy(result.image.localUrl)}
                 title={t("watermark.copyPath")}
+                aria-label={t("watermark.copyPath")}
               >
                 {copiedPath === result.image.localUrl ? <Check size={12} /> : <Copy size={12} />}
               </Button>
@@ -251,87 +119,37 @@ export const WatermarkResultsCard: React.FC = () => {
 
           {/* Multiple Items Results List */}
           {result.results && result.results.length > 1 && (
-            <div
-              style={{
-                maxHeight: 340,
-                overflowY: "auto",
-                display: "flex",
-                flexDirection: "column",
-                gap: "var(--space-1)",
-              }}
-            >
+            <div className="watermark-scroll-list">
               {result.results.map((item, idx) => (
-                <div
-                  key={idx}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    padding: "var(--space-2) var(--space-3)",
-                    borderRadius: "var(--radius-sm)",
-                    backgroundColor: "var(--bg-canvas)",
-                    border: "1px solid var(--border-subtle)",
-                    fontSize: "var(--text-xs)",
-                    gap: "var(--space-2)",
-                  }}
-                >
-                  <div style={{ overflow: "hidden", minWidth: 0, flex: 1 }}>
-                    <div
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        color: "var(--text-primary)",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
+                <div key={`${item.path}-${idx}`} className="watermark-file-row">
+                  <div className="watermark-file-meta">
+                    <div className="watermark-file-path" title={item.path}>
                       {item.path}
                     </div>
                     {item.out_path && item.out_path !== item.path && (
-                      <div
-                        style={{
-                          fontFamily: "var(--font-mono)",
-                          color: "var(--text-muted)",
-                          fontSize: "11px",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
+                      <div className="watermark-file-subpath" title={item.out_path}>
                         → {item.out_path}
                       </div>
                     )}
-                    {item.error && (
-                      <div style={{ color: "var(--alert-error-text)" }}>{item.error}</div>
-                    )}
+                    {item.error && <div className="watermark-file-error">{item.error}</div>}
                   </div>
 
-                  <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                  <div className="watermark-file-actions">
                     {item.error ? (
-                      <Badge
-                        style={{
-                          backgroundColor: "var(--alert-error-bg)",
-                          color: "var(--alert-error-text)",
-                        }}
-                      >
-                        <AlertCircle size={11} style={{ marginRight: 3 }} />{" "}
+                      <Badge className="watermark-badge-error">
+                        <AlertCircle size={11} className="watermark-badge-icon" />{" "}
                         {t("watermark.result.error")}
                       </Badge>
                     ) : item.detected ? (
-                      <Badge
-                        style={{
-                          backgroundColor: "var(--status-connected-bg)",
-                          color: "var(--status-connected)",
-                        }}
-                      >
-                        <CheckCircle2 size={11} style={{ marginRight: 3 }} />{" "}
+                      <Badge className="watermark-badge-connected">
+                        <CheckCircle2 size={11} className="watermark-badge-icon" />{" "}
                         {t("watermark.result.detectedScore", {
                           score: Math.round(item.score * 100),
                         })}
                       </Badge>
                     ) : (
                       <Badge>
-                        <Check size={11} style={{ marginRight: 3 }} />{" "}
+                        <Check size={11} className="watermark-badge-icon" />{" "}
                         {t("watermark.result.cleanBadge")}
                       </Badge>
                     )}
@@ -340,14 +158,9 @@ export const WatermarkResultsCard: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => handleCopy(item.out_path)}
-                        style={{
-                          border: "none",
-                          background: "none",
-                          cursor: "pointer",
-                          padding: 2,
-                          color: "var(--text-muted)",
-                        }}
+                        className="watermark-icon-btn"
                         title={t("watermark.copyPath")}
+                        aria-label={t("watermark.copyPath")}
                       >
                         {copiedPath === item.out_path ? <Check size={12} /> : <Copy size={12} />}
                       </button>

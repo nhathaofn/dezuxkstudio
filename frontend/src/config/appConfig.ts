@@ -27,8 +27,6 @@ export const appConfig = {
   initialPreferences: {
     theme: "light",
     language: "en",
-    gatewayUrl: "http://127.0.0.1:8080",
-    hasGatewayApiKey: false,
   } satisfies Preferences,
   /** Extra time the client waits beyond the server action timeout before giving up. */
   clientTimeoutGraceMs: 2_000,

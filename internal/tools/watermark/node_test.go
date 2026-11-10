@@ -514,5 +514,3 @@ func TestWatermarkRemoverNode_ContextCanceled(t *testing.T) {
 		t.Fatalf("expected context.Canceled error, got: %v", err)
 	}
 }
-
-

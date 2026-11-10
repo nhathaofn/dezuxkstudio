@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -27,13 +26,9 @@ import (
 	"time"
 
 	"app/internal/apperr"
-	"app/internal/contracts"
 	domainbinaries "app/internal/domain/binaries"
-	"app/internal/domain/preferences"
-	"app/internal/secrets"
 	binariessvc "app/internal/service/binaries"
 	"app/internal/storage/sqlite"
-	"app/internal/tools/gateway"
 	toolswatermark "app/internal/tools/watermark"
 	"app/pkg/watermark"
 
@@ -490,191 +485,6 @@ func TestAdversarial_Scenario1_MigrationsResilience(t *testing.T) {
 }
 
 // ============================================================================
-// ADVERSARIAL SCENARIO 2: SSRF Attack Scenarios & Secret Leaks
-// ============================================================================
-
-func TestAdversarial_Scenario2_SSRF_And_SecretLeaks(t *testing.T) {
-	var officialReceivedAuth string
-	var officialCallCount int
-	officialSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		officialCallCount++
-		officialReceivedAuth = r.Header.Get("Authorization")
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(gateway.GenerationResponse{
-			Created:  1730000000,
-			Provider: "flow",
-			Data: []gateway.GenerationItem{
-				{B64JSON: base64.StdEncoding.EncodeToString([]byte("OFFICIAL_GENERATED_IMAGE_DATA"))},
-			},
-		})
-	}))
-	defer officialSrv.Close()
-
-	var attackerReceivedAuth string
-	var attackerCallCount int
-	attackerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attackerCallCount++
-		attackerReceivedAuth = r.Header.Get("Authorization")
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(gateway.GenerationResponse{
-			Created:  1730000000,
-			Provider: "attacker",
-			Data: []gateway.GenerationItem{
-				{B64JSON: base64.StdEncoding.EncodeToString([]byte("EVIL_IMAGE_DATA"))},
-			},
-		})
-	}))
-	defer attackerSrv.Close()
-
-	secretToken := "super-confidential-bearer-key-12345"
-	memStore := secrets.NewMemory()
-	_ = memStore.Set(secrets.KeyGatewayAPIKey, secretToken)
-
-	mediaDir := t.TempDir()
-	node := gateway.NewNode(gateway.Options{
-		MediaDir:   mediaDir,
-		GatewayURL: officialSrv.URL,
-		HTTPClient: officialSrv.Client(),
-		Secrets:    memStore,
-	})
-
-	t.Run("SSRF_ExternalHost_BearerTokenWithheld", func(t *testing.T) {
-		attackerReceivedAuth = ""
-		attackerCallCount = 0
-
-		payload, _ := json.Marshal(map[string]string{
-			"prompt":      "generate scenic view",
-			"gateway_url": attackerSrv.URL,
-		})
-
-		_, err := node.Run(context.Background(), payload)
-		if err != nil {
-			t.Fatalf("node.Run to external server failed: %v", err)
-		}
-
-		if attackerCallCount == 0 {
-			t.Fatalf("attacker server was not called")
-		}
-		if attackerReceivedAuth != "" {
-			t.Fatalf("CRITICAL SSRF VULNERABILITY: Bearer token was leaked to external server! Received: %q", attackerReceivedAuth)
-		}
-	})
-
-	t.Run("SSRF_PortMismatch_BearerTokenWithheld", func(t *testing.T) {
-		attackerReceivedAuth = ""
-
-		payload, _ := json.Marshal(map[string]string{
-			"prompt":      "generate test image",
-			"gateway_url": attackerSrv.URL,
-		})
-
-		_, err := node.Run(context.Background(), payload)
-		if err != nil {
-			t.Fatalf("node.Run failed: %v", err)
-		}
-
-		if attackerReceivedAuth != "" {
-			t.Fatalf("CRITICAL SSRF VULNERABILITY: Bearer token attached to mismatched host/port: %q", attackerReceivedAuth)
-		}
-	})
-
-	t.Run("SSRF_NonHTTPSchemes_StrictlyRejected_ERR_VALIDATION", func(t *testing.T) {
-		forbiddenURLs := []string{
-			"ftp://bad-server.com/malicious",
-			"file:///etc/passwd",
-			"gopher://evil.local:70",
-			"javascript:alert('xss')",
-			"data:text/plain;base64,SGVsbG8=",
-		}
-
-		for _, badURL := range forbiddenURLs {
-			payload, _ := json.Marshal(map[string]string{
-				"prompt":      "test prompt",
-				"gateway_url": badURL,
-			})
-
-			_, err := node.Run(context.Background(), payload)
-			if err == nil {
-				t.Fatalf("ADVERSARIAL FAILURE: non-http scheme %q was accepted without error!", badURL)
-			}
-			if !apperr.IsCode(err, apperr.CodeValidation) {
-				t.Fatalf("ADVERSARIAL FAILURE: expected ERR_VALIDATION for scheme %q, got: %v", badURL, err)
-			}
-		}
-	})
-
-	t.Run("OfficialGateway_BearerTokenAttachedCorrectly", func(t *testing.T) {
-		officialReceivedAuth = ""
-
-		payload1, _ := json.Marshal(map[string]string{
-			"prompt":      "test prompt",
-			"gateway_url": officialSrv.URL,
-		})
-		_, err := node.Run(context.Background(), payload1)
-		if err != nil {
-			t.Fatalf("node.Run to official URL failed: %v", err)
-		}
-		if officialReceivedAuth != "Bearer "+secretToken {
-			t.Fatalf("expected Bearer %s, got: %q", secretToken, officialReceivedAuth)
-		}
-
-		officialReceivedAuth = ""
-		payload2, _ := json.Marshal(map[string]string{
-			"prompt":      "test prompt with empty gateway_url",
-			"gateway_url": "",
-		})
-		_, err = node.Run(context.Background(), payload2)
-		if err != nil {
-			t.Fatalf("node.Run with empty gateway_url failed: %v", err)
-		}
-		if officialReceivedAuth != "Bearer "+secretToken {
-			t.Fatalf("expected Bearer token attached for empty URL fallback, got: %q", officialReceivedAuth)
-		}
-	})
-
-	t.Run("Preferences_DTO_Never_Leaks_Plaintext_APIKey", func(t *testing.T) {
-		prefDomain := preferences.Preferences{
-			SchemaVersion: 1,
-			Theme:         preferences.ThemeDark,
-			Language:      preferences.LanguageEnglish,
-			GatewayURL:    "http://127.0.0.1:8080",
-		}
-
-		dto := contracts.NewPreferences(prefDomain, true)
-
-		if !dto.HasGatewayApiKey {
-			t.Fatalf("expected HasGatewayApiKey = true")
-		}
-
-		jsonBytes, err := json.Marshal(dto)
-		if err != nil {
-			t.Fatalf("marshal preferences DTO failed: %v", err)
-		}
-
-		jsonStr := string(jsonBytes)
-
-		if strings.Contains(jsonStr, secretToken) {
-			t.Fatalf("SECURITY VIOLATION: JSON representation contains secret token %q!", secretToken)
-		}
-
-		var rawMap map[string]any
-		if err := json.Unmarshal(jsonBytes, &rawMap); err != nil {
-			t.Fatalf("unmarshal json failed: %v", err)
-		}
-
-		if _, exists := rawMap["gatewayApiKey"]; exists {
-			t.Fatalf("SECURITY VIOLATION: preferences JSON contains 'gatewayApiKey' field: %v", rawMap["gatewayApiKey"])
-		}
-		if _, exists := rawMap["gateway_api_key"]; exists {
-			t.Fatalf("SECURITY VIOLATION: preferences JSON contains 'gateway_api_key' field: %v", rawMap["gateway_api_key"])
-		}
-		if hasKeyVal, exists := rawMap["hasGatewayApiKey"]; !exists || hasKeyVal != true {
-			t.Fatalf("expected hasGatewayApiKey=true in JSON, got: %v", hasKeyVal)
-		}
-	})
-}
-
-// ============================================================================
 // ADVERSARIAL SCENARIO 3: Binary Tampering & SHA256 Checksum Enforcement
 // ============================================================================
 
@@ -1054,7 +864,6 @@ func TestAdversarial_Scenario4_WatermarkMIME_And_TranscodeIntegrity(t *testing.T
 			t.Fatalf("in-place transcoded PNG missing magic bytes")
 		}
 	})
-
 
 	t.Run("Corrupted_And_NonImage_Bytes_Cleanly_Handled", func(t *testing.T) {
 		corruptedInputs := [][]byte{

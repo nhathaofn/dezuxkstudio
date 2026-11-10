@@ -68,8 +68,8 @@ func fields(c *Config) []field {
 		{key: "update.timeout", usage: "update check HTTP timeout", val: durationValue{&c.Update.Timeout}},
 		{key: "update.check_on_startup", usage: "check for updates when the UI starts", val: boolValue{&c.Update.CheckOnStartup}},
 
-		{key: "desktop.width", usage: "initial window width", val: intValue{&c.Desktop.Width}},
-		{key: "desktop.height", usage: "initial window height", val: intValue{&c.Desktop.Height}},
+		{key: "desktop.width", usage: "initial window width (0 = 80% of primary screen)", val: intValue{&c.Desktop.Width}},
+		{key: "desktop.height", usage: "initial window height (0 = 80% of primary screen)", val: intValue{&c.Desktop.Height}},
 		{key: "desktop.min_width", usage: "minimum window width", val: intValue{&c.Desktop.MinWidth}},
 		{key: "desktop.min_height", usage: "minimum window height", val: intValue{&c.Desktop.MinHeight}},
 		{key: "desktop.title", usage: "window title (default: product name and version)", val: stringValue{&c.Desktop.Title}},

@@ -102,72 +102,53 @@ export const WatermarkConfigCard: React.FC = () => {
     }
   };
 
+  const handleDropzoneKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      void handleBrowse();
+    }
+  };
+
   const totalFiles = inputPaths.length > 0 ? inputPaths.length : inputPath ? 1 : 0;
 
   return (
-    <Card icon={Sparkles} title={t("watermark.card.input")}>
-      <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+    <Card icon={Sparkles} title={t("watermark.card.input")} className="card--flex-fill">
+      <div className="watermark-config-stack">
         {/* Compact Dropzone */}
         <div
+          role="button"
+          tabIndex={0}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
           onClick={handleBrowse}
-          style={{
-            border: `1px dashed ${dragActive ? "var(--border-focus)" : "var(--border-default)"}`,
-            borderRadius: "var(--radius-md)",
-            padding: "var(--space-3)",
-            textAlign: "center",
-            cursor: "pointer",
-            backgroundColor: dragActive ? "var(--bg-surface-elevated)" : "var(--bg-canvas)",
-            transition: "all var(--transition-fast)",
-          }}
+          onKeyDown={handleDropzoneKeyDown}
+          className={`watermark-dropzone${dragActive ? " watermark-dropzone--active" : ""}`}
         >
           <input
             ref={fileInputRef}
             type="file"
             multiple
             accept="image/png,image/jpeg,image/webp"
-            style={{ display: "none" }}
+            className="watermark-dropzone__input"
             onChange={handleFileInputChange}
           />
-          <UploadCloud
-            size={22}
-            style={{
-              color: dragActive ? "var(--border-focus)" : "var(--text-muted)",
-              margin: "0 auto var(--space-1)",
-            }}
-          />
-          <div
-            style={{
-              fontSize: "var(--text-sm)",
-              fontWeight: "var(--weight-medium)",
-              color: "var(--text-primary)",
-              marginBottom: 2,
-            }}
-          >
+          <UploadCloud size={22} className="watermark-dropzone__icon" />
+          <div className="watermark-dropzone__title">
             {totalFiles > 0
               ? t("watermark.readyFiles", { count: totalFiles })
               : t("watermark.dragOrClick")}
           </div>
-          <div
-            style={{
-              fontSize: "var(--text-xs)",
-              color: "var(--text-muted)",
-            }}
-          >
+          <div className="watermark-dropzone__desc">
             {totalFiles > 0 ? t("watermark.changeFiles") : t("watermark.dragOrClickDesc")}
           </div>
         </div>
 
         {/* Config Fields */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+        <div className="watermark-config-stack">
           {/* Corner Selection */}
           <div className="form-group">
-            <label
-              className="field-label"
-              style={{ display: "flex", alignItems: "center", gap: 4 }}
-            >
+            <label className="field-label watermark-label-with-icon">
               <Crosshair size={12} />
               {t("watermark.corner")}
             </label>
@@ -175,12 +156,6 @@ export const WatermarkConfigCard: React.FC = () => {
               value={corner}
               onChange={(e) => setCorner(e.target.value)}
               className="input-control"
-              style={{
-                height: 36,
-                padding: "4px var(--select-padding-right, 36px) 4px 10px",
-                fontSize: "var(--text-sm)",
-                lineHeight: "normal",
-              }}
             >
               <option value="bottom-right">{t("watermark.corner.bottom_right")}</option>
               <option value="bottom-left">{t("watermark.corner.bottom_left")}</option>
@@ -192,10 +167,7 @@ export const WatermarkConfigCard: React.FC = () => {
 
           {/* Multi-threading Workers */}
           <div className="form-group">
-            <label
-              className="field-label"
-              style={{ display: "flex", alignItems: "center", gap: 4 }}
-            >
+            <label className="field-label watermark-label-with-icon">
               <Cpu size={12} />
               {t("watermark.workers")}
             </label>
@@ -203,12 +175,6 @@ export const WatermarkConfigCard: React.FC = () => {
               value={workers}
               onChange={(e) => setWorkers(Number(e.target.value))}
               className="input-control"
-              style={{
-                height: 36,
-                padding: "4px var(--select-padding-right, 36px) 4px 10px",
-                fontSize: "var(--text-sm)",
-                lineHeight: "normal",
-              }}
             >
               <option value={0}>{t("watermark.workers.auto")}</option>
               <option value={2}>{t("watermark.workers.count", { count: 2 })}</option>
@@ -221,12 +187,12 @@ export const WatermarkConfigCard: React.FC = () => {
           {/* Output Mode Switch */}
           <div className="form-group">
             <label className="field-label">{t("watermark.outputMode")}</label>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-2)" }}>
+            <div className="watermark-segmented">
               <Button
                 size="sm"
                 variant={!inPlace ? "primary" : "secondary"}
                 onClick={() => setInPlace(false)}
-                style={{ fontSize: "var(--text-xs)" }}
+                className="watermark-segmented__btn"
               >
                 {t("watermark.mode.copy")}
               </Button>
@@ -234,7 +200,7 @@ export const WatermarkConfigCard: React.FC = () => {
                 size="sm"
                 variant={inPlace ? "primary" : "secondary"}
                 onClick={() => setInPlace(true)}
-                style={{ fontSize: "var(--text-xs)" }}
+                className="watermark-segmented__btn"
               >
                 {t("watermark.mode.inplace")}
               </Button>
@@ -245,28 +211,21 @@ export const WatermarkConfigCard: React.FC = () => {
           {!inPlace && (
             <div className="form-group">
               <label className="field-label">{t("watermark.outputDir")}</label>
-              <div style={{ display: "flex", gap: "var(--space-2)" }}>
+              <div className="watermark-dir-row">
                 <input
                   type="text"
                   placeholder={t("watermark.outputDir.placeholder")}
                   value={outputDir}
                   onChange={(e) => setOutputDir(e.target.value)}
-                  className="input-control"
-                  style={{
-                    flex: 1,
-                    height: 36,
-                    padding: "6px 10px",
-                    fontSize: "var(--text-xs)",
-                    fontFamily: "var(--font-mono)",
-                    lineHeight: "normal",
-                  }}
+                  className="input-control input-control--mono"
                 />
                 <Button
                   type="button"
-                  size="sm"
+                  size="md"
+                  iconOnly
                   onClick={handleBrowseOutputDir}
                   title={t("watermark.browseFolder")}
-                  style={{ height: 36, padding: "0 var(--space-3)" }}
+                  aria-label={t("watermark.browseFolder")}
                 >
                   <FolderOpen size={14} />
                 </Button>
