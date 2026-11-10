@@ -18,6 +18,8 @@ export interface RequestOptions {
   /** Aborting sends a cancel frame; the server cancels the action's context. */
   signal?: AbortSignal;
   onProgress?: (p: ActionProgress) => void;
+  /** Explicit per-request timeout in milliseconds; overrides default and long action timeouts. */
+  timeoutMs?: number;
 }
 
 type Listener<T> = (data: T) => void;
@@ -32,6 +34,7 @@ export class RealtimeClient {
   private readonly statusListeners = new Set<Listener<ConnectionStatus>>();
   private readonly conn: ConnectionManager;
   private actionTimeoutMs: number = appConfig.fallback.actionTimeoutMs;
+  private longActionTimeoutMs: number = appConfig.fallback.longActionTimeoutMs;
 
   constructor() {
     this.conn = new ConnectionManager({
@@ -46,6 +49,7 @@ export class RealtimeClient {
 
   connect(endpoint: Endpoint): void {
     this.actionTimeoutMs = endpoint.actionTimeoutMs;
+    this.longActionTimeoutMs = endpoint.longActionTimeoutMs;
     this.conn.connect(endpoint.url, endpoint.token);
   }
 
@@ -89,6 +93,18 @@ export class RealtimeClient {
     return Math.round(performance.now() - start);
   }
 
+  private isLongAction(action: string): boolean {
+    switch (action) {
+      case Actions.BINARIES_DOWNLOAD:
+      case Actions.WORKFLOW_RUN_NODE:
+      case Actions.WORKFLOW_RUN_GRAPH:
+      case Actions.DIAGNOSTICS_EXPORT:
+        return true;
+      default:
+        return false;
+    }
+  }
+
   private send(action: string, payload: unknown, opts: RequestOptions): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (opts.signal?.aborted) {
@@ -102,9 +118,14 @@ export class RealtimeClient {
         this.pending.reject(id, new ActionError("ERR_CANCELLED", "request cancelled"));
       };
 
+      const baseTimeout = this.isLongAction(action)
+        ? this.longActionTimeoutMs
+        : this.actionTimeoutMs;
+      const timeoutMs = (opts.timeoutMs ?? baseTimeout) + appConfig.clientTimeoutGraceMs;
+
       this.pending.add(
         id,
-        this.actionTimeoutMs + appConfig.clientTimeoutGraceMs,
+        timeoutMs,
         {
           resolve: (v) => {
             opts.signal?.removeEventListener("abort", onAbort);

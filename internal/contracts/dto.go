@@ -156,6 +156,7 @@ type ConnectionInfo struct {
 	WSURL                 string      `json:"ws_url"`
 	Token                 string      `json:"token"`
 	ActionTimeoutMs       int64       `json:"action_timeout_ms"`
+	LongActionTimeoutMs   int64       `json:"long_action_timeout_ms"`
 	PingIntervalMs        int64       `json:"ping_interval_ms"`
 	CheckUpdatesOnStartup bool        `json:"check_updates_on_startup"`
 }

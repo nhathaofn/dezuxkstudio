@@ -7,6 +7,8 @@ interface Entry {
   reject: (err: ActionError) => void;
   onProgress?: (p: ActionProgress) => void;
   timer: ReturnType<typeof setTimeout>;
+  timeoutMs: number;
+  onTimeout: () => void;
 }
 
 /** Tracks in-flight requests: correlation, timeout, progress and bulk rejection. */
@@ -29,7 +31,7 @@ export class PendingRequests {
         handlers.reject(new ActionError("ERR_TIMEOUT", "no response from server in time"));
       }
     }, timeoutMs);
-    this.entries.set(id, { ...handlers, timer });
+    this.entries.set(id, { ...handlers, timer, timeoutMs, onTimeout });
   }
 
   /** Resolves or rejects the matching request. Returns false for unknown ids. */
@@ -47,7 +49,18 @@ export class PendingRequests {
   }
 
   progress(id: string, p: ActionProgress): void {
-    this.entries.get(id)?.onProgress?.(p);
+    const entry = this.entries.get(id);
+    if (!entry) return;
+    entry.onProgress?.(p);
+
+    // Heartbeat keep-alive: reset timeout timer when forward progress is observed
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => {
+      if (this.settle(id)) {
+        entry.onTimeout();
+        entry.reject(new ActionError("ERR_TIMEOUT", "no response from server in time"));
+      }
+    }, entry.timeoutMs);
   }
 
   reject(id: string, err: ActionError): void {

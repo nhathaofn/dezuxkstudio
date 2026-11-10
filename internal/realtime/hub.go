@@ -249,7 +249,10 @@ func (h *Hub) execute(ctx context.Context, req *Request, handler HandlerFunc, pa
 
 func (h *Hub) actionTimeout(action string) time.Duration {
 	switch action {
-	case contracts.ActionBinariesDownload, contracts.ActionWorkflowRunGraph:
+	case contracts.ActionBinariesDownload,
+		contracts.ActionWorkflowRunGraph,
+		contracts.ActionWorkflowRunNode,
+		contracts.ActionDiagnosticsExport:
 		if h.opts.LongActionTimeout > 0 {
 			return h.opts.LongActionTimeout
 		}

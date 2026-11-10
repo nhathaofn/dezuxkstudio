@@ -66,7 +66,7 @@ func TestBridgeLifecycle(t *testing.T) {
 
 	b.succeed(connectionInfo(cfg, "ws://127.0.0.1:1/ws", "tok"))
 	info, err := b.GetConnectionInfo()
-	if err != nil || info.Token != "tok" || info.ActionTimeoutMs != cfg.Realtime.ActionTimeout.Milliseconds() {
+	if err != nil || info.Token != "tok" || info.ActionTimeoutMs != cfg.Realtime.ActionTimeout.Milliseconds() || info.LongActionTimeoutMs != cfg.Realtime.LongActionTimeout.Milliseconds() {
 		t.Fatalf("info=%+v err=%v", info, err)
 	}
 	if err := b.SetRemoteToken("x"); !apperr.IsCode(err, apperr.CodeBadRequest) {

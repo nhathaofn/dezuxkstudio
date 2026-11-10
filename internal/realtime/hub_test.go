@@ -455,4 +455,10 @@ func TestTieredActionTimeout(t *testing.T) {
 	if d := h.actionTimeout(contracts.ActionWorkflowRunGraph); d != 300*time.Millisecond {
 		t.Fatalf("expected 300ms for workflow run graph, got %v", d)
 	}
+	if d := h.actionTimeout(contracts.ActionWorkflowRunNode); d != 300*time.Millisecond {
+		t.Fatalf("expected 300ms for workflow run node, got %v", d)
+	}
+	if d := h.actionTimeout(contracts.ActionDiagnosticsExport); d != 300*time.Millisecond {
+		t.Fatalf("expected 300ms for diagnostics export, got %v", d)
+	}
 }
