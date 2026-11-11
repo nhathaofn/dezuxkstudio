@@ -17,6 +17,7 @@ import (
 	domainagent "app/internal/domain/agent"
 	"app/internal/safego"
 	"app/internal/secrets"
+	"github.com/google/uuid"
 )
 
 // Transport abstracts an active ACP connection so unit tests can inject fake pipes.
@@ -117,6 +118,9 @@ type Service struct {
 	cachedVersions   map[domainagent.ProviderID]cachedProbe // CLI --version results
 	authProbes       map[domainagent.ProviderID]cachedProbe // when the CLI auth status was last checked
 	tempWorkspace    string                                 // fallback workspace when none is configured
+	sentScreen       map[string]string                      // screen-context block last sent per provider session
+	conversationID   string                                 // current chat; "" until its first message (new chat on every start)
+	turnConversation map[string]string                      // running turn message ID → conversation it belongs to
 
 	codexServer          *codexAppServer // long-lived `codex app-server` for streaming Codex turns
 	codexAppServerBroken map[string]bool // executables whose app-server failed to start (use codex exec)
@@ -174,6 +178,8 @@ func New(o Options) (*Service, error) {
 		lastErrors:         make(map[domainagent.ProviderID]error),
 		cachedVersions:     make(map[domainagent.ProviderID]cachedProbe),
 		authProbes:         make(map[domainagent.ProviderID]cachedProbe),
+		sentScreen:         make(map[string]string),
+		turnConversation:   make(map[string]string),
 
 		codexAppServerBroken: make(map[string]bool),
 		spawnCodexAppServer:  startCodexAppServer,
@@ -301,6 +307,7 @@ func (s *Service) invalidateStatus(id domainagent.ProviderID) {
 	delete(s.authProbes, id)
 	delete(s.cachedVersions, id)
 	s.mu.Unlock()
+	s.invalidateModelCatalog(id)
 }
 
 // statusInfo builds a provider's info from in-memory state without spawning any CLI process.
@@ -597,7 +604,7 @@ func (s *Service) Connect(ctx context.Context, id domainagent.ProviderID) (domai
 
 	// Open the session right away so the provider's model list (and the user's model choice) is ready
 	// before the first message; a failure here is not fatal, the first turn retries lazily.
-	eagerSessionID, sessErr := transport.NewSession(initCtx, workDir, SystemInstructions())
+	eagerSessionID, sessErr := transport.NewSession(initCtx, workDir, s.systemPrompt(initCtx, id))
 	if sessErr != nil {
 		s.log.Warn("agent: eager session/new failed", "provider", id, "err", sessErr)
 		eagerSessionID = ""
@@ -743,26 +750,43 @@ func (s *Service) SendPrompt(ctx context.Context, text string) (string, domainag
 	messageID := fmt.Sprintf("msg-%d-%d", time.Now().UnixMilli(), seq)
 	userMsgID := fmt.Sprintf("user-%d-%d", time.Now().UnixMilli(), seq)
 
+	// The first message of a chat creates its conversation; later messages join it.
+	now := time.Now().UnixMilli()
+	newConversation := s.conversationID == ""
+	if newConversation {
+		s.conversationID = uuid.NewString()
+	}
+	conversationID := s.conversationID
+	s.turnConversation[messageID] = conversationID
+
 	turnCtx, cancel := context.WithTimeout(context.Background(), s.limits.TurnTimeout)
 	s.busy = true
 	s.activeTurnID = messageID
 	s.activeTurnCancel = cancel
 	s.activeTurnBuf.Reset()
 	s.activeThoughtBuf.Reset()
-	s.activeGuard = newTurnOutputGuard(messageID, trimmed)
+	s.activeGuard = newTurnOutputGuard(messageID)
 	s.mu.Unlock()
 
+	conv := domainagent.Conversation{ID: conversationID, ProviderID: providerID, CreatedAt: now, UpdatedAt: now}
+	if newConversation {
+		conv.Title = conversationTitle(trimmed)
+	}
+	if err := s.repo.SaveConversation(ctx, conv); err != nil {
+		s.log.Warn("agent: failed to save conversation", "err", err)
+	}
 	// Read twice the replay size: error/empty rows are filtered out before the newest N are kept.
-	history, err := s.repo.ListChatMessages(ctx, s.limits.ContextMessages*2)
+	history, err := s.repo.ListConversationMessages(ctx, conversationID, s.limits.ContextMessages*2)
 	if err != nil {
 		s.log.Warn("agent: failed to read history before turn", "err", err)
 	}
 	if err := s.repo.AppendChatMessage(ctx, domainagent.ChatMessage{
-		ID:         userMsgID,
-		ProviderID: providerID,
-		Role:       "user",
-		Text:       trimmed,
-		CreatedAt:  time.Now().UnixMilli(),
+		ID:             userMsgID,
+		ProviderID:     providerID,
+		Role:           "user",
+		Text:           trimmed,
+		CreatedAt:      now,
+		ConversationID: conversationID,
 	}); err != nil {
 		s.log.Warn("agent: failed to persist user message", "err", err)
 	}
@@ -798,24 +822,102 @@ func (s *Service) CancelPrompt(_ context.Context) error {
 	return nil
 }
 
-// ClearSession clears DezuxkStudio's persisted conversation history and resets any active ACP session ID.
-func (s *Service) ClearSession(ctx context.Context) error {
+// CurrentConversationID returns the current chat ("" for a new chat without messages).
+func (s *Service) CurrentConversationID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.conversationID
+}
+
+// NewConversation starts a new chat. Earlier chats stay in history (ListConversations).
+func (s *Service) NewConversation(_ context.Context) error {
+	return s.switchConversation("")
+}
+
+// switchConversation makes id the current chat ("" = a new one) and resets the provider sessions, so the
+// next turn starts a fresh session primed with that chat's own history.
+func (s *Service) switchConversation(id string) error {
 	s.mu.Lock()
 	if s.busy {
 		s.mu.Unlock()
-		return userError(apperr.CodeConflict, msgClearWhileBusy, "cannot clear session while agent is busy", nil)
+		return userError(apperr.CodeConflict, msgClearWhileBusy, "cannot switch chats while the agent is busy", nil)
 	}
+	s.conversationID = id
 	s.activeSessionID = ""
+	s.sessionPrimed = false
 	clear(s.cliSessions)
+	clear(s.sentScreen)
 	s.mu.Unlock()
 	s.approvals.clear()
 	s.emitApprovals()
-	return s.repo.ClearChatMessages(ctx)
+	return nil
 }
 
-// History returns persisted chat messages owned by DezuxkStudio.
-func (s *Service) History(ctx context.Context) ([]domainagent.ChatMessage, error) {
-	return s.repo.ListChatMessages(ctx, s.limits.HistoryLimit)
+// History returns the current chat's messages (empty for a new chat) and its ID.
+func (s *Service) History(ctx context.Context) (string, []domainagent.ChatMessage, error) {
+	s.mu.Lock()
+	id := s.conversationID
+	s.mu.Unlock()
+	if id == "" {
+		return "", nil, nil
+	}
+	msgs, err := s.repo.ListConversationMessages(ctx, id, s.limits.HistoryLimit)
+	return id, msgs, err
+}
+
+// ListConversations returns earlier chats, most recent first.
+func (s *Service) ListConversations(ctx context.Context) ([]domainagent.Conversation, error) {
+	return s.repo.ListConversations(ctx, s.limits.HistoryLimit)
+}
+
+// OpenConversation makes an earlier chat current so the user can read and continue it.
+func (s *Service) OpenConversation(ctx context.Context, id string) (string, []domainagent.ChatMessage, error) {
+	id = strings.TrimSpace(id)
+	msgs, err := s.repo.ListConversationMessages(ctx, id, s.limits.HistoryLimit)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(msgs) == 0 {
+		return "", nil, userError(apperr.CodeNotFound, msgConversationGone, "conversation not found", nil)
+	}
+	if err := s.switchConversation(id); err != nil {
+		return "", nil, err
+	}
+	return id, msgs, nil
+}
+
+// DeleteConversation removes a chat; deleting the current one starts a new chat.
+func (s *Service) DeleteConversation(ctx context.Context, id string) error {
+	s.mu.Lock()
+	current := s.conversationID == id
+	busy := s.busy
+	s.mu.Unlock()
+	if current && busy {
+		return userError(apperr.CodeConflict, msgClearWhileBusy, "cannot delete the chat while the agent is busy", nil)
+	}
+	if err := s.repo.DeleteConversation(ctx, id); err != nil {
+		return err
+	}
+	if current {
+		return s.switchConversation("")
+	}
+	return nil
+}
+
+// conversationTitle shortens a chat's first message into its title.
+func conversationTitle(prompt string) string {
+	title := strings.Join(strings.Fields(prompt), " ")
+	if r := []rune(title); len(r) > 80 {
+		title = string(r[:80]) + "…"
+	}
+	return title
+}
+
+// conversationFor returns the chat a running turn belongs to.
+func (s *Service) conversationFor(messageID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.turnConversation[messageID]
 }
 
 // ListApprovals returns pending high-impact actions waiting for user approval in the desktop UI.
@@ -930,11 +1032,17 @@ func (s *Service) runTurn(ctx context.Context, connToken int64, client Transport
 		}
 		run := func(withHistory bool) error {
 			h := history
+			sessionKey := "" // a new session always receives the screen context
 			if !withHistory {
 				h = nil // a resumed CLI session already holds the conversation
+				sessionKey = cliSessionKey(providerID, s.cliSessionFor(providerID))
 			}
-			fullPrompt := buildHistoryContextPrompt(h, ui, prompt, s.limits)
-			return s.driver(providerID).runTurn(ctx, resolved, workDir, mcpSrv.url, mcpSrv.token, messageID, fullPrompt)
+			fullPrompt := buildHistoryContextPrompt(h, s.screenContextForTurn(sessionKey, ui), prompt, s.limits)
+			err := s.driver(providerID).runTurn(ctx, resolved, workDir, mcpSrv.url, mcpSrv.token, messageID, fullPrompt)
+			if err == nil {
+				s.rememberScreenContext(cliSessionKey(providerID, s.cliSessionFor(providerID)), ui)
+			}
+			return err
 		}
 		resumed := s.cliSessionFor(providerID) != ""
 		err = run(!resumed)
@@ -959,7 +1067,7 @@ func (s *Service) runTurn(ctx context.Context, connToken int64, client Transport
 			s.finishTurn(connToken, providerID, messageID, err)
 			return
 		}
-		newSessionID, err := client.NewSession(ctx, cwd, SystemInstructions())
+		newSessionID, err := client.NewSession(ctx, cwd, s.systemPrompt(ctx, providerID))
 		if err != nil {
 			s.finishTurn(connToken, providerID, messageID, err)
 			return
@@ -979,13 +1087,17 @@ func (s *Service) runTurn(ctx context.Context, connToken int64, client Transport
 		s.sessionPrimed = true
 	}
 	s.mu.Unlock()
+	sessionKey := "acp:" + sessionID
 	if primed {
-		turnPrompt = buildHistoryContextPrompt(nil, ui, prompt, s.limits)
+		turnPrompt = buildHistoryContextPrompt(nil, s.screenContextForTurn(sessionKey, ui), prompt, s.limits)
 	} else {
 		turnPrompt = buildHistoryContextPrompt(history, ui, prompt, s.limits)
 	}
 
 	err := client.Prompt(ctx, sessionID, turnPrompt)
+	if err == nil {
+		s.rememberScreenContext(sessionKey, ui)
+	}
 
 	s.mu.Lock()
 	assistantText := s.activeTurnBuf.String()
@@ -1010,15 +1122,21 @@ func (s *Service) persistAssistantMessage(providerID domainagent.ProviderID, mes
 			return
 		}
 	}
+	now := time.Now().UnixMilli()
+	conversationID := s.conversationFor(messageID)
 	if err := s.repo.AppendChatMessage(context.Background(), domainagent.ChatMessage{
-		ID:         messageID,
-		ProviderID: providerID,
-		Role:       "assistant",
-		Text:       text,
-		Thought:    thought,
-		CreatedAt:  time.Now().UnixMilli(),
+		ID:             messageID,
+		ProviderID:     providerID,
+		Role:           "assistant",
+		Text:           text,
+		Thought:        thought,
+		CreatedAt:      now,
+		ConversationID: conversationID,
 	}); err != nil {
 		s.log.Warn("agent: failed to persist assistant message", "err", err)
+	}
+	if conversationID != "" {
+		_ = s.repo.SaveConversation(context.Background(), domainagent.Conversation{ID: conversationID, ProviderID: providerID, CreatedAt: now, UpdatedAt: now})
 	}
 }
 
@@ -1027,6 +1145,11 @@ func (s *Service) finishTurn(connToken int64, providerID domainagent.ProviderID,
 	if g := s.guardFor(messageID); g != nil {
 		s.flushGuard(providerID, g)
 	}
+	defer func() {
+		s.mu.Lock()
+		delete(s.turnConversation, messageID)
+		s.mu.Unlock()
+	}()
 	s.mu.Lock()
 	if s.activeGuard != nil && s.activeGuard.messageID == messageID {
 		s.activeGuard = nil
@@ -1057,11 +1180,12 @@ func (s *Service) finishTurn(connToken int64, providerID domainagent.ProviderID,
 
 	if err != nil {
 		_ = s.repo.AppendChatMessage(context.Background(), domainagent.ChatMessage{
-			ID:         messageID + "-err",
-			ProviderID: providerID,
-			Role:       "error",
-			Text:       err.Error(),
-			CreatedAt:  time.Now().UnixMilli(),
+			ID:             messageID + "-err",
+			ProviderID:     providerID,
+			Role:           "error",
+			Text:           err.Error(),
+			CreatedAt:      time.Now().UnixMilli(),
+			ConversationID: s.conversationFor(messageID),
 		})
 		key, params := messageOf(err)
 		s.emitChat(domainagent.ChatEvent{
@@ -1508,6 +1632,13 @@ func (s *Service) emitApprovals() {
 	if s.onApprovalsChanged != nil {
 		s.onApprovalsChanged(s.approvals.list())
 	}
+}
+
+func cliSessionKey(id domainagent.ProviderID, sessionID string) string {
+	if sessionID == "" {
+		return ""
+	}
+	return "cli:" + string(id) + ":" + sessionID
 }
 
 func errText(err error) string {

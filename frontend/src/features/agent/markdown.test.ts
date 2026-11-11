@@ -68,3 +68,12 @@ describe("toolLabel", () => {
     expect(toolLabel(vi, "web_search")).toBe("Web search");
   });
 });
+
+describe("notice markers", () => {
+  it("renders a server notice line as a translated note", () => {
+    const blocks = parseBlocks("Done.\n[[notice:code_blocked]]");
+    expect(blocks[1]).toEqual({ type: "notice", key: "code_blocked" });
+    expect(html("[[notice:code_blocked]]")).toContain('class="md-notice"');
+    expect(html("[[notice:code_blocked]]")).not.toContain("[[notice");
+  });
+});

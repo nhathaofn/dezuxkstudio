@@ -277,7 +277,10 @@ func (c *codexAppServer) setHandler(h func(method string, params json.RawMessage
 // ensureCodexAppServer returns a running, initialized app-server for this executable/profile/MCP endpoint,
 // restarting it when any of them changed or the process died.
 func (s *Service) ensureCodexAppServer(ctx context.Context, executable, profileRoot, workspaceDir, mcpURL, mcpToken string) (*codexAppServer, error) {
-	key := strings.Join([]string{executable, profileRoot, mcpURL, mcpToken}, "|")
+	// The base instructions are fixed when the process starts, so a changed prompt (interface
+	// language, installed features) starts a new process.
+	instructions := s.systemPrompt(ctx, domainagent.ProviderCodex)
+	key := strings.Join([]string{executable, profileRoot, mcpURL, mcpToken, instructions}, "|")
 	s.mu.Lock()
 	srv := s.codexServer
 	if srv != nil && srv.key == key && srv.alive() {
@@ -295,7 +298,7 @@ func (s *Service) ensureCodexAppServer(ctx context.Context, executable, profileR
 		return nil, err
 	}
 	envMap[mcpTokenEnvVar] = mcpToken
-	baseFile, err := writeCodexBaseInstructions(profileRoot, SystemInstructions())
+	baseFile, err := writeCodexBaseInstructions(profileRoot, instructions)
 	if err != nil {
 		return nil, err
 	}
@@ -646,11 +649,12 @@ func (s *Service) runCodexAppServerTurn(ctx context.Context, srv *codexAppServer
 // codexThread returns the conversation thread for this turn: the one already loaded in the process, the
 // saved thread resumed from the isolated CODEX_HOME, or a new one.
 func (s *Service) codexThread(ctx context.Context, srv *codexAppServer, workspaceDir string) (string, error) {
+	// The profile is already the base instructions (model_instructions_file); it is not repeated as
+	// developer instructions, which would cost ~2k extra tokens on every model call.
 	settings := map[string]any{
-		"cwd":                   workspaceDir,
-		"sandbox":               "read-only",
-		"approvalPolicy":        "never",
-		"developerInstructions": SystemInstructions(),
+		"cwd":            workspaceDir,
+		"sandbox":        "read-only",
+		"approvalPolicy": "never",
 	}
 	if saved := s.cliSessionFor(domainagent.ProviderCodex); saved != "" {
 		srv.mu.Lock()

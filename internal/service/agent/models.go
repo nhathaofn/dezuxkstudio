@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"app/internal/apperr"
 	domainagent "app/internal/domain/agent"
@@ -26,16 +27,22 @@ type modelState struct {
 	mu        sync.Mutex
 	catalogs  map[domainagent.ProviderID][]domainagent.ModelOption
 	catalogOf map[domainagent.ProviderID]string // executable the catalog was read from
+	loadedAt  map[domainagent.ProviderID]time.Time
 	current   map[domainagent.ProviderID]string // model the provider reports as active (Antigravity)
 	selection map[domainagent.ProviderID]domainagent.ModelSelection
+	// codeMode records, per provider, which models only reach tools through a code runner (Codex
+	// "tool_mode": "code_mode_only"); such models are not shown tool definitions natively.
+	codeMode map[domainagent.ProviderID]map[string]bool
 }
 
 func newModelState() *modelState {
 	return &modelState{
 		catalogs:  make(map[domainagent.ProviderID][]domainagent.ModelOption),
 		catalogOf: make(map[domainagent.ProviderID]string),
+		loadedAt:  make(map[domainagent.ProviderID]time.Time),
 		current:   make(map[domainagent.ProviderID]string),
 		selection: make(map[domainagent.ProviderID]domainagent.ModelSelection),
+		codeMode:  make(map[domainagent.ProviderID]map[string]bool),
 	}
 }
 
@@ -62,8 +69,31 @@ func (s *Service) fillModelInfo(info *domainagent.ProviderInfo) {
 	}
 	info.CurrentModel = s.models.current[info.ID]
 	sel := s.models.selection[info.ID]
+	// A saved choice the current account does not offer (e.g. a Plus model after switching to a free
+	// account) is not shown as selected; the provider default is used instead.
+	if sel.Model != "" && len(info.Models) > 0 {
+		if opt, ok := findModel(info.Models, sel.Model); !ok {
+			sel = domainagent.ModelSelection{}
+		} else if sel.Effort != "" && !containsString(opt.Efforts, sel.Effort) {
+			sel.Effort = ""
+		}
+	}
 	info.SelectedModel = sel.Model
 	info.SelectedEffort = sel.Effort
+}
+
+// invalidateModelCatalog drops a provider's model list so the next probe reads it again. The list
+// depends on the signed-in account's plan, so it must not survive a sign-in, sign-out or path change.
+func (s *Service) invalidateModelCatalog(id domainagent.ProviderID) {
+	s.models.mu.Lock()
+	defer s.models.mu.Unlock()
+	if id == domainagent.ProviderAntigravity {
+		return // Antigravity's list comes from each ACP session and is replaced on connect
+	}
+	delete(s.models.catalogs, id)
+	delete(s.models.catalogOf, id)
+	delete(s.models.loadedAt, id)
+	delete(s.models.codeMode, id)
 }
 
 // effectiveSelection returns the saved selection if it is still valid for the provider's current catalog.
@@ -196,7 +226,8 @@ func (s *Service) ensureModelCatalog(ctx context.Context, id domainagent.Provide
 		return
 	}
 	s.models.mu.Lock()
-	loaded := s.models.catalogOf[id] == executable && len(s.models.catalogs[id]) > 0
+	loaded := s.models.catalogOf[id] == executable && len(s.models.catalogs[id]) > 0 &&
+		time.Since(s.models.loadedAt[id]) < s.limits.StatusCacheTTL
 	s.models.mu.Unlock()
 	if loaded {
 		return
@@ -220,6 +251,7 @@ func (s *Service) ensureModelCatalog(ctx context.Context, id domainagent.Provide
 	s.models.mu.Lock()
 	s.models.catalogs[id] = models
 	s.models.catalogOf[id] = executable
+	s.models.loadedAt[id] = time.Now()
 	s.models.mu.Unlock()
 }
 
@@ -230,6 +262,7 @@ type codexCatalogJSON struct {
 		Description              string `json:"description"`
 		Visibility               string `json:"visibility"`
 		Priority                 int    `json:"priority"`
+		ToolMode                 string `json:"tool_mode"`
 		DefaultReasoningLevel    string `json:"default_reasoning_level"`
 		SupportedReasoningLevels []struct {
 			Effort string `json:"effort"`
@@ -248,7 +281,64 @@ func (s *Service) loadCodexModels(ctx context.Context, executable string) ([]dom
 	if err != nil {
 		return nil, fmt.Errorf("codex debug models: %w", err)
 	}
-	return parseCodexCatalog(out)
+	models, err := parseCodexCatalog(out)
+	if err == nil {
+		s.models.mu.Lock()
+		s.models.codeMode[domainagent.ProviderCodex] = parseCodexCodeModeModels(out)
+		s.models.mu.Unlock()
+	}
+	return models, err
+}
+
+// parseCodexCodeModeModels returns the listed models whose tool_mode is code-mode only.
+func parseCodexCodeModeModels(raw []byte) map[string]bool {
+	var cat codexCatalogJSON
+	if json.Unmarshal(raw, &cat) != nil {
+		return nil
+	}
+	out := make(map[string]bool)
+	for _, m := range cat.Models {
+		if m.Visibility == "list" && m.Slug != "" {
+			out[m.Slug] = strings.HasPrefix(m.ToolMode, "code_mode")
+		}
+	}
+	return out
+}
+
+// toolsVisibility reports whether the model a provider will use sees tool definitions natively:
+// "native", "code" (code runner only) or "unknown" (default model with a mixed or unloaded catalog).
+func (s *Service) toolsVisibility(id domainagent.ProviderID) string {
+	sel := s.effectiveSelection(id)
+	s.models.mu.Lock()
+	defer s.models.mu.Unlock()
+	modes := s.models.codeMode[id]
+	if len(modes) == 0 {
+		return "unknown"
+	}
+	if sel.Model != "" {
+		code, known := modes[sel.Model]
+		switch {
+		case !known:
+			return "unknown"
+		case code:
+			return "code"
+		default:
+			return "native"
+		}
+	}
+	// Provider default model: decided only when every listed model agrees.
+	allCode, anyCode := true, false
+	for _, code := range modes {
+		allCode = allCode && code
+		anyCode = anyCode || code
+	}
+	switch {
+	case allCode:
+		return "code"
+	case !anyCode:
+		return "native"
+	}
+	return "unknown"
 }
 
 func parseCodexCatalog(raw []byte) ([]domainagent.ModelOption, error) {

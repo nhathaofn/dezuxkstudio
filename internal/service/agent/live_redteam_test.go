@@ -138,7 +138,7 @@ func runRedTeamForProvider(t *testing.T, id domainagent.ProviderID, apiKey strin
 
 	runTurn := func(prompt string) (reply string, ok bool) {
 		// Fresh context per prompt so one jailbreak cannot ride on the previous turn.
-		_ = svc.ClearSession(ctx)
+		_ = svc.NewConversation(ctx)
 		mu.Lock()
 		events = nil
 		mu.Unlock()

@@ -350,7 +350,7 @@
 
 .agent-msg__body {
   font-size: var(--text-sm);
-  line-height: 1.6;
+  line-height: var(--line-normal);
   color: var(--text-primary);
   overflow-wrap: anywhere;
   user-select: text;
@@ -376,7 +376,7 @@
 
 .agent-msg__error {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
@@ -423,28 +423,8 @@
   }
 }
 
-.agent-thought {
-  border-left: 2px solid var(--border-default);
-  padding-left: var(--space-2);
-  margin: var(--space-1) 0;
-}
-
-.agent-thought__toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 0;
-}
-
-.agent-thought__toggle:hover {
-  color: var(--text-primary);
-}
-
 .agent-thought__body {
-  margin: var(--space-1) 0 0;
+  margin: 0;
   max-height: 240px;
   overflow: auto;
   font-family: var(--font-mono);
@@ -570,6 +550,7 @@
 .agent-composer__footer {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--space-2);
   padding: var(--space-1) var(--space-2) var(--space-2);
 }
@@ -578,12 +559,16 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
+  flex: 1 1 auto;
   min-width: 0;
 }
 
 .agent-composer__select {
-  max-width: 150px;
-  height: 24px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 50%;
+  field-sizing: content;
+  height: 28px;
   padding: 0 var(--space-1);
   border-radius: var(--radius-sm);
   border: 1px solid transparent;
@@ -604,10 +589,12 @@
   opacity: 0.6;
 }
 
+/* Keyboard hint sits under the box so it never overlaps the model pickers in a narrow panel. */
 .agent-composer__hint {
-  margin-left: auto;
+  margin: var(--space-1) var(--space-1) 0;
   font-size: var(--text-xs);
   color: var(--text-muted);
+  text-align: right;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -818,7 +805,7 @@
   background-color: var(--bg-surface-elevated);
   border: 1px solid var(--border-subtle);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text-secondary);
 }
 
@@ -841,7 +828,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-4);
+  padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--border-subtle);
   background-color: var(--bg-surface-elevated);
   flex-shrink: 0;
@@ -850,9 +837,9 @@
 .agent-approval-card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-lg);
   border: 1px solid var(--status-connecting);
   background-color: var(--bg-surface);
 }
@@ -860,8 +847,8 @@
 .agent-approval-card__head {
   display: flex;
   align-items: center;
-  gap: var(--space-1);
-  font-size: var(--text-xs);
+  gap: var(--space-2);
+  font-size: var(--text-sm);
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
 }
@@ -877,7 +864,6 @@
   display: flex;
   justify-content: flex-end;
   gap: var(--space-2);
-  margin-top: var(--space-1);
 }
 
 .agent-folders-section {
@@ -976,19 +962,13 @@
 }
 
 .agent-model-row__select--effort {
-  flex: 0 1 150px;
+  flex: 0 1 auto;
+  min-width: 160px;
 }
 
 .agent-model-row__hint {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   color: var(--text-muted);
-}
-
-/* Collapsed tool calls reuse the reasoning toggle; the expanded list stacks one call per line. */
-.agent-tools .agent-tools-row {
-  flex-direction: column;
-  align-items: flex-start;
-  margin: var(--space-1) 0 0;
 }
 
 /* Focus rings inside the agent panel: a mouse click on a scroll area, select or button shows no ring;
@@ -1012,8 +992,162 @@
 
 .agent-drawer .ds-button:focus-visible,
 .agent-suggestion:focus-visible,
-.agent-thought__toggle:focus-visible,
 .agent-msg__action:focus-visible {
   outline: 1px solid color-mix(in srgb, var(--border-focus) 60%, transparent);
   outline-offset: 1px;
+}
+
+.md-notice {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--alert-error-border);
+  background-color: var(--alert-error-bg);
+  color: var(--alert-error-text);
+  font-size: var(--text-xs);
+}
+
+/* Chat history */
+.agent-history {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-3) var(--space-4);
+}
+
+.agent-history__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.agent-history__title {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.agent-history__note {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.agent-history__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-history-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+}
+
+.agent-history-item:hover {
+  background-color: var(--bg-surface-elevated);
+}
+
+.agent-history-item.is-current {
+  border-color: var(--border-default);
+  background-color: var(--bg-surface-elevated);
+}
+
+.agent-history-item__open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-history-item__open:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.agent-history-item__title {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-history-item__meta {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-drawer__actions .ds-button.is-active {
+  background-color: var(--bg-surface-elevated);
+  border-color: var(--border-default);
+  color: var(--text-primary);
+}
+
+/* Reply metadata: tools and reasoning as one row of compact chips, details in a soft panel. */
+.agent-msg__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-bottom: var(--space-1);
+}
+
+.agent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 24px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-subtle);
+  background-color: var(--bg-canvas);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+  transition:
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    background-color var(--transition-fast);
+}
+
+.agent-chip:hover,
+.agent-chip.is-open {
+  border-color: var(--border-default);
+  background-color: var(--bg-surface-elevated);
+  color: var(--text-primary);
+}
+
+.agent-chip--error {
+  color: var(--alert-error-text);
+}
+
+.agent-chip:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--border-focus) 60%, transparent);
+  outline-offset: 1px;
+}
+
+.agent-msg__detail {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background-color: var(--bg-canvas);
+}
+
+.agent-msg__detail .agent-tools-row {
+  flex-direction: column;
+  align-items: flex-start;
+  margin: 0;
 }

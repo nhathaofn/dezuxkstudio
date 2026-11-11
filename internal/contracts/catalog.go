@@ -33,24 +33,27 @@ const (
 	ActionWorkflowRunNode  = "workflow:run_node"
 	ActionWorkflowRunGraph = "workflow:run_graph"
 
-	ActionAgentList             = "agent:list"
-	ActionAgentProbe            = "agent:probe"
-	ActionAgentSetPath          = "agent:set_path"
-	ActionAgentLogin            = "agent:login"
-	ActionAgentLogout           = "agent:logout"
-	ActionAgentConnect          = "agent:connect"
-	ActionAgentDisconnect       = "agent:disconnect"
-	ActionAgentSendPrompt       = "agent:send_prompt"
-	ActionAgentCancelPrompt     = "agent:cancel_prompt"
-	ActionAgentClearSession     = "agent:clear_session"
-	ActionAgentHistory          = "agent:history"
-	ActionAgentListApprovals    = "agent:list_approvals"
-	ActionAgentResolveApproval  = "agent:resolve_approval"
-	ActionAgentSetUIContext     = "agent:set_ui_context"
-	ActionAgentListAllowedDirs  = "agent:list_allowed_dirs"
-	ActionAgentAddAllowedDir    = "agent:add_allowed_dir"
-	ActionAgentRemoveAllowedDir = "agent:remove_allowed_dir"
-	ActionAgentSetModel         = "agent:set_model"
+	ActionAgentList               = "agent:list"
+	ActionAgentProbe              = "agent:probe"
+	ActionAgentSetPath            = "agent:set_path"
+	ActionAgentLogin              = "agent:login"
+	ActionAgentLogout             = "agent:logout"
+	ActionAgentConnect            = "agent:connect"
+	ActionAgentDisconnect         = "agent:disconnect"
+	ActionAgentSendPrompt         = "agent:send_prompt"
+	ActionAgentCancelPrompt       = "agent:cancel_prompt"
+	ActionAgentNewConversation    = "agent:new_conversation"
+	ActionAgentListConversations  = "agent:list_conversations"
+	ActionAgentOpenConversation   = "agent:open_conversation"
+	ActionAgentDeleteConversation = "agent:delete_conversation"
+	ActionAgentHistory            = "agent:history"
+	ActionAgentListApprovals      = "agent:list_approvals"
+	ActionAgentResolveApproval    = "agent:resolve_approval"
+	ActionAgentSetUIContext       = "agent:set_ui_context"
+	ActionAgentListAllowedDirs    = "agent:list_allowed_dirs"
+	ActionAgentAddAllowedDir      = "agent:add_allowed_dir"
+	ActionAgentRemoveAllowedDir   = "agent:remove_allowed_dir"
+	ActionAgentSetModel           = "agent:set_model"
 )
 
 // Server-pushed event names (WebSocket).
@@ -127,8 +130,11 @@ func Actions() []ActionSpec {
 		{ActionAgentDisconnect, "Disconnects the active agent connection.", t[Empty](), t[AgentListResult]()},
 		{ActionAgentSendPrompt, "Submits a chat prompt to the connected agent.", t[AgentSendPromptPayload](), t[AgentPromptResult]()},
 		{ActionAgentCancelPrompt, "Cancels the currently active agent prompt turn.", t[Empty](), t[Empty]()},
-		{ActionAgentClearSession, "Clears DezuxkStudio agent chat history and resets the active session.", t[Empty](), t[Empty]()},
-		{ActionAgentHistory, "Returns persisted DezuxkStudio agent chat messages.", t[Empty](), t[AgentHistoryResult]()},
+		{ActionAgentNewConversation, "Starts a new agent chat; earlier chats stay in history.", t[Empty](), t[Empty]()},
+		{ActionAgentHistory, "Returns the current agent chat (empty for a new chat).", t[Empty](), t[AgentHistoryResult]()},
+		{ActionAgentListConversations, "Lists earlier agent chats, most recent first.", t[Empty](), t[AgentConversationListResult]()},
+		{ActionAgentOpenConversation, "Makes an earlier agent chat current so it can be read and continued.", t[AgentConversationIDPayload](), t[AgentHistoryResult]()},
+		{ActionAgentDeleteConversation, "Deletes an agent chat and its messages.", t[AgentConversationIDPayload](), t[Empty]()},
 		{ActionAgentListApprovals, "Lists pending high-impact agent actions waiting for desktop UI approval.", t[Empty](), t[AgentApprovalListResult]()},
 		{ActionAgentResolveApproval, "Approves or rejects a pending agent action from the desktop UI.", t[AgentResolveApprovalPayload](), t[Empty]()},
 		{ActionAgentSetUIContext, "Updates the active UI screen context visible to the agent.", t[AgentUIContextPayload](), t[Empty]()},

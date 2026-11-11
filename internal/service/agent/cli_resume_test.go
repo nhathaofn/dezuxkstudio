@@ -21,7 +21,8 @@ func TestCodexResumesSessionAndFallsBackWhenMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := newFakeRepo()
-	_ = repo.AppendChatMessage(context.Background(), domainagent.ChatMessage{ID: "old", Role: "user", Text: "câu hỏi cũ", CreatedAt: 1})
+	_ = repo.SaveConversation(context.Background(), domainagent.Conversation{ID: "c1", CreatedAt: 1, UpdatedAt: 1})
+	_ = repo.AppendChatMessage(context.Background(), domainagent.ChatMessage{ID: "old", Role: "user", Text: "câu hỏi cũ", CreatedAt: 1, ConversationID: "c1"})
 
 	var mu sync.Mutex
 	var prompts []string
@@ -57,6 +58,10 @@ func TestCodexResumesSessionAndFallsBackWhenMissing(t *testing.T) {
 	}
 	defer svc.Close()
 	ctx := context.Background()
+	// Continue the earlier chat: its history must be replayed into the first turn of the new session.
+	if _, _, err := svc.OpenConversation(ctx, "c1"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := svc.SetCustomPath(ctx, domainagent.ProviderCodex, exe); err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +86,7 @@ func TestCodexResumesSessionAndFallsBackWhenMissing(t *testing.T) {
 	if !strings.Contains(prompts[0], "câu hỏi cũ") {
 		t.Fatalf("first turn must carry history, got %q", prompts[0])
 	}
-	if strings.Contains(prompts[1], "câu hỏi cũ") || strings.Contains(prompts[1], "Recent Conversation History") {
+	if strings.Contains(prompts[1], "câu hỏi cũ") || strings.Contains(prompts[1], "[Recent conversation]") {
 		t.Fatalf("resumed turn must not resend history, got %q", prompts[1])
 	}
 	failResume = true
@@ -90,16 +95,16 @@ func TestCodexResumesSessionAndFallsBackWhenMissing(t *testing.T) {
 	send("lượt 3")
 	mu.Lock()
 	defer mu.Unlock()
-	if len(prompts) != 4 || !strings.Contains(prompts[3], "Recent Conversation History") {
+	if len(prompts) != 4 || !strings.Contains(prompts[3], "[Recent conversation]") {
 		t.Fatalf("expected a fresh retry with history after a missing session, got %d prompts", len(prompts))
 	}
-	if prompts[2] == prompts[3] || strings.Contains(prompts[2], "Recent Conversation History") {
+	if prompts[2] == prompts[3] || strings.Contains(prompts[2], "[Recent conversation]") {
 		t.Fatal("expected the failed resume attempt without history, then a fresh attempt with history")
 	}
 
-	_ = svc.ClearSession(ctx)
+	_ = svc.NewConversation(ctx)
 	svc.setCLISession(domainagent.ProviderClaude, "c1")
-	_ = svc.ClearSession(ctx)
+	_ = svc.NewConversation(ctx)
 	if svc.cliSessionFor(domainagent.ProviderClaude) != "" {
 		t.Fatal("clearing the chat must drop CLI sessions")
 	}

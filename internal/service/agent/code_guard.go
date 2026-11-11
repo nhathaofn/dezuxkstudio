@@ -481,8 +481,8 @@ type turnOutputGuard struct {
 	finalized  bool
 }
 
-func newTurnOutputGuard(messageID, userPrompt string) *turnOutputGuard {
-	return &turnOutputGuard{messageID: messageID, notice: codeBlockedNotice(userPrompt)}
+func newTurnOutputGuard(messageID string) *turnOutputGuard {
+	return &turnOutputGuard{messageID: messageID, notice: noticeMarker(noticeCodeBlocked)}
 }
 
 // filterText returns the safe portion of an answer chunk (with a one-time refusal notice once blocked).
@@ -554,22 +554,4 @@ func (g *turnOutputGuard) sanitizedThought() string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.thoughtOut.String()
-}
-
-func codeBlockedNotice(userPrompt string) string {
-	if isLikelyVietnamese(userPrompt) {
-		return "⚠️ Nội dung bị chặn: DezuxkStudio Assistant không viết, sửa hay xuất mã nguồn/lệnh terminal. Mình chỉ hỗ trợ các tính năng của DezuxkStudio và nội dung đi kèm (kịch bản, dịch, prompt, phụ đề, quản lý file media)."
-	}
-	return "⚠️ Content blocked: DezuxkStudio Assistant does not write, edit, or output source code or terminal commands. It only helps with DezuxkStudio features and supporting content (scripts, translation, prompts, subtitles, media file management)."
-}
-
-func isLikelyVietnamese(s string) bool {
-	const viMarks = "ăâđêôơưáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ"
-	lower := strings.ToLower(s)
-	for _, r := range lower {
-		if strings.ContainsRune(viMarks, r) {
-			return true
-		}
-	}
-	return false
 }

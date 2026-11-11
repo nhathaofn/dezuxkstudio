@@ -257,6 +257,18 @@ type ChatMessage struct {
 	Thought    string     `json:"thought,omitempty"`
 	Tool       string     `json:"tool,omitempty"`
 	CreatedAt  int64      `json:"created_at"`
+	// ConversationID groups messages into one chat; empty only for rows written before conversations.
+	ConversationID string `json:"conversation_id,omitempty"`
+}
+
+// Conversation is one chat thread in DezuxkStudio's history.
+type Conversation struct {
+	ID           string     `json:"id"`
+	Title        string     `json:"title"` // first user message, shortened
+	ProviderID   ProviderID `json:"provider_id"`
+	CreatedAt    int64      `json:"created_at"`
+	UpdatedAt    int64      `json:"updated_at"`
+	MessageCount int        `json:"message_count"`
 }
 
 // ApprovalRequest represents a pending high-impact action proposed by the agent for desktop UI approval.
@@ -285,6 +297,12 @@ type Repository interface {
 	AppendChatMessage(ctx context.Context, msg ChatMessage) error
 	ListChatMessages(ctx context.Context, limit int) ([]ChatMessage, error)
 	ClearChatMessages(ctx context.Context) error
+	// SaveConversation creates the conversation or updates its provider and updated_at; a non-empty
+	// title is only set when the conversation has none yet.
+	SaveConversation(ctx context.Context, c Conversation) error
+	ListConversations(ctx context.Context, limit int) ([]Conversation, error)
+	ListConversationMessages(ctx context.Context, conversationID string, limit int) ([]ChatMessage, error)
+	DeleteConversation(ctx context.Context, conversationID string) error
 	ListAllowedDirs(ctx context.Context) ([]string, error)
 	AddAllowedDir(ctx context.Context, dir string) error
 	RemoveAllowedDir(ctx context.Context, dir string) error

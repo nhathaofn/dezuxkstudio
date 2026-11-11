@@ -592,8 +592,8 @@ func extractTextContent(raw json.RawMessage) string {
 // dezuxkMCPToolNames is the exact set of tools served by DezuxkStudio's MCP server.
 var dezuxkMCPToolNames = map[string]bool{
 	"studio_list_capabilities": true, "workflow_list_specs": true, "workflow_run_node": true, "workflow_run_graph": true,
-	"binaries_list": true, "binaries_probe": true, "binaries_download": true, "preferences_get": true,
-	"preferences_update": true, "system_info": true, "diagnostics_export": true, "workspace_list_files": true,
+	"binaries_list": true, "binaries_download": true,
+	"preferences_update": true, "diagnostics_export": true, "workspace_list_files": true,
 	"workspace_read_file": true, "workspace_write_file": true, "workspace_move_file": true, "workspace_delete_file": true,
 }
 
