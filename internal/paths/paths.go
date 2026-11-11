@@ -77,6 +77,12 @@ func (p Paths) Ensure() error {
 // Media returns the directory where generated and processed images and videos are stored.
 func (p Paths) Media() string { return filepath.Join(p.Data, "media") }
 
+// AgentWorkspace is the sandbox working directory handed to external AI agents.
+func (p Paths) AgentWorkspace() string { return filepath.Join(p.Data, "agent-workspace") }
+
+// AgentProfiles holds the isolated per-provider CLI profiles (credentials, sessions) of AI agents.
+func (p Paths) AgentProfiles() string { return filepath.Join(p.Data, "agent-profiles") }
+
 // Backups is where database snapshots are kept before schema migrations.
 func (p Paths) Backups() string { return filepath.Join(p.Data, "backups") }
 

@@ -31,9 +31,148 @@ export type BinaryStatus = (typeof BinaryStatusValues)[number];
 export const BinarySourceValues = ["tools", "custom", "system", "none"] as const;
 export type BinarySource = (typeof BinarySourceValues)[number];
 
+export const AgentProviderIDValues = ["antigravity", "codex", "claude"] as const;
+export type AgentProviderID = (typeof AgentProviderIDValues)[number];
+
+export const AgentConnectionStateValues = ["missing", "disconnected", "connecting", "connected", "unauthenticated", "error"] as const;
+export type AgentConnectionState = (typeof AgentConnectionStateValues)[number];
+
+export const AgentAuthStateValues = ["unknown", "authenticated", "unauthenticated", "unsupported"] as const;
+export type AgentAuthState = (typeof AgentAuthStateValues)[number];
+
+export const AgentSourceValues = ["custom", "system", "none"] as const;
+export type AgentSource = (typeof AgentSourceValues)[number];
+
+export const AgentChatEventTypeValues = ["delta", "thought", "tool_call", "tool_result", "done", "error", "system"] as const;
+export type AgentChatEventType = (typeof AgentChatEventTypeValues)[number];
+
 export interface ActionProgress {
   percent: number;
   message: string;
+}
+
+export interface AgentAllowedDirPayload {
+  dir: string;
+}
+
+export interface AgentAllowedDirsResult {
+  dirs: string[];
+}
+
+export interface AgentApprovalListResult {
+  approvals: AgentApprovalRequest[];
+}
+
+export interface AgentApprovalRequest {
+  id: string;
+  provider_id: AgentProviderID;
+  tool: string;
+  title: string;
+  summary: string;
+  created_at: string;
+}
+
+export interface AgentChatEvent {
+  type: AgentChatEventType;
+  provider_id: AgentProviderID;
+  message_id: string;
+  text: string;
+  tool?: string;
+  error: string;
+  error_key?: string;
+  error_params?: Record<string, string>;
+}
+
+export interface AgentChatMessage {
+  id: string;
+  provider_id: AgentProviderID;
+  role: string;
+  text: string;
+  thought?: string;
+  tool?: string;
+  created_at: number;
+}
+
+export interface AgentHistoryResult {
+  messages: AgentChatMessage[];
+}
+
+export interface AgentListResult {
+  providers: AgentProviderInfo[];
+}
+
+export interface AgentLoginPayload {
+  id: AgentProviderID;
+  api_key: string;
+}
+
+export interface AgentPromptResult {
+  message_id: string;
+  provider_id: AgentProviderID;
+}
+
+export interface AgentProviderIDPayload {
+  id: AgentProviderID;
+}
+
+export interface AgentProviderInfo {
+  id: AgentProviderID;
+  name: string;
+  description: string;
+  executable: string;
+  resolved_path: string;
+  custom_path: string;
+  source: AgentSource;
+  version: string;
+  state: AgentConnectionState;
+  supported: boolean;
+  unsupported_reason: string;
+  auth_state: AgentAuthState;
+  account_info: string;
+  isolated_profile_dir: string;
+  protocol_version: number;
+  agent_name: string;
+  agent_version: string;
+  last_error: string;
+  last_error_key?: string;
+  last_error_params?: Record<string, string>;
+  install_hint: string;
+  active: boolean;
+  busy: boolean;
+  models: ModelOption[];
+  current_model: string;
+  selected_model: string;
+  selected_effort: string;
+}
+
+export interface AgentResolveApprovalPayload {
+  id: string;
+  approve: boolean;
+}
+
+export interface AgentSendPromptPayload {
+  prompt: string;
+}
+
+export interface AgentSetModelPayload {
+  id: AgentProviderID;
+  model: string;
+  effort: string;
+}
+
+export interface AgentSetPathPayload {
+  id: AgentProviderID;
+  custom_path: string;
+}
+
+export interface AgentUIContextPayload {
+  route: string;
+  note: string;
+  screen?: string;
+  feature?: string;
+  selected_files?: string[];
+  settings?: Record<string, string>;
+  last_result?: string;
 }
 
 export interface BinaryIDPayload {
@@ -140,6 +279,14 @@ export interface GraphResult {
   nodes: Record<string, NodeRun>;
 }
 
+export interface ModelOption {
+  id: string;
+  name: string;
+  description?: string;
+  efforts?: string[];
+  default_effort?: string;
+}
+
 export interface NodeRun {
   status: string;
   output?: unknown;
@@ -159,6 +306,10 @@ export interface Param {
   optionsFrom?: string;
   min?: number;
   max?: number;
+  options?: string[];
+  default?: string;
+  role?: string;
+  destructive?: boolean;
 }
 
 export interface PathsInfo {
@@ -285,6 +436,42 @@ export const Actions = {
   WORKFLOW_RUN_NODE: "workflow:run_node",
   /** Runs a full workflow DAG graph in dependency order. */
   WORKFLOW_RUN_GRAPH: "workflow:run_graph",
+  /** Lists supported isolated agent providers and their live connection status. */
+  AGENT_LIST: "agent:list",
+  /** Probes an agent provider executable, isolated auth, and version. */
+  AGENT_PROBE: "agent:probe",
+  /** Sets or clears a custom executable path for an agent provider. */
+  AGENT_SET_PATH: "agent:set_path",
+  /** Authenticates the isolated DezuxkStudio profile for an agent provider. */
+  AGENT_LOGIN: "agent:login",
+  /** Clears isolated DezuxkStudio credentials for an agent provider. */
+  AGENT_LOGOUT: "agent:logout",
+  /** Starts and initializes an isolated agent connection with DezuxkStudio MCP tools. */
+  AGENT_CONNECT: "agent:connect",
+  /** Disconnects the active agent connection. */
+  AGENT_DISCONNECT: "agent:disconnect",
+  /** Submits a chat prompt to the connected agent. */
+  AGENT_SEND_PROMPT: "agent:send_prompt",
+  /** Cancels the currently active agent prompt turn. */
+  AGENT_CANCEL_PROMPT: "agent:cancel_prompt",
+  /** Clears DezuxkStudio agent chat history and resets the active session. */
+  AGENT_CLEAR_SESSION: "agent:clear_session",
+  /** Returns persisted DezuxkStudio agent chat messages. */
+  AGENT_HISTORY: "agent:history",
+  /** Lists pending high-impact agent actions waiting for desktop UI approval. */
+  AGENT_LIST_APPROVALS: "agent:list_approvals",
+  /** Approves or rejects a pending agent action from the desktop UI. */
+  AGENT_RESOLVE_APPROVAL: "agent:resolve_approval",
+  /** Updates the active UI screen context visible to the agent. */
+  AGENT_SET_UI_CONTEXT: "agent:set_ui_context",
+  /** Lists user-approved workspace directories accessible to the agent. */
+  AGENT_LIST_ALLOWED_DIRS: "agent:list_allowed_dirs",
+  /** Authorizes a directory for non-code agent file operations. */
+  AGENT_ADD_ALLOWED_DIR: "agent:add_allowed_dir",
+  /** Revokes agent access to an authorized directory. */
+  AGENT_REMOVE_ALLOWED_DIR: "agent:remove_allowed_dir",
+  /** Selects the model and reasoning effort used by an agent provider. */
+  AGENT_SET_MODEL: "agent:set_model",
 } as const;
 export type ActionName = (typeof Actions)[keyof typeof Actions];
 
@@ -304,6 +491,24 @@ export interface ActionMap {
   "workflow:specs": { payload: Empty; result: WorkflowSpecsResult };
   "workflow:run_node": { payload: WorkflowRunNodePayload; result: WorkflowRunNodeResult };
   "workflow:run_graph": { payload: WorkflowRunGraphPayload; result: WorkflowRunGraphResult };
+  "agent:list": { payload: Empty; result: AgentListResult };
+  "agent:probe": { payload: AgentProviderIDPayload; result: AgentProviderInfo };
+  "agent:set_path": { payload: AgentSetPathPayload; result: AgentProviderInfo };
+  "agent:login": { payload: AgentLoginPayload; result: AgentProviderInfo };
+  "agent:logout": { payload: AgentProviderIDPayload; result: AgentProviderInfo };
+  "agent:connect": { payload: AgentProviderIDPayload; result: AgentProviderInfo };
+  "agent:disconnect": { payload: Empty; result: AgentListResult };
+  "agent:send_prompt": { payload: AgentSendPromptPayload; result: AgentPromptResult };
+  "agent:cancel_prompt": { payload: Empty; result: Empty };
+  "agent:clear_session": { payload: Empty; result: Empty };
+  "agent:history": { payload: Empty; result: AgentHistoryResult };
+  "agent:list_approvals": { payload: Empty; result: AgentApprovalListResult };
+  "agent:resolve_approval": { payload: AgentResolveApprovalPayload; result: Empty };
+  "agent:set_ui_context": { payload: AgentUIContextPayload; result: Empty };
+  "agent:list_allowed_dirs": { payload: Empty; result: AgentAllowedDirsResult };
+  "agent:add_allowed_dir": { payload: AgentAllowedDirPayload; result: AgentAllowedDirsResult };
+  "agent:remove_allowed_dir": { payload: AgentAllowedDirPayload; result: AgentAllowedDirsResult };
+  "agent:set_model": { payload: AgentSetModelPayload; result: AgentProviderInfo };
 }
 
 export const Events = {
@@ -311,12 +516,21 @@ export const Events = {
   ACTION_PROGRESS: "action:progress",
   /** Preferences changed (from any client). */
   PREFERENCES_UPDATED: "preferences:updated",
+  /** Agent provider discovery or connection state changed. */
+  AGENT_STATUS_CHANGED: "agent:status_changed",
+  /** Streamed text, thought, tool call, or completion update from the active agent turn. */
+  AGENT_CHAT_EVENT: "agent:chat_event",
+  /** Pending agent approval queue changed. */
+  AGENT_APPROVALS: "agent:approvals",
 } as const;
 export type EventName = (typeof Events)[keyof typeof Events];
 
 export interface EventMap {
   "action:progress": ActionProgress;
   "preferences:updated": Preferences;
+  "agent:status_changed": AgentProviderInfo;
+  "agent:chat_event": AgentChatEvent;
+  "agent:approvals": AgentApprovalListResult;
 }
 
 export const NativeEvents = {

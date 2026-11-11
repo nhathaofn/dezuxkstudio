@@ -49,6 +49,14 @@ var AllParamKinds = []struct {
 	TSName string
 }{{ParamSelect, "Select"}, {ParamInteger, "Integer"}, {ParamText, "Text"}, {ParamToggle, "Toggle"}}
 
+// ParamRole tells callers (UI, agent) what a text param refers to so they can validate it generically.
+type ParamRole string
+
+const (
+	ParamRoleNone      ParamRole = ""
+	ParamRoleOutputDir ParamRole = "output_dir" // directory the node writes results into
+)
+
 // Param is a node setting.
 type Param struct {
 	Name        string    `json:"name"`
@@ -57,9 +65,21 @@ type Param struct {
 	OptionsFrom string    `json:"optionsFrom,omitempty"`
 	Min         int       `json:"min,omitempty"`
 	Max         int       `json:"max,omitempty"`
+	// Options lists the allowed values of a select param.
+	Options []string `json:"options,omitempty"`
+	// Default is the value the UI uses when the user does not change the setting (string form).
+	Default string `json:"default,omitempty"`
+	// Role marks params that carry a filesystem path.
+	Role ParamRole `json:"role,omitempty"`
+	// Destructive marks a toggle that, when true, modifies or replaces the user's original files.
+	Destructive bool `json:"destructive,omitempty"`
 }
 
 // Spec describes a node type: identity, ports and settings.
+//
+// The Spec is also the contract DezuxkStudio's agent reads to use the feature: fill Description, Options,
+// Default, Role and Destructive so the agent runs the node exactly like its UI. See
+// docs/agent-feature-integration.md.
 type Spec struct {
 	Type        string  `json:"type"`
 	Provider    string  `json:"provider"`

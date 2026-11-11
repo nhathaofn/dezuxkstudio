@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"app/internal/domain/agent"
 	"app/internal/domain/preferences"
 )
 
@@ -149,5 +150,74 @@ func TestBinariesRepository(t *testing.T) {
 	p, err = repo.GetCustomPath(ctx, "ffmpeg")
 	if err != nil || p != "C:\\new\\ffmpeg.exe" {
 		t.Fatalf("expected C:\\new\\ffmpeg.exe, got %q, err: %v", p, err)
+	}
+}
+
+func TestAgentRepository(t *testing.T) {
+	db := open(t, t.TempDir())
+	defer db.Close()
+	repo := NewAgentRepository(db)
+	ctx := context.Background()
+
+	p, err := repo.GetCustomPath(ctx, agent.ProviderAntigravity)
+	if err != nil || p != "" {
+		t.Fatalf("expected empty custom path, got %q, err: %v", p, err)
+	}
+
+	if err := repo.SetCustomPath(ctx, agent.ProviderAntigravity, "C:\\tools\\agy.exe"); err != nil {
+		t.Fatal(err)
+	}
+	p, err = repo.GetCustomPath(ctx, agent.ProviderAntigravity)
+	if err != nil || p != "C:\\tools\\agy.exe" {
+		t.Fatalf("expected C:\\tools\\agy.exe, got %q, err: %v", p, err)
+	}
+
+	all, err := repo.GetAllCustomPaths(ctx)
+	if err != nil || all[agent.ProviderAntigravity] != "C:\\tools\\agy.exe" {
+		t.Fatalf("unexpected custom path map: %+v, err=%v", all, err)
+	}
+
+	if err := repo.SetCustomPath(ctx, agent.ProviderAntigravity, ""); err != nil {
+		t.Fatal(err)
+	}
+	p, err = repo.GetCustomPath(ctx, agent.ProviderAntigravity)
+	if err != nil || p != "" {
+		t.Fatalf("expected cleared custom path, got %q, err: %v", p, err)
+	}
+
+	if err := repo.AppendChatMessage(ctx, agent.ChatMessage{
+		ID:         "m1",
+		ProviderID: agent.ProviderCodex,
+		Role:       "user",
+		Text:       "hello",
+		CreatedAt:  1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := repo.ListChatMessages(ctx, 50)
+	if err != nil || len(msgs) != 1 || msgs[0].Text != "hello" {
+		t.Fatalf("unexpected chat messages: %+v, err=%v", msgs, err)
+	}
+	if err := repo.ClearChatMessages(ctx); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err = repo.ListChatMessages(ctx, 50)
+	if err != nil || len(msgs) != 0 {
+		t.Fatalf("expected cleared chat messages, got %+v, err=%v", msgs, err)
+	}
+
+	if err := repo.AddAllowedDir(ctx, "D:\\media\\project1"); err != nil {
+		t.Fatal(err)
+	}
+	dirs, err := repo.ListAllowedDirs(ctx)
+	if err != nil || len(dirs) != 1 || dirs[0] != "D:\\media\\project1" {
+		t.Fatalf("unexpected allowed dirs: %+v, err=%v", dirs, err)
+	}
+	if err := repo.RemoveAllowedDir(ctx, "D:\\media\\project1"); err != nil {
+		t.Fatal(err)
+	}
+	dirs, err = repo.ListAllowedDirs(ctx)
+	if err != nil || len(dirs) != 0 {
+		t.Fatalf("expected empty allowed dirs, got %+v, err=%v", dirs, err)
 	}
 }

@@ -4,7 +4,8 @@ import { Button } from "../../components/ui/Button";
 import { Badge } from "../../components/ui/Badge";
 import { ErrorText } from "../../components/ui/ErrorText";
 import { useT } from "../../lib/i18n";
-import { useWatermarkStore } from "./useWatermarkStore";
+import { useAgentScreenContext } from "../agent/screenContext";
+import { useWatermarkStore, type WatermarkNodeResult } from "./useWatermarkStore";
 import { WatermarkConfigCard } from "./WatermarkConfigCard";
 import { WatermarkResultsCard } from "./WatermarkResultsCard";
 
@@ -15,6 +16,20 @@ export const WatermarkView: React.FC = () => {
     useWatermarkStore();
 
   const totalFiles = inputPaths.length > 0 ? inputPaths.length : inputPath ? 1 : 0;
+  const { inPlace, outputDir, workers, corner } = useWatermarkStore();
+
+  // Let the agent see this screen: loaded images, current settings (keyed by the node's param names), last run.
+  useAgentScreenContext({
+    feature: "tool.watermark_remover",
+    selected_files: inputPaths.length > 0 ? inputPaths : inputPath ? [inputPath] : [],
+    settings: {
+      corner,
+      workers: String(workers),
+      inplace: String(inPlace),
+      output_dir: outputDir,
+    },
+    last_result: loading ? "running…" : error ? `error: ${error.message}` : summarizeResult(result),
+  });
 
   return (
     <div className="dashboard-layout watermark-layout">
@@ -70,3 +85,18 @@ export const WatermarkView: React.FC = () => {
 };
 
 export default WatermarkView;
+
+function summarizeResult(result: WatermarkNodeResult | null): string {
+  if (!result) return "";
+  const items = result.results ?? [];
+  const failed = items.filter((r) => r.error).length;
+  const outputs = items.filter((r) => r.detected && r.out_path).map((r) => r.out_path);
+  const parts = [
+    `${result.detected_count ?? 0}/${result.total_count ?? items.length} images had a watermark and were cleaned`,
+  ];
+  if (failed > 0) parts.push(`${failed} failed`);
+  if (outputs.length > 0) {
+    parts.push(`outputs: ${outputs.slice(0, 5).join(", ")}${outputs.length > 5 ? ", …" : ""}`);
+  }
+  return parts.join("; ");
+}

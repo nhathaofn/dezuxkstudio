@@ -1,6 +1,7 @@
 import React from "react";
 import { NavLink } from "react-router-dom";
-import { Settings } from "lucide-react";
+import { Bot, Settings } from "lucide-react";
+import { useAgentStore } from "../features/agent/useAgentStore";
 import { StatusIndicator } from "../features/connection/StatusIndicator";
 import { useSystemStore } from "../features/system/useSystemStore";
 import { useT } from "../lib/i18n";
@@ -9,6 +10,9 @@ import { navRoutes, settingsRoute } from "./navigation";
 export const AppHeader: React.FC = () => {
   const t = useT();
   const build = useSystemStore((s) => s.info?.build);
+  const agentOpen = useAgentStore((s) => s.panelOpen);
+  const toggleAgentPanel = useAgentStore((s) => s.togglePanel);
+  const agentOnline = useAgentStore((s) => s.providers.some((p) => p.active));
 
   return (
     <header className="app-header">
@@ -32,6 +36,17 @@ export const AppHeader: React.FC = () => {
         </div>
         <div className="header-right">
           <StatusIndicator />
+          <button
+            type="button"
+            className={`ds-button ds-button--sm ds-button--icon agent-bot-btn ${agentOpen ? "ds-button--primary" : "ds-button--secondary"}`}
+            onClick={toggleAgentPanel}
+            title={t(agentOpen ? "header.closeAgent" : "header.openAgent")}
+            aria-label={t(agentOpen ? "header.closeAgent" : "header.openAgent")}
+            aria-expanded={agentOpen}
+          >
+            <Bot size={14} />
+            {agentOnline && <span className="agent-bot-btn__dot" aria-hidden="true" />}
+          </button>
           <NavLink
             to={settingsRoute.path}
             className={({ isActive }) =>

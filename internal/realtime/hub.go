@@ -252,7 +252,9 @@ func (h *Hub) actionTimeout(action string) time.Duration {
 	case contracts.ActionBinariesDownload,
 		contracts.ActionWorkflowRunGraph,
 		contracts.ActionWorkflowRunNode,
-		contracts.ActionDiagnosticsExport:
+		contracts.ActionDiagnosticsExport,
+		contracts.ActionAgentLogin,           // browser OAuth sign-in waits for the user (agent.login_timeout)
+		contracts.ActionAgentResolveApproval: // an approved action can run a whole workflow
 		if h.opts.LongActionTimeout > 0 {
 			return h.opts.LongActionTimeout
 		}
