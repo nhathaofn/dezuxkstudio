@@ -142,10 +142,17 @@ func NewNode(opts Options) engine.Node {
 			{Name: "images", Label: "Cleaned images (Batch)", Type: engine.PortImage, Multiple: true},
 		},
 		Params: []engine.Param{
-			{Name: "inplace", Label: "Overwrite original file", Kind: engine.ParamToggle},
-			{Name: "output_dir", Label: "Output directory", Kind: engine.ParamText},
-			{Name: "workers", Label: "CPU worker threads (0 = Auto)", Kind: engine.ParamInteger, Min: 0, Max: 64},
-			{Name: "corner", Label: "Scan corner (bottom-right / bottom-left / top-right / top-left / any)", Kind: engine.ParamSelect},
+			{Name: "inplace", Label: "Overwrite original file", Kind: engine.ParamToggle, Default: "false", Destructive: true},
+			{Name: "output_dir", Label: "Output directory (empty = next to each source image)", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
+			{Name: "workers", Label: "CPU worker threads (0 = Auto)", Kind: engine.ParamInteger, Min: 0, Max: 64, Default: "0"},
+			{
+				Name: "corner", Label: "Scan corner", Kind: engine.ParamSelect,
+				Options: []string{
+					string(watermark.CornerBottomRight), string(watermark.CornerBottomLeft),
+					string(watermark.CornerTopRight), string(watermark.CornerTopLeft), string(watermark.CornerAny),
+				},
+				Default: string(watermark.CornerBottomRight),
+			},
 		},
 	}
 

@@ -322,3 +322,72 @@ func TestBinariesRealtimeActions(t *testing.T) {
 		t.Fatalf("expected custom_path C:\\custom\\ffmpeg.exe, got %q", updated.CustomPath)
 	}
 }
+
+func TestAgentRealtimeActions(t *testing.T) {
+	h := startCore(t, nil)
+	ws := h.dial()
+
+	// 1. agent:list
+	res, _ := ws.call(contracts.ActionAgentList, contracts.Empty{})
+	if !res.Success {
+		t.Fatalf("agent:list failed: %+v", res.Error)
+	}
+	var list contracts.AgentListResult
+	if err := json.Unmarshal(res.Data, &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Providers) != 3 {
+		t.Fatalf("expected 3 agent providers, got %d", len(list.Providers))
+	}
+
+	// 2. agent:probe
+	probeRes, _ := ws.call(contracts.ActionAgentProbe, contracts.AgentProviderIDPayload{ID: "antigravity"})
+	if !probeRes.Success {
+		t.Fatalf("agent:probe failed: %+v", probeRes.Error)
+	}
+	var info contracts.AgentProviderInfo
+	if err := json.Unmarshal(probeRes.Data, &info); err != nil {
+		t.Fatal(err)
+	}
+	if info.ID != "antigravity" {
+		t.Fatalf("expected id antigravity, got %s", info.ID)
+	}
+
+	// 3. agent:set_path
+	setRes, _ := ws.call(contracts.ActionAgentSetPath, contracts.AgentSetPathPayload{
+		ID:         "antigravity",
+		CustomPath: "C:\\custom\\agy.exe",
+	})
+	if !setRes.Success {
+		t.Fatalf("agent:set_path failed: %+v", setRes.Error)
+	}
+	var updated contracts.AgentProviderInfo
+	if err := json.Unmarshal(setRes.Data, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.CustomPath != "C:\\custom\\agy.exe" {
+		t.Fatalf("expected custom_path C:\\custom\\agy.exe, got %q", updated.CustomPath)
+	}
+
+	// 4. agent:send_prompt fails cleanly when no agent is connected
+	promptRes, _ := ws.call(contracts.ActionAgentSendPrompt, contracts.AgentSendPromptPayload{
+		Prompt: "hello",
+	})
+	if promptRes.Success || promptRes.Error == nil || promptRes.Error.Code != "ERR_UNAVAILABLE" {
+		t.Fatalf("expected ERR_UNAVAILABLE when disconnected, got %+v", promptRes)
+	}
+
+	// 5. agent:history, agent:list_approvals, agent:list_allowed_dirs, agent:set_ui_context
+	if res, _ := ws.call(contracts.ActionAgentHistory, contracts.Empty{}); !res.Success {
+		t.Fatalf("agent:history failed: %+v", res.Error)
+	}
+	if res, _ := ws.call(contracts.ActionAgentListApprovals, contracts.Empty{}); !res.Success {
+		t.Fatalf("agent:list_approvals failed: %+v", res.Error)
+	}
+	if res, _ := ws.call(contracts.ActionAgentListAllowedDirs, contracts.Empty{}); !res.Success {
+		t.Fatalf("agent:list_allowed_dirs failed: %+v", res.Error)
+	}
+	if res, _ := ws.call(contracts.ActionAgentSetUIContext, contracts.AgentUIContextPayload{Route: "/watermark"}); !res.Success {
+		t.Fatalf("agent:set_ui_context failed: %+v", res.Error)
+	}
+}

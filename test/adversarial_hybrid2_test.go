@@ -65,9 +65,9 @@ func TestAdversarial_SQLite_CleanDatabaseMigration(t *testing.T) {
 		recorded = append(recorded, rm)
 	}
 
-	// Clean database migration runner must apply migrations 1 through 4
-	if len(recorded) != 4 {
-		t.Fatalf("expected exactly 4 applied migrations, got %d: %+v", len(recorded), recorded)
+	// Clean database migration runner must apply migrations 1 through 7
+	if len(recorded) != 7 {
+		t.Fatalf("expected exactly 7 applied migrations, got %d: %+v", len(recorded), recorded)
 	}
 	if recorded[0].version != 1 || recorded[0].name != "001_initial_schema.sql" {
 		t.Errorf("migration 1 mismatch: got %+v", recorded[0])
@@ -81,18 +81,27 @@ func TestAdversarial_SQLite_CleanDatabaseMigration(t *testing.T) {
 	if recorded[3].version != 4 || recorded[3].name != "004_drop_dynamic_providers.sql" {
 		t.Errorf("migration 4 mismatch: got %+v", recorded[3])
 	}
+	if recorded[4].version != 5 || recorded[4].name != "005_agent_providers.sql" {
+		t.Errorf("migration 5 mismatch: got %+v", recorded[4])
+	}
+	if recorded[5].version != 6 || recorded[5].name != "006_agent_runtime.sql" {
+		t.Errorf("migration 6 mismatch: got %+v", recorded[5])
+	}
+	if recorded[6].version != 7 || recorded[6].name != "007_agent_models.sql" {
+		t.Errorf("migration 7 mismatch: got %+v", recorded[6])
+	}
 
-	// Verify maximum version in _schema_migrations is 4
+	// Verify maximum version in _schema_migrations is 7
 	var maxVer int
 	if err := rawDB.QueryRow("SELECT MAX(version) FROM _schema_migrations").Scan(&maxVer); err != nil {
 		t.Fatalf("failed to get max version: %v", err)
 	}
-	if maxVer != 4 {
-		t.Errorf("expected max version 4, got %d", maxVer)
+	if maxVer != 7 {
+		t.Errorf("expected max version 7, got %d", maxVer)
 	}
 
 	// Verify expected tables exist
-	for _, expectedTable := range []string{"_schema_migrations", "app_metadata", "user_settings", "binary_configs"} {
+	for _, expectedTable := range []string{"_schema_migrations", "app_metadata", "user_settings", "binary_configs", "agent_providers", "agent_chat_messages", "agent_allowed_dirs"} {
 		var count int
 		err := rawDB.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", expectedTable).Scan(&count)
 		if err != nil || count != 1 {

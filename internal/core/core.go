@@ -16,11 +16,14 @@ import (
 	"app/internal/buildinfo"
 	"app/internal/config"
 	"app/internal/contracts"
+	domainagent "app/internal/domain/agent"
 	domainprefs "app/internal/domain/preferences"
 	"app/internal/paths"
 	"app/internal/realtime"
 	"app/internal/realtime/modules"
+	"app/internal/secrets"
 	"app/internal/server"
+	agentsvc "app/internal/service/agent"
 	binariessvc "app/internal/service/binaries"
 	"app/internal/service/diagnostics"
 	"app/internal/service/preferences"
@@ -54,6 +57,7 @@ type Core struct {
 	db        *sqlite.DB
 	hub       *realtime.Hub
 	srv       *server.Server
+	agentSvc  *agentsvc.Service
 	shutdown  time.Duration
 	startedAt time.Time
 }
@@ -184,12 +188,56 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		return nil, err
 	}
 
+	agentSvc, err := agentsvc.New(agentsvc.Options{
+		Repo:         sqlite.NewAgentRepository(c.db),
+		DataDir:      o.Paths.Data,
+		WorkspaceDir: o.Paths.AgentWorkspace(),
+		MediaDir:     o.Paths.Media(),
+		ProfilesDir:  o.Paths.AgentProfiles(),
+		AppVersion:   buildinfo.Version,
+		// Provider API keys go to the OS credential store (in-memory fallback where none exists).
+		Secrets: secrets.NewDesktopStore(buildinfo.AppID),
+		Limits: agentsvc.Limits{
+			TurnTimeout:         cfg.Agent.TurnTimeout,
+			InitializeTimeout:   cfg.Agent.InitializeTimeout,
+			VersionProbeTimeout: cfg.Agent.VersionProbeTimeout,
+			AuthProbeTimeout:    cfg.Agent.AuthProbeTimeout,
+			LoginTimeout:        cfg.Agent.LoginTimeout,
+			ModelCatalogTimeout: cfg.Agent.ModelCatalogTimeout,
+			StatusCacheTTL:      cfg.Agent.StatusCacheTTL,
+			ApprovalTTL:         cfg.Agent.ApprovalTTL,
+			HistoryLimit:        cfg.Agent.HistoryLimit,
+			ContextMessages:     cfg.Agent.ContextMessages,
+			ContextMessageChars: cfg.Agent.ContextMessageChars,
+		},
+		Logger:      o.Logger,
+		Workflow:    wfSvc,
+		Binaries:    binSvc,
+		Preferences: prefSvc,
+		System:      sysSvc,
+		Diagnostics: diagSvc,
+		OnStatusChanged: func(info domainagent.ProviderInfo) {
+			c.hub.Publish(contracts.EventAgentStatusChanged, contracts.NewAgentProviderInfo(info))
+		},
+		OnChatEvent: func(evt domainagent.ChatEvent) {
+			c.hub.Publish(contracts.EventAgentChatEvent, contracts.NewAgentChatEvent(evt))
+		},
+		OnApprovalsChanged: func(approvals []domainagent.ApprovalRequest) {
+			c.hub.Publish(contracts.EventAgentApprovals, contracts.NewAgentApprovalListResult(approvals))
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	c.agentSvc = agentSvc
+
 	return []realtime.Module{
 		modules.System{Info: sysSvc, Update: updSvc},
 		modules.Preferences{Service: prefSvc},
 		modules.Diagnostics{Service: diagSvc},
 		modules.Binaries{Service: binSvc},
 		modules.Workflow{Service: wfSvc},
+		modules.Agent{Service: agentSvc},
 	}, nil
 }
 
@@ -208,7 +256,12 @@ func (c *Core) Errors() <-chan error { return c.srv.Errors() }
 func (c *Core) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), c.shutdown)
 	defer cancel()
+	var agentErr error
+	if c.agentSvc != nil {
+		agentErr = c.agentSvc.Close()
+	}
 	return errors.Join(
+		agentErr,
 		c.hub.Close(ctx),
 		c.srv.Stop(),
 		c.db.Close(),

@@ -6,6 +6,7 @@ import (
 
 	"app/internal/apperr"
 	"app/internal/config"
+	"app/internal/domain/agent"
 	"app/internal/domain/binaries"
 	"app/internal/domain/preferences"
 )
@@ -31,12 +32,34 @@ const (
 	ActionWorkflowSpecs    = "workflow:specs"
 	ActionWorkflowRunNode  = "workflow:run_node"
 	ActionWorkflowRunGraph = "workflow:run_graph"
+
+	ActionAgentList             = "agent:list"
+	ActionAgentProbe            = "agent:probe"
+	ActionAgentSetPath          = "agent:set_path"
+	ActionAgentLogin            = "agent:login"
+	ActionAgentLogout           = "agent:logout"
+	ActionAgentConnect          = "agent:connect"
+	ActionAgentDisconnect       = "agent:disconnect"
+	ActionAgentSendPrompt       = "agent:send_prompt"
+	ActionAgentCancelPrompt     = "agent:cancel_prompt"
+	ActionAgentClearSession     = "agent:clear_session"
+	ActionAgentHistory          = "agent:history"
+	ActionAgentListApprovals    = "agent:list_approvals"
+	ActionAgentResolveApproval  = "agent:resolve_approval"
+	ActionAgentSetUIContext     = "agent:set_ui_context"
+	ActionAgentListAllowedDirs  = "agent:list_allowed_dirs"
+	ActionAgentAddAllowedDir    = "agent:add_allowed_dir"
+	ActionAgentRemoveAllowedDir = "agent:remove_allowed_dir"
+	ActionAgentSetModel         = "agent:set_model"
 )
 
 // Server-pushed event names (WebSocket).
 const (
 	EventActionProgress     = "action:progress"
 	EventPreferencesUpdated = "preferences:updated"
+	EventAgentStatusChanged = "agent:status_changed"
+	EventAgentChatEvent     = "agent:chat_event"
+	EventAgentApprovals     = "agent:approvals"
 )
 
 // Native event names emitted through the Wails runtime (desktop shell only).
@@ -95,6 +118,24 @@ func Actions() []ActionSpec {
 		{ActionWorkflowSpecs, "Returns the catalogue of registered workflow node types.", t[Empty](), t[WorkflowSpecsResult]()},
 		{ActionWorkflowRunNode, "Runs one node standalone by type with JSON input.", t[WorkflowRunNodePayload](), t[WorkflowRunNodeResult]()},
 		{ActionWorkflowRunGraph, "Runs a full workflow DAG graph in dependency order.", t[WorkflowRunGraphPayload](), t[WorkflowRunGraphResult]()},
+		{ActionAgentList, "Lists supported isolated agent providers and their live connection status.", t[Empty](), t[AgentListResult]()},
+		{ActionAgentProbe, "Probes an agent provider executable, isolated auth, and version.", t[AgentProviderIDPayload](), t[AgentProviderInfo]()},
+		{ActionAgentSetPath, "Sets or clears a custom executable path for an agent provider.", t[AgentSetPathPayload](), t[AgentProviderInfo]()},
+		{ActionAgentLogin, "Authenticates the isolated DezuxkStudio profile for an agent provider.", t[AgentLoginPayload](), t[AgentProviderInfo]()},
+		{ActionAgentLogout, "Clears isolated DezuxkStudio credentials for an agent provider.", t[AgentProviderIDPayload](), t[AgentProviderInfo]()},
+		{ActionAgentConnect, "Starts and initializes an isolated agent connection with DezuxkStudio MCP tools.", t[AgentProviderIDPayload](), t[AgentProviderInfo]()},
+		{ActionAgentDisconnect, "Disconnects the active agent connection.", t[Empty](), t[AgentListResult]()},
+		{ActionAgentSendPrompt, "Submits a chat prompt to the connected agent.", t[AgentSendPromptPayload](), t[AgentPromptResult]()},
+		{ActionAgentCancelPrompt, "Cancels the currently active agent prompt turn.", t[Empty](), t[Empty]()},
+		{ActionAgentClearSession, "Clears DezuxkStudio agent chat history and resets the active session.", t[Empty](), t[Empty]()},
+		{ActionAgentHistory, "Returns persisted DezuxkStudio agent chat messages.", t[Empty](), t[AgentHistoryResult]()},
+		{ActionAgentListApprovals, "Lists pending high-impact agent actions waiting for desktop UI approval.", t[Empty](), t[AgentApprovalListResult]()},
+		{ActionAgentResolveApproval, "Approves or rejects a pending agent action from the desktop UI.", t[AgentResolveApprovalPayload](), t[Empty]()},
+		{ActionAgentSetUIContext, "Updates the active UI screen context visible to the agent.", t[AgentUIContextPayload](), t[Empty]()},
+		{ActionAgentListAllowedDirs, "Lists user-approved workspace directories accessible to the agent.", t[Empty](), t[AgentAllowedDirsResult]()},
+		{ActionAgentAddAllowedDir, "Authorizes a directory for non-code agent file operations.", t[AgentAllowedDirPayload](), t[AgentAllowedDirsResult]()},
+		{ActionAgentRemoveAllowedDir, "Revokes agent access to an authorized directory.", t[AgentAllowedDirPayload](), t[AgentAllowedDirsResult]()},
+		{ActionAgentSetModel, "Selects the model and reasoning effort used by an agent provider.", t[AgentSetModelPayload](), t[AgentProviderInfo]()},
 	}
 }
 
@@ -103,6 +144,9 @@ func Events() []EventSpec {
 	return []EventSpec{
 		{EventActionProgress, "Progress of a long-running action; ref_id is the action id.", t[ActionProgress]()},
 		{EventPreferencesUpdated, "Preferences changed (from any client).", t[Preferences]()},
+		{EventAgentStatusChanged, "Agent provider discovery or connection state changed.", t[AgentProviderInfo]()},
+		{EventAgentChatEvent, "Streamed text, thought, tool call, or completion update from the active agent turn.", t[AgentChatEvent]()},
+		{EventAgentApprovals, "Pending agent approval queue changed.", t[AgentApprovalListResult]()},
 	}
 }
 
@@ -139,6 +183,11 @@ func Enums() []EnumSpec {
 		{"BinaryID", t[binaries.BinaryID](), stringsOf(binaries.AllIDs())},
 		{"BinaryStatus", t[binaries.Status](), stringsOf([]binaries.Status{binaries.StatusAvailable, binaries.StatusMissing, binaries.StatusInvalid})},
 		{"BinarySource", t[binaries.Source](), stringsOf([]binaries.Source{binaries.SourceTools, binaries.SourceCustom, binaries.SourceSystem, binaries.SourceNone})},
+		{"AgentProviderID", t[agent.ProviderID](), stringsOf(agent.AllProviderIDs())},
+		{"AgentConnectionState", t[agent.ConnectionState](), stringsOf(agent.AllConnectionStates())},
+		{"AgentAuthState", t[agent.AuthState](), stringsOf(agent.AllAuthStates())},
+		{"AgentSource", t[agent.Source](), stringsOf(agent.AllSources())},
+		{"AgentChatEventType", t[agent.ChatEventType](), stringsOf(agent.AllChatEventTypes())},
 	}
 }
 

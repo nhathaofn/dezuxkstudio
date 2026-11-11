@@ -52,6 +52,7 @@ type Config struct {
 	Diagnostics DiagnosticsConfig
 	Update      UpdateConfig
 	Desktop     DesktopConfig
+	Agent       AgentConfig
 }
 
 // ServerConfig configures the HTTP/WebSocket core server.
@@ -114,6 +115,21 @@ type UpdateConfig struct {
 	FeedURL        string
 	Timeout        time.Duration
 	CheckOnStartup bool
+}
+
+// AgentConfig tunes the external AI agent integration (timeouts, caches, chat context size).
+type AgentConfig struct {
+	TurnTimeout         time.Duration // max duration of one chat turn
+	InitializeTimeout   time.Duration // max wait for an ACP agent handshake
+	VersionProbeTimeout time.Duration // max duration of `<cli> --version`
+	AuthProbeTimeout    time.Duration // max duration of a CLI auth status check
+	LoginTimeout        time.Duration // max duration of an interactive sign-in (browser OAuth)
+	ModelCatalogTimeout time.Duration // max duration of reading a CLI's model catalog
+	StatusCacheTTL      time.Duration // how long CLI auth/version probe results are reused
+	ApprovalTTL         time.Duration // pending approvals expire after this long
+	HistoryLimit        int           // messages returned to the chat UI
+	ContextMessages     int           // past user/assistant messages replayed into a new session
+	ContextMessageChars int           // per-message cap (runes) when replaying history
 }
 
 // DesktopConfig configures the native window and desktop startup.
@@ -188,6 +204,19 @@ func Default(mode Mode) *Config {
 			FeedURL:        buildinfo.UpdateFeedURL,
 			Timeout:        10 * time.Second,
 			CheckOnStartup: true,
+		},
+		Agent: AgentConfig{
+			TurnTimeout:         10 * time.Minute,
+			InitializeTimeout:   15 * time.Second,
+			VersionProbeTimeout: 1500 * time.Millisecond,
+			AuthProbeTimeout:    10 * time.Second,
+			LoginTimeout:        3 * time.Minute,
+			ModelCatalogTimeout: 30 * time.Second,
+			StatusCacheTTL:      5 * time.Minute,
+			ApprovalTTL:         30 * time.Minute,
+			HistoryLimit:        200,
+			ContextMessages:     10,
+			ContextMessageChars: 1200,
 		},
 		Desktop: DesktopConfig{
 			Width:        0, // 0 = auto (80% of primary screen)

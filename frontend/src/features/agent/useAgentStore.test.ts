@@ -1,0 +1,254 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Actions, type AgentProviderInfo } from "../../contracts/generated";
+import { ActionError, rtClient } from "../../lib/rtClient";
+import { clampDrawerWidth, useAgentStore } from "./useAgentStore";
+
+const mockProviders: AgentProviderInfo[] = [
+  {
+    id: "antigravity",
+    name: "Google Antigravity",
+    description: "Runs inside isolated DezuxkStudio home profile.",
+    executable: "agy",
+    resolved_path: "C:\\tools\\agy.exe",
+    custom_path: "",
+    source: "system",
+    version: "1.0.0",
+    state: "disconnected",
+    supported: true,
+    unsupported_reason: "",
+    auth_state: "unknown",
+    account_info: "",
+    isolated_profile_dir: "C:\\data\\agent-profiles\\antigravity",
+    protocol_version: 0,
+    agent_name: "",
+    agent_version: "",
+    last_error: "",
+    install_hint: "agy acp --login",
+    active: false,
+    busy: false,
+    models: [],
+    current_model: "",
+    selected_model: "",
+    selected_effort: "",
+  },
+  {
+    id: "codex",
+    name: "OpenAI Codex",
+    description: "Runs via isolated CODEX_HOME.",
+    executable: "codex",
+    resolved_path: "",
+    custom_path: "",
+    source: "none",
+    version: "",
+    state: "missing",
+    supported: true,
+    unsupported_reason: "",
+    auth_state: "unauthenticated",
+    account_info: "",
+    isolated_profile_dir: "C:\\data\\agent-profiles\\codex",
+    protocol_version: 0,
+    agent_name: "",
+    agent_version: "",
+    last_error: "",
+    install_hint: "Use Sign in below",
+    active: false,
+    busy: false,
+    models: [],
+    current_model: "",
+    selected_model: "",
+    selected_effort: "",
+  },
+];
+
+describe("useAgentStore", () => {
+  beforeEach(() => {
+    useAgentStore.setState({
+      panelOpen: false,
+      panelWidth: 420,
+      activeTab: "chat",
+      providers: [],
+      approvals: [],
+      allowedDirs: [],
+      loadingProviders: false,
+      busyAction: false,
+      sending: false,
+      error: null,
+      prompt: "",
+      messages: [],
+    });
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("toggles drawer open state and clamps drawer width", () => {
+    const store = useAgentStore.getState();
+    expect(store.panelOpen).toBe(false);
+    store.togglePanel();
+    expect(useAgentStore.getState().panelOpen).toBe(true);
+    store.closePanel();
+    expect(useAgentStore.getState().panelOpen).toBe(false);
+
+    expect(clampDrawerWidth(100)).toBe(340);
+    expect(clampDrawerWidth(9999)).toBe(680);
+    expect(clampDrawerWidth(Number.NaN)).toBe(420);
+  });
+
+  it("fetches providers and connects to selected provider", async () => {
+    vi.spyOn(rtClient, "request").mockResolvedValueOnce({ providers: mockProviders });
+    await useAgentStore.getState().fetchProviders();
+    expect(useAgentStore.getState().providers).toHaveLength(2);
+
+    const connected: AgentProviderInfo = {
+      ...mockProviders[0],
+      state: "connected",
+      active: true,
+      protocol_version: 1,
+    };
+    useAgentStore.getState().setActiveTab("connections");
+    vi.spyOn(rtClient, "request").mockResolvedValueOnce(connected);
+
+    await useAgentStore.getState().connectProvider("antigravity");
+    const state = useAgentStore.getState();
+    expect(state.activeTab).toBe("chat");
+    expect(state.providers.find((p) => p.id === "antigravity")?.active).toBe(true);
+  });
+
+  it("streams chat deltas, thoughts, tool calls, and handles early events", async () => {
+    useAgentStore.setState({
+      providers: [{ ...mockProviders[0], state: "connected", active: true }],
+      prompt: "What can you do?",
+    });
+
+    let resolvePrompt!: (v: { message_id: string; provider_id: "antigravity" }) => void;
+    vi.spyOn(rtClient, "request").mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolvePrompt = resolve;
+        })
+    );
+
+    const sendPromise = useAgentStore.getState().sendPrompt();
+    expect(useAgentStore.getState().sending).toBe(true);
+    expect(useAgentStore.getState().prompt).toBe("");
+    expect(useAgentStore.getState().messages).toHaveLength(2);
+
+    useAgentStore.getState().receiveChatEvent({
+      type: "thought",
+      provider_id: "antigravity",
+      message_id: "msg-42",
+      text: "planning...",
+      error: "",
+    });
+    useAgentStore.getState().receiveChatEvent({
+      type: "tool_call",
+      provider_id: "antigravity",
+      message_id: "msg-42",
+      tool: "studio_list_capabilities",
+      text: "studio_list_capabilities",
+      error: "",
+    });
+    useAgentStore.getState().receiveChatEvent({
+      type: "tool_result",
+      provider_id: "antigravity",
+      message_id: "msg-42",
+      tool: "studio_list_capabilities",
+      text: "completed",
+      error: "",
+    });
+    useAgentStore.getState().receiveChatEvent({
+      type: "delta",
+      provider_id: "antigravity",
+      message_id: "msg-42",
+      text: "I can help with DezuxkStudio features!",
+      error: "",
+    });
+
+    resolvePrompt({ message_id: "msg-42", provider_id: "antigravity" });
+    await sendPromise;
+
+    useAgentStore.getState().receiveChatEvent({
+      type: "done",
+      provider_id: "antigravity",
+      message_id: "msg-42",
+      text: "",
+      error: "",
+    });
+
+    const msgs = useAgentStore.getState().messages;
+    expect(msgs).toHaveLength(2);
+    expect(msgs[1].id).toBe("msg-42");
+    expect(msgs[1].thought).toBe("planning...");
+    expect(msgs[1].tools).toEqual([{ name: "studio_list_capabilities", status: "done" }]);
+    expect(msgs[1].text).toBe("I can help with DezuxkStudio features!");
+    expect(msgs[1].streaming).toBe(false);
+    expect(useAgentStore.getState().sending).toBe(false);
+  });
+
+  it("converts failed sendPrompt RPC into an error bubble", async () => {
+    useAgentStore.setState({
+      providers: [{ ...mockProviders[0], state: "connected", active: true }],
+      prompt: "Will fail",
+    });
+
+    vi.spyOn(rtClient, "request").mockRejectedValueOnce(
+      new ActionError("ERR_UNAVAILABLE", "agent offline")
+    );
+
+    await useAgentStore.getState().sendPrompt();
+    const state = useAgentStore.getState();
+    expect(state.sending).toBe(false);
+    expect(state.messages[1].role).toBe("error");
+    expect(state.messages[1].text).toContain("agent offline");
+  });
+
+  it("clears chat and notifies backend", async () => {
+    useAgentStore.setState({
+      providers: [{ ...mockProviders[0], state: "connected", active: true }],
+      messages: [{ id: "m1", role: "user", text: "test" }],
+    });
+
+    const reqSpy = vi.spyOn(rtClient, "request").mockResolvedValueOnce({});
+    await useAgentStore.getState().clearChat();
+
+    expect(useAgentStore.getState().messages).toEqual([]);
+    expect(reqSpy).toHaveBeenCalledWith(Actions.AGENT_CLEAR_SESSION, {});
+  });
+});
+
+describe("retryLast and clearChat", () => {
+  beforeEach(() => {
+    useAgentStore.setState({
+      providers: [{ ...mockProviders[0], active: true, state: "connected" }],
+      messages: [
+        { id: "u1", role: "user", text: "first" },
+        { id: "a1", role: "assistant", text: "ok" },
+        { id: "u2", role: "user", text: "translate this" },
+        { id: "e2", role: "error", text: "timed out" },
+      ],
+      sending: false,
+      prompt: "",
+      error: null,
+    });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("re-sends the last user message and drops the failed exchange", async () => {
+    const req = vi
+      .spyOn(rtClient, "request")
+      .mockResolvedValue({ message_id: "msg-9", provider_id: "antigravity" } as never);
+    await useAgentStore.getState().retryLast();
+    expect(req).toHaveBeenCalledWith(Actions.AGENT_SEND_PROMPT, { prompt: "translate this" });
+    const texts = useAgentStore.getState().messages.map((m) => `${m.role}:${m.text}`);
+    expect(texts).toEqual(["user:first", "assistant:ok", "user:translate this", "assistant:"]);
+  });
+
+  it("keeps the conversation when the server refuses to clear it", async () => {
+    vi.spyOn(rtClient, "request").mockRejectedValue(new ActionError("ERR_CONFLICT", "busy"));
+    await useAgentStore.getState().clearChat();
+    expect(useAgentStore.getState().messages).toHaveLength(4);
+    expect(useAgentStore.getState().error?.code).toBe("ERR_CONFLICT");
+  });
+});

@@ -42,16 +42,16 @@ func TestMigrations(t *testing.T) {
 		if err := db.sql.QueryRow("SELECT MAX(version) FROM _schema_migrations").Scan(&maxVer); err != nil {
 			t.Fatalf("failed to query max version: %v", err)
 		}
-		if maxVer != 4 {
-			t.Fatalf("expected latest version 4, got %d", maxVer)
+		if maxVer != 7 {
+			t.Fatalf("expected latest version 7, got %d", maxVer)
 		}
 
 		var count int
 		if err := db.sql.QueryRow("SELECT COUNT(*) FROM _schema_migrations").Scan(&count); err != nil {
 			t.Fatalf("failed to count migrations: %v", err)
 		}
-		if count != 4 {
-			t.Fatalf("expected 4 recorded migrations, got %d", count)
+		if count != 7 {
+			t.Fatalf("expected 7 recorded migrations, got %d", count)
 		}
 
 		// Ensure dynamic provider tables do not exist
@@ -64,7 +64,7 @@ func TestMigrations(t *testing.T) {
 		}
 
 		// Ensure core tables exist
-		for _, tbl := range []string{"_schema_migrations", "app_metadata", "user_settings", "binary_configs"} {
+		for _, tbl := range []string{"_schema_migrations", "app_metadata", "user_settings", "binary_configs", "agent_providers", "agent_chat_messages", "agent_allowed_dirs"} {
 			var exists int
 			err := db.sql.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", tbl).Scan(&exists)
 			if err != nil || exists != 1 {
@@ -129,8 +129,8 @@ func TestMigrations(t *testing.T) {
 		if err := db.sql.QueryRow("SELECT MAX(version) FROM _schema_migrations").Scan(&maxVer); err != nil {
 			t.Fatal(err)
 		}
-		if maxVer != 4 {
-			t.Fatalf("expected version 4 after upgrade from v1, got %d", maxVer)
+		if maxVer != 7 {
+			t.Fatalf("expected version 7 after upgrade from v1, got %d", maxVer)
 		}
 
 		// Verify existing data preserved
@@ -187,7 +187,7 @@ func TestMigrations(t *testing.T) {
 		}
 		raw.Close()
 
-		// Upgrade to v4
+		// Upgrade to latest
 		db, err := Open(context.Background(), Options{
 			Path:          dbPath,
 			BackupDir:     backupDir,
@@ -204,8 +204,8 @@ func TestMigrations(t *testing.T) {
 		if err := db.sql.QueryRow("SELECT MAX(version) FROM _schema_migrations").Scan(&maxVer); err != nil {
 			t.Fatal(err)
 		}
-		if maxVer != 4 {
-			t.Fatalf("expected version 4 after upgrade from v2, got %d", maxVer)
+		if maxVer != 7 {
+			t.Fatalf("expected version 7 after upgrade from v2, got %d", maxVer)
 		}
 
 		var customPath string
@@ -274,7 +274,7 @@ func TestMigrations(t *testing.T) {
 		}
 		raw.Close()
 
-		// Upgrade to v4
+		// Upgrade to latest
 		db, err := Open(context.Background(), Options{
 			Path:          dbPath,
 			BackupDir:     backupDir,
@@ -283,7 +283,7 @@ func TestMigrations(t *testing.T) {
 			Logger:        slog.New(slog.DiscardHandler),
 		})
 		if err != nil {
-			t.Fatalf("upgrade from v3 to v4 failed: %v", err)
+			t.Fatalf("upgrade from v3 failed: %v", err)
 		}
 		defer db.Close()
 
@@ -291,8 +291,8 @@ func TestMigrations(t *testing.T) {
 		if err := db.sql.QueryRow("SELECT MAX(version) FROM _schema_migrations").Scan(&maxVer); err != nil {
 			t.Fatal(err)
 		}
-		if maxVer != 4 {
-			t.Fatalf("expected version 4 after upgrade from v3, got %d", maxVer)
+		if maxVer != 7 {
+			t.Fatalf("expected version 7 after upgrade from v3, got %d", maxVer)
 		}
 
 		// Verify ALL 7 dynamic provider tables are dropped and DO NOT exist in sqlite_master
@@ -308,12 +308,12 @@ func TestMigrations(t *testing.T) {
 		}
 	})
 
-	t.Run("FutureVersionV5_ReturnsErrSchemaTooNew", func(t *testing.T) {
+	t.Run("FutureVersionV8_ReturnsErrSchemaTooNew", func(t *testing.T) {
 		dir := t.TempDir()
-		dbPath := filepath.Join(dir, "v5.db")
+		dbPath := filepath.Join(dir, "v8.db")
 		backupDir := filepath.Join(dir, "backups")
 
-		// Create database with v5 recorded
+		// Create database with v8 recorded
 		raw, err := sql.Open("sqlite", dbPath)
 		if err != nil {
 			t.Fatalf("failed to open raw sqlite: %v", err)
@@ -324,7 +324,7 @@ func TestMigrations(t *testing.T) {
 				name TEXT NOT NULL,
 				applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 			);
-			INSERT INTO _schema_migrations (version, name) VALUES (5, '005_future.sql');
+			INSERT INTO _schema_migrations (version, name) VALUES (8, '008_future.sql');
 		`); err != nil {
 			raw.Close()
 			t.Fatal(err)
@@ -339,7 +339,7 @@ func TestMigrations(t *testing.T) {
 			Logger:        slog.New(slog.DiscardHandler),
 		})
 		if err == nil {
-			t.Fatalf("expected error for future version 5, got nil")
+			t.Fatalf("expected error for future version 8, got nil")
 		}
 		if !errors.Is(err, ErrSchemaTooNew) {
 			t.Fatalf("expected ErrSchemaTooNew, got: %v", err)

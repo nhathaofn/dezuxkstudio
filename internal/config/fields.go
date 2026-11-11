@@ -68,6 +68,18 @@ func fields(c *Config) []field {
 		{key: "update.timeout", usage: "update check HTTP timeout", val: durationValue{&c.Update.Timeout}},
 		{key: "update.check_on_startup", usage: "check for updates when the UI starts", val: boolValue{&c.Update.CheckOnStartup}},
 
+		{key: "agent.turn_timeout", usage: "max duration of one agent chat turn", val: durationValue{&c.Agent.TurnTimeout}},
+		{key: "agent.initialize_timeout", usage: "max wait for an ACP agent handshake", val: durationValue{&c.Agent.InitializeTimeout}},
+		{key: "agent.version_probe_timeout", usage: "max duration of an agent CLI --version probe", val: durationValue{&c.Agent.VersionProbeTimeout}},
+		{key: "agent.auth_probe_timeout", usage: "max duration of an agent CLI auth status check", val: durationValue{&c.Agent.AuthProbeTimeout}},
+		{key: "agent.login_timeout", usage: "max duration of an agent sign-in (browser OAuth)", val: durationValue{&c.Agent.LoginTimeout}},
+		{key: "agent.model_catalog_timeout", usage: "max duration of reading an agent CLI model catalog", val: durationValue{&c.Agent.ModelCatalogTimeout}},
+		{key: "agent.status_cache_ttl", usage: "reuse agent CLI auth/version probe results for this long", val: durationValue{&c.Agent.StatusCacheTTL}},
+		{key: "agent.approval_ttl", usage: "pending agent approvals expire after this long", val: durationValue{&c.Agent.ApprovalTTL}},
+		{key: "agent.history_limit", usage: "agent chat messages shown in the UI", val: intValue{&c.Agent.HistoryLimit}},
+		{key: "agent.context_messages", usage: "past chat messages replayed into a new agent session", val: intValue{&c.Agent.ContextMessages}},
+		{key: "agent.context_message_chars", usage: "max characters per replayed chat message", val: intValue{&c.Agent.ContextMessageChars}},
+
 		{key: "desktop.width", usage: "initial window width (0 = 80% of primary screen)", val: intValue{&c.Desktop.Width}},
 		{key: "desktop.height", usage: "initial window height (0 = 80% of primary screen)", val: intValue{&c.Desktop.Height}},
 		{key: "desktop.min_width", usage: "minimum window width", val: intValue{&c.Desktop.MinWidth}},
