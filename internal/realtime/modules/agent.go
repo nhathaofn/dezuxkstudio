@@ -91,8 +91,9 @@ func (m Agent) Register(r *realtime.Registry) {
 				return contracts.AgentPromptResult{}, err
 			}
 			return contracts.AgentPromptResult{
-				MessageID:  msgID,
-				ProviderID: provID,
+				MessageID:      msgID,
+				ProviderID:     provID,
+				ConversationID: m.Service.CurrentConversationID(),
 			}, nil
 		})
 
@@ -101,22 +102,45 @@ func (m Agent) Register(r *realtime.Registry) {
 			return contracts.Empty{}, m.Service.CancelPrompt(ctx)
 		})
 
-	realtime.Handle(r, contracts.ActionAgentClearSession,
+	realtime.Handle(r, contracts.ActionAgentNewConversation,
 		func(ctx context.Context, _ *realtime.Request, _ contracts.Empty) (contracts.Empty, error) {
-			return contracts.Empty{}, m.Service.ClearSession(ctx)
+			return contracts.Empty{}, m.Service.NewConversation(ctx)
+		})
+
+	realtime.Handle(r, contracts.ActionAgentListConversations,
+		func(ctx context.Context, _ *realtime.Request, _ contracts.Empty) (contracts.AgentConversationListResult, error) {
+			list, err := m.Service.ListConversations(ctx)
+			if err != nil {
+				return contracts.AgentConversationListResult{}, err
+			}
+			out := make([]contracts.AgentConversation, len(list))
+			for i, c := range list {
+				out[i] = contracts.AgentConversation(c)
+			}
+			return contracts.AgentConversationListResult{Conversations: out}, nil
+		})
+
+	realtime.Handle(r, contracts.ActionAgentOpenConversation,
+		func(ctx context.Context, _ *realtime.Request, p contracts.AgentConversationIDPayload) (contracts.AgentHistoryResult, error) {
+			id, msgs, err := m.Service.OpenConversation(ctx, p.ID)
+			if err != nil {
+				return contracts.AgentHistoryResult{}, err
+			}
+			return historyResult(id, msgs), nil
+		})
+
+	realtime.Handle(r, contracts.ActionAgentDeleteConversation,
+		func(ctx context.Context, _ *realtime.Request, p contracts.AgentConversationIDPayload) (contracts.Empty, error) {
+			return contracts.Empty{}, m.Service.DeleteConversation(ctx, p.ID)
 		})
 
 	realtime.Handle(r, contracts.ActionAgentHistory,
 		func(ctx context.Context, _ *realtime.Request, _ contracts.Empty) (contracts.AgentHistoryResult, error) {
-			msgs, err := m.Service.History(ctx)
+			id, msgs, err := m.Service.History(ctx)
 			if err != nil {
 				return contracts.AgentHistoryResult{}, err
 			}
-			out := make([]contracts.AgentChatMessage, len(msgs))
-			for i, msg := range msgs {
-				out[i] = contracts.AgentChatMessage(msg)
-			}
-			return contracts.AgentHistoryResult{Messages: out}, nil
+			return historyResult(id, msgs), nil
 		})
 
 	realtime.Handle(r, contracts.ActionAgentListApprovals,
@@ -173,6 +197,14 @@ func (m Agent) listResult(ctx context.Context) (contracts.AgentListResult, error
 		return contracts.AgentListResult{}, err
 	}
 	return toContractAgentList(list), nil
+}
+
+func historyResult(id string, msgs []domainagent.ChatMessage) contracts.AgentHistoryResult {
+	out := make([]contracts.AgentChatMessage, len(msgs))
+	for i, msg := range msgs {
+		out[i] = contracts.AgentChatMessage(msg)
+	}
+	return contracts.AgentHistoryResult{ConversationID: id, Messages: out}
 }
 
 func toContractAgentList(in []domainagent.ProviderInfo) contracts.AgentListResult {

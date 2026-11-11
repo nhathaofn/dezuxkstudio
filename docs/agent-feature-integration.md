@@ -113,8 +113,23 @@ Danh sách nằm trong `internal/service/agent/access_policy.go` (`forbiddenExte
 ## 8. Giới hạn vai trò (không cần làm gì thêm)
 
 Mọi đầu ra của agent đi qua `code_guard.go`: code và lệnh terminal bị chặn trước khi tới UI, lịch sử chat hoặc file.
-System prompt nằm ở `internal/service/agent/profile/agent.md`. Nếu một tính năng mới cần agent hiểu thêm ngữ cảnh,
-hãy viết vào `Description` của node trước, chỉ sửa prompt khi thật cần thiết.
+
+### Cấu trúc system prompt (`internal/service/agent/profile.go`)
+
+System prompt được ghép theo lớp, phần ổn định đặt trước để provider dùng lại được cache (tốn ít hạn mức hơn):
+
+| Lớp | Nguồn | Nội dung |
+|---|---|---|
+| `<policy>` | `profile/policy.md` | **Chỉ quy tắc của ứng dụng**: phạm vi, giới hạn cứng, an toàn, trung thực. Không tên tool, không tính năng, không ngôn ngữ cụ thể. `{{app}}` được thay bằng tên sản phẩm |
+| `<application>` | lúc chạy | Tên, phiên bản, nền tảng, ngôn ngữ giao diện |
+| `<features>` | `engine.Spec` của các node | Một dòng cho mỗi tính năng: type, tên, mô tả, input, setting |
+| Theo lượt | `UIContext` | Ngữ cảnh màn hình, **chỉ gửi khi thay đổi** trong cùng một phiên |
+
+Quy tắc khi sửa:
+- Hướng dẫn dùng một tool → viết vào mô tả của tool đó trong `mcp_tools.go`, không viết vào `policy.md`.
+- Agent cần hiểu thêm về một tính năng → viết vào `Description` của node; nó tự vào lớp `<features>`.
+- Câu thông báo hiển thị cho người dùng → khóa i18n ở frontend (`agent.notice.*`, `agent.err.*`), backend chỉ gửi khóa.
+- `policy.md` chỉ sửa khi đổi quy tắc của ứng dụng. Test `TestPolicyIsRulesOnly` chặn việc viết cứng tên tool, tính năng hoặc chữ không phải tiếng Anh vào đó.
 
 ## 9. Kiểm thử với model thật
 

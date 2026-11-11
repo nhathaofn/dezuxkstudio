@@ -65,9 +65,9 @@ func TestAdversarial_SQLite_CleanDatabaseMigration(t *testing.T) {
 		recorded = append(recorded, rm)
 	}
 
-	// Clean database migration runner must apply migrations 1 through 7
-	if len(recorded) != 7 {
-		t.Fatalf("expected exactly 7 applied migrations, got %d: %+v", len(recorded), recorded)
+	// Clean database migration runner must apply migrations 1 through 8
+	if len(recorded) != 8 {
+		t.Fatalf("expected exactly 8 applied migrations, got %d: %+v", len(recorded), recorded)
 	}
 	if recorded[0].version != 1 || recorded[0].name != "001_initial_schema.sql" {
 		t.Errorf("migration 1 mismatch: got %+v", recorded[0])
@@ -90,18 +90,21 @@ func TestAdversarial_SQLite_CleanDatabaseMigration(t *testing.T) {
 	if recorded[6].version != 7 || recorded[6].name != "007_agent_models.sql" {
 		t.Errorf("migration 7 mismatch: got %+v", recorded[6])
 	}
+	if recorded[7].version != 8 || recorded[7].name != "008_agent_conversations.sql" {
+		t.Errorf("migration 8 mismatch: got %+v", recorded[7])
+	}
 
-	// Verify maximum version in _schema_migrations is 7
+	// Verify maximum version in _schema_migrations is 8
 	var maxVer int
 	if err := rawDB.QueryRow("SELECT MAX(version) FROM _schema_migrations").Scan(&maxVer); err != nil {
 		t.Fatalf("failed to get max version: %v", err)
 	}
-	if maxVer != 7 {
-		t.Errorf("expected max version 7, got %d", maxVer)
+	if maxVer != 8 {
+		t.Errorf("expected max version 8, got %d", maxVer)
 	}
 
 	// Verify expected tables exist
-	for _, expectedTable := range []string{"_schema_migrations", "app_metadata", "user_settings", "binary_configs", "agent_providers", "agent_chat_messages", "agent_allowed_dirs"} {
+	for _, expectedTable := range []string{"_schema_migrations", "app_metadata", "user_settings", "binary_configs", "agent_providers", "agent_chat_messages", "agent_allowed_dirs", "agent_conversations"} {
 		var count int
 		err := rawDB.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", expectedTable).Scan(&count)
 		if err != nil || count != 1 {

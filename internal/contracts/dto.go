@@ -347,6 +347,8 @@ func (p AgentSendPromptPayload) Validate() error {
 type AgentPromptResult struct {
 	MessageID  string           `json:"message_id"`
 	ProviderID agent.ProviderID `json:"provider_id"`
+	// ConversationID is the chat the prompt was added to (created by the first message of a new chat).
+	ConversationID string `json:"conversation_id"`
 }
 
 // AgentChatEvent streams delta/thought/tool/completion/error updates from the active turn.
@@ -375,11 +377,42 @@ type AgentChatMessage struct {
 	Thought    string           `json:"thought,omitempty"`
 	Tool       string           `json:"tool,omitempty"`
 	CreatedAt  int64            `json:"created_at"`
+	// ConversationID is the chat the message belongs to.
+	ConversationID string `json:"conversation_id,omitempty"`
 }
 
-// AgentHistoryResult returns persisted DezuxkStudio chat history.
+// AgentHistoryResult returns one chat's messages ("" conversation_id = a new, empty chat).
 type AgentHistoryResult struct {
-	Messages []AgentChatMessage `json:"messages"`
+	ConversationID string             `json:"conversation_id"`
+	Messages       []AgentChatMessage `json:"messages"`
+}
+
+// AgentConversation summarizes one agent chat.
+type AgentConversation struct {
+	ID           string           `json:"id"`
+	Title        string           `json:"title"`
+	ProviderID   agent.ProviderID `json:"provider_id"`
+	CreatedAt    int64            `json:"created_at"`
+	UpdatedAt    int64            `json:"updated_at"`
+	MessageCount int              `json:"message_count"`
+}
+
+// AgentConversationListResult answers agent:list_conversations.
+type AgentConversationListResult struct {
+	Conversations []AgentConversation `json:"conversations"`
+}
+
+// AgentConversationIDPayload targets one agent chat.
+type AgentConversationIDPayload struct {
+	ID string `json:"id"`
+}
+
+// Validate checks the conversation ID.
+func (p AgentConversationIDPayload) Validate() error {
+	if id := strings.TrimSpace(p.ID); id == "" || len(id) > 64 {
+		return apperr.Validation("conversation id is required")
+	}
+	return nil
 }
 
 // AgentApprovalRequest describes a high-impact action waiting for desktop UI approval.

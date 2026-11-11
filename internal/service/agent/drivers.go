@@ -26,6 +26,10 @@ type providerDriver interface {
 	runTurn(ctx context.Context, executable, workDir, mcpURL, mcpToken, messageID, prompt string) error
 	// release frees long-lived resources (processes, tokens) after disconnect, sign-in or sign-out.
 	release()
+	// toolCallHint returns how the model reaches the app's tools when they are NOT listed to it natively
+	// (e.g. Codex code mode, where tools are discovered at runtime); "" when the provider lists them.
+	// A non-empty hint makes the system prompt include a generated <tools> layer.
+	toolCallHint() string
 }
 
 func (s *Service) driver(id domainagent.ProviderID) providerDriver {
@@ -48,7 +52,20 @@ func (d codexDriver) profile() string    { return d.s.profileDirFor(domainagent.
 func (codexDriver) perTurn() bool        { return true }
 func (codexDriver) cheapAuthProbe() bool { return false }
 func (d codexDriver) release()           { d.s.closeCodexAppServer() }
-func (d codexDriver) prepare() error     { _, err := prepareCodexProfile(d.profile()); return err }
+
+// toolCallHint depends on the selected model: code-mode models (GPT-5.6/GPT-6 today) only reach MCP tools
+// through the code runner, other models get them as regular tool definitions and need no <tools> layer.
+func (d codexDriver) toolCallHint() string {
+	call := "tools." + mcpToolPrefix + "<name>(args)"
+	switch d.s.toolsVisibility(domainagent.ProviderCodex) {
+	case "native":
+		return ""
+	case "code":
+		return "Call them from the code runner as " + call + "."
+	}
+	return "If they are not in your tool list, call them from the code runner as " + call + "."
+}
+func (d codexDriver) prepare() error { _, err := prepareCodexProfile(d.profile()); return err }
 func (d codexDriver) login(ctx context.Context, exe, apiKey string) error {
 	return loginCodex(ctx, exe, d.profile(), apiKey)
 }
@@ -71,6 +88,7 @@ func (d claudeDriver) profile() string    { return d.s.profileDirFor(domainagent
 func (claudeDriver) perTurn() bool        { return true }
 func (claudeDriver) cheapAuthProbe() bool { return false }
 func (claudeDriver) release()             {}
+func (claudeDriver) toolCallHint() string { return "" }
 func (d claudeDriver) prepare() error     { _, err := prepareClaudeProfile(d.profile()); return err }
 func (d claudeDriver) login(ctx context.Context, exe, apiKey string) error {
 	return loginClaude(ctx, exe, d.profile(), apiKey)
@@ -93,6 +111,7 @@ func (d agyDriver) profile() string    { return d.s.profileDirFor(domainagent.Pr
 func (agyDriver) perTurn() bool        { return false }
 func (agyDriver) cheapAuthProbe() bool { return true }
 func (d agyDriver) release()           { cleanupAgyProfileToken(d.profile()) }
+func (agyDriver) toolCallHint() string { return "" }
 func (agyDriver) prepare() error       { return nil }
 func (d agyDriver) probeAuth(context.Context, string) (domainagent.AuthState, string) {
 	return probeAgyAuth(d.profile())
@@ -117,6 +136,7 @@ type unsupportedDriver struct{ id domainagent.ProviderID }
 func (unsupportedDriver) perTurn() bool        { return false }
 func (unsupportedDriver) cheapAuthProbe() bool { return true }
 func (unsupportedDriver) release()             {}
+func (unsupportedDriver) toolCallHint() string { return "" }
 func (unsupportedDriver) prepare() error       { return nil }
 func (unsupportedDriver) probeAuth(context.Context, string) (domainagent.AuthState, string) {
 	return domainagent.AuthUnknown, ""

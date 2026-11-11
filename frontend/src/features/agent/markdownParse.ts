@@ -10,13 +10,16 @@ export type MdBlock =
   | { type: "ol"; items: string[]; start: number }
   | { type: "quote"; text: string }
   | { type: "code"; lang: string; text: string }
-  | { type: "hr" };
+  | { type: "hr" }
+  /** A server notice line "[[notice:key]]", translated by the UI (agent.notice.<key>). */
+  | { type: "notice"; key: string };
 
 const reFence = /^\s*(```|~~~)\s*([\w+-]*)\s*$/;
 const reHeading = /^(#{1,4})\s+(.*)$/;
 const reUl = /^\s*[-*+]\s+(.*)$/;
 const reOl = /^\s*(\d{1,4})[.)]\s+(.*)$/;
 const reQuote = /^\s*>\s?(.*)$/;
+const reNotice = /^\s*\[\[notice:([a-z_]+)\]\]\s*$/;
 const reHr = /^\s*([-*_])(\s*\1){2,}\s*$/;
 
 /** Splits Markdown source into blocks. */
@@ -50,6 +53,13 @@ export function parseBlocks(src: string): MdBlock[] {
 
     if (line.trim() === "") {
       flushPara();
+      continue;
+    }
+
+    const notice = reNotice.exec(line);
+    if (notice) {
+      flushPara();
+      blocks.push({ type: "notice", key: notice[1] });
       continue;
     }
 

@@ -91,9 +91,28 @@ export interface AgentChatMessage {
   thought?: string;
   tool?: string;
   created_at: number;
+  conversation_id?: string;
+}
+
+export interface AgentConversation {
+  id: string;
+  title: string;
+  provider_id: AgentProviderID;
+  created_at: number;
+  updated_at: number;
+  message_count: number;
+}
+
+export interface AgentConversationIDPayload {
+  id: string;
+}
+
+export interface AgentConversationListResult {
+  conversations: AgentConversation[];
 }
 
 export interface AgentHistoryResult {
+  conversation_id: string;
   messages: AgentChatMessage[];
 }
 
@@ -109,6 +128,7 @@ export interface AgentLoginPayload {
 export interface AgentPromptResult {
   message_id: string;
   provider_id: AgentProviderID;
+  conversation_id: string;
 }
 
 export interface AgentProviderIDPayload {
@@ -454,10 +474,16 @@ export const Actions = {
   AGENT_SEND_PROMPT: "agent:send_prompt",
   /** Cancels the currently active agent prompt turn. */
   AGENT_CANCEL_PROMPT: "agent:cancel_prompt",
-  /** Clears DezuxkStudio agent chat history and resets the active session. */
-  AGENT_CLEAR_SESSION: "agent:clear_session",
-  /** Returns persisted DezuxkStudio agent chat messages. */
+  /** Starts a new agent chat; earlier chats stay in history. */
+  AGENT_NEW_CONVERSATION: "agent:new_conversation",
+  /** Returns the current agent chat (empty for a new chat). */
   AGENT_HISTORY: "agent:history",
+  /** Lists earlier agent chats, most recent first. */
+  AGENT_LIST_CONVERSATIONS: "agent:list_conversations",
+  /** Makes an earlier agent chat current so it can be read and continued. */
+  AGENT_OPEN_CONVERSATION: "agent:open_conversation",
+  /** Deletes an agent chat and its messages. */
+  AGENT_DELETE_CONVERSATION: "agent:delete_conversation",
   /** Lists pending high-impact agent actions waiting for desktop UI approval. */
   AGENT_LIST_APPROVALS: "agent:list_approvals",
   /** Approves or rejects a pending agent action from the desktop UI. */
@@ -500,8 +526,11 @@ export interface ActionMap {
   "agent:disconnect": { payload: Empty; result: AgentListResult };
   "agent:send_prompt": { payload: AgentSendPromptPayload; result: AgentPromptResult };
   "agent:cancel_prompt": { payload: Empty; result: Empty };
-  "agent:clear_session": { payload: Empty; result: Empty };
+  "agent:new_conversation": { payload: Empty; result: Empty };
   "agent:history": { payload: Empty; result: AgentHistoryResult };
+  "agent:list_conversations": { payload: Empty; result: AgentConversationListResult };
+  "agent:open_conversation": { payload: AgentConversationIDPayload; result: AgentHistoryResult };
+  "agent:delete_conversation": { payload: AgentConversationIDPayload; result: Empty };
   "agent:list_approvals": { payload: Empty; result: AgentApprovalListResult };
   "agent:resolve_approval": { payload: AgentResolveApprovalPayload; result: Empty };
   "agent:set_ui_context": { payload: AgentUIContextPayload; result: Empty };

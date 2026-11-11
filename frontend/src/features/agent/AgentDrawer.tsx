@@ -1,11 +1,12 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import {
   Bot,
   FolderPlus,
   MessageSquare,
   PlugZap,
   RefreshCw,
-  RotateCcw,
+  History,
+  Plus,
   Trash2,
   X,
 } from "lucide-react";
@@ -18,9 +19,6 @@ import { useConnectionStore } from "../connection/useConnectionStore";
 import { AgentChatTab } from "./AgentChatTab";
 import { AgentProviderCard } from "./AgentProviderCard";
 import { useAgentStore } from "./useAgentStore";
-
-/** How long the "confirm new chat" state stays armed. */
-const CONFIRM_CLEAR_MS = 3000;
 
 export const AgentDrawer: React.FC = () => {
   const t = useT();
@@ -37,20 +35,16 @@ export const AgentDrawer: React.FC = () => {
   const setPanelWidth = useAgentStore((s) => s.setPanelWidth);
   const setActiveTab = useAgentStore((s) => s.setActiveTab);
   const fetchProviders = useAgentStore((s) => s.fetchProviders);
-  const clearChat = useAgentStore((s) => s.clearChat);
+  const newChat = useAgentStore((s) => s.newChat);
   const hasMessages = useAgentStore((s) => s.messages.length > 0);
   const sending = useAgentStore((s) => s.sending);
+  const chatView = useAgentStore((s) => s.chatView);
+  const setChatView = useAgentStore((s) => s.setChatView);
   const addAllowedDir = useAgentStore((s) => s.addAllowedDir);
   const removeAllowedDir = useAgentStore((s) => s.removeAllowedDir);
 
   const [resizing, setResizing] = useState(false);
-  // Clearing deletes the persisted conversation, so it takes a second click to confirm.
-  const [confirmClear, setConfirmClear] = useState(false);
-  useEffect(() => {
-    if (!confirmClear) return;
-    const timer = setTimeout(() => setConfirmClear(false), CONFIRM_CLEAR_MS);
-    return () => clearTimeout(timer);
-  }, [confirmClear]);
+  const historyOpen = activeTab === "chat" && chatView === "history";
 
   if (!panelOpen) return null;
 
@@ -114,32 +108,34 @@ export const AgentDrawer: React.FC = () => {
         </div>
 
         <div className="agent-drawer__actions">
-          {activeTab === "chat" &&
-            (confirmClear ? (
-              <Button
-                size="sm"
-                className="agent-clear-confirm"
-                onClick={() => {
-                  setConfirmClear(false);
-                  void clearChat();
-                }}
-                title={t("agent.clearConfirm")}
-              >
-                <RotateCcw size={13} />
-                {t("agent.clearConfirm")}
-              </Button>
-            ) : (
-              <Button
-                size="sm"
-                iconOnly
-                onClick={() => setConfirmClear(true)}
-                disabled={!hasMessages || sending}
-                title={t("agent.clear")}
-                aria-label={t("agent.clear")}
-              >
-                <RotateCcw size={13} />
-              </Button>
-            ))}
+          {/* A new chat never deletes anything: earlier chats stay in History. */}
+          <Button
+            size="sm"
+            iconOnly
+            onClick={() => {
+              setActiveTab("chat");
+              void newChat();
+            }}
+            disabled={sending || (!hasMessages && activeTab === "chat" && chatView === "chat")}
+            title={t("agent.newChat")}
+            aria-label={t("agent.newChat")}
+          >
+            <Plus size={14} />
+          </Button>
+          <Button
+            size="sm"
+            iconOnly
+            className={historyOpen ? "is-active" : ""}
+            onClick={() => {
+              setActiveTab("chat");
+              setChatView(historyOpen ? "chat" : "history");
+            }}
+            aria-pressed={historyOpen}
+            title={t("agent.history.title")}
+            aria-label={t("agent.history.title")}
+          >
+            <History size={14} />
+          </Button>
           <Button
             size="sm"
             iconOnly

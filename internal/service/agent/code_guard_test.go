@@ -70,7 +70,7 @@ func TestContainsSourceCodeAllowsContent(t *testing.T) {
 
 // streamThrough feeds text to a fresh guard in chunks of the given size and returns everything released.
 func streamThrough(text string, chunk int) (string, *turnOutputGuard) {
-	g := newTurnOutputGuard("m1", "viết code")
+	g := newTurnOutputGuard("m1")
 	var out strings.Builder
 	runes := []rune(text)
 	for i := 0; i < len(runes); i += chunk {
@@ -114,8 +114,8 @@ func TestStreamFilterNeverReleasesCode(t *testing.T) {
 					t.Errorf("%s (chunk=%d): code fragment %q leaked to the UI:\n%s", name, chunk, m, got)
 				}
 			}
-			if !strings.Contains(got, "Nội dung bị chặn") {
-				t.Errorf("%s (chunk=%d): expected Vietnamese block notice, got %q", name, chunk, got)
+			if !strings.Contains(got, noticeMarker(noticeCodeBlocked)) {
+				t.Errorf("%s (chunk=%d): expected the block notice marker, got %q", name, chunk, got)
 			}
 			if strings.Contains(got, "Hết.") {
 				t.Errorf("%s (chunk=%d): text after blocked code must be dropped", name, chunk)
@@ -134,17 +134,18 @@ func TestStreamFilterKeepsTextBeforeCode(t *testing.T) {
 	}
 }
 
-func TestBlockNoticeLanguage(t *testing.T) {
-	if !strings.Contains(codeBlockedNotice("write a python function"), "Content blocked") {
-		t.Fatal("expected English notice for English prompt")
+func TestBlockNoticeIsLanguageNeutral(t *testing.T) {
+	// The UI translates the marker; the backend must not pick a language.
+	if got := noticeMarker(noticeCodeBlocked); got != "[[notice:code_blocked]]" {
+		t.Fatalf("unexpected marker %q", got)
 	}
-	if !strings.Contains(codeBlockedNotice("viết hàm python"), "Nội dung bị chặn") {
-		t.Fatal("expected Vietnamese notice for Vietnamese prompt")
+	if got := stripNoticeMarkers("ok\n[[notice:code_blocked]]\n"); strings.Contains(got, "notice") {
+		t.Fatalf("markers must not be replayed to the model: %q", got)
 	}
 }
 
 func TestThoughtFilterDropsCode(t *testing.T) {
-	g := newTurnOutputGuard("m1", "x")
+	g := newTurnOutputGuard("m1")
 	var out strings.Builder
 	out.WriteString(g.filterThought("Người dùng muốn code.\n"))
 	out.WriteString(g.filterThought("def a():\n    import os\n    os.system('x')\n    return 1\n"))
@@ -230,7 +231,7 @@ func TestServiceGuardsProviderOutput(t *testing.T) {
 	if strings.Contains(ui.String(), "os.system") {
 		t.Fatalf("code reached the UI: %q", ui.String())
 	}
-	if !strings.Contains(ui.String(), "Nội dung bị chặn") {
+	if !strings.Contains(ui.String(), noticeMarker(noticeCodeBlocked)) {
 		t.Fatalf("expected block notice in UI stream, got %q", ui.String())
 	}
 	history, _ := repo.ListChatMessages(ctx, 10)
@@ -294,7 +295,7 @@ func TestWorkspaceWriteToolRejectsCode(t *testing.T) {
 }
 
 func TestStreamFilterReleasesProseBeforeNewline(t *testing.T) {
-	g := newTurnOutputGuard("m1", "chào")
+	g := newTurnOutputGuard("m1")
 	var got strings.Builder
 	for _, chunk := range []string{"Chào ", "bạn! Mình là ", "trợ lý của DezuxkStudio", " và có thể giúp bạn."} {
 		out := g.filterText(chunk)

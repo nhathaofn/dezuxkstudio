@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +30,8 @@ type fakeRepo struct {
 	messages    []domainagent.ChatMessage
 	allowedDirs []string
 	models      map[domainagent.ProviderID]domainagent.ModelSelection
+
+	conversations map[string]domainagent.Conversation
 }
 
 func newFakeRepo() *fakeRepo {
@@ -95,6 +98,67 @@ func (r *fakeRepo) ClearChatMessages(_ context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.messages = nil
+	return nil
+}
+
+func (r *fakeRepo) SaveConversation(_ context.Context, c domainagent.Conversation) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.conversations == nil {
+		r.conversations = make(map[string]domainagent.Conversation)
+	}
+	if old, ok := r.conversations[c.ID]; ok {
+		if old.Title != "" {
+			c.Title = old.Title
+		}
+		c.CreatedAt = old.CreatedAt
+	}
+	r.conversations[c.ID] = c
+	return nil
+}
+
+func (r *fakeRepo) ListConversations(_ context.Context, _ int) ([]domainagent.Conversation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []domainagent.Conversation
+	for _, c := range r.conversations {
+		for _, m := range r.messages {
+			if m.ConversationID == c.ID {
+				c.MessageCount++
+			}
+		}
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
+	return out, nil
+}
+
+func (r *fakeRepo) ListConversationMessages(_ context.Context, id string, limit int) ([]domainagent.ChatMessage, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []domainagent.ChatMessage
+	for _, m := range r.messages {
+		if m.ConversationID == id {
+			out = append(out, m)
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out, nil
+}
+
+func (r *fakeRepo) DeleteConversation(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.conversations, id)
+	kept := r.messages[:0]
+	for _, m := range r.messages {
+		if m.ConversationID != id {
+			kept = append(kept, m)
+		}
+	}
+	r.messages = kept
 	return nil
 }
 
@@ -729,7 +793,7 @@ func TestServiceConnectChatAndIsolatedCLIs(t *testing.T) {
 	}
 
 	// History persisted in DezuxkStudio's own SQLite repo.
-	hist, err := svc.History(ctx)
+	_, hist, err := svc.History(ctx)
 	if err != nil || len(hist) != 2 {
 		t.Fatalf("expected 2 persisted messages, got %+v, err=%v", hist, err)
 	}
@@ -792,8 +856,8 @@ func TestCodexArgsAndJSONLStream(t *testing.T) {
 		`sandbox_mode="read-only"`,
 		"features.shell_tool=false",
 		"features.apps=false",
-		"developer_instructions=",
 		"model_instructions_file=",
+		"agents.enabled=false",
 		"mcp_servers.dezuxk.url=",
 		`mcp_servers.dezuxk.bearer_token_env_var="DEZUXK_AGENT_TOKEN"`,
 	} {

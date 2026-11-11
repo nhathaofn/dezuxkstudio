@@ -204,21 +204,22 @@ describe("useAgentStore", () => {
     expect(state.messages[1].text).toContain("agent offline");
   });
 
-  it("clears chat and notifies backend", async () => {
+  it("starts a new chat on the server, keeping history", async () => {
     useAgentStore.setState({
       providers: [{ ...mockProviders[0], state: "connected", active: true }],
       messages: [{ id: "m1", role: "user", text: "test" }],
     });
 
     const reqSpy = vi.spyOn(rtClient, "request").mockResolvedValueOnce({});
-    await useAgentStore.getState().clearChat();
+    await useAgentStore.getState().newChat();
 
     expect(useAgentStore.getState().messages).toEqual([]);
-    expect(reqSpy).toHaveBeenCalledWith(Actions.AGENT_CLEAR_SESSION, {});
+    expect(useAgentStore.getState().conversationId).toBe("");
+    expect(reqSpy).toHaveBeenCalledWith(Actions.AGENT_NEW_CONVERSATION, {});
   });
 });
 
-describe("retryLast and clearChat", () => {
+describe("retryLast and newChat", () => {
   beforeEach(() => {
     useAgentStore.setState({
       providers: [{ ...mockProviders[0], active: true, state: "connected" }],
@@ -247,8 +248,62 @@ describe("retryLast and clearChat", () => {
 
   it("keeps the conversation when the server refuses to clear it", async () => {
     vi.spyOn(rtClient, "request").mockRejectedValue(new ActionError("ERR_CONFLICT", "busy"));
-    await useAgentStore.getState().clearChat();
+    await useAgentStore.getState().newChat();
     expect(useAgentStore.getState().messages).toHaveLength(4);
     expect(useAgentStore.getState().error?.code).toBe("ERR_CONFLICT");
+  });
+});
+
+describe("conversations", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("shows the agent panel when the app starts", () => {
+    expect(useAgentStore.getInitialState().panelOpen).toBe(true);
+    expect(useAgentStore.getInitialState().conversationId).toBe("");
+  });
+
+  it("opens an earlier chat as the current one", async () => {
+    useAgentStore.setState({ chatView: "history", messages: [], conversationId: "" });
+    vi.spyOn(rtClient, "request").mockResolvedValue({
+      conversation_id: "c1",
+      messages: [{ id: "m1", provider_id: "codex", role: "user", text: "earlier", created_at: 1 }],
+    } as never);
+    await useAgentStore.getState().openConversation("c1");
+    const s = useAgentStore.getState();
+    expect(s.conversationId).toBe("c1");
+    expect(s.chatView).toBe("chat");
+    expect(s.messages.map((m) => m.text)).toEqual(["earlier"]);
+  });
+
+  it("deleting the open chat leaves a new, empty one", async () => {
+    useAgentStore.setState({
+      conversationId: "c1",
+      messages: [{ id: "m1", role: "user", text: "x" }],
+      conversations: [
+        {
+          id: "c1",
+          title: "a",
+          provider_id: "codex",
+          created_at: 1,
+          updated_at: 1,
+          message_count: 1,
+        },
+        {
+          id: "c2",
+          title: "b",
+          provider_id: "codex",
+          created_at: 1,
+          updated_at: 1,
+          message_count: 1,
+        },
+      ],
+    });
+    const req = vi.spyOn(rtClient, "request").mockResolvedValue({} as never);
+    await useAgentStore.getState().deleteConversation("c1");
+    expect(req).toHaveBeenCalledWith(Actions.AGENT_DELETE_CONVERSATION, { id: "c1" });
+    const s = useAgentStore.getState();
+    expect(s.conversations.map((c) => c.id)).toEqual(["c2"]);
+    expect(s.conversationId).toBe("");
+    expect(s.messages).toEqual([]);
   });
 });

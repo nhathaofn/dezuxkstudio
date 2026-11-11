@@ -117,14 +117,47 @@ func buildCodexExecArgs(mcpURL, instructions, baseInstructionsFile, resumeID str
 		"--skip-git-repo-check",
 		"--ignore-user-config",
 		"--ignore-rules",
-		"-c", "developer_instructions="+strconv.Quote(instructions),
 	)
+	// The profile is the model's base instructions (model_instructions_file). Sending it again as
+	// developer_instructions would double ~2k tokens on every model call, so it is only the fallback.
+	if baseInstructionsFile == "" {
+		args = append(args, "-c", "developer_instructions="+strconv.Quote(instructions))
+	}
 	args = append(args, codexPolicyArgs(mcpURL, baseInstructionsFile)...)
 	return append(args, "-")
 }
 
+// codexLeanArgs switch off Codex features DezuxkStudio never uses. Each one adds tool definitions or
+// instructions to every model call (multi-agent tools and role prompts alone are ~9k characters), which
+// costs the user's quota on every turn. view_image is also off because it would read images outside
+// DezuxkStudio's access policy; image files are opened through workspace_read_file instead.
+var codexLeanArgs = []string{
+	"-c", "agents.enabled=false",
+	"-c", "skills.include_instructions=false",
+	"-c", "features.multi_agent=false",
+	"-c", "features.multi_agent_v2=false",
+	"-c", "features.goals=false",
+	"-c", "features.plugins=false",
+	"-c", "features.hooks=false",
+	"-c", "features.skill_search=false",
+	"-c", "features.tool_suggest=false",
+	"-c", "features.image_generation=false",
+	"-c", "features.browser_use=false",
+	"-c", "features.computer_use=false",
+	"-c", "features.sleep_tool=false",
+	"-c", "features.view_image=false",
+	// GPT-6 models default to low verbosity, which clips explanations and lists; length is governed by
+	// the policy instead ("match the length to the request").
+	"-c", `model_verbosity="medium"`,
+}
+
 // codexPolicyArgs are the security settings shared by `codex exec` and `codex app-server`: read-only
 // sandbox, no approvals, no shell or apps, and DezuxkStudio's MCP server as the only tool source.
+//
+// DezuxkStudio's MCP tools are pre-approved inside Codex (default_tools_approval_mode="approve"):
+// DezuxkStudio enforces its own policy and approval queue for every tool (destructive actions wait
+// for Approve in the app's panel). Without this, Codex asks for approval of each MCP call, which this
+// headless session can never grant, and the model answers that it "cannot access the tool".
 func codexPolicyArgs(mcpURL, baseInstructionsFile string) []string {
 	args := []string{
 		"-c", `sandbox_mode="read-only"`,
@@ -133,7 +166,9 @@ func codexPolicyArgs(mcpURL, baseInstructionsFile string) []string {
 		"-c", "features.apps=false",
 		"-c", "mcp_servers." + mcpServerName + ".url=" + strconv.Quote(mcpURL),
 		"-c", "mcp_servers." + mcpServerName + ".bearer_token_env_var=" + strconv.Quote(mcpTokenEnvVar),
+		"-c", "mcp_servers." + mcpServerName + `.default_tools_approval_mode="approve"`,
 	}
+	args = append(args, codexLeanArgs...)
 	if baseInstructionsFile != "" {
 		args = append(args, "-c", "model_instructions_file="+strconv.Quote(baseInstructionsFile))
 	}
@@ -272,12 +307,13 @@ func (s *Service) runCodexExecTurn(ctx context.Context, executable, profileRoot,
 	}
 	envMap[mcpTokenEnvVar] = mcpToken
 
-	baseFile, err := writeCodexBaseInstructions(profileRoot, SystemInstructions())
+	instructions := s.systemPrompt(ctx, domainagent.ProviderCodex)
+	baseFile, err := writeCodexBaseInstructions(profileRoot, instructions)
 	if err != nil {
 		return err
 	}
 	resumeID := s.cliSessionFor(domainagent.ProviderCodex)
-	args := buildCodexExecArgs(mcpURL, SystemInstructions(), baseFile, resumeID)
+	args := buildCodexExecArgs(mcpURL, instructions, baseFile, resumeID)
 	if modelArgs := codexModelArgs(s.effectiveSelection(domainagent.ProviderCodex)); len(modelArgs) > 0 {
 		args = append(args[:len(args)-1:len(args)-1], append(modelArgs, "-")...) // keep "-" (stdin prompt) last
 	}

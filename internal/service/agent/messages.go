@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"regexp"
 
 	"app/internal/apperr"
 )
@@ -24,7 +25,20 @@ const (
 	msgProcessExited      = "agent.err.processExited" // {detail}
 	msgSuperseded         = "agent.err.superseded"
 	msgSignInFailed       = "agent.err.signInFailed" // {detail}
+	msgConversationGone   = "agent.err.conversationGone"
 )
+
+// Notices are inserted into assistant text as a language-neutral marker line, e.g. "[[notice:code_blocked]]".
+// The frontend replaces the line with the translated "agent.notice.<key>" message, so the backend never
+// hardcodes user-facing sentences and persisted history is shown in the reader's current language.
+const noticeCodeBlocked = "code_blocked"
+
+var reNoticeMarker = regexp.MustCompile(`(?m)^\[\[notice:[a-z_]+\]\]\s*$`)
+
+func noticeMarker(key string) string { return "[[notice:" + key + "]]" }
+
+// stripNoticeMarkers removes notice lines, which are for the UI, before text is replayed to a model.
+func stripNoticeMarkers(text string) string { return reNoticeMarker.ReplaceAllString(text, "") }
 
 // localizedError attaches an i18n key to an error without changing its text.
 type localizedError struct {

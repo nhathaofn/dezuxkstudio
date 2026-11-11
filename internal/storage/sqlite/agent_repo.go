@@ -69,14 +69,14 @@ func (r *AgentRepository) SetCustomPath(ctx context.Context, id agent.ProviderID
 // AppendChatMessage persists a single chat message in DezuxkStudio's isolated history.
 func (r *AgentRepository) AppendChatMessage(ctx context.Context, msg agent.ChatMessage) error {
 	_, err := r.db.sql.ExecContext(ctx, `
-		INSERT INTO agent_chat_messages (id, provider_id, role, text, thought, tool, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO agent_chat_messages (id, provider_id, role, text, thought, tool, created_at, conversation_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			text = excluded.text,
 			thought = excluded.thought,
 			tool = excluded.tool,
 			role = excluded.role;`,
-		msg.ID, string(msg.ProviderID), msg.Role, msg.Text, msg.Thought, msg.Tool, msg.CreatedAt)
+		msg.ID, string(msg.ProviderID), msg.Role, msg.Text, msg.Thought, msg.Tool, msg.CreatedAt, msg.ConversationID)
 	if err != nil {
 		return fmt.Errorf("sqlite: append agent chat message: %w", err)
 	}
@@ -116,6 +116,104 @@ func (r *AgentRepository) ListChatMessages(ctx context.Context, limit int) ([]ag
 		return nil, fmt.Errorf("sqlite: iterate agent chat messages: %w", err)
 	}
 	return out, nil
+}
+
+// SaveConversation creates a conversation or refreshes its provider and updated_at.
+func (r *AgentRepository) SaveConversation(ctx context.Context, c agent.Conversation) error {
+	_, err := r.db.sql.ExecContext(ctx, `
+		INSERT INTO agent_conversations (id, title, provider_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			title = CASE WHEN agent_conversations.title = '' THEN excluded.title ELSE agent_conversations.title END,
+			provider_id = excluded.provider_id,
+			updated_at = excluded.updated_at;`,
+		c.ID, c.Title, string(c.ProviderID), c.CreatedAt, c.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("sqlite: save agent conversation: %w", err)
+	}
+	return nil
+}
+
+// ListConversations returns conversations, most recently active first.
+func (r *AgentRepository) ListConversations(ctx context.Context, limit int) ([]agent.Conversation, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := r.db.sql.QueryContext(ctx, `
+		SELECT c.id, c.title, c.provider_id, c.created_at, c.updated_at,
+		       (SELECT COUNT(*) FROM agent_chat_messages m WHERE m.conversation_id = c.id)
+		FROM agent_conversations c
+		ORDER BY c.updated_at DESC, c.id DESC
+		LIMIT ?;`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list agent conversations: %w", err)
+	}
+	defer rows.Close()
+	var out []agent.Conversation
+	for rows.Next() {
+		var c agent.Conversation
+		var pid string
+		if err := rows.Scan(&c.ID, &c.Title, &pid, &c.CreatedAt, &c.UpdatedAt, &c.MessageCount); err != nil {
+			return nil, fmt.Errorf("sqlite: scan agent conversation: %w", err)
+		}
+		c.ProviderID = agent.ProviderID(pid)
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: iterate agent conversations: %w", err)
+	}
+	return out, nil
+}
+
+// ListConversationMessages returns the newest messages of one conversation in chronological order.
+func (r *AgentRepository) ListConversationMessages(ctx context.Context, conversationID string, limit int) ([]agent.ChatMessage, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := r.db.sql.QueryContext(ctx, `
+		SELECT id, provider_id, role, text, thought, tool, created_at, conversation_id
+		FROM (
+			SELECT id, provider_id, role, text, thought, tool, created_at, conversation_id
+			FROM agent_chat_messages
+			WHERE conversation_id = ?
+			ORDER BY created_at DESC, id DESC
+			LIMIT ?
+		) sub
+		ORDER BY created_at ASC, id ASC;`, conversationID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list conversation messages: %w", err)
+	}
+	defer rows.Close()
+	var out []agent.ChatMessage
+	for rows.Next() {
+		var m agent.ChatMessage
+		var pid string
+		if err := rows.Scan(&m.ID, &pid, &m.Role, &m.Text, &m.Thought, &m.Tool, &m.CreatedAt, &m.ConversationID); err != nil {
+			return nil, fmt.Errorf("sqlite: scan conversation message: %w", err)
+		}
+		m.ProviderID = agent.ProviderID(pid)
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: iterate conversation messages: %w", err)
+	}
+	return out, nil
+}
+
+// DeleteConversation removes a conversation and its messages.
+func (r *AgentRepository) DeleteConversation(ctx context.Context, conversationID string) error {
+	tx, err := r.db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: delete agent conversation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_chat_messages WHERE conversation_id = ?`, conversationID); err != nil {
+		return fmt.Errorf("sqlite: delete conversation messages: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_conversations WHERE id = ?`, conversationID); err != nil {
+		return fmt.Errorf("sqlite: delete conversation: %w", err)
+	}
+	return tx.Commit()
 }
 
 // ClearChatMessages removes all persisted DezuxkStudio agent chat messages.

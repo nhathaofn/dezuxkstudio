@@ -19,6 +19,7 @@ import {
 import type { AgentProviderInfo } from "../../contracts/generated";
 import { Button } from "../../components/ui/Button";
 import { translateServerMessage, useT, type MessageKey } from "../../lib/i18n";
+import { AgentHistoryList } from "./AgentHistoryList";
 import { Markdown } from "./markdown";
 import { useScreenContextStore } from "./screenContext";
 import { toolLabel } from "./toolLabels";
@@ -33,32 +34,31 @@ const STICK_TO_BOTTOM_PX = 80;
 /** The composer grows with its content up to this height (px), then scrolls. */
 const COMPOSER_MAX_HEIGHT = 200;
 
-/** Tool calls collapse into one summary line, like the reasoning; a click shows each call. */
-const ToolCalls: React.FC<{ tools: NonNullable<AgentChatMessage["tools"]> }> = ({ tools }) => {
+/** Summary chip for a reply's tool calls; the list opens in the detail panel below the chips. */
+const ToolsChip: React.FC<{
+  tools: NonNullable<AgentChatMessage["tools"]>;
+  open: boolean;
+  onToggle: () => void;
+}> = ({ tools, open, onToggle }) => {
   const t = useT();
-  const [open, setOpen] = useState(false);
   const running = tools.some((tool) => tool.status === "running");
   const failed = tools.filter((tool) => tool.status === "error").length;
   return (
-    <div className="agent-thought agent-tools">
-      <button
-        type="button"
-        className="agent-thought__toggle"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-      >
-        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-        <Wrench size={11} />
-        <span>
-          {running
-            ? t("agent.chat.toolsRunning")
-            : t("agent.chat.toolsDone", { count: tools.length })}
-          {failed > 0 && ` · ${t("agent.chat.toolsFailed", { count: failed })}`}
-        </span>
-        {running && <span className="agent-dots" aria-hidden="true" />}
-      </button>
-      {open && <ToolList tools={tools} />}
-    </div>
+    <button
+      type="button"
+      className={`agent-chip${open ? " is-open" : ""}${failed > 0 ? " agent-chip--error" : ""}`}
+      onClick={onToggle}
+      aria-expanded={open}
+    >
+      {running ? <Loader2 size={11} className="animate-spin" /> : <Wrench size={11} />}
+      <span>
+        {running
+          ? t("agent.chat.toolsRunning")
+          : t("agent.chat.toolsDone", { count: tools.length })}
+        {failed > 0 && ` · ${t("agent.chat.toolsFailed", { count: failed })}`}
+      </span>
+      {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+    </button>
   );
 };
 
@@ -96,12 +96,15 @@ interface ChatBubbleProps {
 const ChatBubble: React.FC<ChatBubbleProps> = React.memo(
   ({ msg, agentName, canRetry, onRetry }) => {
     const t = useT();
-    const [thoughtOpen, setThoughtOpen] = useState(false);
+    // Tools and reasoning share one compact row of chips; at most one detail panel is open.
+    const [detail, setDetail] = useState<"tools" | "thought" | null>(null);
+    const toggle = (d: "tools" | "thought") => setDetail((cur) => (cur === d ? null : d));
     const [copied, setCopied] = useState(false);
 
     const isUser = msg.role === "user";
     const isError = msg.role === "error";
     const thinkingOnly = msg.streaming && !msg.text;
+    const hasTools = !!msg.tools && msg.tools.length > 0;
 
     const handleCopy = async () => {
       try {
@@ -145,24 +148,44 @@ const ChatBubble: React.FC<ChatBubbleProps> = React.memo(
           )}
         </div>
 
-        {msg.tools && msg.tools.length > 0 && <ToolCalls tools={msg.tools} />}
-
-        {msg.thought && (
-          <div className="agent-thought">
-            <button
-              type="button"
-              className="agent-thought__toggle"
-              onClick={() => setThoughtOpen((v) => !v)}
-              aria-expanded={thoughtOpen}
-            >
-              {thoughtOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              <span>
-                {thinkingOnly ? t("agent.chat.thinking") : t("agent.chat.thinkingProcess")}
-              </span>
-              {thinkingOnly && <span className="agent-dots" aria-hidden="true" />}
-            </button>
-            {thoughtOpen && <pre className="agent-thought__body">{msg.thought}</pre>}
+        {(hasTools || msg.thought) && (
+          <div className="agent-msg__meta">
+            {hasTools && (
+              <ToolsChip
+                tools={msg.tools!}
+                open={detail === "tools"}
+                onToggle={() => toggle("tools")}
+              />
+            )}
+            {msg.thought && (
+              <button
+                type="button"
+                className={`agent-chip${detail === "thought" ? " is-open" : ""}`}
+                onClick={() => toggle("thought")}
+                aria-expanded={detail === "thought"}
+              >
+                <Sparkles size={11} />
+                <span>
+                  {thinkingOnly ? t("agent.chat.thinking") : t("agent.chat.thinkingProcess")}
+                </span>
+                {thinkingOnly ? (
+                  <span className="agent-dots" aria-hidden="true" />
+                ) : detail === "thought" ? (
+                  <ChevronDown size={11} />
+                ) : (
+                  <ChevronRight size={11} />
+                )}
+              </button>
+            )}
           </div>
+        )}
+        {detail === "tools" && hasTools && (
+          <div className="agent-msg__detail">
+            <ToolList tools={msg.tools!} />
+          </div>
+        )}
+        {detail === "thought" && msg.thought && (
+          <pre className="agent-msg__detail agent-thought__body">{msg.thought}</pre>
         )}
 
         {isError ? (
@@ -304,6 +327,15 @@ const ComposerModelPicker: React.FC<{ provider: AgentProviderInfo; disabled: boo
 };
 
 export const AgentChatTab: React.FC<AgentChatTabProps> = ({ connectedToCore }) => {
+  const chatView = useAgentStore((s) => s.chatView);
+  return chatView === "history" ? (
+    <AgentHistoryList />
+  ) : (
+    <AgentChatPane connectedToCore={connectedToCore} />
+  );
+};
+
+const AgentChatPane: React.FC<AgentChatTabProps> = ({ connectedToCore }) => {
   const t = useT();
   const providers = useAgentStore((s) => s.providers);
   const messages = useAgentStore((s) => s.messages);
@@ -482,9 +514,6 @@ export const AgentChatTab: React.FC<AgentChatTabProps> = ({ connectedToCore }) =
             ) : (
               <span className="agent-composer__status">{t("agent.status.disconnected")}</span>
             )}
-            <span className="agent-composer__hint">
-              {sending ? t("agent.chat.hintStop") : t("agent.chat.hintSend")}
-            </span>
             {sending ? (
               <Button size="sm" onClick={() => void cancelPrompt()} title={t("agent.chat.stop")}>
                 <Square size={12} />
@@ -505,6 +534,9 @@ export const AgentChatTab: React.FC<AgentChatTabProps> = ({ connectedToCore }) =
             )}
           </div>
         </div>
+        <p className="agent-composer__hint">
+          {sending ? t("agent.chat.hintStop") : t("agent.chat.hintSend")}
+        </p>
       </div>
     </div>
   );

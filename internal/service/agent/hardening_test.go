@@ -15,6 +15,7 @@ import (
 
 	"app/internal/apperr"
 	domainagent "app/internal/domain/agent"
+	"app/internal/engine"
 	"app/internal/secrets"
 )
 
@@ -278,4 +279,212 @@ func expiredContext(t *testing.T) context.Context {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	t.Cleanup(cancel)
 	return ctx
+}
+
+func TestCodexPreApprovesDezuxkMCPTools(t *testing.T) {
+	args := strings.Join(codexPolicyArgs("http://127.0.0.1:1/mcp", ""), " ")
+	if !strings.Contains(args, `mcp_servers.dezuxk.default_tools_approval_mode="approve"`) {
+		t.Fatalf("Codex would ask for approvals this session cannot grant: %s", args)
+	}
+	for _, want := range []string{`sandbox_mode="read-only"`, "features.shell_tool=false"} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("policy arg %q missing: %s", want, args)
+		}
+	}
+}
+
+func TestModelCatalogFollowsTheSignedInAccount(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := New(Options{Repo: newFakeRepo(), DataDir: dir, ProfilesDir: filepath.Join(dir, "p"), Logger: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	id := domainagent.ProviderCodex
+	plus := []domainagent.ModelOption{{ID: "gpt-6-sol", Efforts: []string{"high"}}, {ID: "gpt-6-luna"}}
+	svc.models.mu.Lock()
+	svc.models.catalogs[id] = plus
+	svc.models.catalogOf[id] = "codex.exe"
+	svc.models.loadedAt[id] = time.Now()
+	svc.models.selection[id] = domainagent.ModelSelection{Model: "gpt-6-sol", Effort: "high"}
+	svc.models.mu.Unlock()
+
+	// Signing in with another account (free plan) must drop the cached Plus list.
+	svc.invalidateStatus(id)
+	svc.models.mu.Lock()
+	_, stale := svc.models.catalogs[id]
+	svc.models.catalogs[id] = []domainagent.ModelOption{{ID: "gpt-6-luna"}}
+	svc.models.mu.Unlock()
+	if stale {
+		t.Fatal("model catalog survived an account change")
+	}
+
+	info := domainagent.ProviderInfo{ID: id}
+	svc.fillModelInfo(&info)
+	if info.SelectedModel != "" || info.SelectedEffort != "" {
+		t.Fatalf("a model the account does not offer must not show as selected: %+v", info)
+	}
+	if sel := svc.effectiveSelection(id); sel.Model != "" {
+		t.Fatalf("turns must fall back to the provider default, got %+v", sel)
+	}
+}
+
+func TestPolicyIsRulesOnly(t *testing.T) {
+	policy := SystemInstructions()
+	if strings.Contains(policy, "{{app}}") || !strings.Contains(policy, clientName) {
+		t.Fatal("the product name must be filled in at runtime")
+	}
+	// Rules only: no hardcoded language, tool names or feature lists.
+	for _, r := range policy {
+		if r > 0x7f && !strings.ContainsRune("—…", r) {
+			t.Fatalf("policy must be language-neutral English, found %q", r)
+		}
+	}
+	for _, name := range []string{"workflow_list_specs", "workspace_", "studio_list_capabilities", "watermark", "ffmpeg"} {
+		if strings.Contains(strings.ToLower(policy), name) {
+			t.Fatalf("policy must not hardcode %q; tools and features describe themselves", name)
+		}
+	}
+}
+
+func TestSystemPromptLayers(t *testing.T) {
+	dir := t.TempDir()
+	wf := &fakeWorkflow{specs: []engine.Spec{{Type: "tool.demo", Label: "Demo", Description: "Does a\n demo.",
+		Inputs: []engine.Port{{Name: "images", Type: engine.PortImage}}, Params: []engine.Param{{Name: "mode"}}}}}
+	svc, err := New(Options{Repo: newFakeRepo(), DataDir: dir, ProfilesDir: filepath.Join(dir, "p"), Logger: slog.New(slog.DiscardHandler), Workflow: wf, AppVersion: "1.2.3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	prompt := svc.systemPrompt(context.Background(), domainagent.ProviderAntigravity)
+	policyAt := strings.Index(prompt, "<policy>")
+	appAt := strings.Index(prompt, "\n<application>\n")
+	featAt := strings.Index(prompt, "\n<features>\n")
+	if policyAt != 0 || appAt < policyAt || featAt < appAt {
+		t.Fatalf("layers must be policy → application → features (stable prefix first):\n%s", prompt)
+	}
+	for _, want := range []string{"version: 1.2.3", "- tool.demo (Demo): Does a demo. | inputs: images:image | settings: mode"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestScreenContextIsSentOncePerSession(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := New(Options{Repo: newFakeRepo(), DataDir: dir, ProfilesDir: filepath.Join(dir, "p"), Logger: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	ui := UIContext{Screen: "Demo", SelectedFiles: []string{`D:\a.png`}}
+	if got := svc.screenContextForTurn("acp:s1", ui); got.empty() {
+		t.Fatal("first turn of a session must carry the screen context")
+	}
+	svc.rememberScreenContext("acp:s1", ui)
+	if got := svc.screenContextForTurn("acp:s1", ui); !got.empty() {
+		t.Fatal("an unchanged screen must not be resent")
+	}
+	changed := ui
+	changed.SelectedFiles = []string{`D:\b.png`}
+	if got := svc.screenContextForTurn("acp:s1", changed); got.empty() {
+		t.Fatal("a changed screen must be sent")
+	}
+	if got := svc.screenContextForTurn("", ui); got.empty() {
+		t.Fatal("a new session (no key) always gets the screen context")
+	}
+}
+
+func TestToolsLayerOnlyForCodeModeProviders(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := New(Options{Repo: newFakeRepo(), DataDir: dir, ProfilesDir: filepath.Join(dir, "p"), Logger: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	ctx := context.Background()
+	codex := svc.systemPrompt(ctx, domainagent.ProviderCodex)
+	for _, want := range []string{"\n<tools>\n", "tools." + mcpToolPrefix + "<name>", "- preferences_update: ", "- workflow_run_node: "} {
+		if !strings.Contains(codex, want) {
+			t.Fatalf("Codex (code mode) must be told which app tools exist; missing %q:\n%s", want, codex)
+		}
+	}
+	for _, id := range []domainagent.ProviderID{domainagent.ProviderClaude, domainagent.ProviderAntigravity} {
+		if strings.Contains(svc.systemPrompt(ctx, id), "\n<tools>\n") {
+			t.Fatalf("%s lists tools natively; the <tools> layer would only cost tokens", id)
+		}
+	}
+}
+
+func TestCodexToolsLayerFollowsTheModelsToolMode(t *testing.T) {
+	dir := t.TempDir()
+	svc, err := New(Options{Repo: newFakeRepo(), DataDir: dir, ProfilesDir: filepath.Join(dir, "p"), Logger: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	ctx := context.Background()
+	catalog := []byte(`{"models":[
+		{"slug":"gpt-6-luna","visibility":"list","tool_mode":"code_mode_only"},
+		{"slug":"gpt-5.5","visibility":"list"}]}`)
+	models, _ := parseCodexCatalog(catalog)
+	svc.models.mu.Lock()
+	svc.models.catalogs[domainagent.ProviderCodex] = models
+	svc.models.codeMode[domainagent.ProviderCodex] = parseCodexCodeModeModels(catalog)
+	svc.models.mu.Unlock()
+	pick := func(model string) string {
+		svc.models.mu.Lock()
+		svc.models.selection[domainagent.ProviderCodex] = domainagent.ModelSelection{Model: model}
+		svc.models.mu.Unlock()
+		return svc.systemPrompt(ctx, domainagent.ProviderCodex)
+	}
+	if p := pick("gpt-6-luna"); !strings.Contains(p, "Call them from the code runner") {
+		t.Fatalf("code-mode model must get the <tools> layer:\n%s", p)
+	}
+	if p := pick("gpt-5.5"); strings.Contains(p, "<tools>") {
+		t.Fatalf("a model with native tool definitions must not get the <tools> layer:\n%s", p)
+	}
+	if p := pick(""); !strings.Contains(p, "If they are not in your tool list") {
+		t.Fatalf("an undecidable default model gets the conditional hint:\n%s", p)
+	}
+}
+
+func TestConversationsStartFreshAndCanBeReopened(t *testing.T) {
+	dir := t.TempDir()
+	repo := newFakeRepo()
+	_ = repo.SaveConversation(context.Background(), domainagent.Conversation{ID: "old", Title: "earlier", CreatedAt: 1, UpdatedAt: 1})
+	_ = repo.AppendChatMessage(context.Background(), domainagent.ChatMessage{ID: "m", Role: "user", Text: "earlier", ConversationID: "old"})
+	svc, err := New(Options{Repo: repo, DataDir: dir, ProfilesDir: filepath.Join(dir, "p"), Logger: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	ctx := context.Background()
+
+	// Every start is a new, empty chat; earlier ones are in the list.
+	if id, msgs, _ := svc.History(ctx); id != "" || len(msgs) != 0 {
+		t.Fatalf("app start must open a new chat, got %q %+v", id, msgs)
+	}
+	if list, _ := svc.ListConversations(ctx); len(list) != 1 || list[0].ID != "old" {
+		t.Fatalf("earlier chats must be listed: %+v", list)
+	}
+	id, msgs, err := svc.OpenConversation(ctx, "old")
+	if err != nil || id != "old" || len(msgs) != 1 {
+		t.Fatalf("reopen failed: %q %+v %v", id, msgs, err)
+	}
+	if cur, _, _ := svc.History(ctx); cur != "old" {
+		t.Fatalf("an opened chat becomes current, got %q", cur)
+	}
+	if err := svc.NewConversation(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if cur, _, _ := svc.History(ctx); cur != "" {
+		t.Fatal("new chat must leave the earlier one in history, not reuse it")
+	}
+	if list, _ := svc.ListConversations(ctx); len(list) != 1 {
+		t.Fatalf("starting a new chat must not delete history: %+v", list)
+	}
+	if _, _, err := svc.OpenConversation(ctx, "missing"); err == nil {
+		t.Fatal("opening an unknown chat must fail")
+	}
 }

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	domainagent "app/internal/domain/agent"
@@ -20,77 +21,85 @@ import (
 )
 
 const (
-	maxWorkspaceReadBytes = 256 << 10
+	// Tool output stays in the model's context for the rest of the conversation, so results are capped.
+	maxWorkspaceReadBytes = 64 << 10 // ~16k tokens of text
 	maxImageReadBytes     = 5 << 20
-	maxListEntries        = 2000
+	maxListEntries        = 300
 )
 
 type runNodeToolInput struct {
-	Type      string         `json:"type" jsonschema:"Registered node type from workflow_list_specs (e.g. tool.watermark_remover)"`
-	Input     map[string]any `json:"input" jsonschema:"Object whose keys are the node's input port names and param names from workflow_list_specs. Media ports take file paths, folder paths, or lists of them; folders are expanded by DezuxkStudio. Omitted params use the same defaults as the feature's UI."`
-	Recursive bool           `json:"recursive,omitempty" jsonschema:"Also include files in sub-folders when a folder path is given"`
+	Type      string         `json:"type" jsonschema:"Node type from workflow_list_specs"`
+	Input     map[string]any `json:"input" jsonschema:"Input ports and params by name; media ports take file/folder paths or lists; omitted params use UI defaults"`
+	Recursive bool           `json:"recursive,omitempty" jsonschema:"Include sub-folders"`
 }
 
 type runGraphToolInput struct {
-	Nodes     []engine.GraphNode `json:"nodes" jsonschema:"Workflow graph nodes; params use the same keys as workflow_run_node input"`
-	Edges     []engine.Edge      `json:"edges,omitempty" jsonschema:"Workflow graph edges"`
-	Recursive bool               `json:"recursive,omitempty" jsonschema:"Also include files in sub-folders when a folder path is given"`
+	Nodes     []engine.GraphNode `json:"nodes" jsonschema:"Graph nodes (same input keys as workflow_run_node)"`
+	Edges     []engine.Edge      `json:"edges,omitempty"`
+	Recursive bool               `json:"recursive,omitempty" jsonschema:"Include sub-folders"`
 }
 
 type binaryIDToolInput struct {
-	ID string `json:"id" jsonschema:"Binary identifier from binaries_list (e.g. ffmpeg)"`
+	ID string `json:"id" jsonschema:"Binary id, e.g. ffmpeg"`
 }
 
 type preferencesUpdateToolInput struct {
-	Theme    string `json:"theme,omitempty" jsonschema:"Optional theme: system, light, or dark"`
-	Language string `json:"language,omitempty" jsonschema:"Optional language: en or vi"`
+	Theme    string `json:"theme,omitempty" jsonschema:"system|light|dark"`
+	Language string `json:"language,omitempty" jsonschema:"en|vi"`
 }
 
 type listFilesToolInput struct {
-	Dir string `json:"dir,omitempty" jsonschema:"Absolute folder path anywhere on the user's computer (e.g. D:\\Photos); defaults to the DezuxkStudio agent workspace"`
+	Dir string `json:"dir,omitempty" jsonschema:"Absolute folder path; default: agent workspace"`
 }
 
 type readFileToolInput struct {
-	Path string `json:"path" jsonschema:"Absolute path of a text file (.txt, .md, .json, .srt, .vtt, .csv, …) or an image/video/audio file"`
+	Path string `json:"path" jsonschema:"Text, image, video or audio file path"`
 }
 
 type writeFileToolInput struct {
-	Path    string `json:"path" jsonschema:"Target text file path (.txt, .md, .json, .srt, .vtt, .csv, .xml); relative paths go to the agent workspace"`
-	Content string `json:"content" jsonschema:"UTF-8 text content to write"`
+	Path    string `json:"path" jsonschema:"Text file path (.txt .md .json .srt .vtt .csv .xml); relative = agent workspace"`
+	Content string `json:"content"`
 }
 
 type moveFileToolInput struct {
-	Source      string `json:"source" jsonschema:"Existing file path"`
-	Destination string `json:"destination" jsonschema:"Destination file path or existing folder; the file type (extension) must stay the same"`
-	Overwrite   bool   `json:"overwrite,omitempty" jsonschema:"Set true only if replacing an existing destination file (requires user approval)"`
+	Source      string `json:"source"`
+	Destination string `json:"destination" jsonschema:"File path or folder; extension must not change"`
+	Overwrite   bool   `json:"overwrite,omitempty" jsonschema:"Replace an existing file (needs approval)"`
 }
 
 type deleteFileToolInput struct {
-	Path string `json:"path" jsonschema:"File to delete; outside DezuxkStudio's own folders this requires user approval"`
+	Path string `json:"path" jsonschema:"File to delete"`
 }
+
+// mcpServerInstructions is the short MCP-level reminder (the full rules are the provider's system prompt).
+var toolDocsOnce sync.Once
+
+const mcpServerInstructions = "DezuxkStudio's own tools. Follow the DezuxkStudio Assistant rules from your system prompt; " +
+	"call workflow_list_specs before running a feature."
 
 func mcpJSON(data any) (*mcp.CallToolResult, any, error) {
 	b, err := json.Marshal(data)
 	if err != nil {
 		return nil, nil, err
 	}
-	return &mcp.CallToolResult{
-		Content:           []mcp.Content{&mcp.TextContent{Text: string(b)}},
-		StructuredContent: data,
-	}, nil, nil
+	// Text only: some clients pass both text and structuredContent to the model, doubling every result.
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}, nil, nil
 }
 
 func mcpError(msg string) (*mcp.CallToolResult, any, error) {
 	payload := map[string]any{"ok": false, "error": msg}
 	b, _ := json.Marshal(payload)
-	return &mcp.CallToolResult{
-		IsError:           true,
-		Content:           []mcp.Content{&mcp.TextContent{Text: string(b)}},
-		StructuredContent: payload,
-	}, nil, nil
+	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}, nil, nil
 }
 
+// toolDoc is a registered MCP tool's name and description, used to build the prompt's <tools> layer.
+type toolDoc struct{ Name, Description string }
+
+// mcpToolDocs lists the tools registered by buildMCPServer, in registration order.
+var mcpToolDocs []toolDoc
+
 func addMCPTool[I any](server *mcp.Server, name, description string, fn func(context.Context, I) (*mcp.CallToolResult, any, error)) {
+	recordToolDoc(name, description)
 	mcp.AddTool(server, &mcp.Tool{Name: name, Description: description},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in I) (*mcp.CallToolResult, any, error) {
 			return fn(ctx, in)
@@ -108,19 +117,37 @@ func (s *Service) needsApproval(tool, title, summary string, exec func(context.C
 	})
 }
 
+func recordToolDoc(name, description string) {
+	for _, d := range mcpToolDocs {
+		if d.Name == name {
+			return
+		}
+	}
+	mcpToolDocs = append(mcpToolDocs, toolDoc{Name: name, Description: description})
+}
+
+// registeredToolDocs builds the MCP server once (tools are static) and returns its tool list.
+func (s *Service) registeredToolDocs() []toolDoc {
+	toolDocsOnce.Do(func() { _ = s.buildMCPServer() })
+	return mcpToolDocs
+}
+
 func (s *Service) buildMCPServer() *mcp.Server {
+	// Every provider already receives the full profile as its system prompt. MCP clients may copy server
+	// instructions into each tool's description (Codex does: 16 tools × ~9k characters ≈ 38k tokens), so
+	// the server only states a one-line reminder.
 	server := mcp.NewServer(&mcp.Implementation{Name: mcpServerName, Version: s.appVersion}, &mcp.ServerOptions{
-		Instructions: SystemInstructions(),
+		Instructions: mcpServerInstructions,
 	})
 
 	addMCPTool(server, "studio_list_capabilities",
-		"List all live features, registered workflow nodes, binaries, preferences, UI context, and trusted folders currently available in DezuxkStudio.",
+		"App features, managed tools, preferences, current screen and trusted folders.",
 		func(ctx context.Context, _ struct{}) (*mcp.CallToolResult, any, error) {
 			return mcpJSON(s.buildCapabilitiesSnapshot(ctx))
 		})
 
 	addMCPTool(server, "workflow_list_specs",
-		"List DezuxkStudio's features as workflow nodes: input ports (with accepted media types), params (with allowed options and the UI's default values), and outputs. Always read this before running a feature.",
+		"Inputs, settings (options, defaults) and outputs of every app feature. Read before running one.",
 		func(ctx context.Context, _ struct{}) (*mcp.CallToolResult, any, error) {
 			if s.workflow == nil {
 				return mcpError("workflow service is unavailable")
@@ -129,7 +156,7 @@ func (s *Service) buildMCPServer() *mcp.Server {
 		})
 
 	addMCPTool(server, "workflow_run_node",
-		"Run one DezuxkStudio feature (workflow node) exactly like its UI does. Pass files or folders; DezuxkStudio expands folders, applies the UI defaults, validates settings, and returns the real per-file results. Settings that overwrite original files require user approval.",
+		"Run one app feature like its screen does. Destructive settings wait for user approval.",
 		func(ctx context.Context, in runNodeToolInput) (*mcp.CallToolResult, any, error) {
 			if s.workflow == nil {
 				return mcpError("workflow service is unavailable")
@@ -159,7 +186,7 @@ func (s *Service) buildMCPServer() *mcp.Server {
 		})
 
 	addMCPTool(server, "workflow_run_graph",
-		"Run a multi-step DezuxkStudio workflow (DAG of nodes). Each node is validated like workflow_run_node; graphs with destructive settings require user approval.",
+		"Run several features as a workflow (DAG). Destructive settings wait for user approval.",
 		func(ctx context.Context, in runGraphToolInput) (*mcp.CallToolResult, any, error) {
 			if s.workflow == nil {
 				return mcpError("workflow service is unavailable")
@@ -189,7 +216,7 @@ func (s *Service) buildMCPServer() *mcp.Server {
 		})
 
 	addMCPTool(server, "binaries_list",
-		"List external binaries managed by DezuxkStudio and their availability status.",
+		"Managed external tools (e.g. ffmpeg) with status and version.",
 		func(ctx context.Context, _ struct{}) (*mcp.CallToolResult, any, error) {
 			if s.binaries == nil {
 				return mcpError("binaries service is unavailable")
@@ -201,21 +228,8 @@ func (s *Service) buildMCPServer() *mcp.Server {
 			return mcpJSON(map[string]any{"binaries": items})
 		})
 
-	addMCPTool(server, "binaries_probe",
-		"Probe one managed binary in DezuxkStudio.",
-		func(ctx context.Context, in binaryIDToolInput) (*mcp.CallToolResult, any, error) {
-			if s.binaries == nil {
-				return mcpError("binaries service is unavailable")
-			}
-			info, err := s.binaries.Probe(ctx, domainbinaries.BinaryID(strings.TrimSpace(in.ID)))
-			if err != nil {
-				return mcpError(err.Error())
-			}
-			return mcpJSON(info)
-		})
-
 	addMCPTool(server, "binaries_download",
-		"Propose downloading an official managed binary into DezuxkStudio tools directory (always requires UI approval).",
+		"Propose downloading a managed tool (needs user approval).",
 		func(_ context.Context, in binaryIDToolInput) (*mcp.CallToolResult, any, error) {
 			if s.binaries == nil {
 				return mcpError("binaries service is unavailable")
@@ -230,21 +244,8 @@ func (s *Service) buildMCPServer() *mcp.Server {
 				func(execCtx context.Context) (any, error) { return s.binaries.Download(execCtx, id, nil) })
 		})
 
-	addMCPTool(server, "preferences_get",
-		"Get current DezuxkStudio user preferences (theme and language).",
-		func(ctx context.Context, _ struct{}) (*mcp.CallToolResult, any, error) {
-			if s.preferences == nil {
-				return mcpError("preferences service is unavailable")
-			}
-			prefs, err := s.preferences.Get(ctx)
-			if err != nil {
-				return mcpError(err.Error())
-			}
-			return mcpJSON(prefs)
-		})
-
 	addMCPTool(server, "preferences_update",
-		"Update DezuxkStudio preferences (theme: system|light|dark, language: en|vi).",
+		"Change theme (system|light|dark) or language (en|vi).",
 		func(ctx context.Context, in preferencesUpdateToolInput) (*mcp.CallToolResult, any, error) {
 			if s.preferences == nil {
 				return mcpError("preferences service is unavailable")
@@ -265,17 +266,8 @@ func (s *Service) buildMCPServer() *mcp.Server {
 			return mcpJSON(updated)
 		})
 
-	addMCPTool(server, "system_info",
-		"Read DezuxkStudio build, runtime, and non-sensitive application directory metadata.",
-		func(_ context.Context, _ struct{}) (*mcp.CallToolResult, any, error) {
-			if s.system == nil {
-				return mcpError("system service is unavailable")
-			}
-			return mcpJSON(s.system.Info())
-		})
-
 	addMCPTool(server, "diagnostics_export",
-		"Export a DezuxkStudio diagnostics zip bundle for troubleshooting.",
+		"Export a diagnostics bundle for troubleshooting.",
 		func(ctx context.Context, _ struct{}) (*mcp.CallToolResult, any, error) {
 			if s.diagnostics == nil {
 				return mcpError("diagnostics service is unavailable")
@@ -288,7 +280,7 @@ func (s *Service) buildMCPServer() *mcp.Server {
 		})
 
 	addMCPTool(server, "workspace_list_files",
-		"List files and folders anywhere on the user's computer (system folders, credentials, and source code are hidden). Each entry has its file class (text, image, video, audio, document, other).",
+		"List a folder (system, credential and code files are hidden).",
 		func(_ context.Context, in listFilesToolInput) (*mcp.CallToolResult, any, error) {
 			target, err := s.policy.ValidateDir(in.Dir)
 			if err != nil {
@@ -337,7 +329,7 @@ func (s *Service) buildMCPServer() *mcp.Server {
 		})
 
 	addMCPTool(server, "workspace_read_file",
-		"Open a file: text files return their content; images are returned as images you can look at; video/audio return metadata (use DezuxkStudio features to process them).",
+		"Open a text file (content), image (view) or video/audio (metadata).",
 		func(_ context.Context, in readFileToolInput) (*mcp.CallToolResult, any, error) {
 			target, err := s.policy.ValidateRead(in.Path)
 			if err != nil {
@@ -386,7 +378,7 @@ func (s *Service) buildMCPServer() *mcp.Server {
 		})
 
 	addMCPTool(server, "workspace_write_file",
-		"Create or update a text content file (.txt, .md, .json, .srt, .vtt, .csv, .xml) anywhere on the user's computer. Overwriting an existing file outside DezuxkStudio's folders requires user approval.",
+		"Create or update a text file. Overwriting outside trusted folders needs approval.",
 		func(_ context.Context, in writeFileToolInput) (*mcp.CallToolResult, any, error) {
 			target, err := s.policy.ValidateWrite(in.Path)
 			if err != nil {
@@ -418,7 +410,7 @@ func (s *Service) buildMCPServer() *mcp.Server {
 		})
 
 	addMCPTool(server, "workspace_move_file",
-		"Move or rename a file anywhere on the user's computer, keeping its file type. Replacing an existing destination requires user approval.",
+		"Move or rename a file, keeping its type. Replacing a file needs approval.",
 		func(_ context.Context, in moveFileToolInput) (*mcp.CallToolResult, any, error) {
 			src, dst, err := s.policy.ValidateMove(in.Source, in.Destination)
 			if err != nil {
@@ -455,7 +447,7 @@ func (s *Service) buildMCPServer() *mcp.Server {
 		})
 
 	addMCPTool(server, "workspace_delete_file",
-		"Delete a file. Inside DezuxkStudio's own folders it is deleted directly; anywhere else it requires user approval.",
+		"Delete a file. Outside trusted folders this needs approval.",
 		func(_ context.Context, in deleteFileToolInput) (*mcp.CallToolResult, any, error) {
 			target, err := s.policy.ValidateDelete(in.Path)
 			if err != nil {
@@ -515,17 +507,24 @@ func (s *Service) buildCapabilitiesSnapshot(ctx context.Context) map[string]any 
 		}
 	}
 	appFeatures := map[string]any{
-		"note":              "Real DezuxkStudio features. Run them with workflow_run_node (call workflow_list_specs for full input/setting details).",
+		"note":              "App features; details in workflow_list_specs.",
 		"workflow_features": features,
-		"system_features": []string{
-			"Managed external tools (binaries_list / binaries_probe / binaries_download), e.g. ffmpeg",
-			"App preferences: theme and language (preferences_get / preferences_update)",
-			"System information and diagnostics export (system_info / diagnostics_export)",
-		},
+		"system_features":   []string{"managed tools (binaries_*)", "theme/language (preferences_update)", "diagnostics_export"},
 	}
 	if s.binaries != nil {
 		if bins, err := s.binaries.List(ctx); err == nil {
-			appFeatures["binaries"] = bins
+			// Only what the agent needs to decide; paths and descriptions are in binaries_list.
+			type binarySummary struct {
+				ID          domainbinaries.BinaryID `json:"id"`
+				Status      domainbinaries.Status   `json:"status"`
+				Version     string                  `json:"version,omitempty"`
+				CanDownload bool                    `json:"can_download,omitempty"`
+			}
+			summary := make([]binarySummary, 0, len(bins))
+			for _, b := range bins {
+				summary = append(summary, binarySummary{ID: b.ID, Status: b.Status, Version: b.Version, CanDownload: b.CanDownload})
+			}
+			appFeatures["binaries"] = summary
 		}
 	}
 	if s.preferences != nil {
@@ -536,13 +535,13 @@ func (s *Service) buildCapabilitiesSnapshot(ctx context.Context) map[string]any 
 
 	// Group 2: what the assistant does by itself. These are NOT DezuxkStudio features and must never be presented as such.
 	assistantExtras := map[string]any{
-		"note": "NOT DezuxkStudio features: the assistant does these itself, in chat or with its file tools, to support the app's work.",
+		"note": "NOT DezuxkStudio features: the assistant does these itself, in the chat or with its file tools.",
 		"items": []string{
-			"Write video scripts, storyboards, voice-over text, captions",
-			"Translate natural-language text and subtitles",
-			"Write and refine prompts for image/video/AI generation",
-			"Analyze documents, images, subtitles, and media metadata",
-			"Organize the user's files: list, read, create text files, move/rename, delete (with approval outside trusted folders)",
+			"Write video scripts, storyboards, voice-over text and captions",
+			"Translate text and subtitles between human languages",
+			"Write and refine prompts for image, video and AI generation",
+			"Analyze documents, images, subtitles and media metadata",
+			"Organize files: list, read, create text files, move/rename, delete (with approval outside trusted folders)",
 		},
 	}
 
@@ -552,13 +551,9 @@ func (s *Service) buildCapabilitiesSnapshot(ctx context.Context) map[string]any 
 		"current_screen":        ui,
 		"dezuxkstudio_features": appFeatures,
 		"assistant_extras":      assistantExtras,
-		"file_access": map[string]any{
-			"scope":         "Any folder on the user's computer except system folders, credentials, and source code. Overwrite/delete outside trusted folders needs approval.",
-			"trusted_roots": s.policy.Roots(),
-			"workspace_dir": s.workspaceDir,
-			"media_dir":     s.mediaDir,
-		},
-		"never": []string{"read or write source code", "run terminal/OS commands", "control the computer or other apps", "switch DezuxkStudio screens (no tool for that yet)"},
+		// The access rules themselves are in the system prompt; only the folders are data.
+		"trusted_folders": s.policy.Roots(),
+		"workspace_dir":   s.workspaceDir,
 	}
 }
 

@@ -3,6 +3,8 @@ import {
   Actions,
   type AgentApprovalRequest,
   type AgentChatEvent,
+  type AgentConversation,
+  type AgentHistoryResult,
   type AgentProviderID,
   type AgentProviderInfo,
   type AgentUIContextPayload,
@@ -11,6 +13,8 @@ import { rtClient, toActionError, type ActionError } from "../../lib/rtClient";
 import { safeStorage } from "../../lib/storage";
 
 export type AgentDrawerTab = "chat" | "connections";
+/** What the chat tab shows: the current chat or the list of earlier chats. */
+export type AgentChatView = "chat" | "history";
 
 export interface AgentToolCallItem {
   name: string;
@@ -37,6 +41,21 @@ const MAX_WIDTH = 680;
 
 /** How long "Copied" feedback stays visible after a clipboard copy in the agent panel. */
 export const COPY_FEEDBACK_MS = 1500;
+
+/** Maps a server history result to store state. */
+function historyState(res: AgentHistoryResult): Pick<AgentState, "messages" | "conversationId"> {
+  return {
+    conversationId: res.conversation_id ?? "",
+    messages: (res.messages ?? []).map((m) => ({
+      id: m.id,
+      role: m.role === "user" ? "user" : m.role === "error" ? "error" : "assistant",
+      text: m.text,
+      thought: m.thought || undefined,
+      providerId: m.provider_id,
+      streaming: false,
+    })),
+  };
+}
 
 export function clampDrawerWidth(width: number): number {
   if (!Number.isFinite(width)) return DEFAULT_WIDTH;
@@ -65,6 +84,11 @@ interface AgentState {
   error: ActionError | null;
   prompt: string;
   messages: AgentChatMessage[];
+  /** Current chat ("" = a new chat that has no messages yet). */
+  conversationId: string;
+  chatView: AgentChatView;
+  conversations: AgentConversation[];
+  loadingConversations: boolean;
 
   openPanel: () => void;
   closePanel: () => void;
@@ -87,7 +111,12 @@ interface AgentState {
   disconnect: () => Promise<void>;
   sendPrompt: () => Promise<void>;
   cancelPrompt: () => Promise<void>;
-  clearChat: () => Promise<void>;
+  /** Starts a new chat; the previous one stays in history. */
+  newChat: () => Promise<void>;
+  setChatView: (view: AgentChatView) => void;
+  fetchConversations: () => Promise<void>;
+  openConversation: (id: string) => Promise<void>;
+  deleteConversation: (id: string) => Promise<void>;
   /** Re-sends the last user message after a failed turn, dropping the error reply. */
   retryLast: () => Promise<void>;
   resolveApproval: (id: string, approve: boolean) => Promise<void>;
@@ -101,7 +130,7 @@ interface AgentState {
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
-  panelOpen: false,
+  panelOpen: true,
   panelWidth: readSavedWidth(),
   activeTab: "chat",
   providers: [],
@@ -113,6 +142,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   error: null,
   prompt: "",
   messages: [],
+  conversationId: "",
+  chatView: "chat",
+  conversations: [],
+  loadingConversations: false,
 
   openPanel: () => set({ panelOpen: true }),
   closePanel: () => set({ panelOpen: false }),
@@ -143,15 +176,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   fetchHistory: async () => {
     try {
       const res = await rtClient.request(Actions.AGENT_HISTORY, {});
-      const msgs: AgentChatMessage[] = (res.messages ?? []).map((m) => ({
-        id: m.id,
-        role: m.role === "user" ? "user" : m.role === "error" ? "error" : "assistant",
-        text: m.text,
-        thought: m.thought || undefined,
-        providerId: m.provider_id,
-        streaming: false,
-      }));
-      set({ messages: msgs });
+      set(historyState(res));
     } catch {
       // Ignore history hydration errors on bootstrap
     }
@@ -287,6 +312,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       set((s) => {
         const hasAuthoritative = s.messages.some((m) => m.id === res.message_id);
         return {
+          conversationId: res.conversation_id || s.conversationId,
           // If streamed events already created the real message, drop the placeholder instead of
           // leaving an empty bubble that streams forever.
           messages: hasAuthoritative
@@ -318,12 +344,53 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
-  clearChat: async () => {
-    // Clear on the server first: if it refuses (e.g. a reply is still running) the visible
-    // conversation must stay in sync with the persisted one.
+  newChat: async () => {
+    // Switch on the server first: if it refuses (a reply is still running) the visible chat must
+    // stay in sync with the server's current one.
     try {
-      await rtClient.request(Actions.AGENT_CLEAR_SESSION, {});
-      set({ messages: [], approvals: [], error: null });
+      await rtClient.request(Actions.AGENT_NEW_CONVERSATION, {});
+      set({ messages: [], approvals: [], error: null, conversationId: "", chatView: "chat" });
+    } catch (err) {
+      set({ error: toActionError(err) });
+    }
+  },
+
+  setChatView: (chatView) => {
+    set({ chatView });
+    if (chatView === "history") void get().fetchConversations();
+  },
+
+  fetchConversations: async () => {
+    set({ loadingConversations: true });
+    try {
+      const res = await rtClient.request(Actions.AGENT_LIST_CONVERSATIONS, {});
+      set({ conversations: res.conversations ?? [] });
+    } catch (err) {
+      set({ error: toActionError(err) });
+    } finally {
+      set({ loadingConversations: false });
+    }
+  },
+
+  openConversation: async (id) => {
+    set({ error: null });
+    try {
+      const res = await rtClient.request(Actions.AGENT_OPEN_CONVERSATION, { id });
+      set({ ...historyState(res), approvals: [], chatView: "chat" });
+    } catch (err) {
+      set({ error: toActionError(err) });
+    }
+  },
+
+  deleteConversation: async (id) => {
+    set({ error: null });
+    try {
+      await rtClient.request(Actions.AGENT_DELETE_CONVERSATION, { id });
+      set((s) => ({
+        conversations: s.conversations.filter((c) => c.id !== id),
+        // Deleting the current chat leaves a new, empty one.
+        ...(s.conversationId === id ? { messages: [], conversationId: "" } : {}),
+      }));
     } catch (err) {
       set({ error: toActionError(err) });
     }

@@ -1,5 +1,6 @@
 import React from "react";
 import { openExternal } from "../../lib/bridge";
+import { translateServerMessage, useT } from "../../lib/i18n";
 import { parseBlocks } from "./markdownParse";
 
 /**
@@ -72,6 +73,16 @@ function renderLines(text: string, key: string): React.ReactNode[] {
   });
 }
 
+/** A translated application notice (e.g. content removed by the code guard). */
+const Notice: React.FC<{ noticeKey: string }> = ({ noticeKey }) => {
+  const t = useT();
+  return (
+    <div className="md-notice" role="note">
+      {translateServerMessage(t, `agent.notice.${noticeKey}`, undefined) ?? noticeKey}
+    </div>
+  );
+};
+
 export const Markdown: React.FC<{ text: string; className?: string }> = React.memo(
   ({ text, className }) => {
     const blocks = parseBlocks(text);
@@ -116,6 +127,8 @@ export const Markdown: React.FC<{ text: string; className?: string }> = React.me
               );
             case "hr":
               return <hr key={key} />;
+            case "notice":
+              return <Notice key={key} noticeKey={b.key} />;
           }
         })}
       </div>

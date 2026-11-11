@@ -524,7 +524,7 @@ func (s *Service) runClaudeTurn(ctx context.Context, executable, profileRoot, wo
 	}
 	defer cleanup()
 
-	args := buildClaudeExecArgs(mcpCfgPath, SystemInstructions())
+	args := buildClaudeExecArgs(mcpCfgPath, s.systemPrompt(ctx, domainagent.ProviderClaude))
 	args = append(args, claudeModelArgs(s.effectiveSelection(domainagent.ProviderClaude))...)
 	// Keep one conversation per chat: the first turn names the session, later turns resume it.
 	// Sessions are stored only inside the isolated CLAUDE_CONFIG_DIR.

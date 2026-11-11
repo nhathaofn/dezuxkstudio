@@ -221,3 +221,42 @@ func TestAgentRepository(t *testing.T) {
 		t.Fatalf("expected empty allowed dirs, got %+v, err=%v", dirs, err)
 	}
 }
+
+func TestAgentConversations(t *testing.T) {
+	db := open(t, t.TempDir())
+	defer db.Close()
+	repo := NewAgentRepository(db)
+	ctx := context.Background()
+
+	for _, c := range []agent.Conversation{
+		{ID: "a", Title: "first chat", ProviderID: agent.ProviderCodex, CreatedAt: 1, UpdatedAt: 1},
+		{ID: "b", Title: "second chat", ProviderID: agent.ProviderClaude, CreatedAt: 2, UpdatedAt: 2},
+	} {
+		if err := repo.SaveConversation(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = repo.AppendChatMessage(ctx, agent.ChatMessage{ID: "a1", Role: "user", Text: "hi", CreatedAt: 1, ConversationID: "a"})
+	_ = repo.AppendChatMessage(ctx, agent.ChatMessage{ID: "b1", Role: "user", Text: "yo", CreatedAt: 2, ConversationID: "b"})
+	// Later activity in "a" moves it to the top; its title is kept.
+	if err := repo.SaveConversation(ctx, agent.Conversation{ID: "a", Title: "other", ProviderID: agent.ProviderCodex, CreatedAt: 9, UpdatedAt: 9}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := repo.ListConversations(ctx, 10)
+	if err != nil || len(list) != 2 || list[0].ID != "a" || list[0].Title != "first chat" || list[0].MessageCount != 1 || list[0].CreatedAt != 1 {
+		t.Fatalf("unexpected conversations: %+v err=%v", list, err)
+	}
+	msgs, err := repo.ListConversationMessages(ctx, "b", 10)
+	if err != nil || len(msgs) != 1 || msgs[0].ID != "b1" || msgs[0].ConversationID != "b" {
+		t.Fatalf("messages must be scoped to their conversation: %+v err=%v", msgs, err)
+	}
+	if err := repo.DeleteConversation(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if left, _ := repo.ListConversations(ctx, 10); len(left) != 1 || left[0].ID != "b" {
+		t.Fatalf("delete must remove the conversation: %+v", left)
+	}
+	if gone, _ := repo.ListConversationMessages(ctx, "a", 10); len(gone) != 0 {
+		t.Fatalf("delete must remove its messages: %+v", gone)
+	}
+}

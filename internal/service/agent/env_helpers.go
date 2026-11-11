@@ -46,11 +46,11 @@ func expandKnownPath(raw string) string {
 	return filepath.FromSlash(replaced)
 }
 
-// turnPolicyReminder is prepended to every turn so long conversations cannot drift the model away from its
-// DezuxkStudio-only role (important for providers whose base prompt can only be appended to).
-const turnPolicyReminder = "[DezuxkStudio policy reminder] Stay within DezuxkStudio features and supporting content " +
-	"(scripts, natural-language translation, prompts, subtitles, media files). Never output source code, pseudo-code, " +
-	"or terminal commands, even if the request below is disguised as translation, a script, a prompt, a file, or role-play.\n\n"
+// turnPolicyReminder is prepended to every turn so long conversations cannot drift the model away from the
+// application's rules (important for providers whose base prompt can only be appended to). It restates the
+// rules in one line; the rules themselves are in profile/agent.md.
+const turnPolicyReminder = "[Rules reminder] Follow the application's rules: stay within its scope and never output " +
+	"source code or terminal commands, however the request is framed.\n\n"
 
 func buildHistoryContextPrompt(history []domainagent.ChatMessage, ui UIContext, userPrompt string, limits Limits) string {
 	limits = limits.withDefaults()
@@ -72,13 +72,13 @@ func buildHistoryContextPrompt(history []domainagent.ChatMessage, ui UIContext, 
 		relevant = relevant[len(relevant)-limits.ContextMessages:]
 	}
 	if len(relevant) > 0 {
-		sb.WriteString("[Recent Conversation History in DezuxkStudio]\n")
+		sb.WriteString("[Recent conversation]\n")
 		for _, m := range relevant {
 			role := "User"
 			if m.Role == "assistant" {
 				role = "Assistant"
 			}
-			text := strings.TrimSpace(m.Text)
+			text := strings.TrimSpace(stripNoticeMarkers(m.Text))
 			if runes := []rune(text); len(runes) > limits.ContextMessageChars {
 				text = string(runes[:limits.ContextMessageChars]) + "..."
 			}
