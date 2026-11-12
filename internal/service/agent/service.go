@@ -1164,6 +1164,7 @@ func (s *Service) endTurn(t *turn, err error) {
 		if s.turn == t {
 			s.turn = nil
 		}
+		current = current && s.connSeq.Load() == t.connToken // a disconnect may have happened while storing
 		if err != nil && isAuthError(err) && current {
 			s.states[t.providerID] = domainagent.StateUnauthenticated
 			s.authStates[t.providerID] = domainagent.AuthUnauthenticated
@@ -1564,14 +1565,14 @@ func (s *Service) turnFor(messageID string) *turn {
 
 // emitChat is the single exit point for streamed chat events. Answer and reasoning text passes through
 // the running turn's output guard so source code never reaches the UI, whichever provider produced it;
-// text that belongs to no running turn (a cancelled turn's process still writing) is dropped.
+// events that belong to no running turn (a cancelled turn's process still writing) are dropped.
 func (s *Service) emitChat(evt domainagent.ChatEvent) {
 	t := s.turnFor(evt.MessageID)
+	if t == nil {
+		return
+	}
 	switch evt.Type {
 	case domainagent.ChatEventDelta, domainagent.ChatEventThought:
-		if t == nil {
-			return
-		}
 		if evt.Type == domainagent.ChatEventDelta {
 			evt.Text = t.guard.filterText(evt.Text)
 		} else {
@@ -1581,9 +1582,7 @@ func (s *Service) emitChat(evt domainagent.ChatEvent) {
 			return
 		}
 	case domainagent.ChatEventToolCall:
-		if t != nil {
-			t.noteTool(evt.Tool)
-		}
+		t.noteTool(evt.Tool)
 	}
 	s.emitChatRaw(evt)
 }
