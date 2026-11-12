@@ -35,6 +35,14 @@ input {
   outline: none;
 }
 
+/* Focus: one frame, --focus-width thick, in the focus colour, drawn over the control's own border
+   (negative offset = the same pixels). A bordered control just changes colour; a frameless one gets a
+   thin inset frame. Never a second ring around the control. */
+:where(button, a[href], summary, select, textarea, [role="button"], [role="tab"], [role="switch"], [role="option"]):focus-visible {
+  outline: var(--focus-width) solid var(--border-focus);
+  outline-offset: calc(var(--focus-width) * -1);
+}
+
 code {
   font-family: var(--font-mono);
 }

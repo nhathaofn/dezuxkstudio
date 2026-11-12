@@ -41,6 +41,18 @@
   --radius-lg: 10px;
   --radius-full: 9999px;
 
+  /* Frame thickness: every border of a button, field, card or divider. One value, one place. */
+  --border-width: 1px;
+  /* Focus is a frame of this width in --border-focus, drawn exactly where the border is
+     (see "Focus" in reset.css): the frame changes colour, no second ring is added. */
+  --focus-width: 1px;
+
+  /* Dialog widths (a modal never uses a hard-coded px) and the backdrop behind it. */
+  --dialog-width-sm: 420px;
+  --dialog-width-md: 560px;
+  --dialog-width-lg: 760px;
+  --overlay-bg: rgb(0 0 0 / 45%);
+
   /* 4. Transitions & Layout Bounds */
   --transition-fast: 120ms ease;
   --transition-normal: 200ms ease;
@@ -60,11 +72,11 @@
   --border-subtle: #e2e8f0;
   --border-default: #cbd5e1;
   --border-strong: #94a3b8;
-  --border-focus: #0284c7;
+  --border-focus: var(--btn-primary-bg);
 
   --text-primary: #0f172a;
   --text-secondary: #334155;
-  --text-muted: #64748b;
+  --text-muted: var(--text-secondary);
   --text-disabled: #94a3b8;
   --text-accent: #0284c7;
   --accent: #0284c7;
@@ -117,11 +129,11 @@
   --border-subtle: #1e2333;
   --border-default: #2d344b;
   --border-strong: #454f6f;
-  --border-focus: #38bdf8;
+  --border-focus: var(--btn-primary-bg);
 
   --text-primary: #f8fafc;
   --text-secondary: #cbd5e1;
-  --text-muted: #8391a8;
+  --text-muted: var(--text-secondary);
   --text-disabled: #4e576c;
   --text-accent: #38bdf8;
   --accent: #38bdf8;

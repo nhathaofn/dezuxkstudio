@@ -99,7 +99,7 @@ export function ProvidersView() {
   return (
     <ModelGroupsContext.Provider
       value={{
-        collapsed: modelGroups[selectedId] ?? {},
+        expanded: modelGroups[selectedId] ?? {},
         toggle: (capability) =>
           setModelGroups((previous) => ({
             ...previous,
@@ -213,7 +213,7 @@ export function ProvidersView() {
                 </div>
                 <div
                   ref={listRef}
-                  className="providers-list"
+                  className="providers-list scroll-hidden"
                   role="listbox"
                   aria-label={t("providers.navigation")}
                   onKeyDown={(event) => {

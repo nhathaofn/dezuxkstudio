@@ -1,36 +1,42 @@
 import { useState } from "react";
-import { Check, Pencil, Play, Trash2 } from "lucide-react";
+import { Check, ChevronRight, Pencil, Play, Trash2 } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { ErrorText } from "../../components/ui/ErrorText";
 import { appConfig } from "../../config/appConfig";
 import { useT } from "../../lib/i18n";
 import { toActionError, type ActionError } from "../../lib/rtClient";
+import { showsTestDetail } from "./health";
 import { useProvidersStore } from "./useProvidersStore";
 
 export function TestResult({ id }: { id: string }) {
   const t = useT();
   const result = useProvidersStore((s) => s.testResults[id]);
   if (!result) return null;
+  const shown = result.models.slice(0, appConfig.ui.providerTestModelLimit);
   return (
-    <details
-      className={`providers-test-result providers-notice--${result.ok ? "success" : "danger"}`}
-    >
-      <summary>
-        {t(`providers.outcome.${result.outcome}`)}
-        {result.ok && <> · {t("providers.latency", { ms: result.latency_ms })}</>}
-      </summary>
-      {result.status > 0 && <span>{t("providers.httpStatus", { status: result.status })}</span>}
-      {result.detail && <p>{result.detail}</p>}
-      {result.ok && result.models.length > 0 && (
+    <div className="providers-test-result" role="status">
+      <p className="providers-test-summary">
+        <span className={`providers-dot providers-dot--${result.ok ? "ok" : "dead"}`} />
+        <span>
+          {t(`providers.outcome.${result.outcome}`)}
+          {result.ok && <> · {t("providers.latency", { ms: result.latency_ms })}</>}
+        </span>
+      </p>
+      {!result.ok && (result.status > 0 || (result.detail && showsTestDetail(result.outcome))) && (
+        <p className="providers-test-error">
+          {result.status > 0 && <>{t("providers.httpStatus", { status: result.status })} </>}
+          {showsTestDetail(result.outcome) && result.detail}
+        </p>
+      )}
+      {result.ok && shown.length > 0 && (
         <details>
           <summary>
-            {t("providers.testModels", {
-              count: Math.min(result.models.length, appConfig.ui.providerTestModelLimit),
-            })}
+            <ChevronRight size={12} aria-hidden="true" />
+            {t("providers.testModels", { count: shown.length })}
           </summary>
-          <ul>
-            {result.models.slice(0, appConfig.ui.providerTestModelLimit).map((model) => (
+          <ul className="providers-test-models">
+            {shown.map((model) => (
               <li key={model}>
                 <code title={model}>{model}</code>
               </li>
@@ -38,7 +44,7 @@ export function TestResult({ id }: { id: string }) {
           </ul>
         </details>
       )}
-    </details>
+    </div>
   );
 }
 
@@ -129,6 +135,7 @@ export function ProviderActions({
       {!confirm && <ErrorText error={error} />}
       {confirm && (
         <Dialog
+          size="sm"
           title={t("providers.confirmDelete")}
           onClose={() => setConfirm(false)}
           busy={busy}

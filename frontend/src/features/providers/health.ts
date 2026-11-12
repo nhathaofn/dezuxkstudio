@@ -45,3 +45,10 @@ export function relativeTestTime(
     unit
   );
 }
+
+/** Outcomes raised by the app itself: their translated label says everything, and the server's
+ *  English detail would only leak untranslated text into the UI. */
+const LOCAL_OUTCOMES: ReadonlySet<string> = new Set(["secret_missing", "invalid_credentials"]);
+
+/** Whether a test result's server-side detail text may be shown to the user. */
+export const showsTestDetail = (outcome: string) => !LOCAL_OUTCOMES.has(outcome);

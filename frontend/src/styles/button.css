@@ -37,14 +37,13 @@
 }
 
 .ds-button:focus-visible {
-  outline: 2px solid var(--border-focus);
-  outline-offset: 2px;
+  /* the global focus frame (reset.css) applies */
 }
 
 .ds-button--primary {
   background-color: var(--btn-primary-bg);
   color: var(--btn-primary-text);
-  border: 1px solid transparent;
+  border: var(--border-width) solid transparent;
 }
 
 .ds-button--primary:hover {
@@ -54,7 +53,7 @@
 .ds-button--secondary {
   background-color: var(--btn-secondary-bg);
   color: var(--btn-secondary-text);
-  border: 1px solid var(--btn-secondary-border);
+  border: var(--border-width) solid var(--btn-secondary-border);
 }
 
 .ds-button--secondary:hover {
@@ -69,7 +68,7 @@
 .ds-button--ghost {
   background: transparent;
   color: var(--text-secondary);
-  border: 1px solid transparent;
+  border: var(--border-width) solid transparent;
 }
 .ds-button--ghost:hover {
   background: var(--bg-surface-elevated);

@@ -272,6 +272,7 @@ export function CustomProviderForm({
   if (modelsOnly) return form;
   return (
     <Dialog
+      size="lg"
       title={t(provider ? "providers.editCustom" : "providers.addCustom")}
       onClose={onClose}
       dirty={dirty}

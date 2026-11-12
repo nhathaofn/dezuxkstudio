@@ -7,7 +7,7 @@
   padding: 0 var(--space-2);
   border-radius: var(--radius-sm);
   background-color: var(--bg-surface-elevated);
-  border: 1px solid var(--border-subtle);
+  border: var(--border-width) solid var(--border-subtle);
   font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;

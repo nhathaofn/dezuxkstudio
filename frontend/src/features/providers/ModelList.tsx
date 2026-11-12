@@ -1,16 +1,26 @@
-import { useContext, useId, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useContext,
+  useDeferredValue,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, ChevronRight, Pencil, Plus, Search, Star, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, Search, Trash2 } from "lucide-react";
 import type { CustomEndpoint, ProviderCapability, ProviderModel } from "../../contracts/generated";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
-import { Switch } from "../../components/ui/Switch";
 import { useT } from "../../lib/i18n";
 import type { ActionError } from "../../lib/rtClient";
 import { emptyFacts, newModel, parseDurations, parseResolutions } from "./customModels";
-import { enabledCounts, factsSummary, filterModels } from "./modelPresentation";
+import { enabledCounts, filterModels } from "./modelPresentation";
+import { ModelRow } from "./ModelRow";
 import { CapabilityIcon } from "./CapabilityIcon";
-import { ModelGroupsContext, type ModelGroups } from "./modelGroups";
+import { isGroupOpen, ModelGroupsContext, type ModelGroups } from "./modelGroups";
 
 function FactsEditor({
   model,
@@ -114,12 +124,14 @@ export function ModelList({
   const id = useId();
   const [search, setSearch] = useState("");
   const groupState = useContext(ModelGroupsContext);
-  const [localCollapsed, setLocalCollapsed] = useState<ModelGroups>({});
-  const collapsed = groupState?.collapsed ?? localCollapsed;
+  const [localExpanded, setLocalExpanded] = useState<ModelGroups>({});
+  const expanded = groupState?.expanded ?? localExpanded;
   const toggleGroup = (capability: ProviderCapability) => {
     if (groupState) groupState.toggle(capability);
-    else setLocalCollapsed((previous) => ({ ...previous, [capability]: !previous[capability] }));
+    else setLocalExpanded((previous) => ({ ...previous, [capability]: !previous[capability] }));
   };
+  // While searching, every group with a match is shown so results are never hidden behind a chevron.
+  const searching = search.trim() !== "";
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<{ index: number; model: ProviderModel } | null>(null);
   const [modelId, setModelId] = useState("");
@@ -128,16 +140,36 @@ export function ModelList({
   const selected = endpoints
     ? (endpoints.find((entry) => entry.key === selection)?.key ?? endpoints[0]?.key ?? "")
     : (capabilities.find((value) => value === selection) ?? capabilities[0] ?? "");
-  const filtered = filterModels(models, search);
-  const counts = enabledCounts(filtered);
-  const change = (index: number, patch: Partial<ProviderModel>) => {
+  // Typing stays responsive: the (possibly long) filtered list renders at a lower priority.
+  const deferredSearch = useDeferredValue(search);
+  const filtered = useMemo(() => filterModels(models, deferredSearch), [models, deferredSearch]);
+  const counts = useMemo(() => enabledCounts(filtered), [filtered]);
+  const indexOf = useMemo(() => new Map(models.map((model, i) => [model, i])), [models]);
+  const groups = useMemo(() => {
+    const byCapability = new Map<ProviderCapability, ProviderModel[]>();
+    for (const model of filtered) {
+      const rows = byCapability.get(model.capability);
+      if (rows) rows.push(model);
+      else byCapability.set(model.capability, [model]);
+    }
+    return [...byCapability];
+  }, [filtered]);
+  // Stable handlers (read the latest data through refs) so memoised rows only re-render with their data.
+  const modelsRef = useRef(models);
+  const onChangeRef = useRef(onChange);
+  useLayoutEffect(() => {
+    modelsRef.current = models;
+    onChangeRef.current = onChange;
+  });
+  const change = useCallback((index: number, patch: Partial<ProviderModel>) => {
+    const models = modelsRef.current;
     const updated = { ...models[index], ...patch };
     if (!updated.enabled) updated.is_default = false;
     if (updated.capability !== models[index].capability) {
       if (!patch.facts) updated.facts = emptyFacts();
       updated.is_default = false;
     }
-    onChange(
+    onChangeRef.current(
       models.map((model, i) =>
         i === index
           ? updated
@@ -146,15 +178,19 @@ export function ModelList({
             : model
       )
     );
-  };
-  const bulk = (enabled: boolean) =>
+  }, []);
+  const edit = useCallback((index: number) => {
+    const model = modelsRef.current[index];
+    setEditing({ index, model: { ...model, facts: { ...model.facts } } });
+  }, []);
+  const bulk = (enabled: boolean) => {
+    const targets = new Set(filtered);
     onChange(
       models.map((model) =>
-        filtered.includes(model)
-          ? { ...model, enabled, is_default: enabled && model.is_default }
-          : model
+        targets.has(model) ? { ...model, enabled, is_default: enabled && model.is_default } : model
       )
     );
+  };
   return (
     <fieldset className="providers-fieldset providers-model-editor" disabled={disabled}>
       <div className="providers-model-toolbar">
@@ -202,14 +238,14 @@ export function ModelList({
         </p>
       )}
       <div className="providers-models">
-        {[...new Set(filtered.map((model) => model.capability))].map((capability) => {
-          const rows = filtered.filter((model) => model.capability === capability);
+        {groups.map(([capability, rows]) => {
+          const open = isGroupOpen(expanded, capability, searching);
           return (
             <section className="providers-model-group" key={capability}>
               <button
                 type="button"
                 className="providers-model-group-heading"
-                aria-expanded={!collapsed[capability]}
+                aria-expanded={open}
                 onClick={() => toggleGroup(capability)}
               >
                 <CapabilityIcon value={capability} />
@@ -217,75 +253,20 @@ export function ModelList({
                 <span className="providers-meta">
                   {t("providers.enabledCount", enabledCounts(rows))}
                 </span>
-                {collapsed[capability] ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
               </button>
-              {!collapsed[capability] &&
-                rows.map((model) => {
-                  const index = models.indexOf(model);
-                  const summary = factsSummary(model.facts, {
-                    seconds: t("providers.seconds"),
-                    audio: t("providers.audio"),
-                    tokens: (count) => t("providers.tokens", { count }),
-                  });
-                  const defaultLabel = t("providers.defaultFor", {
-                    capability: t(`providers.capability.${capability}`),
-                  });
-                  return (
-                    <div
-                      className={`providers-model-row${model.enabled ? "" : " providers-model-row--disabled"}`}
-                      key={`${model.model_id}-${capability}`}
-                    >
-                      <Switch
-                        checked={model.enabled}
-                        disabled={disabled}
-                        aria-label={t("providers.enabledRow", { row: index + 1 })}
-                        onCheckedChange={(enabled) => change(index, { enabled })}
-                      />
-                      <div
-                        className="providers-model-name"
-                        title={[model.display_name, model.model_id].filter(Boolean).join(" · ")}
-                      >
-                        <span>{model.display_name || model.model_id}</span>
-                        {model.display_name && model.display_name !== model.model_id && (
-                          <code>{model.model_id}</code>
-                        )}
-                      </div>
-                      {endpoints && (
-                        <span className="providers-endpoint" title={model.endpoint}>
-                          {model.endpoint}
-                        </span>
-                      )}
-                      <span className="providers-model-summary providers-meta" title={summary}>
-                        {summary}
-                      </span>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        iconOnly
-                        disabled={disabled || !model.enabled}
-                        title={defaultLabel}
-                        aria-label={defaultLabel}
-                        aria-pressed={model.is_default}
-                        className={model.is_default ? "providers-default-star" : ""}
-                        onClick={() => change(index, { is_default: true })}
-                      >
-                        <Star size={14} fill={model.is_default ? "currentColor" : "none"} />
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        iconOnly
-                        title={t("providers.editModel")}
-                        aria-label={t("providers.editModel")}
-                        onClick={() =>
-                          setEditing({ index, model: { ...model, facts: { ...model.facts } } })
-                        }
-                      >
-                        <Pencil size={14} />
-                      </Button>
-                    </div>
-                  );
-                })}
+              {open &&
+                rows.map((model) => (
+                  <ModelRow
+                    key={`${model.model_id}-${capability}`}
+                    model={model}
+                    index={indexOf.get(model) ?? 0}
+                    disabled={disabled}
+                    showEndpoint={!!endpoints}
+                    onChange={change}
+                    onEdit={edit}
+                  />
+                ))}
             </section>
           );
         })}

@@ -32,13 +32,15 @@ function statusMeta(state: AgentConnectionState, t: (k: MessageKey) => string) {
   switch (state) {
     case "connected":
       return {
-        color: "var(--status-connected)",
+        // label stays in the normal text colour; only errors are red
+        color: undefined,
         icon: <CheckCircle2 size={13} style={{ color: "var(--status-connected)" }} />,
         label: t("agent.status.connected"),
       };
     case "connecting":
       return {
-        color: "var(--status-connecting)",
+        // label stays in the normal text colour; only errors are red
+        color: undefined,
         icon: (
           <RefreshCw
             size={13}
@@ -50,13 +52,15 @@ function statusMeta(state: AgentConnectionState, t: (k: MessageKey) => string) {
       };
     case "unauthenticated":
       return {
-        color: "var(--status-connecting)",
+        // label stays in the normal text colour; only errors are red
+        color: undefined,
         icon: <AlertTriangle size={13} style={{ color: "var(--status-connecting)" }} />,
         label: t("agent.status.unauthenticated"),
       };
     case "missing":
       return {
-        color: "var(--status-connecting)",
+        // label stays in the normal text colour; only errors are red
+        color: undefined,
         icon: <Search size={13} style={{ color: "var(--status-connecting)" }} />,
         label: t("agent.status.missing"),
       };
@@ -69,7 +73,8 @@ function statusMeta(state: AgentConnectionState, t: (k: MessageKey) => string) {
     case "disconnected":
     default:
       return {
-        color: "var(--text-muted)",
+        // label stays in the normal text colour; only errors are red
+        color: undefined,
         icon: <Plug size={13} style={{ color: "var(--text-muted)" }} />,
         label: t("agent.status.disconnected"),
       };

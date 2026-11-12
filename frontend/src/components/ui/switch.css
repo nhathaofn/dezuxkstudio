@@ -16,12 +16,12 @@
   position: absolute;
   inset: var(--space-1) 0;
   background: var(--bg-surface-muted);
-  border: 1px solid var(--border-strong);
+  border: var(--border-width) solid var(--border-strong);
   border-radius: var(--radius-full);
 }
 .ui-switch[aria-checked="true"]::before {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--btn-primary-bg);
+  border-color: var(--btn-primary-bg);
 }
 .ui-switch span {
   position: relative;
@@ -35,8 +35,8 @@
   transform: translateX(12px);
 }
 .ui-switch:focus-visible {
-  outline: 2px solid var(--border-focus);
-  outline-offset: 2px;
+  outline: var(--focus-width) solid var(--border-focus);
+  outline-offset: calc(var(--focus-width) * -1);
 }
 .ui-switch:disabled {
   opacity: 0.5;

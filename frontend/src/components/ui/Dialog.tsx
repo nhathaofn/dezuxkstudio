@@ -12,6 +12,7 @@ export function Dialog({
   onClose,
   dirty = false,
   busy = false,
+  size = "md",
 }: {
   title: string;
   children: ReactNode;
@@ -19,6 +20,8 @@ export function Dialog({
   onClose: () => void;
   dirty?: boolean;
   busy?: boolean;
+  /** sm: confirmations; md: forms; lg: forms with a table (custom provider). */
+  size?: "sm" | "md" | "lg";
 }) {
   const t = useT();
   const id = useId();
@@ -41,7 +44,7 @@ export function Dialog({
   return (
     <dialog
       ref={ref}
-      className="ui-dialog"
+      className={`ui-dialog ui-dialog--${size}`}
       aria-modal="true"
       aria-labelledby={id}
       onCancel={(event) => {
@@ -107,6 +110,7 @@ export function Dialog({
       )}
       {confirmDiscard && (
         <Dialog
+          size="sm"
           title={t("dialog.discardTitle")}
           onClose={() => setConfirmDiscard(false)}
           footer={

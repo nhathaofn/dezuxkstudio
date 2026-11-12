@@ -1,15 +1,26 @@
 .ui-dialog {
-  width: min(880px, calc(100vw - 32px));
-  max-height: calc(100dvh - 48px);
+  /* The global reset zeroes margins, which also removes the auto margin that centres a <dialog>. */
+  margin: auto;
+  width: min(var(--dialog-width, var(--dialog-width-md)), calc(100vw - var(--space-8)));
+  max-height: calc(100dvh - var(--space-8));
   padding: 0;
   color: var(--text-primary);
   background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
+  border: var(--border-width) solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-md);
+}
+.ui-dialog--sm {
+  --dialog-width: var(--dialog-width-sm);
+}
+.ui-dialog--md {
+  --dialog-width: var(--dialog-width-md);
+}
+.ui-dialog--lg {
+  --dialog-width: var(--dialog-width-lg);
 }
 .ui-dialog::backdrop {
-  background: rgb(0 0 0 / 45%);
+  background: var(--overlay-bg);
 }
 .ui-dialog[open] {
   display: flex;
@@ -21,26 +32,24 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 16px 24px;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-6);
   flex-shrink: 0;
 }
 .ui-dialog-header {
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: var(--border-width) solid var(--border-subtle);
 }
 .ui-dialog-header h2 {
   margin: 0;
   font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
 }
 .ui-dialog-body {
-  padding: 24px;
+  padding: var(--space-6);
   min-height: 0;
   overflow: auto;
 }
 .ui-dialog-footer {
   justify-content: flex-end;
-  border-top: 1px solid var(--border-subtle);
-}
-.ui-dialog:has(> .ui-dialog-body > p:only-child) {
-  max-width: 440px;
+  border-top: var(--border-width) solid var(--border-subtle);
 }
