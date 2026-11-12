@@ -103,10 +103,13 @@ func (s *Service) featuresBlock(ctx context.Context) string {
 		strings.Join(lines, "\n") + "\n</features>"
 }
 
+// maxFeatureLine bounds one feature description in the system prompt (runes).
+const maxFeatureLine = 200
+
 func oneLine(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
-	if r := []rune(s); len(r) > 200 {
-		s = string(r[:200]) + "…"
+	if r := []rune(s); len(r) > maxFeatureLine {
+		s = string(r[:maxFeatureLine]) + "…"
 	}
 	return s
 }

@@ -21,7 +21,11 @@ const (
 
 // AllProviderIDs returns all registered provider identifiers in display order.
 func AllProviderIDs() []ProviderID {
-	return []ProviderID{ProviderAntigravity, ProviderCodex, ProviderClaude}
+	ids := make([]ProviderID, len(providerSpecs))
+	for i, sp := range providerSpecs {
+		ids[i] = sp.ID
+	}
+	return ids
 }
 
 // ConnectionState describes the runtime lifecycle state of a provider connection.
@@ -137,9 +141,9 @@ type ProviderSpec struct {
 	UnsupportedReason string
 }
 
-// Registry maps each ProviderID to its static specification.
-var Registry = map[ProviderID]ProviderSpec{
-	ProviderAntigravity: {
+// providerSpecs declares every provider once, in display order.
+var providerSpecs = []ProviderSpec{
+	{
 		ID:                   ProviderAntigravity,
 		Name:                 "Google Antigravity",
 		ExecutableLabel:      "agy",
@@ -158,7 +162,7 @@ var Registry = map[ProviderID]ProviderSpec{
 		},
 		Supported: true,
 	},
-	ProviderCodex: {
+	{
 		ID:                   ProviderCodex,
 		Name:                 "OpenAI Codex",
 		ExecutableLabel:      "codex",
@@ -186,7 +190,7 @@ var Registry = map[ProviderID]ProviderSpec{
 		},
 		Supported: true,
 	},
-	ProviderClaude: {
+	{
 		ID:                   ProviderClaude,
 		Name:                 "Anthropic Claude",
 		ExecutableLabel:      "claude",
@@ -219,6 +223,15 @@ var Registry = map[ProviderID]ProviderSpec{
 		Supported: true,
 	},
 }
+
+// Registry maps each ProviderID to its static specification.
+var Registry = func() map[ProviderID]ProviderSpec {
+	m := make(map[ProviderID]ProviderSpec, len(providerSpecs))
+	for _, sp := range providerSpecs {
+		m[sp.ID] = sp
+	}
+	return m
+}()
 
 // ModelOption is one model a provider's CLI reports as selectable, with the reasoning levels it supports.
 // Lists always come from the provider itself (ACP session, CLI catalog, or CLI aliases), never guessed.

@@ -501,3 +501,17 @@ func TestConversationsStartFreshAndCanBeReopened(t *testing.T) {
 		t.Fatal("opening an unknown chat must fail")
 	}
 }
+
+// A probe that runs out of time must not report the profile as signed out.
+func TestAuthProbeTimeoutIsUnknown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	exe, _ := os.Executable()
+	if got, _ := probeCodexAuth(ctx, exe, t.TempDir()); got != domainagent.AuthUnknown {
+		t.Fatalf("codex: %s, want unknown", got)
+	}
+	ps := profileSecrets{store: secrets.NewMemory()}
+	if got, _ := ps.probeClaudeAuth(ctx, exe, t.TempDir()); got != domainagent.AuthUnknown {
+		t.Fatalf("claude: %s, want unknown", got)
+	}
+}

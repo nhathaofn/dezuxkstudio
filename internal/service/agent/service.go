@@ -937,11 +937,17 @@ func (s *Service) DeleteConversation(ctx context.Context, id string) error {
 	return s.repo.DeleteConversation(ctx, id)
 }
 
+// Display bounds for values derived from free text.
+const (
+	maxConversationTitle = 80 // runes of the first message used as the chat title
+	maxVersionLen        = 64 // bytes of a CLI --version line
+)
+
 // conversationTitle shortens a chat's first message into its title.
 func conversationTitle(prompt string) string {
 	title := strings.Join(strings.Fields(prompt), " ")
-	if r := []rune(title); len(r) > 80 {
-		title = string(r[:80]) + "…"
+	if r := []rune(title); len(r) > maxConversationTitle {
+		title = string(r[:maxConversationTitle]) + "…"
 	}
 	return title
 }
@@ -1500,7 +1506,7 @@ func (s *Service) probeVersion(ctx context.Context, executable string, versionAr
 	if err != nil && len(out) == 0 {
 		return ""
 	}
-	return firstLineTrimmedMax(string(out), 64)
+	return firstLineTrimmedMax(string(out), maxVersionLen)
 }
 
 func firstLineTrimmedMax(s string, maxLen int) string {

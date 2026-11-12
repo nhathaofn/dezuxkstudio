@@ -41,15 +41,12 @@ func probeCodexAuth(ctx context.Context, executable, profileRoot string) (domain
 	cmd := proc.Command(ctx, executable, "login", "status")
 	cmd.Env = providerEnv(domainagent.ProviderCodex, envMap)
 	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return domainagent.AuthUnknown, "" // a slow probe says nothing about the sign-in
+	}
 	text := strings.TrimSpace(string(out))
-	lower := strings.ToLower(text)
-	if err == nil && (strings.Contains(lower, "logged in") && !strings.Contains(lower, "not logged in")) {
-		return domainagent.AuthAuthenticated, firstLineTrimmed(text)
-	}
-	if strings.Contains(lower, "not logged in") {
-		return domainagent.AuthUnauthenticated, ""
-	}
-	if err != nil {
+	// `codex login status` exits non-zero when signed out.
+	if err != nil || strings.Contains(strings.ToLower(text), "not logged in") {
 		return domainagent.AuthUnauthenticated, ""
 	}
 	return domainagent.AuthAuthenticated, firstLineTrimmed(text)

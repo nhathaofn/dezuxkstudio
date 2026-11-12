@@ -97,6 +97,9 @@ func (ps profileSecrets) probeClaudeAuth(ctx context.Context, executable, profil
 	cmd := proc.Command(ctx, executable, "auth", "status", "--json") // the caller bounds ctx
 	cmd.Env = env
 	out, cmdErr := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return domainagent.AuthUnknown, "" // a slow probe says nothing about the sign-in
+	}
 
 	var parsed claudeAuthStatusJSON
 	if jsonErr := json.Unmarshal(out, &parsed); jsonErr == nil {
