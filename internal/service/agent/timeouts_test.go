@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"app/internal/config"
 	domainagent "app/internal/domain/agent"
 	domainbinaries "app/internal/domain/binaries"
 	"app/internal/progress"
@@ -179,5 +181,24 @@ func TestChatEventsTouchOnlyTheActiveTurn(t *testing.T) {
 	svc.emitChatRaw(domainagent.ChatEvent{MessageID: "msg-0", Type: domainagent.ChatEventDelta, Text: "old"})
 	if touches.Load() != 1 {
 		t.Fatalf("touches = %d, want 1", touches.Load())
+	}
+}
+
+// Every Limits field must come from config: a new field left out of LimitsFrom would silently
+// run with zero (then a hidden fallback) instead of the configured value.
+func TestLimitsFromConfigFillsEveryField(t *testing.T) {
+	l := LimitsFrom(config.Default(config.ModeDesktop))
+	v := reflect.ValueOf(l)
+	for i := 0; i < v.NumField(); i++ {
+		if v.Field(i).IsZero() {
+			t.Errorf("Limits.%s is not mapped from config", v.Type().Field(i).Name)
+		}
+	}
+	cfg := config.Default(config.ModeDesktop)
+	cfg.Agent.TurnTimeout = 42 * time.Second
+	cfg.Realtime.LongActionTimeout = 7 * time.Minute
+	got := LimitsFrom(cfg)
+	if got.TurnTimeout != 42*time.Second || got.MCPToolTimeout != 7*time.Minute {
+		t.Fatalf("config values not used: %+v", got)
 	}
 }

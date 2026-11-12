@@ -7,17 +7,16 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
 	"syscall"
-	"time"
 
 	"app/internal/buildinfo"
 	"app/internal/config"
 	"app/internal/core"
+	"app/internal/httpclient"
 	"app/internal/logger"
 	"app/internal/paths"
 	"app/internal/platform"
@@ -104,15 +103,7 @@ func run() (code int) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	streamingClient := &http.Client{
-		Timeout: 0,
-		Transport: &http.Transport{
-			Proxy:               http.ProxyFromEnvironment,
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 10,
-			IdleConnTimeout:     90 * time.Second,
-		},
-	}
+	streamingClient := httpclient.New(cfg.Network)
 
 	c, err := core.New(ctx, core.Options{
 		Config:         cfg,

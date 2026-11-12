@@ -18,6 +18,7 @@ import (
 	"app/internal/contracts"
 	domainagent "app/internal/domain/agent"
 	domainprefs "app/internal/domain/preferences"
+	"app/internal/httpclient"
 	"app/internal/paths"
 	"app/internal/realtime"
 	"app/internal/realtime/modules"
@@ -156,7 +157,7 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 
 	sysSvc := system.New(cfg.Mode, o.Paths, o.OpenDirectory)
 
-	updateClient := &http.Client{Timeout: cfg.Update.Timeout}
+	updateClient := httpclient.WithTimeout(o.HTTPClient, cfg.Update.Timeout)
 	updSvc, err := update.New(update.Options{
 		FeedURL:        cfg.Update.FeedURL,
 		CurrentVersion: buildinfo.Version,
@@ -186,7 +187,7 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 	}
 
 	binSvc := binariessvc.New(sqlite.NewBinariesRepository(c.db), o.Paths.Tools(), o.Logger,
-		binariessvc.WithProbeTimeout(cfg.Binaries.ProbeTimeout))
+		binariessvc.WithProbeTimeout(cfg.Binaries.ProbeTimeout), binariessvc.WithHTTPClient(o.HTTPClient))
 
 	wfSvc, err := workflow.New(workflow.Options{
 		Paths:  o.Paths,
@@ -204,23 +205,8 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		ProfilesDir:  o.Paths.AgentProfiles(),
 		AppVersion:   buildinfo.Version,
 		// Provider API keys go to the OS credential store (in-memory fallback where none exists).
-		Secrets: secrets.NewDesktopStore(buildinfo.AppID),
-		Limits: agentsvc.Limits{
-			TurnTimeout:         cfg.Agent.TurnTimeout,
-			InitializeTimeout:   cfg.Agent.InitializeTimeout,
-			VersionProbeTimeout: cfg.Agent.VersionProbeTimeout,
-			AuthProbeTimeout:    cfg.Agent.AuthProbeTimeout,
-			LoginTimeout:        cfg.Agent.LoginTimeout,
-			ModelCatalogTimeout: cfg.Agent.ModelCatalogTimeout,
-			// An MCP tool call may run a whole workflow, which the hub bounds by the long action timeout.
-			MCPToolTimeout:      cfg.Realtime.LongActionTimeout,
-			MCPShutdownTimeout:  cfg.Server.ShutdownTimeout,
-			StatusCacheTTL:      cfg.Agent.StatusCacheTTL,
-			ApprovalTTL:         cfg.Agent.ApprovalTTL,
-			HistoryLimit:        cfg.Agent.HistoryLimit,
-			ContextMessages:     cfg.Agent.ContextMessages,
-			ContextMessageChars: cfg.Agent.ContextMessageChars,
-		},
+		Secrets:     secrets.NewDesktopStore(buildinfo.AppID),
+		Limits:      agentsvc.LimitsFrom(cfg),
 		Logger:      o.Logger,
 		Workflow:    wfSvc,
 		Binaries:    binSvc,

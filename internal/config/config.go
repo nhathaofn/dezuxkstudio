@@ -52,6 +52,7 @@ type Config struct {
 	Diagnostics DiagnosticsConfig
 	Update      UpdateConfig
 	Binaries    BinariesConfig
+	Network     NetworkConfig
 	Desktop     DesktopConfig
 	Agent       AgentConfig
 }
@@ -114,6 +115,13 @@ type DiagnosticsConfig struct {
 	Keep int
 }
 
+// NetworkConfig tunes the shared outbound HTTP client (update checks, tool downloads).
+type NetworkConfig struct {
+	IdleConnTimeout     time.Duration
+	MaxIdleConns        int
+	MaxIdleConnsPerHost int
+}
+
 // BinariesConfig configures external tool (ffmpeg, yt-dlp...) inspection.
 type BinariesConfig struct {
 	ProbeTimeout time.Duration // max duration of `<tool> -version`; a cold start under antivirus can take seconds
@@ -134,6 +142,7 @@ type AgentConfig struct {
 	AuthProbeTimeout    time.Duration // max duration of a CLI auth status check
 	LoginTimeout        time.Duration // max duration of an interactive sign-in (browser OAuth)
 	ModelCatalogTimeout time.Duration // max duration of reading a CLI's model catalog
+	InterruptWait       time.Duration // how long a cancelled turn waits for the CLI to report what it produced
 	StatusCacheTTL      time.Duration // how long CLI auth/version probe results are reused
 	ApprovalTTL         time.Duration // pending approvals expire after this long
 	HistoryLimit        int           // messages returned to the chat UI
@@ -211,6 +220,7 @@ func Default(mode Mode) *Config {
 		},
 		Diagnostics: DiagnosticsConfig{Keep: 5},
 		Binaries:    BinariesConfig{ProbeTimeout: 15 * time.Second},
+		Network:     NetworkConfig{IdleConnTimeout: 90 * time.Second, MaxIdleConns: 100, MaxIdleConnsPerHost: 10},
 		Update: UpdateConfig{
 			FeedURL:        buildinfo.UpdateFeedURL,
 			Timeout:        10 * time.Second,
@@ -223,6 +233,7 @@ func Default(mode Mode) *Config {
 			AuthProbeTimeout:    10 * time.Second,
 			LoginTimeout:        3 * time.Minute,
 			ModelCatalogTimeout: 30 * time.Second,
+			InterruptWait:       5 * time.Second,
 			StatusCacheTTL:      5 * time.Minute,
 			ApprovalTTL:         30 * time.Minute,
 			HistoryLimit:        200,

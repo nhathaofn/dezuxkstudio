@@ -7,13 +7,14 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"app/internal/apperr"
+	"app/internal/config"
 	domainbinaries "app/internal/domain/binaries"
+	"app/internal/lookup"
 	"app/internal/runner"
 )
 
@@ -28,8 +29,10 @@ type Service struct {
 	dlSlot       chan struct{} // capacity 1: serialises downloads into toolsDir
 }
 
-// DefaultProbeTimeout mirrors config.Default().Binaries.ProbeTimeout for standalone use (tests, tools).
-const DefaultProbeTimeout = 15 * time.Second
+// DefaultProbeTimeout is the config default (binaries.probe_timeout), for standalone use.
+func DefaultProbeTimeout() time.Duration {
+	return config.Default(config.ModeDesktop).Binaries.ProbeTimeout
+}
 
 // Option customises a Service.
 type Option func(*Service)
@@ -43,6 +46,16 @@ func WithProbeTimeout(d time.Duration) Option {
 	}
 }
 
+// WithHTTPClient sets the client used for downloads (the app's shared client); nil keeps a
+// default client.
+func WithHTTPClient(c *http.Client) Option {
+	return func(s *Service) {
+		if c != nil {
+			s.client = c
+		}
+	}
+}
+
 // New creates a new binaries Service.
 func New(repo domainbinaries.Repository, toolsDir string, logger *slog.Logger, opts ...Option) *Service {
 	s := &Service{
@@ -50,7 +63,7 @@ func New(repo domainbinaries.Repository, toolsDir string, logger *slog.Logger, o
 		toolsDir:     toolsDir,
 		logger:       logger,
 		client:       &http.Client{},
-		probeTimeout: DefaultProbeTimeout,
+		probeTimeout: DefaultProbeTimeout(),
 		dlSlot:       make(chan struct{}, 1),
 	}
 	for _, o := range opts {
@@ -108,43 +121,31 @@ func (s *Service) Resolve(ctx context.Context, id domainbinaries.BinaryID) (reso
 		return "", domainbinaries.SourceNone, "", apperr.Validation(fmt.Sprintf("unknown binary %q", id))
 	}
 
-	// 1. Custom path configured by user
 	customPath, err = s.repo.GetCustomPath(ctx, id)
 	if err != nil {
 		return "", domainbinaries.SourceNone, "", err
 	}
-	if customPath != "" {
-		if fileExists(customPath) {
-			return customPath, domainbinaries.SourceCustom, customPath, nil
-		}
-		// If specified custom path does not exist, note it but continue fallbacks
+	// Priority: user's custom path, app tools folder, portable tools next to the executable, PATH.
+	// A custom path that no longer exists is kept (reported) but falls through to the others.
+	candidates := []lookup.Candidate[domainbinaries.Source]{
+		{Source: domainbinaries.SourceCustom, Find: lookup.File(customPath)},
 	}
-
-	// 2. Application tools directory (%LOCALAPPDATA%/.../data/tools)
 	if s.toolsDir != "" {
-		toolsPath := filepath.Join(s.toolsDir, spec.ExecutableName())
-		if fileExists(toolsPath) {
-			return toolsPath, domainbinaries.SourceTools, customPath, nil
-		}
+		candidates = append(candidates, lookup.Candidate[domainbinaries.Source]{
+			Source: domainbinaries.SourceTools, Find: lookup.File(filepath.Join(s.toolsDir, spec.ExecutableName())),
+		})
 	}
-
-	// 3. Portable tools directory next to the executable
 	if exe, err := os.Executable(); err == nil {
-		exeDir := filepath.Dir(exe)
-		portableTools := filepath.Join(exeDir, "tools", spec.ExecutableName())
-		if fileExists(portableTools) {
-			return portableTools, domainbinaries.SourceTools, customPath, nil
-		}
+		candidates = append(candidates, lookup.Candidate[domainbinaries.Source]{
+			Source: domainbinaries.SourceTools, Find: lookup.File(filepath.Join(filepath.Dir(exe), "tools", spec.ExecutableName())),
+		})
 	}
-
-	// 4. System PATH
-	if sysPath, err := exec.LookPath(spec.ExecutableBase); err == nil {
-		return sysPath, domainbinaries.SourceSystem, customPath, nil
+	candidates = append(candidates, lookup.Candidate[domainbinaries.Source]{
+		Source: domainbinaries.SourceSystem, Find: lookup.OnPath(spec.ExecutableBase, spec.ExecutableName()),
+	})
+	if path, src, ok := lookup.First(candidates...); ok {
+		return path, src, customPath, nil
 	}
-	if sysPath, err := exec.LookPath(spec.ExecutableName()); err == nil {
-		return sysPath, domainbinaries.SourceSystem, customPath, nil
-	}
-
 	return "", domainbinaries.SourceNone, customPath, nil
 }
 
@@ -199,12 +200,4 @@ func (s *Service) Probe(ctx context.Context, id domainbinaries.BinaryID) (domain
 	}
 
 	return info, nil
-}
-
-func fileExists(p string) bool {
-	info, err := os.Stat(p)
-	if err != nil {
-		return false
-	}
-	return !info.IsDir()
 }

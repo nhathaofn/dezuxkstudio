@@ -304,8 +304,7 @@ func TestModelCatalogFollowsTheSignedInAccount(t *testing.T) {
 	plus := []domainagent.ModelOption{{ID: "gpt-6-sol", Efforts: []string{"high"}}, {ID: "gpt-6-luna"}}
 	svc.models.mu.Lock()
 	svc.models.catalogs[id] = plus
-	svc.models.catalogOf[id] = "codex.exe"
-	svc.models.loadedAt[id] = time.Now()
+	svc.models.catalogFrom[id] = cachedProbe{executable: "codex.exe", at: time.Now()}
 	svc.models.selection[id] = domainagent.ModelSelection{Model: "gpt-6-sol", Effort: "high"}
 	svc.models.mu.Unlock()
 

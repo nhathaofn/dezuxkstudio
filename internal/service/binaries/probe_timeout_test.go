@@ -64,7 +64,7 @@ func TestProbeTimeoutIsConfigurable(t *testing.T) {
 
 func TestWithProbeTimeoutIgnoresNonPositive(t *testing.T) {
 	s := New(newMemoryRepo(), t.TempDir(), slog.New(slog.DiscardHandler), WithProbeTimeout(0))
-	if s.probeTimeout != DefaultProbeTimeout {
+	if s.probeTimeout != DefaultProbeTimeout() {
 		t.Fatalf("got %v", s.probeTimeout)
 	}
 }

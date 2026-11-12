@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +14,7 @@ import (
 
 	"app/internal/apperr"
 	domainagent "app/internal/domain/agent"
+	"app/internal/lookup"
 	"app/internal/proc"
 	"app/internal/progress"
 	"app/internal/safego"
@@ -1465,21 +1465,15 @@ func (s *Service) resolveExecutable(ctx context.Context, spec domainagent.Provid
 	if err != nil {
 		return "", domainagent.SourceNone, "", err
 	}
-	if customPath != "" && fileExists(customPath) {
-		return customPath, domainagent.SourceCustom, customPath, nil
+	path, src, ok := lookup.First(
+		lookup.Candidate[domainagent.Source]{Source: domainagent.SourceCustom, Find: lookup.File(customPath)},
+		lookup.Candidate[domainagent.Source]{Source: domainagent.SourceSystem, Find: lookup.OnPath(spec.CandidateExecutables...)},
+		lookup.Candidate[domainagent.Source]{Source: domainagent.SourceSystem, Find: lookup.Files(expandKnownPath, spec.KnownPaths...)},
+	)
+	if !ok {
+		return "", domainagent.SourceNone, customPath, nil
 	}
-	for _, candidate := range spec.CandidateExecutables {
-		if sysPath, lookErr := exec.LookPath(candidate); lookErr == nil && sysPath != "" {
-			return sysPath, domainagent.SourceSystem, customPath, nil
-		}
-	}
-	for _, known := range spec.KnownPaths {
-		p := expandKnownPath(known)
-		if p != "" && fileExists(p) {
-			return p, domainagent.SourceSystem, customPath, nil
-		}
-	}
-	return "", domainagent.SourceNone, customPath, nil
+	return path, src, customPath, nil
 }
 
 // probeVersionCached returns the CLI version, re-running `--version` when the executable changed or the
@@ -1678,11 +1672,6 @@ func errText(err error) string {
 		return ""
 	}
 	return err.Error()
-}
-
-func fileExists(path string) bool {
-	st, err := os.Stat(path)
-	return err == nil && !st.IsDir()
 }
 
 func (s *Service) cliSessionFor(id domainagent.ProviderID) string {

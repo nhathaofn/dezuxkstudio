@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"os"
@@ -126,13 +127,9 @@ func (s *Service) Download(ctx context.Context, id domainbinaries.BinaryID) (dom
 		zipFile.Close()
 
 		// Verify SHA256 checksum
-		if dlSpec.SHA256 != "" {
-			actualHash := hex.EncodeToString(hasher.Sum(nil))
-			expectedHash := strings.ToLower(strings.TrimSpace(dlSpec.SHA256))
-			if actualHash != expectedHash {
-				_ = os.Remove(tempZip)
-				return domainbinaries.BinaryInfo{}, apperr.Integrity(fmt.Sprintf("binary %s checksum mismatch: expected %s, got %s", spec.Name, expectedHash, actualHash))
-			}
+		if err := verifyChecksum(spec.Name, dlSpec.SHA256, hasher); err != nil {
+			_ = os.Remove(tempZip)
+			return domainbinaries.BinaryInfo{}, err
 		}
 
 		report(95, domainbinaries.ProgressExtracting, nil, "Extracting binary...")
@@ -148,14 +145,7 @@ func (s *Service) Download(ctx context.Context, id domainbinaries.BinaryID) (dom
 			if _, err := io.Copy(io.MultiWriter(w, hasher), progressReader); err != nil {
 				return err
 			}
-			if dlSpec.SHA256 != "" {
-				actualHash := hex.EncodeToString(hasher.Sum(nil))
-				expectedHash := strings.ToLower(strings.TrimSpace(dlSpec.SHA256))
-				if actualHash != expectedHash {
-					return apperr.Integrity(fmt.Sprintf("binary %s checksum mismatch: expected %s, got %s", spec.Name, expectedHash, actualHash))
-				}
-			}
-			return nil
+			return verifyChecksum(spec.Name, dlSpec.SHA256, hasher)
 		})
 		if err != nil {
 			var ae *apperr.Error
@@ -176,4 +166,18 @@ func (s *Service) Download(ctx context.Context, id domainbinaries.BinaryID) (dom
 	report(100, domainbinaries.ProgressInstalled, map[string]string{"name": spec.Name}, fmt.Sprintf("%s installed. Probing...", spec.Name))
 
 	return s.Probe(ctx, id)
+}
+
+// verifyChecksum compares the downloaded bytes' SHA-256 with the manifest value; an empty
+// expected value means the manifest pins no checksum.
+func verifyChecksum(name, expected string, h hash.Hash) error {
+	if expected == "" {
+		return nil
+	}
+	actual := hex.EncodeToString(h.Sum(nil))
+	want := strings.ToLower(strings.TrimSpace(expected))
+	if actual != want {
+		return apperr.Integrity(fmt.Sprintf("binary %s checksum mismatch: expected %s, got %s", name, want, actual))
+	}
+	return nil
 }

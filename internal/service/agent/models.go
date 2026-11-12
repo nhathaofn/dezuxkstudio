@@ -27,13 +27,16 @@ import (
 var reClaudeEffortHelp = regexp.MustCompile(`(?s)--effort\s+<level>.*?\(([a-z, ]+)\)`)
 
 type modelState struct {
-	mu        sync.Mutex
-	catalogs  map[domainagent.ProviderID][]domainagent.ModelOption
-	catalogOf map[domainagent.ProviderID]string // executable the catalog was read from
-	loadedAt  map[domainagent.ProviderID]time.Time
-	loading   map[domainagent.ProviderID]bool   // a background catalog load is in flight
-	current   map[domainagent.ProviderID]string // model the provider reports as active (Antigravity)
-	selection map[domainagent.ProviderID]domainagent.ModelSelection
+	mu       sync.Mutex
+	catalogs map[domainagent.ProviderID][]domainagent.ModelOption
+	// catalogFrom records which executable a per-turn CLI's catalog was read from, and when;
+	// the same freshness rule as the version/auth probe caches (cachedProbe).
+	catalogFrom map[domainagent.ProviderID]cachedProbe
+	// agyDefault is the model Antigravity reported as default for new sessions.
+	agyDefault string
+	loading    map[domainagent.ProviderID]bool   // a background catalog load is in flight
+	current    map[domainagent.ProviderID]string // model the provider reports as active (Antigravity)
+	selection  map[domainagent.ProviderID]domainagent.ModelSelection
 	// codeMode records, per provider, which models only reach tools through a code runner (Codex
 	// "tool_mode": "code_mode_only"); such models are not shown tool definitions natively.
 	codeMode map[domainagent.ProviderID]map[string]bool
@@ -41,13 +44,12 @@ type modelState struct {
 
 func newModelState() *modelState {
 	return &modelState{
-		catalogs:  make(map[domainagent.ProviderID][]domainagent.ModelOption),
-		catalogOf: make(map[domainagent.ProviderID]string),
-		loadedAt:  make(map[domainagent.ProviderID]time.Time),
-		loading:   make(map[domainagent.ProviderID]bool),
-		current:   make(map[domainagent.ProviderID]string),
-		selection: make(map[domainagent.ProviderID]domainagent.ModelSelection),
-		codeMode:  make(map[domainagent.ProviderID]map[string]bool),
+		catalogs:    make(map[domainagent.ProviderID][]domainagent.ModelOption),
+		catalogFrom: make(map[domainagent.ProviderID]cachedProbe),
+		loading:     make(map[domainagent.ProviderID]bool),
+		current:     make(map[domainagent.ProviderID]string),
+		selection:   make(map[domainagent.ProviderID]domainagent.ModelSelection),
+		codeMode:    make(map[domainagent.ProviderID]map[string]bool),
 	}
 }
 
@@ -96,8 +98,7 @@ func (s *Service) invalidateModelCatalog(id domainagent.ProviderID) {
 		return // Antigravity's list comes from each ACP session and is replaced on connect
 	}
 	delete(s.models.catalogs, id)
-	delete(s.models.catalogOf, id)
-	delete(s.models.loadedAt, id)
+	delete(s.models.catalogFrom, id)
 	delete(s.models.codeMode, id)
 }
 
@@ -197,7 +198,7 @@ func (s *Service) SetModel(ctx context.Context, id domainagent.ProviderID, model
 func (s *Service) agyDefaultModel() string {
 	s.models.mu.Lock()
 	defer s.models.mu.Unlock()
-	return s.models.catalogOf[domainagent.ProviderAntigravity]
+	return s.models.agyDefault
 }
 
 // applyACPSessionModels records the models an ACP session offers and applies the user's selection.
@@ -208,8 +209,8 @@ func (s *Service) applyACPSessionModels(ctx context.Context, id domainagent.Prov
 	}
 	s.models.mu.Lock()
 	s.models.catalogs[id] = models
-	if s.models.catalogOf[id] == "" {
-		s.models.catalogOf[id] = current // provider default (first session's currentModelId)
+	if id == domainagent.ProviderAntigravity && s.models.agyDefault == "" {
+		s.models.agyDefault = current // provider default (first session's currentModelId)
 	}
 	s.models.current[id] = current
 	s.models.mu.Unlock()
@@ -231,8 +232,7 @@ func (s *Service) applyACPSessionModels(ctx context.Context, id domainagent.Prov
 func (s *Service) modelCatalogFresh(id domainagent.ProviderID, executable string) bool {
 	s.models.mu.Lock()
 	defer s.models.mu.Unlock()
-	return s.models.catalogOf[id] == executable && len(s.models.catalogs[id]) > 0 &&
-		time.Since(s.models.loadedAt[id]) < s.limits.StatusCacheTTL
+	return len(s.models.catalogs[id]) > 0 && s.models.catalogFrom[id].fresh(executable, s.limits.StatusCacheTTL)
 }
 
 // refreshModelCatalogAsync loads a stale catalog in the background and pushes the provider's
@@ -286,8 +286,7 @@ func (s *Service) ensureModelCatalog(ctx context.Context, id domainagent.Provide
 	}
 	s.models.mu.Lock()
 	s.models.catalogs[id] = models
-	s.models.catalogOf[id] = executable
-	s.models.loadedAt[id] = time.Now()
+	s.models.catalogFrom[id] = cachedProbe{executable: executable, at: time.Now()}
 	s.models.mu.Unlock()
 	return true
 }

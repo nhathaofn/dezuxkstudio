@@ -8,15 +8,14 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime/debug"
-	"time"
 
 	"app/internal/buildinfo"
 	"app/internal/config"
 	"app/internal/desktop"
+	"app/internal/httpclient"
 	"app/internal/logger"
 	"app/internal/paths"
 	"app/internal/safego"
@@ -110,15 +109,7 @@ func run() (code int) {
 		return 1
 	}
 
-	streamingClient := &http.Client{
-		Timeout: 0,
-		Transport: &http.Transport{
-			Proxy:               http.ProxyFromEnvironment,
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 10,
-			IdleConnTimeout:     90 * time.Second,
-		},
-	}
+	streamingClient := httpclient.New(cfg.Network)
 
 	err = desktop.Run(desktop.Options{
 		Config:       cfg,
