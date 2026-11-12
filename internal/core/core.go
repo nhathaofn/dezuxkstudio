@@ -229,8 +229,9 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 	}
 
 	wfSvc, err := workflow.New(workflow.Options{
-		Paths:  o.Paths,
-		Logger: o.Logger,
+		Paths:     o.Paths,
+		Logger:    o.Logger,
+		Providers: provSvc,
 	})
 	if err != nil {
 		return nil, err
@@ -249,7 +250,6 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		Workflow:     wfSvc,
 		Binaries:     binSvc,
 		Preferences:  prefSvc,
-		Providers:    provSvc,
 		System:       sysSvc,
 		Diagnostics:  diagSvc,
 		OnStatusChanged: func(info domainagent.ProviderInfo) {

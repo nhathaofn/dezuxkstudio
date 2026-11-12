@@ -437,6 +437,7 @@ export interface Param {
   default?: string;
   role?: string;
   destructive?: boolean;
+  secret?: boolean;
 }
 
 export interface PathsInfo {

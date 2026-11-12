@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"cmp"
 	"context"
 	"crypto/hmac"
 	"crypto/rsa"
@@ -312,45 +313,47 @@ func bearer(key string) map[string]string { return map[string]string{"Authorizat
 
 // ---- built-in probes (ArcReel server/routers/providers.py connectivity checks) ----
 
-var (
-	// Model filters of ArcReel's connectivity checks (server/routers/providers.py).
-	modelFilterOpenAI    = regexp.MustCompile(`gpt|sora|dall|o1|o3|o4`)
-	modelFilterGemini    = regexp.MustCompile(`veo|imagen|image`)
-	modelFilterDashScope = regexp.MustCompile(`qwen|wan`)
-	modelFilterMiniMax   = regexp.MustCompile(`minimax|abab`)
-)
-
+// probeBuiltin runs the connectivity test the registry declares for m (Meta.Probe).
 func (s *Service) probeBuiltin(ctx context.Context, m domain.Meta, r Resolved) ([]string, error) {
 	key := r.Secrets[domain.FieldAPIKey]
-	switch m.ID {
-	case domain.IDOpenAI, domain.IDGrok, domain.IDAgnes:
-		filter := modelFilterOpenAI
-		if m.ID != domain.IDOpenAI {
-			filter = nil
-		}
-		return s.openAIModels(ctx, r.BaseURL, key, filter)
-	case domain.IDDashScope:
-		return s.openAIModels(ctx, dashScopeHost(r.BaseURL)+"/compatible-mode/v1", key, modelFilterDashScope)
-	case domain.IDMiniMax:
-		return s.openAIModels(ctx, minimaxHost(r.BaseURL)+"/v1", key, modelFilterMiniMax)
-	case domain.IDArk, domain.IDArkAgentPlan:
-		_, _, err := s.do(ctx, request{method: http.MethodGet,
-			url: r.BaseURL + "/contents/generations/tasks?page_num=1&page_size=1", headers: bearer(key)})
-		return nil, err
-	case domain.IDAnthropic:
-		ids, err := s.anthropicModels(ctx, r.BaseURL, key)
-		return ids, err
-	case domain.IDGeminiAIStudio:
-		models, err := s.geminiModels(ctx, r.BaseURL, key)
-		return filterIDs(discoveredIDs(models), modelFilterGemini), err
-	case domain.IDGeminiVertex:
+	p := m.Probe
+	host := stripFirstSuffix(r.BaseURL, p.StripSuffixes) + p.Path
+	var filter *regexp.Regexp
+	if p.ModelFilter != "" {
+		filter = regexp.MustCompile(p.ModelFilter) // validated at start-up by ValidateRegistry
+	}
+	switch p.Kind {
+	case domain.ProbeOpenAIModels:
+		return s.openAIModels(ctx, host, key, filter)
+	case domain.ProbeAnthropicModels:
+		ids, err := s.anthropicModels(ctx, host, key)
+		return filterIDs(ids, filter), err
+	case domain.ProbeGeminiModels:
+		models, err := s.geminiModels(ctx, host, key)
+		return filterIDs(discoveredIDs(models), filter), err
+	case domain.ProbeVertexToken:
 		return nil, s.vertexToken(ctx, r.Secrets[domain.FieldCredentialsFile])
-	case domain.IDKling:
-		return nil, s.probeKling(ctx, r)
-	case domain.IDVidu:
-		return nil, s.probeVidu(ctx, r.BaseURL, key)
+	case domain.ProbeArkTasks:
+		_, _, err := s.do(ctx, request{method: http.MethodGet,
+			url: host + "/contents/generations/tasks?page_size=1", headers: bearer(key)})
+		return nil, err
+	case domain.ProbeKlingCosts:
+		return nil, s.probeKling(ctx, host, r)
+	case domain.ProbeViduTasks:
+		return nil, s.probeVidu(ctx, host, key)
 	}
 	return nil, fail(OutcomeInvalid, 0, "no connectivity test for this provider")
+}
+
+// stripFirstSuffix removes the first matching suffix (ArcReel _KNOWN_SUFFIXES / _minimax_host).
+func stripFirstSuffix(base string, suffixes []string) string {
+	base = strings.TrimRight(base, "/")
+	for _, suf := range suffixes {
+		if strings.HasSuffix(base, suf) {
+			return strings.TrimSuffix(base, suf)
+		}
+	}
+	return base
 }
 
 func (s *Service) openAIModels(ctx context.Context, base, key string, filter *regexp.Regexp) ([]string, error) {
@@ -384,22 +387,6 @@ func filterIDs(ids []string, filter *regexp.Regexp) []string {
 	return out
 }
 
-// dashScopeHost strips known API suffixes from a DashScope base URL (ArcReel dashscope_shared.py).
-func dashScopeHost(base string) string {
-	base = strings.TrimRight(base, "/")
-	for _, suf := range []string{"/compatible-mode/v1", "/api/v1"} { // ArcReel _KNOWN_SUFFIXES, first match
-		if strings.HasSuffix(base, suf) {
-			return strings.TrimSuffix(base, suf)
-		}
-	}
-	return base
-}
-
-func minimaxHost(base string) string {
-	base = strings.TrimRight(base, "/")
-	return strings.TrimSuffix(base, "/v1") // ArcReel _minimax_host
-}
-
 func (s *Service) probeVidu(ctx context.Context, base, key string) error {
 	// ArcReel test_vidu_connection: a valid token on a non-existent task returns 404.
 	_, status, err := s.do(ctx, request{method: http.MethodGet, url: base + "/tasks/0/creations",
@@ -413,7 +400,7 @@ func (s *Service) probeVidu(ctx context.Context, base, key string) error {
 	return err
 }
 
-func (s *Service) probeKling(ctx context.Context, r Resolved) error {
+func (s *Service) probeKling(ctx context.Context, root string, r Resolved) error {
 	token := r.Secrets[domain.FieldAPIKey]
 	if token == "" {
 		var err error
@@ -421,7 +408,6 @@ func (s *Service) probeKling(ctx context.Context, r Resolved) error {
 			return fail(OutcomeInvalid, 0, err.Error())
 		}
 	}
-	root := strings.TrimSuffix(r.BaseURL, "/v1")
 	now := time.Now().UnixMilli()
 	raw, _, err := s.do(ctx, request{method: http.MethodGet,
 		url:     fmt.Sprintf("%s/account/costs?start_time=%d&end_time=%d", root, now-86_400_000, now),
@@ -468,7 +454,7 @@ func signJWT(header map[string]string, claims map[string]any, sign func([]byte) 
 // ---- Gemini / Vertex ----
 
 func (s *Service) geminiModels(ctx context.Context, base, key string) ([]DiscoveredModel, error) {
-	base = strings.TrimRight(firstNonEmpty(base, "https://generativelanguage.googleapis.com"), "/")
+	base = strings.TrimRight(cmp.Or(base, defaultBaseURL(domain.IDGeminiAIStudio)), "/")
 	base = strings.TrimSuffix(strings.TrimSuffix(base, "/v1beta"), "/v1")
 	raw, _, err := s.do(ctx, request{method: http.MethodGet, url: base + "/v1beta/models?pageSize=1000",
 		headers: map[string]string{"x-goog-api-key": key}})
@@ -517,6 +503,15 @@ func parseServiceAccount(raw string) (serviceAccount, error) {
 
 func validateServiceAccount(raw string) error { _, err := parseServiceAccount(raw); return err }
 
+// googleTokenURI is Google's OAuth endpoint, used when a service account omits token_uri.
+const googleTokenURI = "https://oauth2.googleapis.com/token"
+
+// defaultBaseURL reads a provider's default URL from the registry (custom discovery reuses it).
+func defaultBaseURL(id string) string {
+	m, _ := domain.Lookup(id)
+	return m.DefaultBaseURL
+}
+
 // VertexScopes are the OAuth scopes ArcReel requests (lib VERTEX_SCOPES).
 var VertexScopes = []string{"https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/generative-language"}
 
@@ -538,7 +533,7 @@ func (s *Service) vertexToken(ctx context.Context, raw string) error {
 	if !ok {
 		return fail(OutcomeInvalid, 0, "service account private key is not RSA")
 	}
-	tokenURI := firstNonEmpty(sa.TokenURI, "https://oauth2.googleapis.com/token")
+	tokenURI := cmp.Or(sa.TokenURI, googleTokenURI)
 	now := time.Now().Unix()
 	assertion, err := signJWT(map[string]string{"alg": "RS256", "typ": "JWT"}, map[string]any{
 		"iss": sa.ClientEmail, "scope": strings.Join(VertexScopes, " "), "aud": tokenURI, "iat": now, "exp": now + 3600,
@@ -576,7 +571,7 @@ func (s *Service) vertexToken(ctx context.Context, raw string) error {
 // ---- Anthropic ----
 
 func (s *Service) anthropicModels(ctx context.Context, base, key string) ([]string, error) {
-	base = strings.TrimRight(firstNonEmpty(base, "https://api.anthropic.com"), "/")
+	base = strings.TrimRight(cmp.Or(base, defaultBaseURL(domain.IDAnthropic)), "/")
 	h := map[string]string{"x-api-key": key, "anthropic-version": "2023-06-01"}
 	raw, status, err := s.do(ctx, request{method: http.MethodGet, url: base + "/v1/models", headers: h})
 	if status == http.StatusUnauthorized {

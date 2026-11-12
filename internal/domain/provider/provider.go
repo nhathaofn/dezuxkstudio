@@ -12,6 +12,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -76,6 +77,40 @@ type Meta struct {
 	CredentialGroups [][]string
 	// DocsURL points the user to where the key is created.
 	DocsURL string
+	// Probe declares how the connectivity test talks to this provider (ArcReel's per-provider check).
+	Probe Probe
+	// Hosts are extra API hosts (regional endpoints) that identify this provider from a base URL; the
+	// host of DefaultBaseURL is always included.
+	Hosts []string
+}
+
+// ProbeKind selects a connectivity-test protocol.
+type ProbeKind string
+
+const (
+	ProbeOpenAIModels    ProbeKind = "openai_models"    // GET {base}/models, Bearer
+	ProbeAnthropicModels ProbeKind = "anthropic_models" // GET {base}/v1/models, x-api-key (Bearer retry)
+	ProbeGeminiModels    ProbeKind = "gemini_models"    // GET {base}/v1beta/models, x-goog-api-key
+	ProbeVertexToken     ProbeKind = "vertex_token"     // service-account JWT -> OAuth token
+	ProbeArkTasks        ProbeKind = "ark_tasks"        // GET {base}/contents/generations/tasks?page_size=1, Bearer
+	ProbeKlingCosts      ProbeKind = "kling_costs"      // GET {root}/account/costs, Bearer api_key or HS256 JWT
+	ProbeViduTasks       ProbeKind = "vidu_tasks"       // GET {base}/tasks/0/creations, Token; 404 = valid
+)
+
+// ProbeKinds lists every probe kind.
+func ProbeKinds() []ProbeKind {
+	return []ProbeKind{ProbeOpenAIModels, ProbeAnthropicModels, ProbeGeminiModels, ProbeVertexToken, ProbeArkTasks, ProbeKlingCosts, ProbeViduTasks}
+}
+
+// Probe is the connectivity-test declaration of a provider.
+type Probe struct {
+	Kind ProbeKind
+	// StripSuffixes: the first matching suffix is removed from the base URL to get the host.
+	StripSuffixes []string
+	// Path is appended to the host before the protocol path (e.g. "/compatible-mode/v1").
+	Path string
+	// ModelFilter (regexp, lower-case ids) keeps the models shown after a successful test; "" = all.
+	ModelFilter string
 }
 
 // Field returns the field with key.
@@ -109,6 +144,14 @@ func (m Meta) Validate() error {
 	}
 	if len(m.Capabilities) == 0 {
 		return fmt.Errorf("provider %s: no capabilities", m.ID)
+	}
+	if !slices.Contains(ProbeKinds(), m.Probe.Kind) {
+		return fmt.Errorf("provider %s: unknown probe kind %q", m.ID, m.Probe.Kind)
+	}
+	if m.Probe.ModelFilter != "" {
+		if _, err := regexp.Compile(m.Probe.ModelFilter); err != nil {
+			return fmt.Errorf("provider %s: bad model filter: %w", m.ID, err)
+		}
 	}
 	for _, c := range m.Capabilities {
 		if !slices.Contains(Capabilities(), c) {

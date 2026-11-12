@@ -90,21 +90,6 @@ func (r *ProviderRepository) GetCredential(ctx context.Context, id string) (prov
 	return c, nil
 }
 
-func (r *ProviderRepository) tx(ctx context.Context, fn func(*sql.Tx) error) error {
-	tx, err := r.db.sql.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("sqlite: begin: %w", err)
-	}
-	if err := fn(tx); err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("sqlite: commit: %w", err)
-	}
-	return nil
-}
-
 // CreateCredential implements provider.Repository.
 func (r *ProviderRepository) CreateCredential(ctx context.Context, c provider.Credential) (provider.Credential, error) {
 	if c.ID == "" {
@@ -112,7 +97,7 @@ func (r *ProviderRepository) CreateCredential(ctx context.Context, c provider.Cr
 	}
 	now := time.Now()
 	c.CreatedAt, c.UpdatedAt = now, now
-	err := r.tx(ctx, func(tx *sql.Tx) error {
+	err := r.db.inTx(ctx, func(tx *sql.Tx) error {
 		var n int
 		if err := tx.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM provider_credentials WHERE provider_id = ? AND is_active = 1`, c.ProviderID).Scan(&n); err != nil {
@@ -143,7 +128,7 @@ func (r *ProviderRepository) UpdateCredential(ctx context.Context, c provider.Cr
 
 // DeleteCredential implements provider.Repository; deleting the active credential promotes the oldest other one.
 func (r *ProviderRepository) DeleteCredential(ctx context.Context, id string) error {
-	return r.tx(ctx, func(tx *sql.Tx) error {
+	return r.db.inTx(ctx, func(tx *sql.Tx) error {
 		var providerID string
 		var active int
 		err := tx.QueryRowContext(ctx, `SELECT provider_id, is_active FROM provider_credentials WHERE id = ?`, id).
@@ -170,7 +155,7 @@ func (r *ProviderRepository) DeleteCredential(ctx context.Context, id string) er
 
 // ActivateCredential implements provider.Repository.
 func (r *ProviderRepository) ActivateCredential(ctx context.Context, id string) error {
-	return r.tx(ctx, func(tx *sql.Tx) error {
+	return r.db.inTx(ctx, func(tx *sql.Tx) error {
 		var providerID string
 		err := tx.QueryRowContext(ctx, `SELECT provider_id FROM provider_credentials WHERE id = ?`, id).Scan(&providerID)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -290,7 +275,7 @@ func (r *ProviderRepository) CreateCustom(ctx context.Context, p provider.Custom
 	}
 	now := time.Now()
 	p.CreatedAt, p.UpdatedAt = now, now
-	err := r.tx(ctx, func(tx *sql.Tx) error {
+	err := r.db.inTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO custom_providers (id, name, discovery_format, base_url, key_hint, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`,
 			p.ID, p.Name, string(p.DiscoveryFormat), p.BaseURL, p.KeyHint, now.UnixMilli(), now.UnixMilli()); err != nil {
@@ -303,7 +288,7 @@ func (r *ProviderRepository) CreateCustom(ctx context.Context, p provider.Custom
 
 // UpdateCustom implements provider.Repository.
 func (r *ProviderRepository) UpdateCustom(ctx context.Context, p provider.CustomProvider) error {
-	return r.tx(ctx, func(tx *sql.Tx) error {
+	return r.db.inTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx,
 			`UPDATE custom_providers SET name = ?, discovery_format = ?, base_url = ?, key_hint = ?, updated_at = ? WHERE id = ?`,
 			p.Name, string(p.DiscoveryFormat), p.BaseURL, p.KeyHint, time.Now().UnixMilli(), p.ID)
@@ -319,7 +304,7 @@ func (r *ProviderRepository) UpdateCustom(ctx context.Context, p provider.Custom
 
 // DeleteCustom implements provider.Repository.
 func (r *ProviderRepository) DeleteCustom(ctx context.Context, id string) error {
-	return r.tx(ctx, func(tx *sql.Tx) error {
+	return r.db.inTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM custom_provider_models WHERE provider_id = ?`, id); err != nil {
 			return fmt.Errorf("sqlite: delete custom models: %w", err)
 		}

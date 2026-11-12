@@ -7,7 +7,6 @@ import (
 	"app/internal/contracts"
 	domainbinaries "app/internal/domain/binaries"
 	domainprefs "app/internal/domain/preferences"
-	domainprovider "app/internal/domain/provider"
 	"app/internal/engine"
 )
 
@@ -34,18 +33,6 @@ type PreferencesManager interface {
 // SystemInspector exposes app runtime/path metadata to DezuxkStudio's MCP server.
 type SystemInspector interface {
 	Info() contracts.SystemInfo
-}
-
-// ProvidersManager exposes API provider setup to DezuxkStudio's MCP server. Results are JSON-ready and
-// never contain a secret value.
-type ProvidersManager interface {
-	AgentOverview(ctx context.Context) (any, error)
-	PlanSetup(req domainprovider.SetupRequest) (domainprovider.SetupPlan, error)
-	AgentSetup(ctx context.Context, req domainprovider.SetupRequest) (any, error)
-	AgentTest(ctx context.Context, id string) (any, error)
-	ActivateCredential(ctx context.Context, id string) error
-	AgentDelete(ctx context.Context, id string) error
-	Describe(ctx context.Context, id string) (string, error)
 }
 
 // DiagnosticsExporter exposes diagnostic bundle export to DezuxkStudio's MCP server.

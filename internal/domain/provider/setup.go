@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"cmp"
 	"net/url"
 	"strings"
 
@@ -48,21 +49,12 @@ func host(raw string) string {
 	return strings.ToLower(u.Hostname())
 }
 
-// builtinHosts maps API hosts to built-in providers (default URLs plus known regional alternatives).
+// builtinHosts maps API hosts to built-in providers, from the registry (default URL host + Hosts).
 func builtinHosts() map[string]string {
-	out := map[string]string{
-		"generativelanguage.googleapis.com": IDGeminiAIStudio,
-		"api.x.ai":                          IDGrok,
-		"api.minimax.io":                    IDMiniMax,
-		"api.minimaxi.chat":                 IDMiniMax,
-		"api-singapore.klingai.com":         IDKling,
-		"api.klingai.com":                   IDKling,
-		"dashscope-intl.aliyuncs.com":       IDDashScope,
-		"api.vidu.com":                      IDVidu,
-	}
+	out := map[string]string{}
 	for _, m := range registry {
-		if h := host(m.DefaultBaseURL); h != "" {
-			if _, taken := out[h]; !taken {
+		for _, h := range append([]string{host(m.DefaultBaseURL)}, m.Hosts...) {
+			if _, taken := out[h]; h != "" && !taken {
 				out[h] = m.ID
 			}
 		}
@@ -111,7 +103,7 @@ func PlanSetup(req SetupRequest) (SetupPlan, error) {
 			return SetupPlan{}, apperr.New(apperr.CodeValidation, "Unknown provider_id "+id).
 				WithDetails(map[string]any{"field": "provider_id"})
 		}
-		plan := SetupPlan{Kind: SetupBuiltin, ProviderID: id, Name: firstNonEmpty(strings.TrimSpace(req.Name), m.DisplayName)}
+		plan := SetupPlan{Kind: SetupBuiltin, ProviderID: id, Name: cmp.Or(strings.TrimSpace(req.Name), m.DisplayName)}
 		if base != "" && base != strings.TrimRight(m.DefaultBaseURL, "/") {
 			if _, has := m.Field(FieldBaseURL); has {
 				plan.BaseURL = base
@@ -130,15 +122,6 @@ func PlanSetup(req SetupRequest) (SetupPlan, error) {
 			format = DiscoveryOpenAI
 		}
 	}
-	return SetupPlan{Kind: SetupCustom, Name: firstNonEmpty(strings.TrimSpace(req.Name), host(base)),
+	return SetupPlan{Kind: SetupCustom, Name: cmp.Or(strings.TrimSpace(req.Name), host(base)),
 		BaseURL: base, DiscoveryFormat: format}, nil
-}
-
-func firstNonEmpty(v ...string) string {
-	for _, s := range v {
-		if s != "" {
-			return s
-		}
-	}
-	return ""
 }

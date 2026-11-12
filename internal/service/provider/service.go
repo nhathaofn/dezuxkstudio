@@ -6,6 +6,7 @@
 package provider
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -482,7 +483,7 @@ func (s *Service) resolveCredential(m domain.Meta, c domain.Credential) (Resolve
 		return Resolved{}, apperr.New(apperr.CodeIntegrity, "Stored secret is missing; enter the key again").
 			WithDetails(map[string]any{"provider_id": m.ID, "credential_id": c.ID, "secret_missing": true})
 	}
-	r.BaseURL = strings.TrimRight(firstNonEmpty(r.Values[domain.FieldBaseURL], m.DefaultBaseURL), "/")
+	r.BaseURL = strings.TrimRight(cmp.Or(r.Values[domain.FieldBaseURL], m.DefaultBaseURL), "/")
 	return r, nil
 }
 
@@ -543,13 +544,4 @@ func (s *Service) Statuses(ctx context.Context) ([]Status, error) {
 		out = append(out, Status{ID: c.ID, Name: c.Name, Custom: true, Capabilities: c.Capabilities(), Configured: len(c.Capabilities()) > 0})
 	}
 	return out, nil
-}
-
-func firstNonEmpty(v ...string) string {
-	for _, s := range v {
-		if s != "" {
-			return s
-		}
-	}
-	return ""
 }

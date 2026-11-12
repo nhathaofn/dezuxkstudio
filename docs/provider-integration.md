@@ -66,23 +66,29 @@ Test thất bại vẫn trả về kết quả, không phải lỗi. `detail` t�
 > Phần test với API thật **chưa được chạy** vì chưa có key. Hành vi được kiểm bằng `httptest` dựa trên
 > request/response mà ArcReel dùng. Khi có key thật, hãy bấm **Test** ở từng provider để xác nhận.
 
-## Agent tự cài key (`providers_*`)
-Người dùng chỉ cần dán API key, có thể kèm base URL, vào khung chat của agent. Agent gọi `providers_setup`:
-- **Nhận diện** (`domain.PlanSetup`) theo thứ tự sau:
-  1. Nếu có `provider_id` thì dùng luôn.
-  2. Nếu không, so host của `base_url` với registry. Ví dụ `api.openai.com` là openai, còn `.../api/plan` là ark-agent-plan.
-  3. Nếu không có base URL, dựa vào tiền tố key: `sk-ant-` là anthropic, `AIza` là Gemini, `xai-` là Grok. Có AK+SK là Kling, có file JSON là Vertex.
-  4. Host lạ thì tạo **custom provider**. Giao thức đoán từ URL (`anthropic` → anthropic, `/v1beta` → gemini, còn lại là openai).
-- **Provider có sẵn**: tạo credential, **kích hoạt** nó, rồi test.
-- **Custom**: discover model trước. Nếu discover lỗi (key hoặc URL sai) thì **không lưu gì**. Nếu thành công thì bật tất cả model và chọn model đầu tiên của mỗi loại làm mặc định.
-- Lưu xong, key được thay bằng `[secret saved]` trong **lịch sử chat lưu ở DB**.
-  Lưu ý: CLI agent (Claude, Codex, Gemini) vẫn có thể giữ transcript riêng trong profile của nó.
-- Các tool khác:
-  - `providers_list`: chỉ đọc, secret đã che.
-  - `providers_test`
-  - `providers_activate`
-  - `providers_delete`: cần người dùng **Approve**.
-- Kết quả trả về agent không bao giờ chứa secret. Policy của agent cấm nhắc lại key.
+## Node (agent và workflow dùng chung)
+Quản lý provider được đóng gói thành **node** giống `tool.watermark_remover` (`internal/tools/provider`), đăng ký trong
+`workflow.New`. Agent không có tool riêng: nó đọc `workflow_list_specs` và chạy bằng `workflow_run_node`.
+
+| Node | Việc làm | Ghi chú |
+|---|---|---|
+| `tool.provider_list` | Xem provider, các trường cần nhập, key đã lưu (đã che), trạng thái sức khỏe | chỉ đọc |
+| `tool.provider_setup` | Lưu key, kích hoạt, rồi test | `provider=auto` để tự nhận diện; các tham số được suy ra từ registry |
+| `tool.provider_test` | Test key theo id | id lấy từ option source `provider.saved` |
+| `tool.provider_activate` | Đổi key đang dùng | option source `provider.credentials` |
+| `tool.provider_delete` | Xoá key | `confirm` là toggle Destructive, nên phải chờ người dùng **Approve** |
+
+- **Không hardcode:** danh sách provider, các trường secret, giao thức, cách test (`Meta.Probe`), bộ lọc model và host nhận diện
+  (`Meta.Hosts`) đều khai báo **một lần** trong `internal/domain/provider/registry.go`. Thêm provider chỉ cần sửa registry:
+  node, form UI, cách test và cách nhận diện sẽ tự cập nhật theo.
+- **Secret:** tham số có `engine.Param.Secret` không hiện trong summary hay thẻ Approve. Sau khi chạy (cả một node lẫn
+  cả graph), agent xoá giá trị đó khỏi lịch sử chat trong DB. Cơ chế này nằm ở engine, nên **mọi** node sau này đều được hưởng.
+- **Nhận diện** (`domain.PlanSetup`):
+  1. Có `provider` thì dùng luôn.
+  2. Nếu không, so host của base URL với registry.
+  3. Không có base URL thì dựa vào tiền tố key: `sk-ant-`, `AIza`, `xai-`. Có AK+SK là Kling, có file JSON là Vertex.
+  4. Host lạ thì tạo custom provider. Phải discover model thành công thì mới lưu.
+- CLI agent (Claude, Codex, Gemini) vẫn có thể giữ transcript riêng trong profile của nó. Muốn an toàn tuyệt đối thì nhập key ở Settings → Providers.
 
 ## Kiểm tra sức khỏe key
 - Khi app mở (`providers.check_on_startup`, mặc định bật), mọi credential và custom provider được test ở chế độ nền,

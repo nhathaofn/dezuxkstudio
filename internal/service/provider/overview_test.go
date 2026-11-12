@@ -68,7 +68,7 @@ func TestAgentSetupBuiltinActivatesAndTests(t *testing.T) {
 		t.Fatal("first should be active")
 	}
 
-	out, err := e.svc.AgentSetup(ctx, domain.SetupRequest{ProviderID: domain.IDOpenAI, APIKey: agentKey, BaseURL: srv.URL + "/v1"})
+	out, err := e.svc.Setup(ctx, domain.SetupRequest{ProviderID: domain.IDOpenAI, APIKey: agentKey, BaseURL: srv.URL + "/v1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestAgentSetupCustomDiscoversAndSets(t *testing.T) {
 	e := newEnv(t, 2*time.Second)
 	ctx := context.Background()
 
-	out, err := e.svc.AgentSetup(ctx, domain.SetupRequest{APIKey: agentKey, BaseURL: srv.URL})
+	out, err := e.svc.Setup(ctx, domain.SetupRequest{APIKey: agentKey, BaseURL: srv.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestAgentSetupCustomDiscoveryFailureSavesNothing(t *testing.T) {
 	defer srv.Close()
 	e := newEnv(t, 2*time.Second)
 	ctx := context.Background()
-	_, err := e.svc.AgentSetup(ctx, domain.SetupRequest{APIKey: agentKey, BaseURL: srv.URL})
+	_, err := e.svc.Setup(ctx, domain.SetupRequest{APIKey: agentKey, BaseURL: srv.URL})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -167,13 +167,13 @@ func TestAgentOverviewMasksSecrets(t *testing.T) {
 	srv := modelsServer(t, "/v1/models", "gpt-4o")
 	e := newEnv(t, 2*time.Second)
 	ctx := context.Background()
-	if _, err := e.svc.AgentSetup(ctx, domain.SetupRequest{ProviderID: domain.IDOpenAI, APIKey: agentKey, BaseURL: srv.URL + "/v1"}); err != nil {
+	if _, err := e.svc.Setup(ctx, domain.SetupRequest{ProviderID: domain.IDOpenAI, APIKey: agentKey, BaseURL: srv.URL + "/v1"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.svc.AgentSetup(ctx, domain.SetupRequest{APIKey: agentKey, BaseURL: srv.URL}); err != nil {
+	if _, err := e.svc.Setup(ctx, domain.SetupRequest{APIKey: agentKey, BaseURL: srv.URL}); err != nil {
 		t.Fatal(err)
 	}
-	out, err := e.svc.AgentOverview(ctx)
+	out, err := e.svc.Overview(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,19 +189,19 @@ func TestAgentTestDeleteDescribeDispatch(t *testing.T) {
 	srv := modelsServer(t, "/v1/models", "gpt-4o")
 	e := newEnv(t, 2*time.Second)
 	ctx := context.Background()
-	b, err := e.svc.AgentSetup(ctx, domain.SetupRequest{ProviderID: domain.IDOpenAI, APIKey: agentKey, BaseURL: srv.URL + "/v1"})
+	b, err := e.svc.Setup(ctx, domain.SetupRequest{ProviderID: domain.IDOpenAI, APIKey: agentKey, BaseURL: srv.URL + "/v1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	credID := asMap(t, b)["credential_id"].(string)
-	c, err := e.svc.AgentSetup(ctx, domain.SetupRequest{APIKey: agentKey, BaseURL: srv.URL, Name: "Mine"})
+	c, err := e.svc.Setup(ctx, domain.SetupRequest{APIKey: agentKey, BaseURL: srv.URL, Name: "Mine"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	customID := asMap(t, c)["custom_id"].(string)
 
 	for _, id := range []string{credID, customID} {
-		r, err := e.svc.AgentTest(ctx, id)
+		r, err := e.svc.TestByID(ctx, id)
 		if err != nil || asMap(t, r)["ok"] != true {
 			t.Fatalf("test %s: %v %v", id, r, err)
 		}
@@ -215,14 +215,14 @@ func TestAgentTestDeleteDescribeDispatch(t *testing.T) {
 	if _, err := e.svc.Describe(ctx, "missing"); err == nil {
 		t.Fatal("expected error for unknown id")
 	}
-	if _, err := e.svc.AgentTest(ctx, "missing"); err == nil {
+	if _, err := e.svc.TestByID(ctx, "missing"); err == nil {
 		t.Fatal("expected test error for unknown id")
 	}
-	if err := e.svc.AgentDelete(ctx, "missing"); err == nil {
+	if err := e.svc.DeleteByID(ctx, "missing"); err == nil {
 		t.Fatal("expected delete error for unknown id")
 	}
 
-	if err := e.svc.AgentDelete(ctx, credID); err != nil {
+	if err := e.svc.DeleteByID(ctx, credID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.repo.GetCredential(ctx, credID); err == nil {
@@ -231,7 +231,7 @@ func TestAgentTestDeleteDescribeDispatch(t *testing.T) {
 	if _, err := secretOf(t, e.store, credID, "api_key"); err == nil {
 		t.Fatal("credential secret still present")
 	}
-	if err := e.svc.AgentDelete(ctx, customID); err != nil {
+	if err := e.svc.DeleteByID(ctx, customID); err != nil {
 		t.Fatal(err)
 	}
 	if cs, _ := e.repo.ListCustom(ctx); len(cs) != 0 {
@@ -239,5 +239,56 @@ func TestAgentTestDeleteDescribeDispatch(t *testing.T) {
 	}
 	if _, err := e.store.Get(customSecretKey(customID)); err == nil {
 		t.Fatal("custom secret still present")
+	}
+}
+
+func TestSavedOptionsLabelsAndFilter(t *testing.T) {
+	e := newEnv(t, 2*time.Second)
+	ctx := context.Background()
+	live := e.create(t, domain.IDOpenAI, apiKeyIn(testKey, nil))
+	deadKey := "sk-dead-SECRET-0987654321"
+	dead := e.create(t, domain.IDOpenAI, apiKeyIn(deadKey, nil))
+	if err := e.repo.SetCredentialHealth(ctx, dead.ID, domain.Health{Outcome: domain.OutcomeAuthFailed, TestedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	custom, err := e.svc.CreateCustom(ctx, domain.CustomInput{Name: "Mine", DiscoveryFormat: domain.DiscoveryFormats()[0],
+		BaseURL: "https://example.test/v1", APIKey: "sk-custom-SECRET-1122334455"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := e.svc.SavedOptions(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]string{}
+	for _, o := range all {
+		byID[o.Value] = o.Label
+	}
+	if len(all) != 3 || byID[live.ID] == "" || byID[dead.ID] == "" || byID[custom.ID] == "" {
+		t.Fatalf("options = %+v", all)
+	}
+	if !strings.Contains(byID[live.ID], domain.MaskSecret(testKey)) || strings.Contains(byID[live.ID], "DEAD") {
+		t.Errorf("live label = %q", byID[live.ID])
+	}
+	if !strings.Contains(byID[dead.ID], domain.MaskSecret(deadKey)) || !strings.Contains(byID[dead.ID], "DEAD") {
+		t.Errorf("dead label = %q", byID[dead.ID])
+	}
+	if !strings.Contains(byID[custom.ID], "(custom)") {
+		t.Errorf("custom label = %q", byID[custom.ID])
+	}
+	noKey(t, all, testKey, deadKey, "sk-custom-SECRET-1122334455")
+
+	creds, err := e.svc.SavedOptions(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(creds) != 2 {
+		t.Fatalf("credentialsOnly = %+v", creds)
+	}
+	for _, o := range creds {
+		if o.Value == custom.ID {
+			t.Error("credentialsOnly must exclude custom providers")
+		}
 	}
 }

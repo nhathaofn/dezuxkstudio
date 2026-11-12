@@ -15,7 +15,6 @@ import (
 	domainagent "app/internal/domain/agent"
 	domainbinaries "app/internal/domain/binaries"
 	domainprefs "app/internal/domain/preferences"
-	domainprovider "app/internal/domain/provider"
 	"app/internal/engine"
 	"app/internal/fsutil"
 
@@ -35,10 +34,30 @@ type runNodeToolInput struct {
 	Recursive bool           `json:"recursive,omitempty" jsonschema:"Include sub-folders"`
 }
 
+// graphNodeToolInput mirrors engine.GraphNode with params as an object: GraphNode.Params is a
+// json.RawMessage, which the MCP schema generator types as "null or array" and so rejects every object.
+type graphNodeToolInput struct {
+	ID     string         `json:"id"`
+	Type   string         `json:"type"`
+	Params map[string]any `json:"params,omitempty" jsonschema:"Same input keys as workflow_run_node"`
+}
+
 type runGraphToolInput struct {
-	Nodes     []engine.GraphNode `json:"nodes" jsonschema:"Graph nodes (same input keys as workflow_run_node)"`
-	Edges     []engine.Edge      `json:"edges,omitempty"`
-	Recursive bool               `json:"recursive,omitempty" jsonschema:"Include sub-folders"`
+	Nodes     []graphNodeToolInput `json:"nodes" jsonschema:"Graph nodes (same input keys as workflow_run_node)"`
+	Edges     []engine.Edge        `json:"edges,omitempty"`
+	Recursive bool                 `json:"recursive,omitempty" jsonschema:"Include sub-folders"`
+}
+
+func (in runGraphToolInput) graphNodes() []engine.GraphNode {
+	out := make([]engine.GraphNode, 0, len(in.Nodes))
+	for _, n := range in.Nodes {
+		var raw json.RawMessage
+		if len(n.Params) > 0 {
+			raw, _ = json.Marshal(n.Params) // a map[string]any decoded from JSON always re-encodes
+		}
+		out = append(out, engine.GraphNode{ID: n.ID, Type: n.Type, Params: raw})
+	}
+	return out
 }
 
 type binaryIDToolInput struct {
@@ -69,40 +88,24 @@ type moveFileToolInput struct {
 	Overwrite   bool   `json:"overwrite,omitempty" jsonschema:"Replace an existing file (needs approval)"`
 }
 
-type providersSetupToolInput struct {
-	ProviderID      string            `json:"provider_id,omitempty" jsonschema:"Built-in id from providers_list; omit to detect from base_url/key"`
-	APIKey          string            `json:"api_key,omitempty"`
-	BaseURL         string            `json:"base_url,omitempty" jsonschema:"API base URL; a non built-in host becomes a custom provider"`
-	Name            string            `json:"name,omitempty"`
-	DiscoveryFormat string            `json:"discovery_format,omitempty" jsonschema:"Custom only: openai|gemini|anthropic (guessed when empty)"`
-	Secrets         map[string]string `json:"secrets,omitempty" jsonschema:"Other secret fields, e.g. access_key+secret_key (Kling), credentials_file JSON (Vertex)"`
-	Values          map[string]string `json:"values,omitempty" jsonschema:"Other non-secret fields, e.g. gcs_bucket"`
-}
-
-func (in providersSetupToolInput) request() domainprovider.SetupRequest {
-	return domainprovider.SetupRequest{ProviderID: in.ProviderID, APIKey: in.APIKey, BaseURL: in.BaseURL, Name: in.Name,
-		DiscoveryFormat: domainprovider.DiscoveryFormat(strings.TrimSpace(in.DiscoveryFormat)), Secrets: in.Secrets, Values: in.Values}
-}
-
-type providerIDToolInput struct {
-	ID string `json:"id" jsonschema:"Credential id or custom provider id from providers_list"`
-}
-
-// redactSecrets removes keys the user pasted in chat from the stored chat history once they are saved
-// in the credential store (secrets must not stay in the database).
-func (s *Service) redactSecrets(ctx context.Context, req domainprovider.SetupRequest) {
-	vals := []string{req.APIKey}
-	for _, v := range req.Secrets {
-		vals = append(vals, v)
-	}
-	for _, v := range vals {
-		if v = strings.TrimSpace(v); len(v) >= 8 {
-			if err := s.repo.RedactChatMessages(ctx, v, "[secret saved]"); err != nil {
-				s.log.Warn("agent: redact chat secret", "error", err)
+// scrubSecretParams removes the values of a node's secret settings (engine.Param.Secret, e.g. an API key
+// the user pasted) from the stored chat history once the node ran: the app keeps them in the credential
+// store only.
+func (s *Service) scrubSecretParams(ctx context.Context, spec engine.Spec, input map[string]any) {
+	for _, p := range spec.Params {
+		if !p.Secret {
+			continue
+		}
+		if v, _ := input[p.Name].(string); len(strings.TrimSpace(v)) >= minScrubbedSecret {
+			if err := s.repo.RedactChatMessages(ctx, strings.TrimSpace(v), "[secret saved]"); err != nil {
+				s.log.Warn("agent: scrub secret from chat history", "error", err)
 			}
 		}
 	}
 }
+
+// minScrubbedSecret avoids rewriting history for trivially short values that are not real keys.
+const minScrubbedSecret = 8
 
 type deleteFileToolInput struct {
 	Path string `json:"path" jsonschema:"File to delete"`
@@ -211,7 +214,10 @@ func (s *Service) buildMCPServer() *mcp.Server {
 			if err != nil {
 				return mcpError(fmt.Sprintf("invalid input: %v", err))
 			}
-			run := func(execCtx context.Context) (any, error) { return s.workflow.RunNode(execCtx, nodeType, raw) }
+			run := func(execCtx context.Context) (any, error) {
+				defer s.scrubSecretParams(context.WithoutCancel(execCtx), spec, prep.Input)
+				return s.workflow.RunNode(execCtx, nodeType, raw)
+			}
 			if len(prep.Destructive) > 0 {
 				return s.needsApproval("workflow_run_node", "Run "+spec.Label, prep.summary(spec), run)
 			}
@@ -229,7 +235,7 @@ func (s *Service) buildMCPServer() *mcp.Server {
 				return mcpError("workflow service is unavailable")
 			}
 			specs := s.workflow.Specs(ctx)
-			g, prepared, err := s.prepareGraph(specs, engine.Graph{Nodes: in.Nodes, Edges: in.Edges}, in.Recursive)
+			g, prepared, err := s.prepareGraph(specs, engine.Graph{Nodes: in.graphNodes(), Edges: in.Edges}, in.Recursive)
 			if err != nil {
 				return mcpError(err.Error())
 			}
@@ -241,7 +247,15 @@ func (s *Service) buildMCPServer() *mcp.Server {
 				destructive = destructive || len(p.Destructive) > 0
 			}
 			summary := fmt.Sprintf("Workflow (%d steps): %s", len(g.Nodes), strings.Join(parts, " → "))
-			run := func(execCtx context.Context) (any, error) { return s.workflow.RunGraph(execCtx, g) }
+			run := func(execCtx context.Context) (any, error) {
+				defer func() {
+					for i, p := range prepared {
+						spec, _ := specByType(specs, g.Nodes[i].Type)
+						s.scrubSecretParams(context.WithoutCancel(execCtx), spec, p.Input)
+					}
+				}()
+				return s.workflow.RunGraph(execCtx, g)
+			}
 			if destructive {
 				return s.needsApproval("workflow_run_graph", "Run workflow", summary, run)
 			}
@@ -314,78 +328,6 @@ func (s *Service) buildMCPServer() *mcp.Server {
 				return mcpError(err.Error())
 			}
 			return mcpJSON(bundle)
-		})
-
-	addMCPTool(server, "providers_list",
-		"API providers (LLM/image/video/TTS): which are configured, what fields each needs, saved credentials (masked).",
-		func(ctx context.Context, _ struct{}) (*mcp.CallToolResult, any, error) {
-			if s.providers == nil {
-				return mcpError("providers service is unavailable")
-			}
-			out, err := s.providers.AgentOverview(ctx)
-			if err != nil {
-				return mcpError(err.Error())
-			}
-			return mcpJSON(out)
-		})
-
-	addMCPTool(server, "providers_setup",
-		"Save an API key the user gave you: built-in provider (detected from base_url/key, or provider_id) or a custom "+
-			"OpenAI/Gemini/Anthropic-compatible endpoint (models auto-discovered). Activates and tests it. Never repeat the key back.",
-		func(ctx context.Context, in providersSetupToolInput) (*mcp.CallToolResult, any, error) {
-			if s.providers == nil {
-				return mcpError("providers service is unavailable")
-			}
-			req := in.request()
-			out, err := s.providers.AgentSetup(ctx, req)
-			if err != nil {
-				return mcpError(err.Error())
-			}
-			s.redactSecrets(ctx, req)
-			return mcpJSON(out)
-		})
-
-	addMCPTool(server, "providers_test",
-		"Test a saved provider credential or custom provider by id (from providers_list).",
-		func(ctx context.Context, in providerIDToolInput) (*mcp.CallToolResult, any, error) {
-			if s.providers == nil {
-				return mcpError("providers service is unavailable")
-			}
-			out, err := s.providers.AgentTest(ctx, strings.TrimSpace(in.ID))
-			if err != nil {
-				return mcpError(err.Error())
-			}
-			return mcpJSON(out)
-		})
-
-	addMCPTool(server, "providers_activate",
-		"Make a saved credential the active one of its provider.",
-		func(ctx context.Context, in providerIDToolInput) (*mcp.CallToolResult, any, error) {
-			if s.providers == nil {
-				return mcpError("providers service is unavailable")
-			}
-			if err := s.providers.ActivateCredential(ctx, strings.TrimSpace(in.ID)); err != nil {
-				return mcpError(err.Error())
-			}
-			return mcpJSON(map[string]any{"ok": true})
-		})
-
-	addMCPTool(server, "providers_delete",
-		"Propose deleting a provider credential or custom provider (needs user approval).",
-		func(ctx context.Context, in providerIDToolInput) (*mcp.CallToolResult, any, error) {
-			if s.providers == nil {
-				return mcpError("providers service is unavailable")
-			}
-			id := strings.TrimSpace(in.ID)
-			name, err := s.providers.Describe(ctx, id)
-			if err != nil {
-				return mcpError(err.Error())
-			}
-			return s.needsApproval("providers_delete", "Delete provider credential "+name,
-				fmt.Sprintf("Delete %s and its stored API key.", name),
-				func(execCtx context.Context) (any, error) {
-					return map[string]any{"deleted": name}, s.providers.AgentDelete(execCtx, id)
-				})
 		})
 
 	addMCPTool(server, "workspace_list_files",
@@ -618,7 +560,7 @@ func (s *Service) buildCapabilitiesSnapshot(ctx context.Context) map[string]any 
 	appFeatures := map[string]any{
 		"note":              "App features; details in workflow_list_specs.",
 		"workflow_features": features,
-		"system_features":   []string{"managed tools (binaries_*)", "theme/language (preferences_update)", "diagnostics_export", "API providers / keys (providers_*)"},
+		"system_features":   []string{"managed tools (binaries_*)", "theme/language (preferences_update)", "diagnostics_export"},
 	}
 	if s.binaries != nil {
 		if bins, err := s.binaries.List(ctx); err == nil {

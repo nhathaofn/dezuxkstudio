@@ -217,18 +217,15 @@ func (r *AgentRepository) ListConversationMessages(ctx context.Context, conversa
 
 // DeleteConversation removes a conversation and its messages.
 func (r *AgentRepository) DeleteConversation(ctx context.Context, conversationID string) error {
-	tx, err := r.db.sql.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("sqlite: delete agent conversation: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_chat_messages WHERE conversation_id = ?`, conversationID); err != nil {
-		return fmt.Errorf("sqlite: delete conversation messages: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_conversations WHERE id = ?`, conversationID); err != nil {
-		return fmt.Errorf("sqlite: delete conversation: %w", err)
-	}
-	return tx.Commit()
+	return r.db.inTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM agent_chat_messages WHERE conversation_id = ?`, conversationID); err != nil {
+			return fmt.Errorf("sqlite: delete conversation messages: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM agent_conversations WHERE id = ?`, conversationID); err != nil {
+			return fmt.Errorf("sqlite: delete conversation: %w", err)
+		}
+		return nil
+	})
 }
 
 // ClearChatMessages removes all persisted DezuxkStudio agent chat messages.

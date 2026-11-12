@@ -1,17 +1,21 @@
 package provider
 
 import (
+	"slices"
+
+	"app/internal/engine"
 	"context"
 	"strings"
 
 	domain "app/internal/domain/provider"
 )
 
-// The methods in this file serve the DezuxkStudio agent (MCP tools). They return JSON-ready maps that
+// The methods in this file back the provider workflow nodes (internal/tools/provider), which the UI
+// workflows and the agent run. They return JSON-ready maps that
 // never contain a secret value: only masked hints.
 
-// AgentOverview lists providers, what each needs and what is configured.
-func (s *Service) AgentOverview(ctx context.Context) (any, error) {
+// Overview lists providers, what each needs and what is configured.
+func (s *Service) Overview(ctx context.Context) (any, error) {
 	snap, err := s.List(ctx)
 	if err != nil {
 		return nil, err
@@ -89,10 +93,10 @@ func (s *Service) PlanSetup(req domain.SetupRequest) (domain.SetupPlan, error) {
 	return domain.PlanSetup(req)
 }
 
-// AgentSetup saves a key the user handed over, activates it and tests it.
+// Setup saves a key the user handed over, activates it and tests it.
 // Built-in: a new credential that becomes active. Custom: models are discovered first (so a wrong
 // key or URL saves nothing), every model is enabled and the first of each capability is the default.
-func (s *Service) AgentSetup(ctx context.Context, req domain.SetupRequest) (any, error) {
+func (s *Service) Setup(ctx context.Context, req domain.SetupRequest) (any, error) {
 	plan, err := domain.PlanSetup(req)
 	if err != nil {
 		return nil, err
@@ -164,8 +168,8 @@ func (s *Service) AgentSetup(ctx context.Context, req domain.SetupRequest) (any,
 	}, nil
 }
 
-// AgentTest tests a credential id or a custom provider id.
-func (s *Service) AgentTest(ctx context.Context, id string) (any, error) {
+// TestByID tests a credential id or a custom provider id.
+func (s *Service) TestByID(ctx context.Context, id string) (any, error) {
 	if _, err := s.repo.GetCredential(ctx, id); err == nil {
 		res, err := s.TestCredential(ctx, id)
 		if err != nil {
@@ -180,8 +184,8 @@ func (s *Service) AgentTest(ctx context.Context, id string) (any, error) {
 	return agentTest(res), nil
 }
 
-// AgentDelete deletes a credential id or a custom provider id.
-func (s *Service) AgentDelete(ctx context.Context, id string) error {
+// DeleteByID deletes a credential id or a custom provider id.
+func (s *Service) DeleteByID(ctx context.Context, id string) error {
 	if _, err := s.repo.GetCredential(ctx, id); err == nil {
 		return s.DeleteCredential(ctx, id)
 	}
@@ -224,4 +228,37 @@ func agentHealth(h domain.Health) map[string]any {
 		return nil
 	}
 	return map[string]any{"outcome": h.Outcome, "dead": h.Outcome.Dead(), "tested_at": h.TestedAt, "detail": h.Detail}
+}
+
+// SavedOptions lists saved credentials (and custom providers unless credentialsOnly) as select options
+// for the provider nodes. Labels carry the masked key and a dead-key marker.
+func (s *Service) SavedOptions(ctx context.Context, credentialsOnly bool) ([]engine.Option, error) {
+	snap, err := s.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	label := func(parts ...string) string {
+		return strings.Join(slices.DeleteFunc(parts, func(p string) bool { return p == "" }), " · ")
+	}
+	mark := func(h domain.Health, active bool) string {
+		switch {
+		case h.Outcome.Dead():
+			return "DEAD"
+		case active:
+			return "active"
+		}
+		return ""
+	}
+	out := []engine.Option{}
+	for _, b := range snap.Builtins {
+		for _, c := range b.Credentials {
+			out = append(out, engine.Option{Value: c.ID, Label: label(b.Meta.DisplayName, c.Name, c.SecretHints[domain.FieldAPIKey], mark(c.Health, c.Active))})
+		}
+	}
+	if !credentialsOnly {
+		for _, c := range snap.Custom {
+			out = append(out, engine.Option{Value: c.ID, Label: label(c.Name+" (custom)", c.KeyHint, mark(c.Health, false))})
+		}
+	}
+	return out, nil
 }

@@ -45,9 +45,11 @@ var (
 var registry = []Meta{
 	{
 		ID: IDGeminiAIStudio, DisplayName: "Google AI Studio",
-		Capabilities: []Capability{llm, image, video, tts},
-		Fields:       []Field{apiKey(), baseURL("https://generativelanguage.googleapis.com")},
-		DocsURL:      "https://aistudio.google.com/apikey",
+		DefaultBaseURL: "https://generativelanguage.googleapis.com",
+		Capabilities:   []Capability{llm, image, video, tts},
+		Fields:         []Field{apiKey(), baseURL("https://generativelanguage.googleapis.com")},
+		DocsURL:        "https://aistudio.google.com/apikey",
+		Probe:          Probe{Kind: ProbeGeminiModels, ModelFilter: `veo|imagen|image`},
 	},
 	{
 		ID: IDGeminiVertex, DisplayName: "Google Vertex AI",
@@ -57,6 +59,7 @@ var registry = []Meta{
 			{Key: FieldGCSBucket, Kind: FieldText},
 		},
 		DocsURL: "https://console.cloud.google.com/iam-admin/serviceaccounts",
+		Probe:   Probe{Kind: ProbeVertexToken},
 	},
 	{
 		ID: IDOpenAI, DisplayName: "OpenAI",
@@ -64,6 +67,7 @@ var registry = []Meta{
 		Fields:         []Field{apiKey(), baseURL("https://api.openai.com/v1")},
 		DefaultBaseURL: "https://api.openai.com/v1",
 		DocsURL:        "https://platform.openai.com/api-keys",
+		Probe:          Probe{Kind: ProbeOpenAIModels, ModelFilter: `gpt|sora|dall|o1|o3|o4`},
 	},
 	{
 		ID: IDAnthropic, DisplayName: "Anthropic",
@@ -71,6 +75,7 @@ var registry = []Meta{
 		Fields:         []Field{apiKey(), baseURL("https://api.anthropic.com")},
 		DefaultBaseURL: "https://api.anthropic.com",
 		DocsURL:        "https://console.anthropic.com/settings/keys",
+		Probe:          Probe{Kind: ProbeAnthropicModels},
 	},
 	{
 		ID: IDArk, DisplayName: "Volcengine Ark",
@@ -78,6 +83,7 @@ var registry = []Meta{
 		Fields:         []Field{apiKey(), baseURL("https://ark.cn-beijing.volces.com/api/v3")},
 		DefaultBaseURL: "https://ark.cn-beijing.volces.com/api/v3",
 		DocsURL:        "https://console.volcengine.com/ark",
+		Probe:          Probe{Kind: ProbeArkTasks},
 	},
 	{
 		ID: IDArkAgentPlan, DisplayName: "Volcengine Ark Agent Plan",
@@ -85,6 +91,7 @@ var registry = []Meta{
 		Fields:         []Field{apiKey()},
 		DefaultBaseURL: "https://ark.cn-beijing.volces.com/api/plan/v3",
 		DocsURL:        "https://console.volcengine.com/ark",
+		Probe:          Probe{Kind: ProbeArkTasks},
 	},
 	{
 		ID: IDGrok, DisplayName: "xAI Grok",
@@ -92,12 +99,14 @@ var registry = []Meta{
 		Fields:         []Field{apiKey()},
 		DefaultBaseURL: "https://api.x.ai/v1",
 		DocsURL:        "https://console.x.ai",
+		Probe:          Probe{Kind: ProbeOpenAIModels},
 	},
 	{
 		ID: IDAgnes, DisplayName: "Agnes",
 		Capabilities:   []Capability{llm, image, video},
 		Fields:         []Field{apiKey(), baseURL("https://apihub.agnes-ai.com/v1")},
 		DefaultBaseURL: "https://apihub.agnes-ai.com/v1",
+		Probe:          Probe{Kind: ProbeOpenAIModels},
 	},
 	{
 		ID: IDDashScope, DisplayName: "Alibaba DashScope",
@@ -106,6 +115,8 @@ var registry = []Meta{
 			{Key: FieldWan3BaseURL, Kind: FieldURL}},
 		DefaultBaseURL: "https://dashscope.aliyuncs.com",
 		DocsURL:        "https://bailian.console.aliyun.com/?apiKey=1",
+		Probe:          Probe{Kind: ProbeOpenAIModels, StripSuffixes: []string{"/compatible-mode/v1", "/api/v1"}, Path: "/compatible-mode/v1", ModelFilter: `qwen|wan`},
+		Hosts:          []string{"dashscope-intl.aliyuncs.com"},
 	},
 	{
 		ID: IDMiniMax, DisplayName: "MiniMax",
@@ -113,6 +124,8 @@ var registry = []Meta{
 		Fields:         []Field{apiKey(), baseURL("https://api.minimaxi.com/v1 · https://api.minimax.io/v1")},
 		DefaultBaseURL: "https://api.minimaxi.com/v1",
 		DocsURL:        "https://platform.minimax.io",
+		Probe:          Probe{Kind: ProbeOpenAIModels, StripSuffixes: []string{"/v1"}, Path: "/v1", ModelFilter: `minimax|abab`},
+		Hosts:          []string{"api.minimax.io", "api.minimaxi.chat"},
 	},
 	{
 		ID: IDKling, DisplayName: "Kling",
@@ -126,6 +139,8 @@ var registry = []Meta{
 		CredentialGroups: [][]string{{FieldAPIKey}, {FieldAccessKey, FieldSecretKey}},
 		DefaultBaseURL:   "https://api-beijing.klingai.com/v1",
 		DocsURL:          "https://app.klingai.com/global/dev",
+		Probe:            Probe{Kind: ProbeKlingCosts, StripSuffixes: []string{"/v1"}},
+		Hosts:            []string{"api-singapore.klingai.com", "api.klingai.com"},
 	},
 	{
 		ID: IDVidu, DisplayName: "Vidu",
@@ -133,6 +148,8 @@ var registry = []Meta{
 		Fields:         []Field{apiKey(), baseURL("https://api.vidu.cn/ent/v2")},
 		DefaultBaseURL: "https://api.vidu.cn/ent/v2",
 		DocsURL:        "https://platform.vidu.cn",
+		Probe:          Probe{Kind: ProbeViduTasks},
+		Hosts:          []string{"api.vidu.com"},
 	},
 }
 

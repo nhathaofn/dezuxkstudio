@@ -61,6 +61,9 @@ func ValidateSpec(s Spec) error {
 		if p.Destructive && p.Kind != ParamToggle {
 			add("param %q: only toggles can be destructive (the approval gate checks toggles)", p.Name)
 		}
+		if p.Secret && (p.Kind != ParamText || p.Default != "") {
+			add("param %q: secret params must be text without a default", p.Name)
+		}
 		if p.Role == ParamRoleOutputDir && p.Kind != ParamText {
 			add("param %q: output_dir role requires kind text", p.Name)
 		}

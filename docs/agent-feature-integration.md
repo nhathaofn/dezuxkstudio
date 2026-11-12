@@ -58,6 +58,7 @@ Giới hạn: tối đa `maxNodeInputFiles` (10.000) file cho mỗi lần chạy
 | `Min` / `Max` | Giới hạn của `integer`. Ngoài khoảng sẽ bị từ chối |
 | `Role: engine.ParamRoleOutputDir` | Tham số là **thư mục ghi kết quả**: được kiểm tra qua `AccessPolicy` và không được là file |
 | `Destructive: true` | Toggle này khi bật sẽ **sửa/ghi đè file gốc của người dùng** → luôn chờ người dùng bấm **Approve** |
+| `Secret: true` | Tham số text chứa thông tin đăng nhập (API key...). Không hiện trong summary hay thẻ Approve, và bị xoá khỏi lịch sử chat sau khi chạy. Không được có `Default` |
 
 Mọi key không có trong `Inputs` / `Params` đều bị từ chối. Vì vậy, các tham số tinh chỉnh nội bộ mà UI không hiển thị
 (ví dụ `min_score` của watermark) agent sẽ không dùng được. Đó là chủ ý, để agent đi đúng như UI.
