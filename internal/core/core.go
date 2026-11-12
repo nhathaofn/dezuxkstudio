@@ -230,6 +230,7 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		Workflow:     wfSvc,
 		Binaries:     binSvc,
 		Preferences:  prefSvc,
+		Providers:    provSvc,
 		System:       sysSvc,
 		Diagnostics:  diagSvc,
 		OnStatusChanged: func(info domainagent.ProviderInfo) {

@@ -59,6 +59,7 @@ type Options struct {
 	Workflow           WorkflowRunner
 	Binaries           BinariesManager
 	Preferences        PreferencesManager
+	Providers          ProvidersManager
 	System             SystemInspector
 	Diagnostics        DiagnosticsExporter
 	OnStatusChanged    func(domainagent.ProviderInfo)
@@ -84,6 +85,7 @@ type Service struct {
 	workflow           WorkflowRunner
 	binaries           BinariesManager
 	preferences        PreferencesManager
+	providers          ProvidersManager
 	system             SystemInspector
 	diagnostics        DiagnosticsExporter
 	onStatusChanged    func(domainagent.ProviderInfo)
@@ -163,6 +165,7 @@ func New(o Options) (*Service, error) {
 		workflow:           o.Workflow,
 		binaries:           o.Binaries,
 		preferences:        o.Preferences,
+		providers:          o.Providers,
 		system:             o.System,
 		diagnostics:        o.Diagnostics,
 		onStatusChanged:    o.OnStatusChanged,

@@ -594,7 +594,8 @@ func extractTextContent(raw json.RawMessage) string {
 var dezuxkMCPToolNames = map[string]bool{
 	"studio_list_capabilities": true, "workflow_list_specs": true, "workflow_run_node": true, "workflow_run_graph": true,
 	"binaries_list": true, "binaries_download": true,
-	"preferences_update": true, "diagnostics_export": true, "workspace_list_files": true,
+	"preferences_update": true, "diagnostics_export": true,
+	"providers_list": true, "providers_setup": true, "providers_test": true, "providers_activate": true, "providers_delete": true, "workspace_list_files": true,
 	"workspace_read_file": true, "workspace_write_file": true, "workspace_move_file": true, "workspace_delete_file": true,
 }
 

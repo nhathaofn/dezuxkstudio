@@ -93,6 +93,17 @@ func (r *fakeRepo) ListChatMessages(_ context.Context, limit int) ([]domainagent
 	return cp, nil
 }
 
+func (r *fakeRepo) RedactChatMessages(_ context.Context, secret, replacement string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.messages {
+		r.messages[i].Text = strings.ReplaceAll(r.messages[i].Text, secret, replacement)
+		r.messages[i].Thought = strings.ReplaceAll(r.messages[i].Thought, secret, replacement)
+		r.messages[i].Tool = strings.ReplaceAll(r.messages[i].Tool, secret, replacement)
+	}
+	return nil
+}
+
 func (r *fakeRepo) ClearChatMessages(_ context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

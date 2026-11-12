@@ -297,6 +297,8 @@ type Repository interface {
 	AppendChatMessage(ctx context.Context, msg ChatMessage) error
 	ListChatMessages(ctx context.Context, limit int) ([]ChatMessage, error)
 	ClearChatMessages(ctx context.Context) error
+	// RedactChatMessages replaces every occurrence of secret in stored chat text.
+	RedactChatMessages(ctx context.Context, secret, replacement string) error
 	// SaveConversation creates the conversation or updates its provider and updated_at; a non-empty
 	// title is only set when the conversation has none yet.
 	SaveConversation(ctx context.Context, c Conversation) error

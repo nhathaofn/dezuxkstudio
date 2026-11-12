@@ -83,6 +83,21 @@ func (r *AgentRepository) AppendChatMessage(ctx context.Context, msg agent.ChatM
 	return nil
 }
 
+// RedactChatMessages implements agent.Repository.
+func (r *AgentRepository) RedactChatMessages(ctx context.Context, secret, replacement string) error {
+	if secret == "" {
+		return nil
+	}
+	_, err := r.db.sql.ExecContext(ctx, `
+		UPDATE agent_chat_messages SET
+			text = REPLACE(text, ?1, ?2), thought = REPLACE(thought, ?1, ?2), tool = REPLACE(tool, ?1, ?2)
+		WHERE instr(text, ?1) > 0 OR instr(thought, ?1) > 0 OR instr(tool, ?1) > 0`, secret, replacement)
+	if err != nil {
+		return fmt.Errorf("sqlite: redact agent chat messages: %w", err)
+	}
+	return nil
+}
+
 // ListChatMessages returns the most recent chat messages in chronological order.
 func (r *AgentRepository) ListChatMessages(ctx context.Context, limit int) ([]agent.ChatMessage, error) {
 	if limit <= 0 {

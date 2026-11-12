@@ -15,6 +15,7 @@ import (
 	domainagent "app/internal/domain/agent"
 	domainbinaries "app/internal/domain/binaries"
 	domainprefs "app/internal/domain/preferences"
+	domainprovider "app/internal/domain/provider"
 	"app/internal/engine"
 	"app/internal/fsutil"
 
@@ -66,6 +67,41 @@ type moveFileToolInput struct {
 	Source      string `json:"source"`
 	Destination string `json:"destination" jsonschema:"File path or folder; extension must not change"`
 	Overwrite   bool   `json:"overwrite,omitempty" jsonschema:"Replace an existing file (needs approval)"`
+}
+
+type providersSetupToolInput struct {
+	ProviderID      string            `json:"provider_id,omitempty" jsonschema:"Built-in id from providers_list; omit to detect from base_url/key"`
+	APIKey          string            `json:"api_key,omitempty"`
+	BaseURL         string            `json:"base_url,omitempty" jsonschema:"API base URL; a non built-in host becomes a custom provider"`
+	Name            string            `json:"name,omitempty"`
+	DiscoveryFormat string            `json:"discovery_format,omitempty" jsonschema:"Custom only: openai|gemini|anthropic (guessed when empty)"`
+	Secrets         map[string]string `json:"secrets,omitempty" jsonschema:"Other secret fields, e.g. access_key+secret_key (Kling), credentials_file JSON (Vertex)"`
+	Values          map[string]string `json:"values,omitempty" jsonschema:"Other non-secret fields, e.g. gcs_bucket"`
+}
+
+func (in providersSetupToolInput) request() domainprovider.SetupRequest {
+	return domainprovider.SetupRequest{ProviderID: in.ProviderID, APIKey: in.APIKey, BaseURL: in.BaseURL, Name: in.Name,
+		DiscoveryFormat: domainprovider.DiscoveryFormat(strings.TrimSpace(in.DiscoveryFormat)), Secrets: in.Secrets, Values: in.Values}
+}
+
+type providerIDToolInput struct {
+	ID string `json:"id" jsonschema:"Credential id or custom provider id from providers_list"`
+}
+
+// redactSecrets removes keys the user pasted in chat from the stored chat history once they are saved
+// in the credential store (secrets must not stay in the database).
+func (s *Service) redactSecrets(ctx context.Context, req domainprovider.SetupRequest) {
+	vals := []string{req.APIKey}
+	for _, v := range req.Secrets {
+		vals = append(vals, v)
+	}
+	for _, v := range vals {
+		if v = strings.TrimSpace(v); len(v) >= 8 {
+			if err := s.repo.RedactChatMessages(ctx, v, "[secret saved]"); err != nil {
+				s.log.Warn("agent: redact chat secret", "error", err)
+			}
+		}
+	}
 }
 
 type deleteFileToolInput struct {
@@ -278,6 +314,78 @@ func (s *Service) buildMCPServer() *mcp.Server {
 				return mcpError(err.Error())
 			}
 			return mcpJSON(bundle)
+		})
+
+	addMCPTool(server, "providers_list",
+		"API providers (LLM/image/video/TTS): which are configured, what fields each needs, saved credentials (masked).",
+		func(ctx context.Context, _ struct{}) (*mcp.CallToolResult, any, error) {
+			if s.providers == nil {
+				return mcpError("providers service is unavailable")
+			}
+			out, err := s.providers.AgentOverview(ctx)
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(out)
+		})
+
+	addMCPTool(server, "providers_setup",
+		"Save an API key the user gave you: built-in provider (detected from base_url/key, or provider_id) or a custom "+
+			"OpenAI/Gemini/Anthropic-compatible endpoint (models auto-discovered). Activates and tests it. Never repeat the key back.",
+		func(ctx context.Context, in providersSetupToolInput) (*mcp.CallToolResult, any, error) {
+			if s.providers == nil {
+				return mcpError("providers service is unavailable")
+			}
+			req := in.request()
+			out, err := s.providers.AgentSetup(ctx, req)
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			s.redactSecrets(ctx, req)
+			return mcpJSON(out)
+		})
+
+	addMCPTool(server, "providers_test",
+		"Test a saved provider credential or custom provider by id (from providers_list).",
+		func(ctx context.Context, in providerIDToolInput) (*mcp.CallToolResult, any, error) {
+			if s.providers == nil {
+				return mcpError("providers service is unavailable")
+			}
+			out, err := s.providers.AgentTest(ctx, strings.TrimSpace(in.ID))
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(out)
+		})
+
+	addMCPTool(server, "providers_activate",
+		"Make a saved credential the active one of its provider.",
+		func(ctx context.Context, in providerIDToolInput) (*mcp.CallToolResult, any, error) {
+			if s.providers == nil {
+				return mcpError("providers service is unavailable")
+			}
+			if err := s.providers.ActivateCredential(ctx, strings.TrimSpace(in.ID)); err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(map[string]any{"ok": true})
+		})
+
+	addMCPTool(server, "providers_delete",
+		"Propose deleting a provider credential or custom provider (needs user approval).",
+		func(ctx context.Context, in providerIDToolInput) (*mcp.CallToolResult, any, error) {
+			if s.providers == nil {
+				return mcpError("providers service is unavailable")
+			}
+			id := strings.TrimSpace(in.ID)
+			name, err := s.providers.Describe(ctx, id)
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return s.needsApproval("providers_delete", "Delete provider credential "+name,
+				fmt.Sprintf("Delete %s and its stored API key.", name),
+				func(execCtx context.Context) (any, error) {
+					return map[string]any{"deleted": name}, s.providers.AgentDelete(execCtx, id)
+				})
 		})
 
 	addMCPTool(server, "workspace_list_files",
@@ -510,7 +618,7 @@ func (s *Service) buildCapabilitiesSnapshot(ctx context.Context) map[string]any 
 	appFeatures := map[string]any{
 		"note":              "App features; details in workflow_list_specs.",
 		"workflow_features": features,
-		"system_features":   []string{"managed tools (binaries_*)", "theme/language (preferences_update)", "diagnostics_export"},
+		"system_features":   []string{"managed tools (binaries_*)", "theme/language (preferences_update)", "diagnostics_export", "API providers / keys (providers_*)"},
 	}
 	if s.binaries != nil {
 		if bins, err := s.binaries.List(ctx); err == nil {
