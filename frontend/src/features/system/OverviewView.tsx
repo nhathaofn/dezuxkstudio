@@ -8,6 +8,7 @@ import { SystemCard } from "./SystemCard";
 import { UpdateCard } from "./UpdateCard";
 import { useSystemStore } from "./useSystemStore";
 import { useT } from "../../lib/i18n";
+import { formatDuration } from "../../lib/format";
 
 export const OverviewView: React.FC = () => {
   const t = useT();
@@ -17,11 +18,7 @@ export const OverviewView: React.FC = () => {
   const status = useConnectionStore((s) => s.status);
   const devMode = usePreferencesStore((s) => s.devMode);
 
-  const formatUptime = (sec: number): string => {
-    const h = Math.floor(sec / 3600);
-    const m = Math.floor((sec % 3600) / 60);
-    return h > 0 ? t("system.uptime.hm", { h, m }) : t("system.uptime.ms", { m, s: sec % 60 });
-  };
+  const formatUptime = (sec: number): string => formatDuration(t, sec);
 
   const handleShortcutKeyDown = (e: React.KeyboardEvent, to: string) => {
     if (e.key === "Enter" || e.key === " ") {

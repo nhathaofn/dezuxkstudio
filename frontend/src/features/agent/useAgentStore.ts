@@ -36,10 +36,12 @@ export interface AgentChatMessage {
   errorParams?: Record<string, string>;
 }
 
-const WIDTH_STORAGE_KEY = "dezuxk-agent-drawer-width";
-const DEFAULT_WIDTH = 420;
-const MIN_WIDTH = 340;
-const MAX_WIDTH = 680;
+const WIDTH_STORAGE_KEY = appConfig.storageKeys.agentDrawerWidth;
+const {
+  defaultWidth: DEFAULT_WIDTH,
+  minWidth: MIN_WIDTH,
+  maxWidth: MAX_WIDTH,
+} = appConfig.ui.agentDrawer;
 
 /** How long "Copied" feedback stays visible after a clipboard copy in the agent panel. */
 export const COPY_FEEDBACK_MS = appConfig.ui.copyFeedbackMs;
@@ -53,6 +55,9 @@ function historyState(res: AgentHistoryResult): Pick<AgentState, "messages" | "c
       role: m.role === "user" ? "user" : m.role === "error" ? "error" : "assistant",
       text: m.text,
       thought: m.thought || undefined,
+      tools: m.tool
+        ? m.tool.split(", ").map((name) => ({ name, status: "done" as const }))
+        : undefined,
       providerId: m.provider_id,
       streaming: false,
     })),

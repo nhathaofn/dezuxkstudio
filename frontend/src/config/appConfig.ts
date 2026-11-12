@@ -11,6 +11,7 @@ export const appConfig = {
     themeHint: "dezuxk.theme_hint",
     languageHint: "dezuxk.language_hint",
     devMode: "dezuxk.dev_mode",
+    agentDrawerWidth: "dezuxk-agent-drawer-width",
   },
   /** Reconnect backoff with full jitter. */
   reconnect: {
@@ -39,6 +40,12 @@ export const appConfig = {
     copyFeedbackMs: 1_500,
     /** Window in which a second click confirms a delete. */
     confirmDeleteMs: 3_000,
+    /** Agent drawer width in px: default and the range the user can drag it to. */
+    agentDrawer: { defaultWidth: 420, minWidth: 340, maxWidth: 680 },
+    /** Height in px the chat composer grows to before it scrolls. */
+    composerMaxHeight: 200,
+    /** Quiet time before the current screen is sent to the agent (typing does not spam the backend). */
+    screenContextDebounceMs: 300,
   },
   /** How often the header status pill pings the server. */
   latencyProbeIntervalMs: 5_000,

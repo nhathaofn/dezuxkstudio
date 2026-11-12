@@ -642,7 +642,8 @@ export const vi: Record<MessageKey, string> = {
   "agent.err.approvalGone": "Yêu cầu này không còn chờ duyệt (đã hết hạn hoặc đã được xử lý).",
   "agent.err.modelChangeBusy": "Hãy đợi agent trả lời xong rồi mới đổi model.",
   "agent.err.connectionClosed": "Kết nối với agent bị đóng đột ngột.",
-  "agent.err.tooManyApprovals": "Đang có quá nhiều thao tác chờ duyệt ({max}). Hãy duyệt hoặc từ chối bớt trước.",
+  "agent.err.tooManyApprovals":
+    "Đang có quá nhiều thao tác chờ duyệt ({max}). Hãy duyệt hoặc từ chối bớt trước.",
   "agent.err.processExited": "Agent dừng đột ngột: {detail}",
   "agent.err.superseded": "Một lần kết nối khác đã thay thế lần này.",
   "agent.err.signInFailed": "Đăng nhập thất bại: {detail}",

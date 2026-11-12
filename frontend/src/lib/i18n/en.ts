@@ -639,7 +639,8 @@ export const en = {
     "This request is no longer pending (it expired or was already handled).",
   "agent.err.modelChangeBusy": "Wait for the current reply to finish before changing the model.",
   "agent.err.connectionClosed": "The agent connection closed unexpectedly.",
-  "agent.err.tooManyApprovals": "Too many actions are waiting for approval ({max}). Approve or reject some first.",
+  "agent.err.tooManyApprovals":
+    "Too many actions are waiting for approval ({max}). Approve or reject some first.",
   "agent.err.processExited": "The agent stopped unexpectedly: {detail}",
   "agent.err.superseded": "Another connection attempt replaced this one.",
   "agent.err.signInFailed": "Sign-in failed: {detail}",

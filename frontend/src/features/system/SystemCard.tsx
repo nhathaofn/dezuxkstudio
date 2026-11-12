@@ -7,6 +7,7 @@ import { ErrorText } from "../../components/ui/ErrorText";
 import { useT } from "../../lib/i18n";
 import type { ActionError } from "../../lib/rtClient";
 import { useSystemStore } from "./useSystemStore";
+import { formatDuration } from "../../lib/format";
 
 export const SystemCard: React.FC = () => {
   const t = useT();
@@ -16,11 +17,7 @@ export const SystemCard: React.FC = () => {
   const openFolder = useSystemStore((s) => s.openFolder);
   const [openError, setOpenError] = useState<ActionError | null>(null);
 
-  const formatUptime = (sec: number): string => {
-    const h = Math.floor(sec / 3600);
-    const m = Math.floor((sec % 3600) / 60);
-    return h > 0 ? t("system.uptime.hm", { h, m }) : t("system.uptime.ms", { m, s: sec % 60 });
-  };
+  const formatUptime = (sec: number): string => formatDuration(t, sec);
 
   const open = async (target: FolderTarget) => setOpenError(await openFolder(target));
 
