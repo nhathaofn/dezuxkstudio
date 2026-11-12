@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
-	"sync"
 	"unicode/utf8"
 
 	domainagent "app/internal/domain/agent"
@@ -112,8 +112,6 @@ type deleteFileToolInput struct {
 }
 
 // mcpServerInstructions is the short MCP-level reminder (the full rules are the provider's system prompt).
-var toolDocsOnce sync.Once
-
 const mcpServerInstructions = "DezuxkStudio's own tools. Follow the DezuxkStudio Assistant rules from your system prompt; " +
 	"call workflow_list_specs before running a feature."
 
@@ -132,15 +130,19 @@ func mcpError(msg string) (*mcp.CallToolResult, any, error) {
 	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}, nil, nil
 }
 
-// toolDoc is a registered MCP tool's name and description, used to build the prompt's <tools> layer.
+// toolDoc is a registered MCP tool's name and description, used to build the prompt's <tools> layer
+// and the capabilities snapshot.
 type toolDoc struct{ Name, Description string }
 
-// mcpToolDocs lists the tools registered by buildMCPServer, in registration order.
-var mcpToolDocs []toolDoc
+// mcpToolset is the MCP server together with the list of the tools registered on it.
+type mcpToolset struct {
+	server *mcp.Server
+	docs   []toolDoc
+}
 
-func addMCPTool[I any](server *mcp.Server, name, description string, fn func(context.Context, I) (*mcp.CallToolResult, any, error)) {
-	recordToolDoc(name, description)
-	mcp.AddTool(server, &mcp.Tool{Name: name, Description: description},
+func addMCPTool[I any](ts *mcpToolset, name, description string, fn func(context.Context, I) (*mcp.CallToolResult, any, error)) {
+	ts.docs = append(ts.docs, toolDoc{Name: name, Description: description})
+	mcp.AddTool(ts.server, &mcp.Tool{Name: name, Description: description},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in I) (*mcp.CallToolResult, any, error) {
 			return fn(ctx, in)
 		})
@@ -148,7 +150,10 @@ func addMCPTool[I any](server *mcp.Server, name, description string, fn func(con
 
 // needsApproval queues an action for the user's decision and returns the standard tool response.
 func (s *Service) needsApproval(tool, title, summary string, exec func(context.Context) (any, error)) (*mcp.CallToolResult, any, error) {
-	req := s.queueApproval(tool, title, summary, exec)
+	req, err := s.queueApproval(tool, title, summary, exec)
+	if err != nil {
+		return mcpError(err.Error())
+	}
 	return mcpJSON(map[string]any{
 		"status":      "needs_approval",
 		"approval_id": req.ID,
@@ -157,28 +162,22 @@ func (s *Service) needsApproval(tool, title, summary string, exec func(context.C
 	})
 }
 
-func recordToolDoc(name, description string) {
-	for _, d := range mcpToolDocs {
-		if d.Name == name {
-			return
-		}
-	}
-	mcpToolDocs = append(mcpToolDocs, toolDoc{Name: name, Description: description})
+// toolDocs returns the registered MCP tools (static for the service's lifetime, built once).
+func (s *Service) toolDocs() []toolDoc {
+	s.toolDocsOnce.Do(func() { s.docs = s.buildToolset().docs })
+	return s.docs
 }
 
-// registeredToolDocs builds the MCP server once (tools are static) and returns its tool list.
-func (s *Service) registeredToolDocs() []toolDoc {
-	toolDocsOnce.Do(func() { _ = s.buildMCPServer() })
-	return mcpToolDocs
-}
+// buildMCPServer returns a new MCP server with every DezuxkStudio tool registered.
+func (s *Service) buildMCPServer() *mcp.Server { return s.buildToolset().server }
 
-func (s *Service) buildMCPServer() *mcp.Server {
+func (s *Service) buildToolset() *mcpToolset {
 	// Every provider already receives the full profile as its system prompt. MCP clients may copy server
 	// instructions into each tool's description (Codex does: 16 tools × ~9k characters ≈ 38k tokens), so
 	// the server only states a one-line reminder.
-	server := mcp.NewServer(&mcp.Implementation{Name: mcpServerName, Version: s.appVersion}, &mcp.ServerOptions{
+	server := &mcpToolset{server: mcp.NewServer(&mcp.Implementation{Name: mcpServerName, Version: s.appVersion}, &mcp.ServerOptions{
 		Instructions: mcpServerInstructions,
-	})
+	})}
 
 	addMCPTool(server, "studio_list_capabilities",
 		"App features, managed tools, preferences, current screen and trusted folders.",
@@ -560,7 +559,7 @@ func (s *Service) buildCapabilitiesSnapshot(ctx context.Context) map[string]any 
 	appFeatures := map[string]any{
 		"note":              "App features; details in workflow_list_specs.",
 		"workflow_features": features,
-		"system_features":   []string{"managed tools (binaries_*)", "theme/language (preferences_update)", "diagnostics_export"},
+		"tools":             s.toolNames(),
 	}
 	if s.binaries != nil {
 		if bins, err := s.binaries.List(ctx); err == nil {
@@ -612,11 +611,26 @@ func (s *Service) buildCapabilitiesSnapshot(ctx context.Context) map[string]any 
 	}
 }
 
-func (s *Service) queueApproval(tool, title, summary string, execFn func(context.Context) (any, error)) domainagent.ApprovalRequest {
+// toolNames lists every registered MCP tool, generated from the registrations.
+func (s *Service) toolNames() []string {
+	docs := s.toolDocs()
+	names := make([]string, len(docs))
+	for i, d := range docs {
+		names[i] = d.Name
+	}
+	return names
+}
+
+func (s *Service) queueApproval(tool, title, summary string, execFn func(context.Context) (any, error)) (domainagent.ApprovalRequest, error) {
 	s.mu.Lock()
 	pid := s.activeID
 	s.mu.Unlock()
-	req := s.approvals.queue(pid, tool, title, summary, execFn)
+	req, ok := s.approvals.queue(pid, tool, title, summary, execFn)
+	if !ok {
+		max := strconv.Itoa(s.limits.MaxPendingApprovals)
+		return req, localize(fmt.Errorf("too many actions are waiting for approval (%s); ask the user to approve or reject them first", max),
+			msgTooManyApprovals, map[string]string{"max": max})
+	}
 	s.emitApprovals()
-	return req
+	return req, nil
 }

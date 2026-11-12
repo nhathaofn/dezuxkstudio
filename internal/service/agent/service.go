@@ -112,6 +112,9 @@ type Service struct {
 	policy    *AccessPolicy
 	approvals *approvalStore
 
+	toolDocsOnce sync.Once
+	docs         []toolDoc // registered MCP tools, see toolDocs
+
 	mu              sync.Mutex
 	mcpSrv          *localMCPServer
 	activeID        domainagent.ProviderID
@@ -187,7 +190,7 @@ func New(o Options) (*Service, error) {
 		runClaude:          o.RunClaudeTurn,
 		probeClaude:        o.ProbeClaudeAuth,
 		policy:             NewAccessPolicy(o.DataDir, o.WorkspaceDir, o.MediaDir, o.ProfilesDir, allowedDirs),
-		approvals:          newApprovalStore(limits.ApprovalTTL),
+		approvals:          newApprovalStore(limits.ApprovalTTL, limits.MaxPendingApprovals),
 		models:             newModelState(),
 		cliSessions:        make(map[domainagent.ProviderID]string),
 		states:             make(map[domainagent.ProviderID]domainagent.ConnectionState),
@@ -202,8 +205,10 @@ func New(o Options) (*Service, error) {
 		spawnCodexAppServer:  startCodexAppServer,
 	}
 	if s.spawnTransport == nil {
+		// The process outlives the Connect call that starts it, so it is not bound to that call's ctx;
+		// Disconnect/Close end it.
 		s.spawnTransport = func(_ context.Context, executable string, args []string, workDir string, env []string, onEvent func(SessionUpdate), onExit func(error)) (Transport, error) {
-			return SpawnACP(context.Background(), executable, args, workDir, env, s.log, onEvent, onExit)
+			return SpawnACP(context.Background(), executable, args, workDir, env, s.toolNames(), s.log, onEvent, onExit)
 		}
 	}
 	if s.runCodex == nil {

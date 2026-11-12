@@ -23,17 +23,19 @@ type pendingApproval struct {
 type approvalStore struct {
 	mu    sync.Mutex
 	ttl   time.Duration
+	max   int // pending requests kept at most, so a looping agent cannot flood the panel
 	now   func() time.Time
 	items map[string]pendingApproval
 }
 
-func newApprovalStore(ttl time.Duration) *approvalStore {
-	return &approvalStore{ttl: ttl, now: time.Now, items: make(map[string]pendingApproval)}
+func newApprovalStore(ttl time.Duration, max int) *approvalStore {
+	return &approvalStore{ttl: ttl, max: max, now: time.Now, items: make(map[string]pendingApproval)}
 }
 
-func (a *approvalStore) queue(providerID domainagent.ProviderID, tool, title, summary string, exec func(context.Context) (any, error)) domainagent.ApprovalRequest {
+// queue adds a request; ok is false (nothing queued) when max requests are already pending.
+func (a *approvalStore) queue(providerID domainagent.ProviderID, tool, title, summary string, exec func(context.Context) (any, error)) (req domainagent.ApprovalRequest, ok bool) {
 	now := a.now()
-	req := domainagent.ApprovalRequest{
+	req = domainagent.ApprovalRequest{
 		ID:         uuid.NewString(),
 		ProviderID: providerID,
 		Tool:       tool,
@@ -42,10 +44,13 @@ func (a *approvalStore) queue(providerID domainagent.ProviderID, tool, title, su
 		CreatedAt:  now.UTC().Format(time.RFC3339),
 	}
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.pruneLocked(now)
+	if a.max > 0 && len(a.items) >= a.max {
+		return req, false
+	}
 	a.items[req.ID] = pendingApproval{request: req, exec: exec, expiresAt: now.Add(a.ttl)}
-	a.mu.Unlock()
-	return req
+	return req, true
 }
 
 func (a *approvalStore) pruneLocked(now time.Time) {

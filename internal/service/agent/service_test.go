@@ -360,9 +360,12 @@ func TestMCPServerAuthAndTools(t *testing.T) {
 	}
 
 	// High-impact inplace action queues UI approval card and executes only upon desktop approval.
-	qReq := svc.queueApproval("workflow_run_node", "Run watermark", "inplace overwrite", func(ctx context.Context) (any, error) {
+	qReq, err := svc.queueApproval("workflow_run_node", "Run watermark", "inplace overwrite", func(ctx context.Context) (any, error) {
 		return wf.RunNode(ctx, "tool.watermark_remover", json.RawMessage(`{"inplace":true}`))
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	approvalsMu.Lock()
 	if len(lastApprovals) != 1 || lastApprovals[0].ID != qReq.ID {
 		approvalsMu.Unlock()
@@ -395,6 +398,7 @@ func TestACPClientProtocolOverPipes(t *testing.T) {
 		clientToSrvW,
 		srvToClientR,
 		stderrR,
+		[]string{"studio_list_capabilities"},
 		slog.New(slog.DiscardHandler),
 		func(u SessionUpdate) {
 			eventsMu.Lock()

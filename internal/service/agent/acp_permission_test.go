@@ -1,8 +1,20 @@
 package agent
 
-import "testing"
+import (
+	"log/slog"
+	"testing"
+)
 
 func TestDezuxkToolPermissionMatchesExactTools(t *testing.T) {
+	svc, err := New(Options{Repo: newFakeRepo(), DataDir: t.TempDir(), Logger: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+	own := map[string]bool{}
+	for _, name := range svc.toolNames() {
+		own[name] = true
+	}
 	allowed := []string{
 		"MCP Tool workflow_run_node",
 		"MCP Tool studio_list_capabilities",
@@ -11,7 +23,7 @@ func TestDezuxkToolPermissionMatchesExactTools(t *testing.T) {
 		"File ../../../../DezuxkStudio/data/agent-profiles/antigravity/home/.gemini/antigravity-cli/mcp/dezuxk/workflow_list_specs.json",
 	}
 	for _, title := range allowed {
-		if !isDezuxkToolPermission(title) {
+		if !isDezuxkToolPermission(title, own) {
 			t.Errorf("expected %q to be approved", title)
 		}
 	}
@@ -28,7 +40,7 @@ func TestDezuxkToolPermissionMatchesExactTools(t *testing.T) {
 		"",
 	}
 	for _, title := range denied {
-		if isDezuxkToolPermission(title) {
+		if isDezuxkToolPermission(title, own) {
 			t.Errorf("expected %q to be refused", title)
 		}
 	}

@@ -95,6 +95,7 @@ func fields(c *Config) []field {
 		{key: "agent.cli_update_interval", usage: "how often to look for a newer agent CLI release", val: durationValue{&c.Agent.CLIUpdateInterval}},
 		{key: "agent.approval_ttl", usage: "pending agent approvals expire after this long", val: durationValue{&c.Agent.ApprovalTTL}},
 		{key: "agent.history_limit", usage: "agent chat messages shown in the UI", val: intValue{&c.Agent.HistoryLimit}},
+		{key: "agent.max_pending_approvals", usage: "agent actions waiting for approval at most", val: intValue{&c.Agent.MaxPendingApprovals}},
 		{key: "agent.context_messages", usage: "past chat messages replayed into a new agent session", val: intValue{&c.Agent.ContextMessages}},
 		{key: "agent.context_message_chars", usage: "max characters per replayed chat message", val: intValue{&c.Agent.ContextMessageChars}},
 

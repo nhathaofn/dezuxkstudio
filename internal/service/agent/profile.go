@@ -64,7 +64,7 @@ func (s *Service) systemPrompt(ctx context.Context, id domainagent.ProviderID) s
 func (s *Service) toolsBlock(hint string) string {
 	var sb strings.Builder
 	sb.WriteString("<tools>\nThe application's tools. " + hint + "\n")
-	for _, d := range s.registeredToolDocs() {
+	for _, d := range s.toolDocs() {
 		fmt.Fprintf(&sb, "- %s: %s\n", d.Name, d.Description)
 	}
 	sb.WriteString("</tools>")

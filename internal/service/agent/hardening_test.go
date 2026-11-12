@@ -19,14 +19,30 @@ import (
 	"app/internal/secrets"
 )
 
+func TestApprovalStoreIsBounded(t *testing.T) {
+	store := newApprovalStore(time.Minute, 2)
+	noop := func(context.Context) (any, error) { return nil, nil }
+	for i := 0; i < 2; i++ {
+		if _, ok := store.queue(domainagent.ProviderCodex, "t", "title", "sum", noop); !ok {
+			t.Fatalf("request %d must be queued", i)
+		}
+	}
+	if _, ok := store.queue(domainagent.ProviderCodex, "t", "title", "sum", noop); ok {
+		t.Fatal("a full store must refuse new requests")
+	}
+	if got := len(store.list()); got != 2 {
+		t.Fatalf("pending = %d, want 2", got)
+	}
+}
+
 func TestApprovalStoreExpiresAndClearsPerProvider(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
-	store := newApprovalStore(time.Minute)
+	store := newApprovalStore(time.Minute, 0)
 	store.now = func() time.Time { return now }
 	noop := func(context.Context) (any, error) { return nil, nil }
 
-	codexReq := store.queue(domainagent.ProviderCodex, "t", "title", "sum", noop)
-	claudeReq := store.queue(domainagent.ProviderClaude, "t", "title", "sum", noop)
+	codexReq, _ := store.queue(domainagent.ProviderCodex, "t", "title", "sum", noop)
+	claudeReq, _ := store.queue(domainagent.ProviderClaude, "t", "title", "sum", noop)
 
 	if !store.clearProvider(domainagent.ProviderCodex) {
 		t.Fatal("clearProvider should report removal")

@@ -97,6 +97,8 @@ type ACPClient struct {
 	log     *slog.Logger
 	onEvent func(SessionUpdate)
 	onExit  func(error)
+	// ownTools are DezuxkStudio's MCP tools: the only tools whose permission requests are granted.
+	ownTools map[string]bool
 
 	nextID   atomic.Int64
 	writeMu  sync.Mutex
@@ -109,7 +111,8 @@ type ACPClient struct {
 }
 
 // SpawnACP starts an ACP agent executable inside an isolated working directory and environment.
-func SpawnACP(ctx context.Context, executable string, args []string, workDir string, env []string, log *slog.Logger, onEvent func(SessionUpdate), onExit func(error)) (*ACPClient, error) {
+// ownTools names DezuxkStudio's MCP tools, the only tools the agent is granted permission for.
+func SpawnACP(ctx context.Context, executable string, args []string, workDir string, env, ownTools []string, log *slog.Logger, onEvent func(SessionUpdate), onExit func(error)) (*ACPClient, error) {
 	cmd := proc.Command(ctx, executable, args...)
 	if workDir != "" {
 		cmd.Dir = workDir
@@ -133,32 +136,37 @@ func SpawnACP(ctx context.Context, executable string, args []string, workDir str
 		return nil, fmt.Errorf("acp: start %s: %w", executable, err)
 	}
 
-	c := newACPClient(stdin, stdout, stderr, cmd, log, onEvent, onExit)
+	c := newACPClient(stdin, stdout, stderr, cmd, ownTools, log, onEvent, onExit)
 	c.start()
 	return c, nil
 }
 
 // NewACPClient creates an ACPClient over caller-supplied streams (primarily for tests).
-func NewACPClient(stdin io.WriteCloser, stdout io.ReadCloser, stderr io.ReadCloser, log *slog.Logger, onEvent func(SessionUpdate), onExit func(error)) *ACPClient {
-	c := newACPClient(stdin, stdout, stderr, nil, log, onEvent, onExit)
+func NewACPClient(stdin io.WriteCloser, stdout io.ReadCloser, stderr io.ReadCloser, ownTools []string, log *slog.Logger, onEvent func(SessionUpdate), onExit func(error)) *ACPClient {
+	c := newACPClient(stdin, stdout, stderr, nil, ownTools, log, onEvent, onExit)
 	c.start()
 	return c
 }
 
-func newACPClient(stdin io.WriteCloser, stdout io.ReadCloser, stderr io.ReadCloser, cmd *exec.Cmd, log *slog.Logger, onEvent func(SessionUpdate), onExit func(error)) *ACPClient {
+func newACPClient(stdin io.WriteCloser, stdout io.ReadCloser, stderr io.ReadCloser, cmd *exec.Cmd, ownTools []string, log *slog.Logger, onEvent func(SessionUpdate), onExit func(error)) *ACPClient {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
+	own := make(map[string]bool, len(ownTools))
+	for _, name := range ownTools {
+		own[name] = true
+	}
 	return &ACPClient{
-		stdin:   stdin,
-		stdout:  stdout,
-		stderr:  stderr,
-		cmd:     cmd,
-		log:     log,
-		onEvent: onEvent,
-		onExit:  onExit,
-		pending: make(map[string]chan rpcOutcome),
-		doneCh:  make(chan struct{}),
+		ownTools: own,
+		stdin:    stdin,
+		stdout:   stdout,
+		stderr:   stderr,
+		cmd:      cmd,
+		log:      log,
+		onEvent:  onEvent,
+		onExit:   onExit,
+		pending:  make(map[string]chan rpcOutcome),
+		doneCh:   make(chan struct{}),
 	}
 }
 
@@ -462,7 +470,7 @@ func (c *ACPClient) handleLine(line string) {
 
 func (c *ACPClient) handleServerRequest(id json.RawMessage, method string, params json.RawMessage) {
 	if method == "session/request_permission" {
-		if optID, allowed := allowedDezuxkPermissionOption(params); allowed {
+		if optID, allowed := allowedDezuxkPermissionOption(params, c.ownTools); allowed {
 			c.replyResult(id, map[string]any{
 				"outcome": map[string]any{
 					"outcome":  "selected",
@@ -490,7 +498,7 @@ func (c *ACPClient) handleServerRequest(id json.RawMessage, method string, param
 
 // allowedDezuxkPermissionOption permits ACP tool approval ONLY for calls targeting DezuxkStudio's own MCP tools.
 // All built-in coding, shell, or arbitrary file permissions are strictly cancelled.
-func allowedDezuxkPermissionOption(raw json.RawMessage) (string, bool) {
+func allowedDezuxkPermissionOption(raw json.RawMessage, ownTools map[string]bool) (string, bool) {
 	if len(raw) == 0 {
 		return "", false
 	}
@@ -507,7 +515,7 @@ func allowedDezuxkPermissionOption(raw json.RawMessage) (string, bool) {
 	if json.Unmarshal(raw, &req) != nil {
 		return "", false
 	}
-	if !isDezuxkToolPermission(req.ToolCall.Title) {
+	if !isDezuxkToolPermission(req.ToolCall.Title, ownTools) {
 		return "", false
 	}
 	for _, opt := range req.Options {
@@ -593,14 +601,6 @@ func extractTextContent(raw json.RawMessage) string {
 	return ""
 }
 
-// dezuxkMCPToolNames is the exact set of tools served by DezuxkStudio's MCP server.
-var dezuxkMCPToolNames = map[string]bool{
-	"studio_list_capabilities": true, "workflow_list_specs": true, "workflow_run_node": true, "workflow_run_graph": true,
-	"binaries_list": true, "binaries_download": true,
-	"preferences_update": true, "diagnostics_export": true, "workspace_list_files": true,
-	"workspace_read_file": true, "workspace_write_file": true, "workspace_move_file": true, "workspace_delete_file": true,
-}
-
 var (
 	// "MCP Tool workflow_run_node", "dezuxk/workflow_run_node", "mcp__dezuxk__workflow_run_node", "dezuxk.workflow_run_node".
 	reDezuxkToolTitle = regexp.MustCompile(`^(?:mcp tool\s+(?:` + mcpServerName + `[/.:]|` + mcpToolPrefix + `)?|` + mcpServerName + `[/.:]|` + mcpToolPrefix + `)([a-z_]+)$`)
@@ -611,13 +611,13 @@ var (
 
 // isDezuxkToolPermission matches a permission request title against DezuxkStudio's exact MCP tool names.
 // Built-in shell/file/edit tools are never approved, even when a path in their title mentions DezuxkStudio.
-func isDezuxkToolPermission(title string) bool {
+func isDezuxkToolPermission(title string, ownTools map[string]bool) bool {
 	t := strings.ToLower(strings.TrimSpace(title))
 	if m := reDezuxkToolTitle.FindStringSubmatch(t); m != nil {
-		return dezuxkMCPToolNames[m[1]]
+		return ownTools[m[1]]
 	}
 	if m := reAgyDezuxkSchemaRead.FindStringSubmatch(t); m != nil {
-		return dezuxkMCPToolNames[m[1]] // read-only schema of our own tools
+		return ownTools[m[1]] // read-only schema of our own tools
 	}
 	return false
 }
