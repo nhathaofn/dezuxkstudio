@@ -67,10 +67,6 @@
   overflow-x: hidden;
 }
 
-
-
-
-
 /* ==========================================================================
    SETTINGS LAYOUT & TABS
    ========================================================================== */
@@ -418,10 +414,6 @@
   overflow-y: auto;
   overflow-x: hidden;
 }
-
-
-
-
 
 .dashboard-hero {
   display: flex;
@@ -786,9 +778,6 @@
   gap: var(--space-1);
   padding-right: 2px;
 }
-
-
-
 
 .watermark-file-row {
   display: flex;
