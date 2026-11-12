@@ -42,6 +42,7 @@ describe("provider health", () => {
     const data: ProvidersListResult = {
       secret_backend: "keyring",
       endpoints: [],
+      setting_specs: [],
       builtins: [
         {
           id: "builtin",
@@ -52,6 +53,10 @@ describe("provider health", () => {
           capabilities: ["llm"],
           configured: true,
           fields: [],
+          models: [],
+          settings: {},
+          setting_defaults: {},
+          discoverable: false,
           credentials: [
             {
               id: "active",
@@ -88,6 +93,8 @@ describe("provider health", () => {
           health: { ...health, outcome: "secret_missing", dead: true },
           capabilities: [],
           models: [],
+          settings: {},
+          setting_defaults: {},
           created_at: "",
           updated_at: "",
         },

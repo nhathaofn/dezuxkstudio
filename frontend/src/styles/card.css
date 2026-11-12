@@ -433,6 +433,33 @@ select.input-control::-ms-expand {
   min-width: 180px;
 }
 
+.providers-add-model {
+  display: grid;
+  grid-template-columns: auto minmax(140px, 1fr) auto minmax(180px, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.providers-model-table code {
+  overflow-wrap: anywhere;
+}
+
+.providers-model-table td .ds-badge {
+  margin-left: var(--space-1);
+}
+
+.providers-model-table th[scope="rowgroup"] {
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
+}
+
+@media (max-width: 760px) {
+  .providers-add-model {
+    grid-template-columns: 1fr;
+  }
+}
+
 .providers-section-title {
   font-size: var(--text-lg);
   color: var(--text-primary);

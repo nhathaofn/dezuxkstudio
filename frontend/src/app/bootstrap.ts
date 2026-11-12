@@ -43,6 +43,7 @@ export function bootstrap(): void {
     void useSystemStore.getState().loadInfo();
     void useBinariesStore.getState().fetchBinaries();
     void useProvidersStore.getState().list();
+    void useProvidersStore.getState().fetchDefaults();
     void useAgentStore.getState().fetchProviders();
     void useAgentStore.getState().fetchHistory();
     void useAgentStore.getState().fetchApprovals();

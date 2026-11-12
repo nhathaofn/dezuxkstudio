@@ -1,19 +1,20 @@
-import { useId, useRef, useState } from "react";
-import { Plus, Search, Server, Trash2 } from "lucide-react";
+import { useId, useState } from "react";
+import { Search, Server } from "lucide-react";
 import {
   ProviderDiscoveryFormatValues,
   type CustomEndpoint,
-  type CustomModelInput,
+  type ProviderModel,
   type CustomProvider,
   type ProviderDiscoveryFormat,
 } from "../../contracts/generated";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
-import { ErrorText } from "../../components/ui/ErrorText";
 import { appConfig } from "../../config/appConfig";
 import { useT } from "../../lib/i18n";
 import { toActionError, type ActionError } from "../../lib/rtClient";
-import { reconcileModels } from "./customModels";
+import { mergeDiscovered, reconcileModels } from "./customModels";
+import { ModelList } from "./ModelList";
+import { DiscoveryError } from "./DiscoveryError";
 import { SecretInput } from "./SecretInput";
 import { useProvidersStore } from "./useProvidersStore";
 
@@ -24,7 +25,6 @@ interface CustomProviderFormProps {
   onSaved: () => void;
   disabled: boolean;
 }
-type ModelRow = CustomModelInput & { rowId: number };
 
 export function CustomProviderForm({
   provider,
@@ -45,10 +45,7 @@ export function CustomProviderForm({
   const [baseUrl, setBaseUrl] = useState(provider?.base_url ?? "");
   const [apiKey, setApiKey] = useState("");
   const [clearKey, setClearKey] = useState(false);
-  const [models, setModels] = useState<ModelRow[]>(() =>
-    (provider?.models ?? []).map((model, rowId) => ({ ...model, rowId }))
-  );
-  const nextRow = useRef(models.length);
+  const [models, setModels] = useState<ProviderModel[]>(provider?.models ?? []);
   const [error, setError] = useState<ActionError | null>(null);
   const [saving, setSaving] = useState(false);
   const [discovering, setDiscovering] = useState(false);
@@ -59,37 +56,8 @@ export function CustomProviderForm({
   const invalid = (field: string) => error?.details?.field === field;
   const setFormat = (format: ProviderDiscoveryFormat) => {
     setProtocol(format);
-    setModels((previous) =>
-      reconcileModels(previous, endpoints, format).map((model, index) => ({
-        ...model,
-        rowId: previous[index].rowId,
-      }))
-    );
+    setModels((previous) => reconcileModels(previous, endpoints, format));
     setDiscoveredCount(null);
-  };
-  const changeModel = (index: number, patch: Partial<CustomModelInput>) => {
-    setModels((previous) => {
-      const updated = previous.map((row, rowIndex) =>
-        rowIndex === index ? { ...row, ...patch } : row
-      );
-      const capability = endpoints.find(
-        (endpoint) => endpoint.key === updated[index].endpoint
-      )?.capability;
-      if (patch.is_default) {
-        for (let rowIndex = 0; rowIndex < updated.length; rowIndex++) {
-          if (
-            rowIndex !== index &&
-            endpoints.find((endpoint) => endpoint.key === updated[rowIndex].endpoint)
-              ?.capability === capability
-          )
-            updated[rowIndex] = { ...updated[rowIndex], is_default: false };
-        }
-      }
-      return reconcileModels(updated, endpoints, protocol).map((model, rowIndex) => ({
-        ...model,
-        rowId: updated[rowIndex].rowId,
-      }));
-    });
   };
   return (
     <Card icon={Server} title={t(provider ? "providers.editCustom" : "providers.addCustom")}>
@@ -107,11 +75,10 @@ export function CustomProviderForm({
               base_url: baseUrl.trim(),
               api_key: apiKey,
               clear_api_key: clearKey,
-              models: models.map(({ model_id, endpoint, enabled, is_default }) => ({
-                model_id: model_id.trim(),
-                endpoint,
-                enabled,
-                is_default,
+              models: models.map((model) => ({
+                ...model,
+                model_id: model.model_id.trim(),
+                display_name: model.display_name.trim(),
               })),
             };
             if (provider) await update(provider.id, payload);
@@ -124,7 +91,7 @@ export function CustomProviderForm({
           }
         }}
       >
-        <ErrorText error={error} />
+        <DiscoveryError error={error} />
         <fieldset className="providers-fieldset" disabled={busy || disabled}>
           <div className="providers-form-grid">
             <div className="form-group">
@@ -235,29 +202,14 @@ export function CustomProviderForm({
                     base_url: baseUrl.trim(),
                     api_key: apiKey,
                   });
-                  const newRows = result.models
-                    .filter((model) => allowed.some((entry) => entry.key === model.endpoint))
-                    .map((model) => ({
-                      model_id: model.model_id,
-                      endpoint: model.endpoint,
-                      enabled: true,
-                      is_default: false,
-                      rowId: nextRow.current++,
-                    }));
-                  setModels((previous) => {
-                    const seen = new Set(
-                      previous.map((model) => `${model.model_id}\0${model.endpoint}`)
-                    );
-                    return [
-                      ...previous,
-                      ...newRows.filter((model) => {
-                        const key = `${model.model_id}\0${model.endpoint}`;
-                        if (seen.has(key)) return false;
-                        seen.add(key);
-                        return true;
-                      }),
-                    ];
-                  });
+                  setModels((previous) =>
+                    mergeDiscovered(
+                      previous,
+                      result.models.filter((model) =>
+                        allowed.some((entry) => entry.key === model.endpoint)
+                      )
+                    )
+                  );
                   setDiscoveredCount(result.models.length);
                 } catch (err) {
                   setError(toActionError(err));
@@ -269,126 +221,20 @@ export function CustomProviderForm({
               <Search size={14} />
               {t(discovering ? "providers.discovering" : "providers.discoverModels")}
             </Button>
-            <Button
-              type="button"
-              disabled={!allowed.length}
-              onClick={() => {
-                setModels((previous) => [
-                  ...previous,
-                  {
-                    rowId: nextRow.current++,
-                    model_id: "",
-                    endpoint: allowed[0].key,
-                    enabled: true,
-                    is_default: false,
-                  },
-                ]);
-              }}
-            >
-              <Plus size={14} />
-              {t("providers.addModel")}
-            </Button>
           </div>
           {discoveredCount !== null && (
             <p role="status" className="subtitle">
               {t("providers.discoveredCount", { count: discoveredCount })}
             </p>
           )}
-          <div
-            className="providers-models"
-            aria-invalid={invalid("models")}
-            tabIndex={0}
-            role="region"
-            aria-label={t("providers.models")}
-          >
-            <table className="providers-model-table">
-              <thead>
-                <tr>
-                  <th>{t("providers.modelId")}</th>
-                  <th>{t("providers.endpoint")}</th>
-                  <th>{t("providers.enabled")}</th>
-                  <th>{t("providers.default")}</th>
-                  <th>{t("providers.actions")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {models.map((model, index) => {
-                  const capability = endpoints.find(
-                    (endpoint) => endpoint.key === model.endpoint
-                  )?.capability;
-                  return (
-                    <tr key={model.rowId}>
-                      <td>
-                        <input
-                          className="input-control input-control--mono"
-                          value={model.model_id}
-                          required
-                          aria-label={t("providers.modelIdRow", { row: index + 1 })}
-                          onChange={(e) => changeModel(index, { model_id: e.target.value })}
-                        />
-                      </td>
-                      <td>
-                        <select
-                          className="input-control"
-                          value={model.endpoint}
-                          required
-                          aria-label={t("providers.endpointRow", { row: index + 1 })}
-                          onChange={(e) =>
-                            changeModel(index, {
-                              endpoint: e.target.value as CustomModelInput["endpoint"],
-                            })
-                          }
-                        >
-                          {allowed.map((entry) => (
-                            <option key={entry.key} value={entry.key}>
-                              {t("providers.endpointOption", {
-                                endpoint: entry.key,
-                                capability: t(`providers.capability.${entry.capability}`),
-                              })}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td>
-                        <input
-                          type="checkbox"
-                          checked={model.enabled}
-                          aria-label={t("providers.enabledRow", { row: index + 1 })}
-                          onChange={(e) => changeModel(index, { enabled: e.target.checked })}
-                        />
-                      </td>
-                      <td>
-                        <input
-                          type="radio"
-                          name={`${id}-${capability}`}
-                          checked={model.is_default}
-                          disabled={!model.enabled}
-                          aria-label={t("providers.defaultRow", { row: index + 1 })}
-                          onChange={() => changeModel(index, { is_default: true })}
-                        />
-                      </td>
-                      <td>
-                        <Button
-                          type="button"
-                          iconOnly
-                          title={t("providers.removeModel")}
-                          aria-label={t("providers.removeModelRow", { row: index + 1 })}
-                          onClick={() =>
-                            setModels((previous) =>
-                              previous.filter((row) => row.rowId !== model.rowId)
-                            )
-                          }
-                        >
-                          <Trash2 size={14} />
-                        </Button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            {models.length === 0 && <p className="subtitle">{t("providers.noModels")}</p>}
-          </div>
+          <ModelList
+            models={models}
+            onChange={setModels}
+            capabilities={allowed.map((entry) => entry.capability)}
+            endpoints={allowed}
+            error={error}
+            disabled={busy || disabled}
+          />
         </fieldset>
         <div className="card-actions-row">
           <Button type="submit" variant="primary" disabled={busy || disabled || !allowed.length}>

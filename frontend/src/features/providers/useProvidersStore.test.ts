@@ -4,6 +4,7 @@ import {
   Events,
   type ProvidersListResult,
   type ProviderTestResult,
+  type ProviderDefaultsResult,
 } from "../../contracts/generated";
 import { ActionError, rtClient } from "../../lib/rtClient";
 import { useConnectionStore } from "../connection/useConnectionStore";
@@ -13,12 +14,14 @@ import { usePreferencesStore } from "../preferences/usePreferencesStore";
 import { useSystemStore } from "../system/useSystemStore";
 import { bootstrap } from "../../app/bootstrap";
 import { useProvidersStore } from "./useProvidersStore";
+import { newModel } from "./customModels";
 
 const data: ProvidersListResult = {
   secret_backend: "keyring",
   builtins: [],
   custom: [],
   endpoints: [],
+  setting_specs: [],
 };
 const testResult: ProviderTestResult = {
   ok: true,
@@ -100,6 +103,7 @@ describe("useProvidersStore", () => {
       vi.spyOn(useAgentStore.getState(), action).mockResolvedValue();
     }
     const list = vi.spyOn(useProvidersStore.getState(), "list").mockResolvedValue();
+    const defaults = vi.spyOn(useProvidersStore.getState(), "fetchDefaults").mockResolvedValue();
     bootstrap();
     const handler = on.mock.calls.find(([event]) => event === Events.PROVIDERS_CHANGED)?.[1];
     expect(handler).toBeDefined();
@@ -108,14 +112,17 @@ describe("useProvidersStore", () => {
     // The callback's generic event union is narrowed by the event assertion above.
     (handler as (payload: ProvidersListResult) => void)(changed);
     expect(useProvidersStore.getState().data).toBe(changed);
+    expect(defaults).toHaveBeenCalledTimes(1);
     const statusHandler = onStatus.mock.calls[0][0];
     statusHandler("connected");
     statusHandler("reconnecting");
     statusHandler("connected");
     expect(list).toHaveBeenCalledTimes(2);
+    expect(defaults).toHaveBeenCalledTimes(3);
   });
 
   it("does not overwrite a newer changed event with an old list response", async () => {
+    vi.spyOn(useProvidersStore.getState(), "fetchDefaults").mockResolvedValue();
     let resolve!: (value: ProvidersListResult) => void;
     vi.spyOn(rtClient, "request").mockReturnValueOnce(
       new Promise<ProvidersListResult>((done) => {
@@ -218,5 +225,149 @@ describe("useProvidersStore", () => {
     expect(request.mock.calls.filter(([action]) => action === Actions.PROVIDERS_LIST)).toHaveLength(
       6
     );
+  });
+
+  it("loads defaults and stores the chosen-purpose response", async () => {
+    const defaults: ProviderDefaultsResult = {
+      purposes: [
+        {
+          purpose: "text",
+          capability: "llm",
+          chosen: "",
+          effective: "",
+          chosen_unavailable: false,
+          candidates: [],
+        },
+      ],
+    };
+    const chosen: ProviderDefaultsResult = {
+      purposes: [
+        { ...defaults.purposes[0], chosen: "provider/model", effective: "provider/model" },
+      ],
+    };
+    const request = vi
+      .spyOn(rtClient, "request")
+      .mockResolvedValueOnce(defaults)
+      .mockResolvedValueOnce(chosen)
+      .mockResolvedValueOnce(chosen);
+    await useProvidersStore.getState().fetchDefaults();
+    expect(useProvidersStore.getState().defaults).toEqual(defaults);
+    await useProvidersStore.getState().setDefault("text", "provider/model");
+    expect(request.mock.calls).toEqual([
+      [Actions.PROVIDERS_DEFAULTS, {}],
+      [Actions.PROVIDERS_SET_DEFAULT, { purpose: "text", model: "provider/model" }],
+      [Actions.PROVIDERS_DEFAULTS, {}],
+    ]);
+    expect(useProvidersStore.getState().defaults).toEqual(chosen);
+  });
+
+  it("sets a purpose back to auto with an empty model ref", async () => {
+    const request = vi.spyOn(rtClient, "request").mockResolvedValue({ purposes: [] });
+    await useProvidersStore.getState().setDefault("image", "");
+    expect(request).toHaveBeenCalledWith(Actions.PROVIDERS_SET_DEFAULT, {
+      purpose: "image",
+      model: "",
+    });
+  });
+
+  it("replaces model lists, discovers builtin models, and patches settings through generated actions", async () => {
+    const models = [newModel({ model_id: "a", capability: "llm", endpoint: "openai-chat" })];
+    const request = vi.spyOn(rtClient, "request").mockResolvedValue(data);
+    const list = vi.spyOn(useProvidersStore.getState(), "list").mockResolvedValue();
+    const defaults = vi.spyOn(useProvidersStore.getState(), "fetchDefaults").mockResolvedValue();
+    request.mockResolvedValueOnce({ models });
+    await expect(useProvidersStore.getState().setModels("custom", models)).resolves.toEqual({
+      models,
+    });
+    expect(request).toHaveBeenLastCalledWith(Actions.PROVIDERS_SET_MODELS, {
+      owner_id: "custom",
+      models,
+    });
+    request.mockResolvedValueOnce({ models });
+    await expect(useProvidersStore.getState().discoverBuiltinModels("builtin")).resolves.toEqual({
+      models,
+    });
+    expect(request).toHaveBeenLastCalledWith(Actions.PROVIDERS_DISCOVER_BUILTIN_MODELS, {
+      id: "builtin",
+    });
+    request.mockResolvedValueOnce({ settings: { video_rpm: 20 } });
+    await expect(
+      useProvidersStore.getState().updateSettings("builtin", { video_rpm: "20", image_rpm: "" })
+    ).resolves.toEqual({ settings: { video_rpm: 20 } });
+    expect(request).toHaveBeenLastCalledWith(Actions.PROVIDERS_UPDATE_SETTINGS, {
+      owner_id: "builtin",
+      settings: { video_rpm: "20", image_rpm: "" },
+    });
+    expect(list).toHaveBeenCalledTimes(3);
+    expect(defaults).toHaveBeenCalledTimes(2);
+  });
+
+  it("retains field, no_discovery and outcome errors for the new calls", async () => {
+    const request = vi.spyOn(rtClient, "request");
+    const store = useProvidersStore.getState();
+    const cases = [
+      {
+        call: () => store.setModels("builtin", []),
+        error: new ActionError("ERR_VALIDATION", "", { field: "models" }),
+      },
+      {
+        call: () => store.setModels("builtin", []),
+        error: new ActionError("ERR_VALIDATION", "", { field: "facts" }),
+      },
+      {
+        call: () => store.updateSettings("builtin", { video_rpm: "-1" }),
+        error: new ActionError("ERR_VALIDATION", "", { field: "video_rpm" }),
+      },
+      {
+        call: () => store.setDefault("text", "missing/model"),
+        error: new ActionError("ERR_VALIDATION", "", { field: "model" }),
+      },
+      {
+        call: () => store.discoverBuiltinModels("builtin"),
+        error: new ActionError("ERR_VALIDATION", "", { no_discovery: true }),
+      },
+      {
+        call: () => store.discoverBuiltinModels("builtin"),
+        error: new ActionError("ERR_UNAVAILABLE", "", { outcome: "timeout" }),
+      },
+    ];
+    for (const { call, error } of cases) {
+      request.mockRejectedValueOnce(error);
+      await expect(call()).rejects.toBe(error);
+      expect(useProvidersStore.getState().error).toBe(error);
+    }
+    const failure = new ActionError("ERR_UNAVAILABLE", "");
+    request.mockRejectedValueOnce(failure);
+    await store.fetchDefaults();
+    expect(useProvidersStore.getState().error).toBe(failure);
+  });
+
+  it("ignores an older defaults snapshot after a changed event triggers a newer fetch", async () => {
+    let resolve!: (value: ProviderDefaultsResult) => void;
+    const newer: ProviderDefaultsResult = {
+      purposes: [
+        {
+          purpose: "video",
+          capability: "video",
+          chosen: "",
+          effective: "provider/new",
+          chosen_unavailable: false,
+          candidates: [],
+        },
+      ],
+    };
+    vi.spyOn(rtClient, "request")
+      .mockReturnValueOnce(
+        new Promise<ProviderDefaultsResult>((done) => {
+          resolve = done;
+        })
+      )
+      .mockResolvedValueOnce(newer);
+    const pending = useProvidersStore.getState().fetchDefaults();
+    useProvidersStore.getState().receive(data);
+    await Promise.resolve();
+    resolve({ purposes: [] });
+    await pending;
+    expect(useProvidersStore.getState().defaults).toEqual(newer);
   });
 });

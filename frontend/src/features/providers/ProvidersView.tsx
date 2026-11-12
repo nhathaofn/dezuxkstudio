@@ -30,6 +30,9 @@ import { useT } from "../../lib/i18n";
 import { toActionError, type ActionError } from "../../lib/rtClient";
 import { useConnectionStore } from "../connection/useConnectionStore";
 import { CredentialForm } from "./CredentialForm";
+import { BuiltinModels } from "./BuiltinModels";
+import { DefaultModels } from "./DefaultModels";
+import { ProviderLimits } from "./ProviderLimits";
 import { CustomProviderForm } from "./CustomProviderForm";
 import { fieldLabel } from "./fieldLabel";
 import { HealthBadge } from "./HealthBadge";
@@ -250,6 +253,14 @@ function BuiltinCard({
           </div>
         ))}
       </details>
+      <BuiltinModels provider={provider} disabled={disabled} />
+      <ProviderLimits
+        ownerId={provider.id}
+        capabilities={provider.capabilities}
+        settings={provider.settings}
+        defaults={provider.setting_defaults}
+        disabled={disabled}
+      />
     </Card>
   );
 }
@@ -299,6 +310,13 @@ function CustomCard({
         onEdit={onEdit}
         onDelete={() => remove(provider.id)}
       />
+      <ProviderLimits
+        ownerId={provider.id}
+        capabilities={provider.models.map((model) => model.capability)}
+        settings={provider.settings}
+        defaults={provider.setting_defaults}
+        disabled={disabled}
+      />
     </Card>
   );
 }
@@ -318,6 +336,7 @@ export function ProvidersView() {
   const [filter, setFilter] = useState<"all" | "custom" | ProviderCapability>("all");
   const [editor, setEditor] = useState<Editor | null>(null);
   const editorRef = useRef<HTMLDivElement>(null);
+  const configureRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!editor) return;
     editorRef.current?.focus();
@@ -341,6 +360,15 @@ export function ProvidersView() {
   return (
     <div className="scrollable-pane">
       <div className="cards-stack providers-view">
+        <DefaultModels
+          disabled={!connected}
+          onConfigure={() => {
+            setFilter("all");
+            configureRef.current?.scrollIntoView({ block: "start" });
+            configureRef.current?.focus();
+          }}
+        />
+        <div id="providers-configure" ref={configureRef} tabIndex={-1} />
         <Card
           icon={KeyRound}
           title={t("providers.title")}

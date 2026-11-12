@@ -7,11 +7,25 @@ import {
   type DiscoverModelsResult,
   type ProvidersListResult,
   type ProviderTestResult,
+  type ProviderModel,
+  type ProviderModelsResult,
+  type ProviderSettingsResult,
+  type ProviderDefaultsResult,
+  type ProviderPurpose,
 } from "../../contracts/generated";
 import { rtClient, toActionError, type ActionError } from "../../lib/rtClient";
 
 interface ProvidersState {
   data: ProvidersListResult | null;
+  defaults: ProviderDefaultsResult | null;
+  fetchDefaults: () => Promise<void>;
+  setModels: (ownerId: string, models: ProviderModel[]) => Promise<ProviderModelsResult>;
+  discoverBuiltinModels: (id: string) => Promise<ProviderModelsResult>;
+  updateSettings: (
+    ownerId: string,
+    settings: Record<string, string>
+  ) => Promise<ProviderSettingsResult>;
+  setDefault: (purpose: ProviderPurpose, model: string) => Promise<void>;
   loading: boolean;
   error: ActionError | null;
   testing: Record<string, boolean>;
@@ -34,6 +48,7 @@ export const useProvidersStore = create<ProvidersState>((set, get) => {
   // An event received while a list is pending is newer than that list snapshot.
   let revision = 0;
   let listSequence = 0;
+  let defaultsSequence = 0;
   const run = async <T>(request: () => Promise<T>): Promise<T> => {
     set({ error: null });
     try {
@@ -74,6 +89,7 @@ export const useProvidersStore = create<ProvidersState>((set, get) => {
   };
   return {
     data: null,
+    defaults: null,
     loading: false,
     error: null,
     testing: {},
@@ -81,6 +97,45 @@ export const useProvidersStore = create<ProvidersState>((set, get) => {
     receive: (data) => {
       revision++;
       set({ data });
+      void get().fetchDefaults();
+    },
+    fetchDefaults: async () => {
+      const sequence = ++defaultsSequence;
+      try {
+        const defaults = await rtClient.request(Actions.PROVIDERS_DEFAULTS, {});
+        if (sequence === defaultsSequence) set({ defaults });
+      } catch (err) {
+        if (sequence === defaultsSequence) set({ error: toActionError(err) });
+      }
+    },
+    setModels: async (owner_id, models) => {
+      const result = await run(() =>
+        rtClient.request(Actions.PROVIDERS_SET_MODELS, { owner_id, models })
+      );
+      await Promise.all([get().list(), get().fetchDefaults()]);
+      return result;
+    },
+    discoverBuiltinModels: async (id) => {
+      const result = await run(() =>
+        rtClient.request(Actions.PROVIDERS_DISCOVER_BUILTIN_MODELS, { id })
+      );
+      await Promise.all([get().list(), get().fetchDefaults()]);
+      return result;
+    },
+    updateSettings: async (owner_id, settings) => {
+      const result = await run(() =>
+        rtClient.request(Actions.PROVIDERS_UPDATE_SETTINGS, { owner_id, settings })
+      );
+      await get().list();
+      return result;
+    },
+    setDefault: async (purpose, model) => {
+      const sequence = ++defaultsSequence;
+      const defaults = await run(() =>
+        rtClient.request(Actions.PROVIDERS_SET_DEFAULT, { purpose, model })
+      );
+      if (sequence === defaultsSequence) set({ defaults });
+      await get().fetchDefaults();
     },
     list: async () => {
       const sequence = ++listSequence;
