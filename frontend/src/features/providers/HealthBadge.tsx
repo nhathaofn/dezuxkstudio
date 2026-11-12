@@ -27,11 +27,21 @@ export function HealthBadge({ health }: { health: ProviderHealth }) {
     );
   }
   const outcome = t(`providers.outcome.${health.outcome}`);
+  const relativeTime = relativeTestTime(health.tested_at, language);
   return (
     <details className={`providers-health providers-health--${status}`}>
       <summary title={[outcome, health.detail].filter(Boolean).join(": ")}>
         <Badge>
           {t(`providers.health.${status}`)} · {outcome}
+          {relativeTime && (
+            <>
+              {" "}
+              ·{" "}
+              <time dateTime={health.tested_at} title={health.tested_at}>
+                {relativeTime}
+              </time>
+            </>
+          )}
         </Badge>
       </summary>
       {health.detail && <p>{health.detail}</p>}

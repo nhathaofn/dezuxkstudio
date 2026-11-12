@@ -25,8 +25,7 @@ export function BuiltinModels({
   const [saved, setSaved] = useState(false);
   const models = draft ?? provider.models;
   return (
-    <details className="providers-details">
-      <summary>{t("providers.modelsCount", { count: models.length })}</summary>
+    <section aria-label={t("providers.models")}>
       <form
         className="providers-form"
         onSubmit={async (e) => {
@@ -92,6 +91,6 @@ export function BuiltinModels({
           </p>
         )}
       </form>
-    </details>
+    </section>
   );
 }

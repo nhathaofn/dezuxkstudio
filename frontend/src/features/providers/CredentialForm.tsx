@@ -1,8 +1,7 @@
 import { useId, useState } from "react";
-import { KeyRound } from "lucide-react";
 import type { BuiltinProvider, ProviderCredential } from "../../contracts/generated";
 import { Button } from "../../components/ui/Button";
-import { Card } from "../../components/ui/Card";
+import { Dialog } from "../../components/ui/Dialog";
 import { ErrorText } from "../../components/ui/ErrorText";
 import { useT } from "../../lib/i18n";
 import { ActionError, toActionError } from "../../lib/rtClient";
@@ -43,6 +42,8 @@ export function CredentialForm({
   const [saving, setSaving] = useState(false);
   const [readingFile, setReadingFile] = useState(false);
   const selected = provider.credential_groups[group];
+  const [initial] = useState(() => JSON.stringify({ name, inputs, group, clearSecrets }));
+  const dirty = initial !== JSON.stringify({ name, inputs, group, clearSecrets });
   const grouped = new Set(provider.credential_groups.flat());
   const visibleFields = provider.fields.filter(
     (f) => !f.secret || !selected || !grouped.has(f.key) || selected.includes(f.key)
@@ -59,12 +60,29 @@ export function CredentialForm({
     );
   };
   return (
-    <Card
-      icon={KeyRound}
-      title={t(credential ? "providers.editCredential" : "providers.addCredential")}
-      subtitle={provider.display_name}
+    <Dialog
+      title={`${t(credential ? "providers.editCredential" : "providers.addCredential")} · ${provider.display_name}`}
+      onClose={onClose}
+      dirty={dirty}
+      busy={saving || readingFile}
+      footer={(requestClose) => (
+        <>
+          <Button type="button" disabled={saving || readingFile} onClick={requestClose}>
+            {t("providers.cancel")}
+          </Button>
+          <Button
+            type="submit"
+            form={`${id}-form`}
+            variant="primary"
+            disabled={saving || readingFile || disabled}
+          >
+            {t(saving ? "providers.saving" : "providers.save")}
+          </Button>
+        </>
+      )}
     >
       <form
+        id={`${id}-form`}
         className="providers-form"
         onSubmit={async (e) => {
           e.preventDefault();
@@ -220,15 +238,7 @@ export function CredentialForm({
             );
           })}
         </fieldset>
-        <div className="card-actions-row">
-          <Button type="submit" variant="primary" disabled={saving || readingFile || disabled}>
-            {t(saving ? "providers.saving" : "providers.save")}
-          </Button>
-          <Button type="button" disabled={saving || readingFile} onClick={onClose}>
-            {t("providers.cancel")}
-          </Button>
-        </div>
       </form>
-    </Card>
+    </Dialog>
   );
 }

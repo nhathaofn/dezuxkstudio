@@ -37,8 +37,7 @@ export function ProviderLimits({
     )
   );
   return (
-    <details className="providers-details">
-      <summary>{t("providers.limits")}</summary>
+    <section aria-label={t("providers.limits")}>
       <form
         className="providers-form"
         onSubmit={async (e) => {
@@ -89,13 +88,14 @@ export function ProviderLimits({
                   <Button
                     type="button"
                     aria-label={t("providers.resetSetting", { setting: label })}
+                    title={t("providers.resetSetting", { setting: label })}
+                    iconOnly
                     onClick={() => {
                       setDraft({ ...draft, [spec.key]: "" });
                       setSaved(false);
                     }}
                   >
                     <RotateCcw size={14} />
-                    {t("providers.reset")}
                   </Button>
                 </div>
                 <p id={`${id}-${spec.key}-help`} className="subtitle">
@@ -123,6 +123,6 @@ export function ProviderLimits({
           </p>
         )}
       </form>
-    </details>
+    </section>
   );
 }

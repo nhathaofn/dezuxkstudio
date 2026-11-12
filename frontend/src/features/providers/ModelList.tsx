@@ -216,7 +216,7 @@ export function ModelList({
                         />
                       </td>
                       <td>
-                        <code>{model.model_id}</code>
+                        <code title={model.model_id}>{model.model_id}</code>
                         {model.user_added && <Badge>{t("providers.userAdded")}</Badge>}
                       </td>
                       <td>
@@ -257,6 +257,7 @@ export function ModelList({
                             type="button"
                             iconOnly
                             aria-label={t("providers.removeModelRow", { row: index + 1 })}
+                            title={t("providers.removeModelRow", { row: index + 1 })}
                             onClick={() => onChange(models.filter((_, i) => i !== index))}
                           >
                             <Trash2 size={14} />

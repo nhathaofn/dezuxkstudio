@@ -44,7 +44,11 @@ export const SettingsView: React.FC = () => {
   const effectiveTab: TabKey = activeTab === "devtools" && !devMode ? "general" : activeTab;
 
   const setTab = (tab: TabKey) => {
-    setSearchParams({ tab });
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous);
+      next.set("tab", tab);
+      return next;
+    });
   };
 
   return (

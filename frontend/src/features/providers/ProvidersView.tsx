@@ -1,16 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import {
-  Check,
-  ExternalLink,
-  KeyRound,
-  Pencil,
-  Play,
-  Plus,
-  RefreshCw,
-  Server,
-  ShieldAlert,
-  Trash2,
-} from "lucide-react";
+import { useEffect, useId, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { Plus, RefreshCw, Search, ShieldAlert, X } from "lucide-react";
 import {
   ProviderCapabilityValues,
   type BuiltinProvider,
@@ -18,308 +8,30 @@ import {
   type ProviderCapability,
   type ProviderCredential,
 } from "../../contracts/generated";
-import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
-import { Card } from "../../components/ui/Card";
 import { ErrorText } from "../../components/ui/ErrorText";
 import { LoadingSkeleton } from "../../components/ui/LoadingSkeleton";
 import { appConfig } from "../../config/appConfig";
-import { openExternal } from "../../lib/bridge";
 import { useFlash } from "../../lib/hooks/useFlash";
 import { useT } from "../../lib/i18n";
-import { toActionError, type ActionError } from "../../lib/rtClient";
 import { useConnectionStore } from "../connection/useConnectionStore";
 import { CredentialForm } from "./CredentialForm";
-import { BuiltinModels } from "./BuiltinModels";
 import { DefaultModels } from "./DefaultModels";
-import { ProviderLimits } from "./ProviderLimits";
 import { CustomProviderForm } from "./CustomProviderForm";
-import { fieldLabel } from "./fieldLabel";
-import { HealthBadge } from "./HealthBadge";
+import { CapabilityIcon } from "./CapabilityIcon";
+import { ProviderDetail } from "./ProviderDetail";
 import { deadKeyNames, healthStatus } from "./health";
+import {
+  initialProvider,
+  parseProviderLocation,
+  providerGroups,
+  providerLocation,
+  providerName,
+  providerStatus,
+  type ProviderEntry,
+} from "./layout";
 import { useProvidersStore } from "./useProvidersStore";
-
-function Capabilities({ values }: { values: ProviderCapability[] }) {
-  const t = useT();
-  return (
-    <div className="chips-row">
-      {values.map((capability) => (
-        <Badge key={capability}>{t(`providers.capability.${capability}`)}</Badge>
-      ))}
-    </div>
-  );
-}
-
-function TestResult({ id }: { id: string }) {
-  const t = useT();
-  const result = useProvidersStore((s) => s.testResults[id]);
-  if (!result) return null;
-  return (
-    <div
-      className={`providers-notice ${result.ok ? "providers-notice--success" : "providers-notice--danger"}`}
-      role="status"
-    >
-      <span>{t(`providers.outcome.${result.outcome}`)}</span>
-      {result.ok && <span>{t("providers.latency", { ms: result.latency_ms })}</span>}
-      {result.status > 0 && <span>{t("providers.httpStatus", { status: result.status })}</span>}
-      {result.detail && <p>{result.detail}</p>}
-      {result.ok && result.models.length > 0 && (
-        <details>
-          <summary>
-            {t("providers.testModels", {
-              count: Math.min(result.models.length, appConfig.ui.providerTestModelLimit),
-            })}
-          </summary>
-          <ul>
-            {result.models.slice(0, appConfig.ui.providerTestModelLimit).map((model) => (
-              <li key={model}>
-                <code>{model}</code>
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
-    </div>
-  );
-}
-
-function ProviderActions({
-  id,
-  disabled,
-  active,
-  onActivate,
-  onTest,
-  onEdit,
-  onDelete,
-}: {
-  id: string;
-  disabled: boolean;
-  active?: boolean;
-  onActivate?: () => Promise<void>;
-  onTest: () => Promise<void>;
-  onEdit: () => void;
-  onDelete: () => Promise<void>;
-}) {
-  const t = useT();
-  const testing = useProvidersStore((s) => s.testing[id]);
-  const [confirm, showConfirm, clearConfirm] = useFlash(appConfig.ui.confirmDeleteMs);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<ActionError | null>(null);
-  const run = async (action: () => Promise<void>) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await action();
-    } catch (err) {
-      setError(toActionError(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <div className="providers-action-block">
-      <div className="card-actions-row">
-        {onActivate && !active && (
-          <Button
-            type="button"
-            disabled={disabled || busy || testing}
-            onClick={() => void run(onActivate)}
-          >
-            <Check size={13} />
-            {t("providers.activate")}
-          </Button>
-        )}
-        <Button
-          type="button"
-          disabled={disabled || busy || testing}
-          onClick={() => void run(onTest)}
-        >
-          <Play size={13} />
-          {t(testing ? "providers.testing" : "providers.test")}
-        </Button>
-        <Button type="button" disabled={disabled || busy || testing} onClick={onEdit}>
-          <Pencil size={13} />
-          {t("providers.edit")}
-        </Button>
-        <Button
-          type="button"
-          className="providers-danger"
-          disabled={disabled || busy || testing}
-          onClick={() => {
-            if (!confirm) {
-              showConfirm(true);
-              return;
-            }
-            clearConfirm();
-            void run(onDelete);
-          }}
-        >
-          <Trash2 size={13} />
-          {t(confirm ? "providers.confirmDelete" : "providers.delete")}
-        </Button>
-      </div>
-      {confirm && (
-        <p className="providers-danger" role="status">
-          {t("providers.deleteWarning")}
-        </p>
-      )}
-      <ErrorText error={error} />
-      <TestResult id={id} />
-    </div>
-  );
-}
-
-function BuiltinCard({
-  provider,
-  disabled,
-  onAdd,
-  onEdit,
-}: {
-  provider: BuiltinProvider;
-  disabled: boolean;
-  onAdd: () => void;
-  onEdit: (credential: ProviderCredential) => void;
-}) {
-  const t = useT();
-  const activate = useProvidersStore((s) => s.activateCredential);
-  const test = useProvidersStore((s) => s.testCredential);
-  const remove = useProvidersStore((s) => s.deleteCredential);
-  return (
-    <Card
-      icon={KeyRound}
-      title={provider.display_name}
-      actions={
-        <>
-          {provider.credentials.some(
-            (credential) => credential.active && healthStatus(credential.health) === "dead"
-          ) && <Badge className="providers-health--dead">{t("providers.health.activeDead")}</Badge>}
-          <Button type="button" disabled={disabled} onClick={onAdd}>
-            <Plus size={13} />
-            {t("providers.addCredential")}
-          </Button>
-        </>
-      }
-    >
-      <div className="providers-meta">
-        <Capabilities values={provider.capabilities} />
-        <Badge className={provider.configured ? "providers-success" : ""}>
-          {t(provider.configured ? "providers.configured" : "providers.notConfigured")}
-        </Badge>
-        {provider.docs_url && (
-          <Button type="button" onClick={() => openExternal(provider.docs_url)}>
-            <ExternalLink size={13} />
-            {t("providers.docs")}
-          </Button>
-        )}
-      </div>
-      <details className="providers-details">
-        <summary>{t("providers.credentialsCount", { count: provider.credentials.length })}</summary>
-        {provider.credentials.length === 0 && (
-          <p className="subtitle">{t("providers.noCredentials")}</p>
-        )}
-        {provider.credentials.map((credential) => (
-          <div
-            key={credential.id}
-            className={`providers-credential${healthStatus(credential.health) === "dead" ? " providers-key--dead" : ""}`}
-          >
-            <div className="providers-meta">
-              <strong>{credential.name}</strong>
-              <HealthBadge health={credential.health} />
-              {credential.active && (
-                <Badge className="providers-success">{t("providers.active")}</Badge>
-              )}
-            </div>
-            <dl className="providers-values">
-              {Object.entries({ ...credential.values, ...credential.secret_hints }).map(
-                ([key, value]) => (
-                  <div key={key}>
-                    <dt>{fieldLabel(t, key)}</dt>
-                    <dd>
-                      <code>{value}</code>
-                    </dd>
-                  </div>
-                )
-              )}
-            </dl>
-            <ProviderActions
-              id={credential.id}
-              disabled={disabled}
-              active={credential.active}
-              onActivate={() => activate(credential.id)}
-              onTest={() => test(credential.id)}
-              onEdit={() => onEdit(credential)}
-              onDelete={() => remove(credential.id)}
-            />
-          </div>
-        ))}
-      </details>
-      <BuiltinModels provider={provider} disabled={disabled} />
-      <ProviderLimits
-        ownerId={provider.id}
-        capabilities={provider.capabilities}
-        settings={provider.settings}
-        defaults={provider.setting_defaults}
-        disabled={disabled}
-      />
-    </Card>
-  );
-}
-
-function CustomCard({
-  provider,
-  disabled,
-  onEdit,
-}: {
-  provider: CustomProvider;
-  disabled: boolean;
-  onEdit: () => void;
-}) {
-  const t = useT();
-  const test = useProvidersStore((s) => s.testCustom);
-  const remove = useProvidersStore((s) => s.deleteCustom);
-  return (
-    <Card
-      icon={Server}
-      title={provider.name}
-      className={healthStatus(provider.health) === "dead" ? "providers-key--dead" : undefined}
-      actions={<HealthBadge health={provider.health} />}
-    >
-      <div className="providers-meta">
-        <Badge>{t(`providers.protocol.${provider.discovery_format}`)}</Badge>
-        <Capabilities values={provider.capabilities} />
-        <Badge>{t("providers.modelsCount", { count: provider.models.length })}</Badge>
-      </div>
-      <dl className="providers-values">
-        <div>
-          <dt>{t("providers.field.base_url")}</dt>
-          <dd>
-            <code>{provider.base_url}</code>
-          </dd>
-        </div>
-        <div>
-          <dt>{t("providers.field.api_key")}</dt>
-          <dd>
-            <code>{provider.key_hint || t("providers.noKey")}</code>
-          </dd>
-        </div>
-      </dl>
-      <ProviderActions
-        id={provider.id}
-        disabled={disabled}
-        onTest={() => test(provider.id)}
-        onEdit={onEdit}
-        onDelete={() => remove(provider.id)}
-      />
-      <ProviderLimits
-        ownerId={provider.id}
-        capabilities={provider.models.map((model) => model.capability)}
-        settings={provider.settings}
-        defaults={provider.setting_defaults}
-        disabled={disabled}
-      />
-    </Card>
-  );
-}
+import "./providers.css";
 
 type Editor =
   | { kind: "credential"; provider: BuiltinProvider; credential?: ProviderCredential }
@@ -327,162 +39,346 @@ type Editor =
 
 export function ProvidersView() {
   const t = useT();
+  const id = useId();
   const connected = useConnectionStore((s) => s.status === "connected");
   const data = useProvidersStore((s) => s.data);
   const loading = useProvidersStore((s) => s.loading);
   const error = useProvidersStore((s) => s.error);
   const list = useProvidersStore((s) => s.list);
-  const deadNames = deadKeyNames(data);
-  const [filter, setFilter] = useState<"all" | "custom" | ProviderCapability>("all");
+  const [params, setParams] = useSearchParams();
+  const { sub, providerId } = parseProviderLocation(params);
+  const selected = initialProvider(data, providerId);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<"all" | ProviderCapability>("all");
   const [editor, setEditor] = useState<Editor | null>(null);
-  const editorRef = useRef<HTMLDivElement>(null);
-  const configureRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!editor) return;
-    editorRef.current?.focus();
-    editorRef.current?.scrollIntoView({ block: "nearest" });
-  }, [editor]);
+  const [dismissedNotice, setDismissedNotice] = useState("");
   const [saved, showSaved] = useFlash(appConfig.ui.copyFeedbackMs);
+  const groups = providerGroups(data, search, filter);
+  const visible = Object.values(groups).flat();
+  const deadNames = deadKeyNames(data);
+  const deadIds = data
+    ? [
+        ...data.builtins.flatMap((provider) =>
+          provider.credentials
+            .filter((key) => key.active && healthStatus(key.health) === "dead")
+            .map(() => provider.id)
+        ),
+        ...data.custom
+          .filter((provider) => healthStatus(provider.health) === "dead")
+          .map((provider) => provider.id),
+      ]
+    : [];
+  const backendWarning = data && data.secret_backend !== "keyring" ? data.secret_backend : null;
+  const noticeKey = JSON.stringify([backendWarning, deadNames]);
+  const selectedId = selected?.provider.id ?? "";
+  useEffect(() => {
+    if (!data || selectedId === providerId) return;
+    setParams(providerLocation(params, { providerId: selectedId }), { replace: true });
+  }, [data, selectedId, providerId, params, setParams]);
+  const select = (entry: ProviderEntry) =>
+    setParams(providerLocation(params, { providerId: entry.provider.id, sub: "providers" }));
   const onSaved = () => {
     setEditor(null);
     showSaved(true);
   };
-  const builtins =
-    data?.builtins.filter(
-      (provider) =>
-        filter !== "custom" && (filter === "all" || provider.capabilities.includes(filter))
-    ) ?? [];
-  const custom =
-    data?.custom.filter(
-      (provider) =>
-        filter === "all" || filter === "custom" || provider.capabilities.includes(filter)
-    ) ?? [];
+  const addCustom = (
+    <Button
+      type="button"
+      className="providers-add-custom"
+      disabled={!connected || !data}
+      onClick={() => setEditor({ kind: "custom" })}
+    >
+      <Plus size={14} />
+      {t("providers.addCustom")}
+    </Button>
+  );
+  const groupLabels = {
+    configured: "providers.configured",
+    unconfigured: "providers.notConfigured",
+    custom: "providers.customTitle",
+  } as const;
   return (
-    <div className="scrollable-pane">
-      <div className="cards-stack providers-view">
-        <DefaultModels
-          disabled={!connected}
-          onConfigure={() => {
-            setFilter("all");
-            configureRef.current?.scrollIntoView({ block: "start" });
-            configureRef.current?.focus();
-          }}
-        />
-        <div id="providers-configure" ref={configureRef} tabIndex={-1} />
-        <Card
-          icon={KeyRound}
-          title={t("providers.title")}
-          subtitle={t("providers.subtitle")}
-          actions={
-            <Button type="button" disabled={!connected || loading} onClick={() => void list()}>
-              <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
-              {t("providers.refresh")}
-            </Button>
-          }
-        >
-          {!connected && (
-            <p className="subtitle" role="status">
-              {t("status.connecting")}
-            </p>
-          )}
-          <ErrorText error={error} />
-          {deadNames.length > 0 && (
-            <div className="providers-notice providers-notice--danger" role="alert">
-              <strong>{t("providers.health.stopped", { count: deadNames.length })}</strong>
-              <ul>
-                {deadNames.map((name, index) => (
-                  <li key={index}>{name}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {saved && (
-            <p className="providers-success" role="status">
-              {t("providers.saved")}
-            </p>
-          )}
-          {data && data.secret_backend !== "keyring" && (
-            <div
-              role="alert"
-              className={`providers-notice providers-notice--${data.secret_backend === "memory" ? "danger" : "warning"}`}
-            >
-              <ShieldAlert size={18} />
-              <span>{t(`providers.backend.${data.secret_backend}`)}</span>
-            </div>
-          )}
-          <div className="providers-meta">
-            <div className="settings-btn-group" role="group" aria-label={t("providers.filter")}>
-              {(["all", ...ProviderCapabilityValues, "custom"] as const).map((value) => (
-                <Button
-                  key={value}
-                  type="button"
-                  variant={filter === value ? "primary" : "secondary"}
-                  aria-pressed={filter === value}
-                  onClick={() => setFilter(value)}
-                >
-                  {t(`providers.capability.${value}`)}
-                </Button>
-              ))}
-            </div>
-            <Button
+    <div className="providers-view">
+      <div className="providers-topbar">
+        <div className="providers-segments" role="tablist" aria-label={t("providers.title")}>
+          {(["providers", "defaults"] as const).map((value) => (
+            <button
+              key={value}
+              id={`${id}-${value}`}
               type="button"
-              disabled={!connected || !data}
-              onClick={() => setEditor({ kind: "custom" })}
+              role="tab"
+              aria-selected={sub === value}
+              aria-controls={`${id}-content`}
+              onClick={() => setParams(providerLocation(params, { sub: value }))}
             >
-              <Plus size={13} />
-              {t("providers.addCustom")}
-            </Button>
-          </div>
-        </Card>
-        {editor && (
-          <div ref={editorRef} tabIndex={-1}>
-            {editor.kind === "credential" && (
-              <CredentialForm
-                key={editor.credential?.id ?? editor.provider.id}
-                provider={editor.provider}
-                credential={editor.credential}
-                onClose={() => setEditor(null)}
-                onSaved={onSaved}
-                disabled={!connected}
-              />
+              {t(value === "providers" ? "providers.navigation" : "providers.defaultModels")}
+            </button>
+          ))}
+        </div>
+        <Button
+          type="button"
+          iconOnly
+          title={t("providers.refresh")}
+          aria-label={t("providers.refresh")}
+          disabled={!connected || loading}
+          onClick={() => void list()}
+        >
+          <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+        </Button>
+      </div>
+      {!connected && (
+        <p className="subtitle" role="status">
+          {t("status.connecting")}
+        </p>
+      )}
+      <ErrorText error={error} />
+      {saved && (
+        <p className="providers-success" role="status">
+          {t("providers.saved")}
+        </p>
+      )}
+      {(backendWarning || deadNames.length > 0) && dismissedNotice !== noticeKey && (
+        <div className="providers-banner" role="alert">
+          <ShieldAlert size={16} aria-hidden="true" />
+          <div>
+            {backendWarning && <span>{t(`providers.backend.${backendWarning}`)} </span>}
+            {deadNames.length > 0 && (
+              <span className="providers-danger">
+                {t("providers.health.stopped", { count: deadNames.length })}{" "}
+                {deadNames.map((name, index) => (
+                  <button
+                    className="providers-text-button"
+                    type="button"
+                    key={`${deadIds[index]}-${index}`}
+                    onClick={() => {
+                      setSearch("");
+                      setFilter("all");
+                      setParams(
+                        providerLocation(params, { sub: "providers", providerId: deadIds[index] })
+                      );
+                    }}
+                  >
+                    {name}
+                  </button>
+                ))}
+              </span>
             )}
-            {editor.kind === "custom" && data && (
-              <CustomProviderForm
-                key={editor.provider?.id ?? "new"}
-                provider={editor.provider}
-                endpoints={data.endpoints}
-                onClose={() => setEditor(null)}
-                onSaved={onSaved}
-                disabled={!connected}
-              />
-            )}
           </div>
-        )}
-        {loading && !data && <LoadingSkeleton />}
-        {builtins.map((provider) => (
-          <BuiltinCard
-            key={provider.id}
-            provider={provider}
+          <Button
+            type="button"
+            iconOnly
+            title={t("providers.dismissNotice")}
+            aria-label={t("providers.dismissNotice")}
+            onClick={() => setDismissedNotice(noticeKey)}
+          >
+            <X size={14} />
+          </Button>
+        </div>
+      )}
+      {loading && !data && <LoadingSkeleton />}
+      <div
+        id={`${id}-content`}
+        role="tabpanel"
+        aria-labelledby={`${id}-${sub}`}
+        className={sub === "defaults" ? "providers-defaults-pane" : "providers-panes"}
+      >
+        {sub === "defaults" ? (
+          <DefaultModels
             disabled={!connected}
-            onAdd={() => setEditor({ kind: "credential", provider })}
-            onEdit={(credential) => setEditor({ kind: "credential", provider, credential })}
+            onConfigure={() => setParams(providerLocation(params, { sub: "providers" }))}
           />
-        ))}
-        {custom.length > 0 && (
-          <h2 className="providers-section-title">{t("providers.customTitle")}</h2>
-        )}
-        {custom.map((provider) => (
-          <CustomCard
-            key={provider.id}
-            provider={provider}
-            disabled={!connected}
-            onEdit={() => setEditor({ kind: "custom", provider })}
-          />
-        ))}
-        {data && !builtins.length && !custom.length && (
-          <div className="empty-state">{t("providers.empty")}</div>
+        ) : (
+          <>
+            <aside className="providers-sidebar" aria-label={t("providers.navigation")}>
+              <label className="providers-search">
+                <Search size={14} aria-hidden="true" />
+                <input
+                  className="input-control"
+                  type="search"
+                  value={search}
+                  placeholder={t("providers.search")}
+                  aria-label={t("providers.search")}
+                  onChange={(event) => setSearch(event.target.value)}
+                />
+              </label>
+              <div className="providers-filters" role="group" aria-label={t("providers.filter")}>
+                {(["all", ...ProviderCapabilityValues] as const).map((value) => (
+                  <Button
+                    key={value}
+                    type="button"
+                    iconOnly
+                    variant={filter === value ? "primary" : "secondary"}
+                    title={t(`providers.capability.${value}`)}
+                    aria-label={t(`providers.capability.${value}`)}
+                    aria-pressed={filter === value}
+                    onClick={() => setFilter(value)}
+                  >
+                    <CapabilityIcon value={value} />
+                  </Button>
+                ))}
+              </div>
+              <div
+                className="providers-list"
+                role="listbox"
+                aria-label={t("providers.navigation")}
+                onKeyDown={(event) => {
+                  if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+                  event.preventDefault();
+                  const options = Array.from(
+                    event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="option"]')
+                  );
+                  const index = options.indexOf(document.activeElement as HTMLButtonElement);
+                  const next =
+                    event.key === "Home"
+                      ? 0
+                      : event.key === "End"
+                        ? options.length - 1
+                        : Math.max(
+                            0,
+                            Math.min(
+                              options.length - 1,
+                              index + (event.key === "ArrowDown" ? 1 : -1)
+                            )
+                          );
+                  options[next]?.focus();
+                }}
+              >
+                {Object.entries(groups).map(([group, entries]) => (
+                  <div
+                    role="group"
+                    aria-label={t(groupLabels[group as keyof typeof groups])}
+                    key={group}
+                  >
+                    <h3>{t(groupLabels[group as keyof typeof groups])}</h3>
+                    {entries.map((entry) => (
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={selectedId === entry.provider.id}
+                        tabIndex={
+                          selectedId === entry.provider.id ||
+                          (!visible.some((row) => row.provider.id === selectedId) &&
+                            entry === visible[0])
+                            ? 0
+                            : -1
+                        }
+                        key={entry.provider.id}
+                        className="providers-list-row"
+                        onClick={() => select(entry)}
+                        title={`${providerName(entry)} · ${t(`providers.status.${providerStatus(entry)}`)}`}
+                      >
+                        <span
+                          className={`providers-dot providers-dot--${providerStatus(entry)}`}
+                          aria-label={t(`providers.status.${providerStatus(entry)}`)}
+                        />
+                        <span className="providers-truncate">{providerName(entry)}</span>
+                        <span className="providers-row-capabilities">
+                          {entry.provider.capabilities.map((capability) => (
+                            <span
+                              key={capability}
+                              title={t(`providers.capability.${capability}`)}
+                              aria-label={t(`providers.capability.${capability}`)}
+                            >
+                              <CapabilityIcon value={capability} size={12} />
+                            </span>
+                          ))}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ))}
+                {!visible.length && <p className="subtitle">{t("providers.empty")}</p>}
+              </div>
+              {addCustom}
+            </aside>
+            <div className="providers-mobile-picker">
+              <label htmlFor={`${id}-picker`}>{t("providers.navigation")}</label>
+              <select
+                id={`${id}-picker`}
+                className="input-control"
+                value={selectedId}
+                onChange={(event) => {
+                  const entry = initialProvider(data, event.target.value);
+                  if (entry) select(entry);
+                }}
+              >
+                {!selected && <option value="">{t("providers.selectProvider")}</option>}
+                {Object.entries(providerGroups(data)).map(([group, entries]) => (
+                  <optgroup key={group} label={t(groupLabels[group as keyof typeof groups])}>
+                    {entries.map((entry) => (
+                      <option key={entry.provider.id} value={entry.provider.id}>
+                        {providerName(entry)}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+              {addCustom}
+            </div>
+            <div className="providers-detail">
+              {selected ? (
+                <ProviderDetail
+                  key={selectedId}
+                  entry={selected}
+                  disabled={!connected}
+                  endpoints={data?.endpoints ?? []}
+                  onAdd={() => {
+                    if (selected.kind === "builtin")
+                      setEditor({ kind: "credential", provider: selected.provider });
+                  }}
+                  onEditCredential={(credential) => {
+                    if (selected.kind === "builtin")
+                      setEditor({ kind: "credential", provider: selected.provider, credential });
+                  }}
+                  onEditCustom={() => {
+                    if (selected.kind === "custom")
+                      setEditor({ kind: "custom", provider: selected.provider });
+                  }}
+                  onSaved={() => showSaved(true)}
+                />
+              ) : (
+                <div className="providers-getting-started">
+                  <h2>{t("providers.getStarted")}</h2>
+                  <p>{t("providers.getStartedHint")}</p>
+                  <div className="card-actions-row">
+                    {data?.builtins.slice(0, 4).map((provider) => (
+                      <Button
+                        key={provider.id}
+                        type="button"
+                        onClick={() =>
+                          setParams(providerLocation(params, { providerId: provider.id }))
+                        }
+                      >
+                        {provider.display_name}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
         )}
       </div>
+      {editor?.kind === "credential" && (
+        <CredentialForm
+          key={editor.credential?.id ?? editor.provider.id}
+          provider={editor.provider}
+          credential={editor.credential}
+          onClose={() => setEditor(null)}
+          onSaved={onSaved}
+          disabled={!connected}
+        />
+      )}
+      {editor?.kind === "custom" && data && (
+        <CustomProviderForm
+          key={editor.provider?.id ?? "new"}
+          provider={editor.provider}
+          endpoints={data.endpoints}
+          onClose={() => setEditor(null)}
+          onSaved={onSaved}
+          disabled={!connected}
+        />
+      )}
     </div>
   );
 }
