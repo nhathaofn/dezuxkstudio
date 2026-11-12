@@ -67,6 +67,7 @@ type Core struct {
 	hub      *realtime.Hub
 	srv      *server.Server
 	agentSvc *agentsvc.Service
+	provSvc  *providersvc.Service
 	// background work tied to the core lifetime (e.g. the start-up provider key check)
 	bgCtx     context.Context
 	bgCancel  context.CancelFunc
@@ -211,6 +212,7 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		Secrets:     secretStore,
 		Client:      o.HTTPClient,
 		TestTimeout: cfg.Providers.TestTimeout,
+		AutoCheck:   cfg.Providers.AutoCheck,
 		LimitDefaults: domainprovider.LimitDefaults{MaxWorkers: cfg.Providers.DefaultMaxWorkers,
 			RPM: cfg.Providers.DefaultRPM, RequestGapMs: cfg.Providers.DefaultRequestGapMs},
 		OnChanged: func() {
@@ -223,6 +225,7 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 	if err != nil {
 		return nil, err
 	}
+	c.provSvc = provSvc
 
 	if cfg.Providers.CheckOnStartup {
 		c.background("provider-startup-check", func(ctx context.Context) {
@@ -318,6 +321,9 @@ func (c *Core) Close() error {
 		case <-done:
 		case <-ctx.Done():
 		}
+	}
+	if c.provSvc != nil {
+		c.provSvc.Close() // running key checks write to the database: finish them first
 	}
 	var agentErr error
 	if c.agentSvc != nil {

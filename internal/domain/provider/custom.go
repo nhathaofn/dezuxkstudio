@@ -95,8 +95,10 @@ type CustomProvider struct {
 	// Concurrency and rate limits; unset keys use the app defaults.
 	Settings Settings
 	// KeyHint is the masked API key ("" when none is stored).
-	KeyHint   string
-	Health    Health
+	KeyHint string
+	Health  Health
+	// Checking is runtime state (not stored): an automatic check is running.
+	Checking  bool
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

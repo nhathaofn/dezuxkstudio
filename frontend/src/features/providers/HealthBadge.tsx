@@ -2,9 +2,22 @@ import type { ProviderHealth } from "../../contracts/generated";
 import { useT } from "../../lib/i18n";
 import { usePreferencesStore } from "../preferences/usePreferencesStore";
 import { healthStatus, relativeTestTime } from "./health";
-export function HealthBadge({ health }: { health: ProviderHealth }) {
+export function HealthBadge({
+  health,
+  checking = false,
+}: {
+  health: ProviderHealth;
+  checking?: boolean;
+}) {
   const t = useT();
   const language = usePreferencesStore((s) => s.prefs.language);
+  if (checking)
+    return (
+      <span className="providers-health" role="status">
+        <span className="providers-dot providers-dot--checking" />
+        <span className="providers-truncate">{t("providers.status.checking")}</span>
+      </span>
+    );
   const status = healthStatus(health);
   const label = t(
     `providers.status.${status === "ok" || status === "dead" ? status : "unverified"}`

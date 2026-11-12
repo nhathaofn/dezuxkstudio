@@ -9,7 +9,7 @@ import { healthStatus } from "./health";
 
 export type ProviderEntry =
   { kind: "builtin"; provider: BuiltinProvider } | { kind: "custom"; provider: CustomProvider };
-export type ProviderStatus = "ok" | "dead" | "unverified" | "unconfigured";
+export type ProviderStatus = "ok" | "dead" | "unverified" | "unconfigured" | "checking";
 export const providerName = (entry: ProviderEntry) =>
   entry.kind === "builtin" ? entry.provider.display_name : entry.provider.name;
 export function activeHealth(entry: ProviderEntry): ProviderHealth | undefined {
@@ -17,7 +17,14 @@ export function activeHealth(entry: ProviderEntry): ProviderHealth | undefined {
     ? entry.provider.credentials.find((key) => key.active)?.health
     : entry.provider.health;
 }
+/** An automatic check of the provider's key (alive? which models?) is running right now. */
+export function isChecking(entry: ProviderEntry): boolean {
+  return entry.kind === "builtin"
+    ? entry.provider.credentials.some((key) => key.active && key.checking)
+    : entry.provider.checking;
+}
 export function providerStatus(entry: ProviderEntry): ProviderStatus {
+  if (isChecking(entry)) return "checking";
   const health = activeHealth(entry);
   if (!health)
     return entry.kind === "builtin" && !entry.provider.configured ? "unconfigured" : "unverified";

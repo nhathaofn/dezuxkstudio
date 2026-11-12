@@ -16,12 +16,14 @@ const (
 	OutcomeInvalid     Outcome = "invalid_credentials"
 	// OutcomeSecretMissing: metadata exists but the secret store lost the key (e.g. memory backend after restart).
 	OutcomeSecretMissing Outcome = "secret_missing"
+	// OutcomeModelsFailed: the key is alive but the provider's model list could not be loaded.
+	OutcomeModelsFailed Outcome = "models_failed"
 )
 
 // Outcomes lists every outcome (exported to TS).
 func Outcomes() []Outcome {
 	return []Outcome{OutcomeOK, OutcomeAuthFailed, OutcomeRateLimited, OutcomeNotFound, OutcomeHTTPError,
-		OutcomeTimeout, OutcomeNetwork, OutcomeInvalid, OutcomeSecretMissing}
+		OutcomeTimeout, OutcomeNetwork, OutcomeInvalid, OutcomeSecretMissing, OutcomeModelsFailed}
 }
 
 // Dead reports outcomes that mean the key itself is unusable (shown red); network-type failures are not.

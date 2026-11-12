@@ -25,7 +25,10 @@ type env struct {
 	changed *int
 }
 
-func newEnv(t *testing.T, timeout time.Duration) *env {
+func newEnv(t *testing.T, timeout time.Duration) *env { return newEnvAuto(t, timeout, false) }
+
+// newEnvAuto builds the service with automatic background checks on or off.
+func newEnvAuto(t *testing.T, timeout time.Duration, auto bool) *env {
 	t.Helper()
 	dir := t.TempDir()
 	db, err := sqlite.Open(context.Background(), sqlite.Options{
@@ -43,7 +46,7 @@ func newEnv(t *testing.T, timeout time.Duration) *env {
 	store := secrets.NewMemory()
 	n := 0
 	var mu sync.Mutex // OnChanged runs concurrently during CheckAll
-	svc, err := New(Options{Repo: repo, Secrets: store, Client: http.DefaultClient, TestTimeout: timeout, OnChanged: func() {
+	svc, err := New(Options{Repo: repo, Secrets: store, Client: http.DefaultClient, TestTimeout: timeout, AutoCheck: auto, OnChanged: func() {
 		mu.Lock()
 		n++
 		mu.Unlock()

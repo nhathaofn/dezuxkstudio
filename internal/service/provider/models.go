@@ -76,7 +76,16 @@ func (s *Service) DiscoverBuiltinModels(ctx context.Context, providerID string) 
 	var found []DiscoveredModel
 	switch m.Probe.Kind {
 	case domain.ProbeOpenAIModels:
-		found, err = s.discover(ctx, domain.DiscoveryOpenAI, host, key)
+		// The same URL the connectivity test used (a built-in provider's base URL is stored as given):
+		// discover() would add /v1 for custom endpoints, and then test and model list could disagree.
+		var ids []string
+		if ids, err = s.openAIModels(ctx, host, key, nil); err == nil {
+			for _, id := range ids {
+				if Usable(id) {
+					found = append(found, discovered(id, InferOpenAIEndpoint(id)))
+				}
+			}
+		}
 	case domain.ProbeGeminiModels:
 		found, err = s.discover(ctx, domain.DiscoveryGemini, host, key)
 	case domain.ProbeAnthropicModels:

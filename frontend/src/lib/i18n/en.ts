@@ -35,6 +35,10 @@ export const en = {
   "providers.keyTab": "Keys",
   "providers.connectionTab": "Connection",
   "providers.modelTab": "Models",
+  "providers.status.checking": "Checking…",
+  "providers.checkingModels": "Checking the key and loading its model list…",
+  "providers.autoCheckHint":
+    "After saving, the key is checked automatically and its models are added to the list.",
   "providers.status.ok": "Working",
   "providers.status.dead": "Key dead",
   "providers.status.unverified": "Not verified",
@@ -194,6 +198,7 @@ export const en = {
   "providers.testModels": "Show models (up to {count})",
   "providers.outcome.ok": "Connection successful",
   "providers.outcome.secret_missing": "Key is missing; enter it again",
+  "providers.outcome.models_failed": "Key works, but its model list could not be loaded",
   "providers.health.untested": "Not tested",
   "providers.health.ok": "Working",
   "providers.health.dead": "Key dead",

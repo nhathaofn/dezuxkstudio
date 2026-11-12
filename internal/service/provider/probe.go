@@ -42,6 +42,7 @@ const (
 	OutcomeNetwork       = domain.OutcomeNetwork
 	OutcomeInvalid       = domain.OutcomeInvalid
 	OutcomeSecretMissing = domain.OutcomeSecretMissing
+	OutcomeModelsFailed  = domain.OutcomeModelsFailed
 )
 
 // TestResult is the outcome of a connectivity test. Detail never contains a secret.

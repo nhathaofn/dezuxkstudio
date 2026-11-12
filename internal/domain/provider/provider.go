@@ -126,6 +126,15 @@ func (m Meta) Field(key string) (Field, bool) {
 	return Field{}, false
 }
 
+// Discoverable reports whether the provider's API can list its models (otherwise models are added by id).
+func (m Meta) Discoverable() bool {
+	switch m.Probe.Kind {
+	case ProbeOpenAIModels, ProbeGeminiModels, ProbeAnthropicModels:
+		return true
+	}
+	return false
+}
+
 // Has reports whether the provider offers capability c.
 func (m Meta) Has(c Capability) bool { return slices.Contains(m.Capabilities, c) }
 
@@ -213,8 +222,10 @@ type Credential struct {
 	SecretHints map[string]string
 	Active      bool
 	Health      Health
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// Checking is runtime state (not stored): an automatic check of this key is running.
+	Checking  bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Input is a create/update request. Secrets maps a secret field to its new value; for updates a

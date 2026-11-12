@@ -7,8 +7,9 @@ import (
 	"app/internal/safego"
 )
 
-// CheckAll tests every saved credential and custom provider, at most concurrency at a time, and records
-// each result (run in the background at start-up so dead keys are flagged in Settings).
+// CheckAll checks every saved credential and custom provider, at most concurrency at a time: each is
+// tested and, when it works, its models are refreshed from the provider API (the same path as a fresh
+// save). Run in the background at start-up so dead keys are flagged and new models appear in Settings.
 // It returns when all tests finished or ctx is cancelled.
 func (s *Service) CheckAll(ctx context.Context, concurrency int) {
 	if concurrency < 1 {
@@ -25,11 +26,11 @@ func (s *Service) CheckAll(ctx context.Context, concurrency int) {
 	var jobs []func()
 	for _, c := range creds {
 		id := c.ID
-		jobs = append(jobs, func() { _, _ = s.TestCredential(ctx, id) })
+		jobs = append(jobs, func() { s.checkAndRefresh(ctx, id) })
 	}
 	for _, p := range custom {
 		id := p.ID
-		jobs = append(jobs, func() { _, _ = s.TestCustom(ctx, id) })
+		jobs = append(jobs, func() { s.checkAndRefresh(ctx, id) })
 	}
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup

@@ -12,7 +12,13 @@ import { HealthBadge } from "./HealthBadge";
 import { fieldLabel } from "./fieldLabel";
 import { ProviderLimits } from "./ProviderLimits";
 import { ProviderActions, TestResult } from "./ProviderActions";
-import { activeHealth, providerName, providerStatus, type ProviderEntry } from "./layout";
+import {
+  activeHealth,
+  isChecking,
+  providerName,
+  providerStatus,
+  type ProviderEntry,
+} from "./layout";
 import { useProvidersStore } from "./useProvidersStore";
 
 export function ProviderDetail({
@@ -198,7 +204,7 @@ export function ProviderDetail({
                       )}
                     </div>
                   </div>
-                  <HealthBadge health={credential.health} />
+                  <HealthBadge health={credential.health} checking={credential.checking} />
                   <ProviderActions
                     id={credential.id}
                     disabled={disabled}
@@ -237,7 +243,7 @@ export function ProviderDetail({
                 </dd>
               </div>
             </dl>
-            <HealthBadge health={entry.provider.health} />
+            <HealthBadge health={entry.provider.health} checking={entry.provider.checking} />
             <ProviderActions
               id={provider.id}
               disabled={disabled}
@@ -255,6 +261,11 @@ export function ProviderDetail({
         id={`${id}-model-panel`}
         aria-labelledby={`${id}-model`}
       >
+        {isChecking(entry) && (
+          <p className="providers-model-notice" role="status">
+            {t("providers.checkingModels")}
+          </p>
+        )}
         {entry.kind === "builtin" ? (
           <BuiltinModels provider={entry.provider} disabled={disabled} />
         ) : (

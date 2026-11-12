@@ -31,6 +31,9 @@ type Options struct {
 	TestTimeout time.Duration
 	// LimitDefaults are the app-wide concurrency / rate defaults for unset provider settings.
 	LimitDefaults domain.LimitDefaults
+	// AutoCheck verifies keys in the background when they are saved, changed or activated
+	// (providers.auto_check). Off, the Test and Refresh buttons are the only way to check.
+	AutoCheck bool
 	// OnChanged is called after every successful mutation (the core publishes providers:changed).
 	OnChanged func()
 }
@@ -43,6 +46,8 @@ type Service struct {
 	testTimeout   time.Duration
 	limitDefaults domain.LimitDefaults
 	onChanged     func()
+	auto          *autoCheck
+	autoOn        bool
 }
 
 // New validates the registry and builds the service.
@@ -53,7 +58,7 @@ func New(o Options) (*Service, error) {
 	if o.Repo == nil || o.Secrets == nil || o.Client == nil || o.TestTimeout <= 0 {
 		return nil, errors.New("provider: incomplete options")
 	}
-	return &Service{repo: o.Repo, secrets: o.Secrets, client: o.Client, testTimeout: o.TestTimeout, limitDefaults: o.LimitDefaults, onChanged: o.OnChanged}, nil
+	return &Service{repo: o.Repo, secrets: o.Secrets, client: o.Client, testTimeout: o.TestTimeout, limitDefaults: o.LimitDefaults, onChanged: o.OnChanged, auto: newAutoCheck(), autoOn: o.AutoCheck}, nil
 }
 
 func (s *Service) changed() {
@@ -92,6 +97,12 @@ func (s *Service) List(ctx context.Context) (Snapshot, error) {
 	custom, err := s.repo.ListCustom(ctx)
 	if err != nil {
 		return Snapshot{}, err
+	}
+	for i := range creds {
+		creds[i].Checking = s.isChecking(creds[i].ID)
+	}
+	for i := range custom {
+		custom[i].Checking = s.isChecking(custom[i].ID)
 	}
 	out := Snapshot{LimitDefaults: s.limitDefaults, SecretBackend: secrets.BackendOf(s.secrets), Custom: custom}
 	for _, m := range domain.Registry() {
@@ -204,6 +215,7 @@ func (s *Service) CreateCredential(ctx context.Context, providerID string, in do
 		return domain.Credential{}, err
 	}
 	s.changed()
+	s.startAutoCheck(c.ID) // is the key alive, which models does it offer
 	return c, nil
 }
 
@@ -297,6 +309,8 @@ func (s *Service) UpdateCredential(ctx context.Context, id string, in domain.Inp
 	}
 	if len(in.Secrets) > 0 || len(clear) > 0 || !maps.Equal(c.Values, oldValues) {
 		_ = s.repo.SetCredentialHealth(ctx, id, domain.Health{}) // the old result no longer describes this key
+		s.changed()
+		s.startAutoCheck(id)
 	}
 	s.changed()
 	return s.repo.GetCredential(ctx, id)
@@ -354,6 +368,7 @@ func (s *Service) ActivateCredential(ctx context.Context, id string) error {
 		return err
 	}
 	s.changed()
+	s.startAutoCheck(id) // the models come from the active key: refresh them
 	return nil
 }
 
@@ -388,6 +403,7 @@ func (s *Service) CreateCustom(ctx context.Context, in domain.CustomInput) (doma
 		return domain.CustomProvider{}, err
 	}
 	s.changed()
+	s.startAutoCheck(p.ID) // is the endpoint alive, which models does it offer
 	return p, nil
 }
 
@@ -417,6 +433,8 @@ func (s *Service) UpdateCustom(ctx context.Context, id string, in domain.CustomI
 	}
 	if keyChanged {
 		_ = s.repo.SetCustomHealth(ctx, id, domain.Health{})
+		s.changed()
+		s.startAutoCheck(id)
 	}
 	s.changed()
 	return s.repo.GetCustom(ctx, id)

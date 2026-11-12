@@ -127,6 +127,7 @@ type NetworkConfig struct {
 type ProvidersConfig struct {
 	TestTimeout         time.Duration // max duration of a provider connectivity test or model discovery
 	CheckOnStartup      bool          // test every saved key in the background when the app starts
+	AutoCheck           bool          // check a key (alive? which models?) in the background when it is saved, changed or activated
 	CheckConcurrency    int           // max start-up key tests running at once
 	DefaultMaxWorkers   int           // generation requests per provider and capability running at once, unless set per provider
 	DefaultRPM          int           // requests per minute per provider and capability (0 = unlimited), unless set per provider
@@ -232,7 +233,7 @@ func Default(mode Mode) *Config {
 		},
 		Diagnostics: DiagnosticsConfig{Keep: 5},
 		Binaries:    BinariesConfig{ProbeTimeout: 15 * time.Second},
-		Providers: ProvidersConfig{TestTimeout: 15 * time.Second, CheckOnStartup: true, CheckConcurrency: 4,
+		Providers: ProvidersConfig{TestTimeout: 15 * time.Second, CheckOnStartup: true, AutoCheck: true, CheckConcurrency: 4,
 			DefaultMaxWorkers: 2, DefaultRPM: 0, DefaultRequestGapMs: 0}, // ArcReel _CONNECTIVITY_CHECK_TIMEOUT
 		Network: NetworkConfig{IdleConnTimeout: 90 * time.Second, MaxIdleConns: 100, MaxIdleConnsPerHost: 10},
 		Update: UpdateConfig{

@@ -63,8 +63,10 @@ type ProviderCredential struct {
 	SecretHints map[string]string `json:"secret_hints"`
 	Active      bool              `json:"active"`
 	Health      ProviderHealth    `json:"health"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	// Checking: an automatic check of this key is running (the result arrives as providers:changed).
+	Checking  bool      `json:"checking"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // BuiltinProvider is a registry entry with its credentials.
@@ -159,6 +161,7 @@ type CustomProvider struct {
 	BaseURL         string                 `json:"base_url"`
 	KeyHint         string                 `json:"key_hint"`
 	Health          ProviderHealth         `json:"health"`
+	Checking        bool                   `json:"checking"`
 	Capabilities    []domain.Capability    `json:"capabilities"`
 	Models          []ProviderModel        `json:"models"`
 	Settings        map[string]int         `json:"settings"`
@@ -227,7 +230,7 @@ func NewProvidersListResult(backend secrets.Backend, builtins []BuiltinWithCrede
 			CredentialGroups: m.CredentialGroups, DocsURL: m.DocsURL, Configured: b.Configured,
 			Fields: []ProviderField{}, Credentials: []ProviderCredential{}, Models: NewProviderModels(b.Models),
 			Settings: settingsMap(b.Settings), SettingDefaults: settingDefaults(def, m.DefaultConcurrency),
-			Discoverable: m.Probe.Kind == domain.ProbeOpenAIModels || m.Probe.Kind == domain.ProbeGeminiModels || m.Probe.Kind == domain.ProbeAnthropicModels}
+			Discoverable: m.Discoverable()}
 		if bp.CredentialGroups == nil {
 			bp.CredentialGroups = [][]string{}
 		}
@@ -260,12 +263,12 @@ func nonNilMap(m map[string]string) map[string]string {
 // NewProviderCredential converts a credential.
 func NewProviderCredential(c domain.Credential) ProviderCredential {
 	return ProviderCredential{ID: c.ID, ProviderID: c.ProviderID, Name: c.Name, Values: nonNilMap(c.Values),
-		SecretHints: nonNilMap(c.SecretHints), Active: c.Active, Health: NewProviderHealth(c.Health), CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt}
+		SecretHints: nonNilMap(c.SecretHints), Active: c.Active, Health: NewProviderHealth(c.Health), Checking: c.Checking, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt}
 }
 
 // NewCustomProvider converts a custom provider.
 func NewCustomProvider(p domain.CustomProvider) CustomProvider {
-	out := CustomProvider{ID: p.ID, Name: p.Name, DiscoveryFormat: p.DiscoveryFormat, BaseURL: p.BaseURL, KeyHint: p.KeyHint, Health: NewProviderHealth(p.Health),
+	out := CustomProvider{ID: p.ID, Name: p.Name, DiscoveryFormat: p.DiscoveryFormat, BaseURL: p.BaseURL, KeyHint: p.KeyHint, Health: NewProviderHealth(p.Health), Checking: p.Checking,
 		Capabilities: p.Capabilities(), Models: NewProviderModels(p.Models), Settings: settingsMap(p.Settings),
 		SettingDefaults: map[string]int{}, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt}
 	if out.Capabilities == nil {

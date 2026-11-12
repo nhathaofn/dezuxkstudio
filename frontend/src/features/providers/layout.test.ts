@@ -10,6 +10,7 @@ import {
   activeHealth,
   initialProvider,
   parseProviderLocation,
+  isChecking,
   providerGroups,
   providerLocation,
   providerName,
@@ -29,6 +30,7 @@ const key = (patch: Partial<ProviderCredential> = {}): ProviderCredential => ({
   name: "Key",
   provider_id: "builtin",
   active: true,
+  checking: false,
   health,
   values: {},
   secret_hints: {},
@@ -57,6 +59,7 @@ const custom = (id: string): CustomProvider => ({
   name: id,
   capabilities: ["image"],
   health,
+  checking: false,
   base_url: "https://example.test",
   discovery_format: "openai",
   key_hint: "",
@@ -190,5 +193,31 @@ describe("provider URL location", () => {
     expect(next.get("extra")).toBe("keep");
     expect(original.get("sub")).toBeNull();
     expect(providerLocation(next, { providerId: "" }).has("p")).toBe(false);
+  });
+});
+
+describe("automatic key check", () => {
+  const entry = (credentials: ProviderCredential[]): ProviderEntry => ({
+    kind: "builtin",
+    provider: builtin("P", { configured: true, credentials }),
+  });
+
+  it("an active key being checked shows as checking, whatever its last result was", () => {
+    expect(
+      providerStatus(entry([key({ checking: true, health: { ...health, dead: true } })]))
+    ).toBe("checking");
+    expect(isChecking(entry([key({ checking: true })]))).toBe(true);
+  });
+
+  it("only the ACTIVE key counts: checking a spare key does not change the provider status", () => {
+    const spare = key({ id: "spare", active: false, checking: true });
+    expect(isChecking(entry([key(), spare]))).toBe(false);
+    expect(providerStatus(entry([key(), spare]))).toBe("ok");
+  });
+
+  it("a custom provider being checked shows as checking", () => {
+    expect(providerStatus({ kind: "custom", provider: { ...custom("c"), checking: true } })).toBe(
+      "checking"
+    );
   });
 });

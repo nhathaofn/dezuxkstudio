@@ -74,6 +74,7 @@ func fields(c *Config) []field {
 		{key: "network.max_idle_conns_per_host", usage: "max idle outbound HTTP connections per host", val: intValue{&c.Network.MaxIdleConnsPerHost}},
 		{key: "providers.test_timeout", usage: "max duration of a provider connectivity test or model discovery", val: durationValue{&c.Providers.TestTimeout}},
 		{key: "providers.check_on_startup", usage: "test every saved provider key in the background at start-up", val: boolValue{&c.Providers.CheckOnStartup}},
+		{key: "providers.auto_check", usage: "check a provider key (alive? which models?) in the background when it is saved, changed or activated", val: boolValue{&c.Providers.AutoCheck}},
 		{key: "providers.check_concurrency", usage: "max provider key tests running at once during the start-up check", val: intValue{&c.Providers.CheckConcurrency}},
 		{key: "providers.default_max_workers", usage: "generation requests per provider and capability at once (unless set per provider)", val: intValue{&c.Providers.DefaultMaxWorkers}},
 		{key: "providers.default_rpm", usage: "requests per minute per provider and capability, 0 = unlimited (unless set per provider)", val: intValue{&c.Providers.DefaultRPM}},

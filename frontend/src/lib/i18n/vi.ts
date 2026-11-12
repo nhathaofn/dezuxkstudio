@@ -36,6 +36,10 @@ export const vi: Record<MessageKey, string> = {
   "providers.keyTab": "Khóa",
   "providers.connectionTab": "Kết nối",
   "providers.modelTab": "Mô hình",
+  "providers.status.checking": "Đang kiểm tra…",
+  "providers.checkingModels": "Đang kiểm tra khóa và lấy danh sách model…",
+  "providers.autoCheckHint":
+    "Sau khi lưu, khóa được kiểm tra tự động và các model của nó được thêm vào danh sách.",
   "providers.status.ok": "Hoạt động tốt",
   "providers.status.dead": "Khóa không còn hoạt động",
   "providers.status.unverified": "Chưa xác minh",
@@ -196,6 +200,7 @@ export const vi: Record<MessageKey, string> = {
   "providers.testModels": "Hiện mô hình (tối đa {count})",
   "providers.outcome.ok": "Kết nối thành công",
   "providers.outcome.secret_missing": "Khóa bị mất, cần nhập lại",
+  "providers.outcome.models_failed": "Khóa hoạt động nhưng không lấy được danh sách model",
   "providers.health.untested": "Chưa kiểm tra",
   "providers.health.ok": "Hoạt động tốt",
   "providers.health.dead": "Khóa không còn hoạt động",

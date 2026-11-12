@@ -636,7 +636,7 @@ func TestDiscoverModelsUsesStoredKey(t *testing.T) {
 }
 
 func TestOutcomesListIsComplete(t *testing.T) {
-	if len(domain.Outcomes()) != 9 {
+	if len(domain.Outcomes()) != 10 {
 		t.Fatalf("outcomes = %v", domain.Outcomes())
 	}
 }

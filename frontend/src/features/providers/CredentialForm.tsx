@@ -237,6 +237,7 @@ export function CredentialForm({
               </div>
             );
           })}
+          <p className="providers-meta">{t("providers.autoCheckHint")}</p>
         </fieldset>
       </form>
     </Dialog>

@@ -58,7 +58,7 @@ export type ProviderDiscoveryFormat = (typeof ProviderDiscoveryFormatValues)[num
 export const ProviderEndpointValues = ["openai-chat", "openai-responses", "gemini-generate", "anthropic-messages", "openai-images", "openai-images-generations", "openai-images-edits", "openai-chat-image", "openrouter-images", "gemini-image", "openai-video", "openai-tts", "gemini-video", "gemini-tts"] as const;
 export type ProviderEndpoint = (typeof ProviderEndpointValues)[number];
 
-export const ProviderTestOutcomeValues = ["ok", "auth_failed", "rate_limited", "not_found", "http_error", "timeout", "network", "invalid_credentials", "secret_missing"] as const;
+export const ProviderTestOutcomeValues = ["ok", "auth_failed", "rate_limited", "not_found", "http_error", "timeout", "network", "invalid_credentials", "secret_missing", "models_failed"] as const;
 export type ProviderTestOutcome = (typeof ProviderTestOutcomeValues)[number];
 
 export const ProviderPurposeValues = ["text", "image", "video", "tts"] as const;
@@ -318,6 +318,7 @@ export interface CustomProvider {
   base_url: string;
   key_hint: string;
   health: ProviderHealth;
+  checking: boolean;
   capabilities: ProviderCapability[];
   models: ProviderModel[];
   settings: Record<string, number>;
@@ -488,6 +489,7 @@ export interface ProviderCredential {
   secret_hints: Record<string, string>;
   active: boolean;
   health: ProviderHealth;
+  checking: boolean;
   created_at: string;
   updated_at: string;
 }

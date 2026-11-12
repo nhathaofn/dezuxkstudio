@@ -114,6 +114,24 @@ Quản lý provider được đóng gói thành **node** giống `tool.watermark
   ```
   Chưa có model dùng được thì trả `ERR_VALIDATION` với `details.not_configured`.
 
+## Tự động kiểm tra khi nhập key
+Không cần bấm "Kiểm tra" hay "Làm mới": khi bạn **lưu, đổi hoặc chọn dùng** một key (và khi lưu hoặc sửa custom provider),
+app tự chạy nền (`internal/service/provider/autocheck.go`):
+1. Test key: sống hay chết, kết quả lưu vào `health`.
+2. Nếu key sống, là key **đang dùng** của provider, và API của provider có danh sách model
+   (`Meta.Discoverable()`), app lấy danh sách model và **thêm model mới** vào mục "Mô hình". Lựa chọn cũ của bạn
+   (bật/tắt, mặc định, thông số, tên hiển thị) được giữ nguyên, model không dùng để sinh nội dung (embedding, whisper…) bị bỏ.
+3. Nếu key sống nhưng không lấy được danh sách model, trạng thái là **models_failed** ("Khóa hoạt động nhưng không lấy được
+   danh sách model", không bị coi là key chết) thay vì im lặng để danh sách rỗng.
+
+- Trong lúc kiểm tra, giao diện hiện **"Đang kiểm tra…"** (cờ `checking`) ở dòng key, tiêu đề provider và chấm ở danh sách bên
+  trái. Kết quả được đẩy qua sự kiện `providers:changed`, không cần tải lại.
+- Lưu lại khi đang kiểm tra thì kiểm tra thêm đúng một lần nữa sau đó, với dữ liệu mới nhất.
+- Khi mở app, `providers.check_on_startup` cũng làm mới danh sách model cho mọi key đang dùng (cùng đường đi).
+- Tắt bằng `providers.auto_check = false` (mặc định bật): lúc đó chỉ còn hai nút Test và Làm mới.
+- **Provider mới trong tương lai** tự có tính năng này chỉ cần khai báo `Probe` trong registry. Không có mã riêng cho từng provider.
+- Bước kiểm tra key và bước lấy danh sách model dùng **cùng một địa chỉ**: địa chỉ gốc bạn nhập được giữ nguyên.
+
 ## Kiểm tra sức khỏe key
 - Khi app mở (`providers.check_on_startup`, mặc định bật), mọi credential và custom provider được test ở chế độ nền,
   tối đa `providers.check_concurrency` (mặc định 4) test chạy cùng lúc. Việc test không làm chậm lúc mở app, và dừng lại khi tắt app.

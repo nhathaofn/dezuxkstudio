@@ -195,6 +195,20 @@
 .providers-dot--unknown {
   background: var(--status-connecting);
 }
+.providers-dot--checking {
+  background: var(--text-secondary);
+  animation: providers-pulse 1.1s ease-in-out infinite;
+}
+@keyframes providers-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .providers-dot--checking {
+    animation: none;
+  }
+}
 .providers-add-custom {
   min-width: 0;
   max-width: 100%;
