@@ -73,6 +73,10 @@ type Options struct {
 
 // Service manages isolated external AI agent connections, MCP tooling, approvals, and chat turns.
 type Service struct {
+	// turnTools lists, per assistant message, the tools it called (in order, once each). It is stored
+	// with the message so history shows which tools an answer was based on. Guarded by mu.
+	turnTools map[string][]string
+
 	// acpToolTitles maps ACP toolCallId -> the title shown when the tool started, so the matching
 	// tool_call_update (often untitled or titled differently) ends the same tool row. Guarded by mu.
 	acpToolTitles map[string]string
@@ -1185,6 +1189,7 @@ func (s *Service) persistAssistantMessage(providerID domainagent.ProviderID, mes
 		Role:           "assistant",
 		Text:           text,
 		Thought:        thought,
+		Tool:           s.takeTools(messageID),
 		CreatedAt:      now,
 		ConversationID: conversationID,
 	}); err != nil {
@@ -1645,7 +1650,42 @@ func (s *Service) emitStatus(info domainagent.ProviderInfo) {
 
 // emitChat is the single exit point for chat events. Answer and reasoning text of the active turn is
 // filtered by the output guard so source code never reaches the UI, whichever provider produced it.
+// noteTool records that the reply messageID called tool.
+func (s *Service) noteTool(messageID, tool string) {
+	if messageID == "" || tool == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.turnTools == nil {
+		s.turnTools = map[string][]string{}
+	}
+	for _, t := range s.turnTools[messageID] {
+		if t == tool {
+			return
+		}
+	}
+	if len(s.turnTools[messageID]) < maxRecordedTools {
+		s.turnTools[messageID] = append(s.turnTools[messageID], tool)
+	}
+}
+
+// takeTools returns and forgets the tools recorded for messageID, joined for storage.
+func (s *Service) takeTools(messageID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	names := s.turnTools[messageID]
+	delete(s.turnTools, messageID)
+	return strings.Join(names, ", ")
+}
+
+// maxRecordedTools bounds the audit list of one reply.
+const maxRecordedTools = 24
+
 func (s *Service) emitChat(evt domainagent.ChatEvent) {
+	if evt.Type == domainagent.ChatEventToolCall {
+		s.noteTool(evt.MessageID, evt.Tool)
+	}
 	if evt.Type == domainagent.ChatEventDelta || evt.Type == domainagent.ChatEventThought {
 		if g := s.guardFor(evt.MessageID); g != nil {
 			if evt.Type == domainagent.ChatEventDelta {

@@ -584,6 +584,10 @@ func (s *Service) buildCapabilitiesSnapshot(ctx context.Context) map[string]any 
 		}
 	}
 
+	if providers := s.providerSnapshot(ctx); providers != nil {
+		appFeatures["providers"] = providers
+	}
+
 	// Group 2: what the assistant does by itself. These are NOT DezuxkStudio features and must never be presented as such.
 	assistantExtras := map[string]any{
 		"note": "NOT DezuxkStudio features: the assistant does these itself, in the chat or with its file tools.",
