@@ -6,6 +6,8 @@ DezuxkStudio Assistant (agent) **không có danh sách tính năng viết cứng
 
 Vì vậy: **một tính năng mới được viết dưới dạng node và khai báo `engine.Spec` đầy đủ thì agent dùng được ngay.**
 
+Muốn nhờ AI code thêm tính năng: dùng mẫu prompt trong [feature-prompt-template.md](feature-prompt-template.md).
+
 ---
 
 ## 1. Checklist khi thêm một node mới
