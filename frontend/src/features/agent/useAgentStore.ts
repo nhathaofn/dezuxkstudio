@@ -168,7 +168,22 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     set({ loadingProviders: true, error: null });
     try {
       const res = await rtClient.request(Actions.AGENT_LIST, {});
-      set({ providers: res.providers, loadingProviders: false });
+      set((s) => {
+        // After a reconnect the turn's final chat event may have been missed while offline. If no
+        // provider is still busy, the reply is over: unlock the input and stop the spinners
+        // (fetchHistory, run on the same connect, brings the stored final text).
+        const turnOver = s.sending && !res.providers.some((p) => p.busy);
+        return {
+          providers: res.providers,
+          loadingProviders: false,
+          ...(turnOver
+            ? {
+                sending: false,
+                messages: s.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
+              }
+            : {}),
+        };
+      });
     } catch (err) {
       set({ error: toActionError(err), loadingProviders: false });
     }

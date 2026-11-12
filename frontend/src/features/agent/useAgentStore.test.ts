@@ -96,6 +96,29 @@ describe("useAgentStore", () => {
     expect(clampDrawerWidth(Number.NaN)).toBe(420);
   });
 
+  it("unlocks a chat stuck in 'sending' when a reconnect shows no turn is running", async () => {
+    useAgentStore.setState({
+      sending: true,
+      messages: [
+        { id: "m1", role: "assistant", text: "partial", providerId: "codex", streaming: true },
+      ],
+    });
+    vi.spyOn(rtClient, "request").mockResolvedValueOnce({ providers: mockProviders });
+    await useAgentStore.getState().fetchProviders();
+    const s = useAgentStore.getState();
+    expect(s.sending).toBe(false);
+    expect(s.messages[0].streaming).toBe(false);
+  });
+
+  it("keeps 'sending' while the server still reports a busy provider", async () => {
+    useAgentStore.setState({ sending: true, messages: [] });
+    vi.spyOn(rtClient, "request").mockResolvedValueOnce({
+      providers: [{ ...mockProviders[0], active: true, busy: true }, mockProviders[1]],
+    });
+    await useAgentStore.getState().fetchProviders();
+    expect(useAgentStore.getState().sending).toBe(true);
+  });
+
   it("fetches providers and connects to selected provider", async () => {
     vi.spyOn(rtClient, "request").mockResolvedValueOnce({ providers: mockProviders });
     await useAgentStore.getState().fetchProviders();

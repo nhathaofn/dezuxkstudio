@@ -330,7 +330,7 @@ export const vi: Record<MessageKey, string> = {
   "agent.err.customPathMissing":
     "Đường dẫn tùy chỉnh {path} không còn tồn tại; đang dùng {fallback} thay thế.",
   "agent.err.customPathGone": "Đường dẫn tùy chỉnh {path} không còn tồn tại.",
-  "agent.err.turnTimeout": "Agent không trả lời xong trong {duration}.",
+  "agent.err.turnTimeout": "Agent không có hoạt động nào trong {duration} nên đã bị dừng.",
   "agent.err.notConnected": "Chưa kết nối agent nào.",
   "agent.err.busy": "Agent vẫn đang trả lời; hãy đợi xong.",
   "agent.err.promptEmpty": "Hãy nhập tin nhắn trước.",

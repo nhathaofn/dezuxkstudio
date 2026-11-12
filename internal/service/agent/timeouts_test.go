@@ -1,15 +1,22 @@
 package agent
 
 import (
+	"context"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	domainagent "app/internal/domain/agent"
+	domainbinaries "app/internal/domain/binaries"
+	"app/internal/progress"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // slowCLI writes a fake CLI that takes ~2s to answer, like a cold-started Node shim on Windows.
@@ -99,5 +106,78 @@ func TestDefaultLimitsFillNewTimeouts(t *testing.T) {
 	l := Limits{}.withDefaults()
 	if l.MCPToolTimeout <= 0 || l.MCPShutdownTimeout <= 0 || l.InterruptWait <= 0 {
 		t.Fatalf("defaults not applied: %+v", l)
+	}
+}
+
+// progressingBinaries reports progress from inside the tool, like a workflow run does.
+type progressingBinaries struct{ fakeBinaries }
+
+func (progressingBinaries) List(ctx context.Context) ([]domainbinaries.BinaryInfo, error) {
+	for i := 0; i < 3; i++ {
+		progress.Report(ctx, progress.Update{Percent: float64(i * 30)})
+	}
+	return nil, nil
+}
+
+type bearer struct{ token string }
+
+func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+b.token)
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+// Over the real HTTP MCP server: a tool call and the progress the tool reports re-arm the
+// running chat turn's idle timeout, so a long workflow started by the agent does not get the
+// turn cut off while it is still working.
+func TestMCPToolActivityKeepsTurnAlive(t *testing.T) {
+	base := t.TempDir()
+	svc, err := New(Options{
+		Repo: newFakeRepo(), DataDir: base,
+		WorkspaceDir: filepath.Join(base, "ws"), MediaDir: filepath.Join(base, "media"), ProfilesDir: filepath.Join(base, "p"),
+		Logger: slog.New(slog.DiscardHandler), Binaries: progressingBinaries{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	var touches atomic.Int32
+	svc.mu.Lock()
+	svc.activeTurnID = "msg-1"
+	svc.activeTurnTouch = func() { touches.Add(1) }
+	svc.mu.Unlock()
+
+	srv, err := svc.ensureMCPServer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	transport := &mcp.StreamableClientTransport{Endpoint: srv.url, HTTPClient: &http.Client{Transport: bearer{srv.token}}}
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	before := touches.Load()
+	if _, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "binaries_list", Arguments: map[string]any{}}); err != nil {
+		t.Fatal(err)
+	}
+	// One touch for the request itself plus one per progress report made inside the tool.
+	if got := touches.Load() - before; got < 4 {
+		t.Fatalf("turn touched %d times by the tool call, want >= 4 (request + 3 progress reports)", got)
+	}
+}
+
+// Streamed chat events for the active message re-arm the turn; events of another message do not.
+func TestChatEventsTouchOnlyTheActiveTurn(t *testing.T) {
+	svc := &Service{models: newModelState(), log: slog.New(slog.DiscardHandler)}
+	var touches atomic.Int32
+	svc.activeTurnID = "msg-1"
+	svc.activeTurnTouch = func() { touches.Add(1) }
+	svc.emitChatRaw(domainagent.ChatEvent{MessageID: "msg-1", Type: domainagent.ChatEventDelta, Text: "hi"})
+	svc.emitChatRaw(domainagent.ChatEvent{MessageID: "msg-0", Type: domainagent.ChatEventDelta, Text: "old"})
+	if touches.Load() != 1 {
+		t.Fatalf("touches = %d, want 1", touches.Load())
 	}
 }

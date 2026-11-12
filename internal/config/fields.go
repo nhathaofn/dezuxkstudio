@@ -71,7 +71,7 @@ func fields(c *Config) []field {
 
 		{key: "binaries.probe_timeout", usage: "max duration of an external tool version probe", val: durationValue{&c.Binaries.ProbeTimeout}},
 
-		{key: "agent.turn_timeout", usage: "max duration of one agent chat turn", val: durationValue{&c.Agent.TurnTimeout}},
+		{key: "agent.turn_timeout", usage: "an agent chat turn is stopped after this long without activity (text, tool calls, tool progress)", val: durationValue{&c.Agent.TurnTimeout}},
 		{key: "agent.initialize_timeout", usage: "max wait for an ACP agent handshake", val: durationValue{&c.Agent.InitializeTimeout}},
 		{key: "agent.version_probe_timeout", usage: "max duration of an agent CLI --version probe", val: durationValue{&c.Agent.VersionProbeTimeout}},
 		{key: "agent.auth_probe_timeout", usage: "max duration of an agent CLI auth status check", val: durationValue{&c.Agent.AuthProbeTimeout}},
@@ -91,6 +91,6 @@ func fields(c *Config) []field {
 		{key: "desktop.frameless", usage: "frameless window", val: boolValue{&c.Desktop.Frameless}},
 		{key: "desktop.start_hidden", usage: "start with the window hidden", val: boolValue{&c.Desktop.StartHidden}},
 		{key: "desktop.background", usage: "window background colour #RRGGBB or #RRGGBBAA", val: stringValue{&c.Desktop.Background}},
-		{key: "desktop.ready_timeout", usage: "max wait for the core to become ready", val: durationValue{&c.Desktop.ReadyTimeout}},
+		{key: "desktop.ready_timeout", usage: "how long one bridge call waits for the core; a slower start is retried, not fatal", val: durationValue{&c.Desktop.ReadyTimeout}},
 	}
 }

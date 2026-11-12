@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"time"
 
+	"app/internal/progress"
 	"app/internal/safego"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -62,6 +64,15 @@ func startLocalMCPServer(s *Service, log *slog.Logger) (*localMCPServer, error) 
 				return
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+			// A tool call is activity of the running chat turn, and so is any progress the tool
+			// reports while it runs (e.g. a workflow): both re-arm the turn's idle timeout.
+			s.touchTurn("")
+			touch := func() { s.touchTurn("") }
+			r = r.WithContext(progress.With(r.Context(), progress.Sink{
+				Report:   func(progress.Update) { touch() },
+				Beat:     touch,
+				Interval: s.limits.TurnTimeout / 4,
+			}))
 			handler.ServeHTTP(w, r)
 		}),
 	}

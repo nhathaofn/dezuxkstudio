@@ -58,7 +58,7 @@ func turnResult(ctx context.Context, err error, timeout time.Duration) error {
 	case errors.Is(ctx.Err(), context.Canceled):
 		return errTurnCancelled
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return localize(fmt.Errorf("agent turn timed out after %s", timeout), msgTurnTimeout, map[string]string{"duration": timeout.String()})
+		return localize(fmt.Errorf("agent turn had no activity for %s", timeout), msgTurnTimeout, map[string]string{"duration": timeout.String()})
 	}
 	return classifyProviderError(err)
 }

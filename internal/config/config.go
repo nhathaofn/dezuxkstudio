@@ -128,7 +128,7 @@ type UpdateConfig struct {
 
 // AgentConfig tunes the external AI agent integration (timeouts, caches, chat context size).
 type AgentConfig struct {
-	TurnTimeout         time.Duration // max duration of one chat turn
+	TurnTimeout         time.Duration // max silence (no streamed output or tool activity) in one chat turn
 	InitializeTimeout   time.Duration // max wait for an ACP agent handshake
 	VersionProbeTimeout time.Duration // max duration of `<cli> --version`
 	AuthProbeTimeout    time.Duration // max duration of a CLI auth status check

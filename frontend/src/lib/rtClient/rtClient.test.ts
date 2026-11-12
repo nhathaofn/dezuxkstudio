@@ -170,6 +170,39 @@ describe("resolveEndpoint", () => {
     });
   });
 
+  it("keeps waiting while the core is still starting instead of showing a fatal screen", async () => {
+    let calls = 0;
+    const starting = JSON.stringify({
+      code: "ERR_UNAVAILABLE",
+      message: "the application core is still starting",
+      details: { starting: true },
+    });
+    const bridge = {
+      GetConnectionInfo: () => {
+        calls++;
+        if (calls < 3) return Promise.reject(new Error(starting)); // Wails ErrorFormatter shape
+        return Promise.resolve({
+          mode: "desktop" as const,
+          ws_url: "ws://127.0.0.1:1/ws",
+          token: "t",
+          action_timeout_ms: 10,
+          long_action_timeout_ms: 50,
+          ping_interval_ms: 20,
+          check_updates_on_startup: false,
+        });
+      },
+      GetBuildInfo: () => Promise.reject(new Error("unused")),
+      SetRemoteToken: () => Promise.resolve(),
+      BrowseExecutable: () => Promise.resolve(""),
+      BrowseImage: () => Promise.resolve(""),
+      BrowseImages: () => Promise.resolve([]),
+      BrowseDirectory: () => Promise.resolve(""),
+    };
+    const ep = await resolveEndpoint(env({ bridge }));
+    expect(calls).toBe(3);
+    expect(ep?.source).toBe("bridge");
+  });
+
   it("re-throws bridge failures as ActionError (fatal screen)", async () => {
     const bridge = {
       GetConnectionInfo: () => Promise.reject({ code: "ERR_UNAVAILABLE", message: "db locked" }),

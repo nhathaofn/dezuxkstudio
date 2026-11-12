@@ -329,7 +329,7 @@ export const en = {
   "agent.err.executableNotFound": "{name} was not found on PATH or at the custom path.",
   "agent.err.customPathMissing": "Custom path {path} no longer exists; using {fallback} instead.",
   "agent.err.customPathGone": "Custom path {path} no longer exists.",
-  "agent.err.turnTimeout": "The agent did not finish within {duration}.",
+  "agent.err.turnTimeout": "The agent showed no activity for {duration} and was stopped.",
   "agent.err.notConnected": "No agent is connected.",
   "agent.err.busy": "The agent is still answering; wait for it to finish.",
   "agent.err.promptEmpty": "Type a message first.",

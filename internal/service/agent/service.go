@@ -106,6 +106,8 @@ type Service struct {
 	activeVersion    string
 	activeTurnID     string
 	activeTurnCancel context.CancelFunc
+	// activeTurnTouch re-arms the turn's idle timeout (agent.turn_timeout measures silence).
+	activeTurnTouch  func()
 	activeTurnBuf    strings.Builder
 	activeThoughtBuf strings.Builder
 	activeGuard      *turnOutputGuard
@@ -705,6 +707,7 @@ func (s *Service) Disconnect(ctx context.Context) error {
 	s.activeVersion = ""
 	s.activeTurnID = ""
 	s.activeTurnCancel = nil
+	s.activeTurnTouch = nil
 	s.activeTurnBuf.Reset()
 	s.activeThoughtBuf.Reset()
 	s.busy = false
@@ -768,8 +771,12 @@ func (s *Service) SendPrompt(ctx context.Context, text string) (string, domainag
 	conversationID := s.conversationID
 	s.turnConversation[messageID] = conversationID
 
-	turnCtx, cancel := context.WithTimeout(context.Background(), s.limits.TurnTimeout)
+	// Like actions, a turn times out after agent.turn_timeout WITHOUT activity (streamed text,
+	// tool events, workflow progress from an MCP tool), not after a fixed total duration.
+	turnCtx, touchTurn, cancelTurn := progress.NewIdleContext(context.Background(), s.limits.TurnTimeout)
+	cancel := context.CancelFunc(cancelTurn)
 	s.busy = true
+	s.activeTurnTouch = touchTurn
 	s.activeTurnID = messageID
 	s.activeTurnCancel = cancel
 	s.activeTurnBuf.Reset()
@@ -1172,6 +1179,7 @@ func (s *Service) finishTurn(connToken int64, providerID domainagent.ProviderID,
 		s.busy = false
 		s.activeTurnID = ""
 		s.activeTurnCancel = nil
+		s.activeTurnTouch = nil
 		s.activeTurnBuf.Reset()
 		s.activeThoughtBuf.Reset()
 		if err != nil && isAuthError(err) {
@@ -1299,6 +1307,7 @@ func (s *Service) handleProcessExit(connToken int64, id domainagent.ProviderID, 
 	s.activeVersion = ""
 	s.activeTurnID = ""
 	s.activeTurnCancel = nil
+	s.activeTurnTouch = nil
 	s.activeTurnBuf.Reset()
 	s.activeThoughtBuf.Reset()
 	s.activeGuard = nil
@@ -1609,8 +1618,21 @@ func (s *Service) emitChat(evt domainagent.ChatEvent) {
 }
 
 func (s *Service) emitChatRaw(evt domainagent.ChatEvent) {
+	s.touchTurn(evt.MessageID)
 	if s.onChatEvent != nil {
 		s.onChatEvent(evt)
+	}
+}
+
+// touchTurn re-arms the active turn's idle timeout; messageID "" means "whatever turn is active"
+// (MCP tool calls do not know the message they belong to).
+func (s *Service) touchTurn(messageID string) {
+	s.mu.Lock()
+	touch := s.activeTurnTouch
+	active := s.activeTurnID
+	s.mu.Unlock()
+	if touch != nil && (messageID == "" || messageID == active) {
+		touch()
 	}
 }
 

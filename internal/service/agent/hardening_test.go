@@ -66,7 +66,7 @@ func TestClassifyProviderErrorAndTurnResult(t *testing.T) {
 	}
 	expired, cancel2 := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel2()
-	if err := turnResult(expired, context.DeadlineExceeded, 3*time.Minute); err == nil || !strings.Contains(err.Error(), "timed out after 3m0s") {
+	if err := turnResult(expired, context.DeadlineExceeded, 3*time.Minute); err == nil || !strings.Contains(err.Error(), "no activity for 3m0s") {
 		t.Fatalf("expired turn must report a readable timeout, got %v", err)
 	}
 }

@@ -259,7 +259,7 @@ func (h *Hub) classify(ctx context.Context, req *Request, err error) error {
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		timeout := h.actionTimeout(req.Action)
-		return apperr.Wrap(apperr.CodeTimeout, fmt.Sprintf("action timed out after %s", timeout), err)
+		return apperr.Wrap(apperr.CodeTimeout, fmt.Sprintf("action had no activity for %s", timeout), err)
 	case errors.Is(ctx.Err(), context.Canceled):
 		return apperr.Wrap(apperr.CodeCancelled, "action cancelled", err)
 	}

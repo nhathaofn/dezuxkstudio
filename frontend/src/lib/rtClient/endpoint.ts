@@ -47,6 +47,21 @@ const browserEndpoint = (
 });
 
 /**
+ * Asks the bridge until the core is ready. Each call waits up to desktop.ready_timeout; a
+ * "still starting" answer is retried (slow first start), any other error is final.
+ */
+async function connectionInfoWhenReady(bridge: BridgeApi) {
+  for (;;) {
+    try {
+      return await bridge.GetConnectionInfo();
+    } catch (err) {
+      const e = toActionError(err);
+      if (e.details?.starting !== true) throw e;
+    }
+  }
+}
+
+/**
  * Resolves the endpoint. Inside the desktop shell the bridge is the only source of
  * truth (it carries the session token); a bridge error is fatal and re-thrown.
  * In a plain browser: ?ws= (dev only) → manual override → runtime-config → location.
@@ -54,7 +69,7 @@ const browserEndpoint = (
 export async function resolveEndpoint(env: EndpointEnv): Promise<Endpoint | null> {
   if (env.bridge) {
     try {
-      const info = await env.bridge.GetConnectionInfo();
+      const info = await connectionInfoWhenReady(env.bridge);
       return {
         url: info.ws_url,
         token: info.token,
