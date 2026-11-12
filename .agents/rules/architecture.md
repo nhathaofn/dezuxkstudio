@@ -100,6 +100,11 @@ The agent has no hard-coded feature list. Choose the feature's shape so the agen
   - Add the feature to `buildCapabilitiesSnapshot` if it should appear in `studio_list_capabilities`.
 - Details and examples: `docs/agent-feature-integration.md`.
 
+### Agent package structure
+- Providers are drivers (`agent/drivers.go`): a `turnDriver` runs each chat turn as its own CLI invocation (Codex, Claude), a `sessionDriver` keeps one ACP connection (Antigravity). Lifecycle code (probe, login, connect, turns) never branches on a provider ID; a new provider is a `domain/agent` spec in `providerSpecs` plus a driver in `newDrivers`. CLI quirks (resume errors, login args) are spec data.
+- A chat turn is one `*turn` (`agent/turn.go`). Every way it ends goes through `Service.endTurn` exactly once, which stores the guard-sanitized reply and the error. Runners only stream events through `emitChat`; they never write chat history.
+- No package-level mutable state: the MCP tool list, the profile secret store and the driver table belong to the `Service`. Lists derived from the registered MCP tools (capabilities snapshot, ACP permission allow-list, `<tools>` prompt layer) are generated, never written by hand.
+
 ## 12. Logging
 - `slog` only; use the `...Context(ctx, ...)` variants when a ctx exists.
 - Levels: `Debug` per-action/per-step trace; `Info` lifecycle (startup, connect/disconnect, migration, shutdown); `Warn` degraded but handled (fallback taken, probe failed, optional step skipped); `Error` needs attention (internal error, panic, data-loss risk). A user mistake (validation, not signed in) is not an error log.
@@ -114,7 +119,7 @@ The agent has no hard-coded feature list. Choose the feature's shape so the agen
 - Never reuse a removed action/event name for a different meaning. SQLite migrations follow the same rule: append-only.
 
 ## 14. Performance & resource limits
-- Every limit is a config key (`realtime.max_concurrent_actions` 64, `realtime.max_message_bytes` 1 MiB, `realtime.client_buffer_size` 256, `agent.history_limit` 200, `agent.context_messages` 10 x `agent.context_message_chars` 1200, `log.max_size_mb` 10 x `log.max_backups` 3) or a named constant with a comment saying why (`maxNodeInputFiles` 10 000 per agent run, MCP request body 4 MiB, Codex JSON-RPC line 16 MiB).
+- Every limit is a config key (`realtime.max_concurrent_actions` 64, `realtime.max_message_bytes` 1 MiB, `realtime.client_buffer_size` 256, `agent.history_limit` 200, `agent.max_pending_approvals` 20, `agent.context_messages` 10 x `agent.context_message_chars` 1200, `log.max_size_mb` 10 x `log.max_backups` 3) or a named constant with a comment saying why (`maxNodeInputFiles` 10 000 per agent run, MCP request body 4 MiB (`mcpMaxRequestBytes`), Codex JSON-RPC line 16 MiB, CLI stream-json line 4 MiB (`cliStdoutLineMax`)).
 - CPU-parallel work uses a bounded worker pool; `0` workers = automatic (CPU count); the user-settable maximum is declared in the spec (watermark: 64).
 - Batches must not need memory proportional to the whole batch: stream items to workers (`ProcessStream`) instead of loading every file first.
 - Hot paths (sending a prompt, finishing a turn, status pushes) never spawn processes: use cached state (`statusInfo`) and refresh in the background.
