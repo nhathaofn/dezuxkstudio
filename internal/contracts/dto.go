@@ -150,6 +150,9 @@ type DiagnosticsBundle struct {
 type ActionProgress struct {
 	Percent float64 `json:"percent"` // 0-100
 	Message string  `json:"message"`
+	// MsgKey/MsgParams name a UI translation of Message; clients without the key show Message.
+	MsgKey    string            `json:"msg_key,omitempty"`
+	MsgParams map[string]string `json:"msg_params,omitempty"`
 }
 
 // ConnectionInfo tells the frontend how to reach the core (desktop bridge).

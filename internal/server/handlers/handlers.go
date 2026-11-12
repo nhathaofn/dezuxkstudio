@@ -23,16 +23,31 @@ func Health(version string, started time.Time, clients func() int) http.Handler 
 	})
 }
 
-// RuntimeConfig tells browser-hosted clients where the WebSocket lives. It never
-// returns credentials.
-func RuntimeConfig(mode, version string, wsURL func() string) http.Handler {
+// Timeouts are the server-side action limits a browser client mirrors so it never gives up
+// on an action the server is still running.
+type Timeouts struct {
+	Action       time.Duration
+	LongAction   time.Duration
+	PingInterval time.Duration
+}
+
+// RuntimeConfig tells browser-hosted clients where the WebSocket lives and which
+// timeouts the server applies. It never returns credentials.
+func RuntimeConfig(mode, version string, timeouts Timeouts, wsURL func() string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, apperr.New(apperr.CodeBadRequest, "method not allowed"))
 			return
 		}
 		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, http.StatusOK, map[string]string{"ws_url": wsURL(), "mode": mode, "version": version})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ws_url":                 wsURL(),
+			"mode":                   mode,
+			"version":                version,
+			"action_timeout_ms":      timeouts.Action.Milliseconds(),
+			"long_action_timeout_ms": timeouts.LongAction.Milliseconds(),
+			"ping_interval_ms":       timeouts.PingInterval.Milliseconds(),
+		})
 	})
 }
 

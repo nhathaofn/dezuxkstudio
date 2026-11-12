@@ -27,6 +27,9 @@ type Limits struct {
 	AuthProbeTimeout    time.Duration
 	LoginTimeout        time.Duration
 	ModelCatalogTimeout time.Duration
+	MCPToolTimeout      time.Duration // max duration of one MCP tool call the CLI waits for (workflow runs)
+	MCPShutdownTimeout  time.Duration // graceful stop of the local MCP server
+	InterruptWait       time.Duration // how long a cancelled Codex turn waits for turn/completed
 	StatusCacheTTL      time.Duration
 	ApprovalTTL         time.Duration
 	HistoryLimit        int
@@ -39,10 +42,13 @@ func DefaultLimits() Limits {
 	return Limits{
 		TurnTimeout:         10 * time.Minute,
 		InitializeTimeout:   15 * time.Second,
-		VersionProbeTimeout: 1500 * time.Millisecond,
+		VersionProbeTimeout: 5 * time.Second, // Node-based CLI shims cold-start slowly on Windows
 		AuthProbeTimeout:    10 * time.Second,
 		LoginTimeout:        3 * time.Minute,
 		ModelCatalogTimeout: 30 * time.Second,
+		MCPToolTimeout:      15 * time.Minute,
+		MCPShutdownTimeout:  3 * time.Second,
+		InterruptWait:       5 * time.Second,
 		StatusCacheTTL:      5 * time.Minute,
 		ApprovalTTL:         30 * time.Minute,
 		HistoryLimit:        200,
@@ -60,6 +66,9 @@ func (l Limits) withDefaults() Limits {
 		{&l.AuthProbeTimeout, &d.AuthProbeTimeout},
 		{&l.LoginTimeout, &d.LoginTimeout},
 		{&l.ModelCatalogTimeout, &d.ModelCatalogTimeout},
+		{&l.MCPToolTimeout, &d.MCPToolTimeout},
+		{&l.MCPShutdownTimeout, &d.MCPShutdownTimeout},
+		{&l.InterruptWait, &d.InterruptWait},
 		{&l.StatusCacheTTL, &d.StatusCacheTTL},
 		{&l.ApprovalTTL, &d.ApprovalTTL},
 	}

@@ -111,8 +111,8 @@ func TestCodexResumesSessionAndFallsBackWhenMissing(t *testing.T) {
 }
 
 func TestCodexResumeArgs(t *testing.T) {
-	first := strings.Join(buildCodexExecArgs("http://x/mcp", "i", "", ""), " ")
-	resumed := strings.Join(buildCodexExecArgs("http://x/mcp", "i", "", "thread-9"), " ")
+	first := strings.Join(buildCodexExecArgs("http://x/mcp", "i", "", "", 0), " ")
+	resumed := strings.Join(buildCodexExecArgs("http://x/mcp", "i", "", "thread-9", 0), " ")
 	if strings.Contains(first, "resume") || !strings.HasPrefix(resumed, "exec resume thread-9 --json") {
 		t.Fatalf("unexpected args:\n%s\n%s", first, resumed)
 	}

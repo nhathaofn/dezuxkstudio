@@ -1,3 +1,4 @@
+import { appConfig } from "../../config/appConfig";
 import React, { useState } from "react";
 import { Layers, FileImage, Loader2, CheckCircle2, Check, AlertCircle, Copy } from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
@@ -15,7 +16,7 @@ export const WatermarkResultsCard: React.FC = () => {
   const handleCopy = (text: string) => {
     void navigator.clipboard.writeText(text);
     setCopiedPath(text);
-    setTimeout(() => setCopiedPath(null), 2000);
+    setTimeout(() => setCopiedPath(null), appConfig.ui.copyFeedbackMs);
   };
 
   const totalFiles = inputPaths.length > 0 ? inputPaths.length : inputPath ? 1 : 0;

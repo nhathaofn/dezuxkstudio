@@ -60,6 +60,7 @@ func (c *Config) Validate() error {
 			"realtime.ping_interval":       c.Realtime.PingInterval,
 			"realtime.write_timeout":       c.Realtime.WriteTimeout,
 			"storage.busy_timeout":         c.Storage.BusyTimeout,
+			"binaries.probe_timeout":       c.Binaries.ProbeTimeout,
 			"agent.turn_timeout":           c.Agent.TurnTimeout,
 			"agent.initialize_timeout":     c.Agent.InitializeTimeout,
 			"agent.version_probe_timeout":  c.Agent.VersionProbeTimeout,

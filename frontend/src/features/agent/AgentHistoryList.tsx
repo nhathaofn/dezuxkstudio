@@ -1,3 +1,4 @@
+import { appConfig } from "../../config/appConfig";
 import React, { useEffect, useState } from "react";
 import { ArrowLeft, Loader2, MessageSquare, Trash2 } from "lucide-react";
 import type { AgentConversation } from "../../contracts/generated";
@@ -7,7 +8,7 @@ import { usePreferencesStore } from "../preferences/usePreferencesStore";
 import { useAgentStore } from "./useAgentStore";
 
 /** How long the "confirm delete" state of a history item stays armed. */
-const CONFIRM_DELETE_MS = 3000;
+const CONFIRM_DELETE_MS = appConfig.ui.confirmDeleteMs;
 
 function formatWhen(ms: number, lang: string): string {
   const d = new Date(ms);

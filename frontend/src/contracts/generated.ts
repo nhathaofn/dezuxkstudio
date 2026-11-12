@@ -49,6 +49,8 @@ export type AgentChatEventType = (typeof AgentChatEventTypeValues)[number];
 export interface ActionProgress {
   percent: number;
   message: string;
+  msg_key?: string;
+  msg_params?: Record<string, string>;
 }
 
 export interface AgentAllowedDirPayload {
@@ -500,6 +502,19 @@ export const Actions = {
   AGENT_SET_MODEL: "agent:set_model",
 } as const;
 export type ActionName = (typeof Actions)[keyof typeof Actions];
+
+/** Actions bounded by the server's long action timeout (contracts.LongActions). */
+export const LongActions: readonly ActionName[] = [
+  "binaries:download",
+  "workflow:run_node",
+  "workflow:run_graph",
+  "diagnostics:export",
+  "agent:list",
+  "agent:probe",
+  "agent:connect",
+  "agent:login",
+  "agent:resolve_approval",
+];
 
 export interface ActionMap {
   "system:ping": { payload: Empty; result: PingResult };

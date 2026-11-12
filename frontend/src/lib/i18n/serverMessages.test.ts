@@ -23,3 +23,23 @@ describe("server message keys", () => {
     expect(translateServerMessage(vi, "agent.err.fromTheFuture", undefined)).toBeUndefined();
   });
 });
+
+describe("download progress keys", () => {
+  it("translates every progress key the Go downloader emits", () => {
+    expect(
+      translateServerMessage(vi, "tools.progress.downloaded", { done: "1.5", total: "80.0" })
+    ).toBe("Đã tải 1.5 / 80.0 MB");
+    for (const key of [
+      "tools.progress.connecting",
+      "tools.progress.downloaded",
+      "tools.progress.downloadedN",
+      "tools.progress.extracting",
+      "tools.progress.writing",
+      "tools.progress.installed",
+    ]) {
+      expect(
+        translateServerMessage(vi, key, { name: "FFmpeg", done: "1", total: "2" })
+      ).toBeDefined();
+    }
+  });
+});

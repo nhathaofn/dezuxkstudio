@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	domainagent "app/internal/domain/agent"
 	"app/internal/fsutil"
+
 	"github.com/google/uuid"
 )
 
@@ -523,6 +525,7 @@ func (s *Service) runClaudeTurn(ctx context.Context, executable, profileRoot, wo
 		return err
 	}
 	defer cleanup()
+	env = append(env, claudeMCPTimeoutEnv(s.limits.MCPToolTimeout)...)
 
 	args := buildClaudeExecArgs(mcpCfgPath, s.systemPrompt(ctx, domainagent.ProviderClaude))
 	args = append(args, claudeModelArgs(s.effectiveSelection(domainagent.ProviderClaude))...)
@@ -557,4 +560,13 @@ func (s *Service) runClaudeTurn(ctx context.Context, executable, profileRoot, wo
 		s.setCLISession(domainagent.ProviderClaude, sessionID)
 	}
 	return err
+}
+
+// claudeMCPTimeoutEnv raises Claude Code's MCP tool call limit (MCP_TOOL_TIMEOUT, milliseconds) so a
+// workflow run through a tool is not abandoned while it still runs.
+func claudeMCPTimeoutEnv(toolTimeout time.Duration) []string {
+	if toolTimeout <= 0 {
+		return nil
+	}
+	return []string{"MCP_TOOL_TIMEOUT=" + strconv.FormatInt(toolTimeout.Milliseconds(), 10)}
 }

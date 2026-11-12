@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	domainagent "app/internal/domain/agent"
 	"app/internal/fsutil"
@@ -107,7 +108,7 @@ func writeCodexBaseInstructions(profileRoot, instructions string) (string, error
 // buildCodexExecArgs builds a `codex exec` (first turn) or `codex exec resume <id>` (later turns) command line.
 // The working directory is set through cmd.Dir because `exec resume` has no -C flag; the sandbox is set through
 // config so both forms stay identical. Sessions are persisted only inside the isolated CODEX_HOME.
-func buildCodexExecArgs(mcpURL, instructions, baseInstructionsFile, resumeID string) []string {
+func buildCodexExecArgs(mcpURL, instructions, baseInstructionsFile, resumeID string, toolTimeout time.Duration) []string {
 	args := []string{"exec"}
 	if resumeID != "" {
 		args = append(args, "resume", resumeID)
@@ -123,7 +124,7 @@ func buildCodexExecArgs(mcpURL, instructions, baseInstructionsFile, resumeID str
 	if baseInstructionsFile == "" {
 		args = append(args, "-c", "developer_instructions="+strconv.Quote(instructions))
 	}
-	args = append(args, codexPolicyArgs(mcpURL, baseInstructionsFile)...)
+	args = append(args, codexPolicyArgs(mcpURL, baseInstructionsFile, toolTimeout)...)
 	return append(args, "-")
 }
 
@@ -158,7 +159,9 @@ var codexLeanArgs = []string{
 // DezuxkStudio enforces its own policy and approval queue for every tool (destructive actions wait
 // for Approve in the app's panel). Without this, Codex asks for approval of each MCP call, which this
 // headless session can never grant, and the model answers that it "cannot access the tool".
-func codexPolicyArgs(mcpURL, baseInstructionsFile string) []string {
+// codexPolicyArgs pins Codex to DezuxkStudio's policy. toolTimeout raises Codex's MCP tool call
+// limit (60s by default) so a workflow run through a tool is not abandoned while it still runs.
+func codexPolicyArgs(mcpURL, baseInstructionsFile string, toolTimeout time.Duration) []string {
 	args := []string{
 		"-c", `sandbox_mode="read-only"`,
 		"-c", `approval_policy="never"`,
@@ -167,6 +170,9 @@ func codexPolicyArgs(mcpURL, baseInstructionsFile string) []string {
 		"-c", "mcp_servers." + mcpServerName + ".url=" + strconv.Quote(mcpURL),
 		"-c", "mcp_servers." + mcpServerName + ".bearer_token_env_var=" + strconv.Quote(mcpTokenEnvVar),
 		"-c", "mcp_servers." + mcpServerName + `.default_tools_approval_mode="approve"`,
+	}
+	if toolTimeout > 0 {
+		args = append(args, "-c", "mcp_servers."+mcpServerName+".tool_timeout_sec="+strconv.FormatInt(int64(toolTimeout.Seconds()), 10))
 	}
 	args = append(args, codexLeanArgs...)
 	if baseInstructionsFile != "" {
@@ -313,7 +319,7 @@ func (s *Service) runCodexExecTurn(ctx context.Context, executable, profileRoot,
 		return err
 	}
 	resumeID := s.cliSessionFor(domainagent.ProviderCodex)
-	args := buildCodexExecArgs(mcpURL, instructions, baseFile, resumeID)
+	args := buildCodexExecArgs(mcpURL, instructions, baseFile, resumeID, s.limits.MCPToolTimeout)
 	if modelArgs := codexModelArgs(s.effectiveSelection(domainagent.ProviderCodex)); len(modelArgs) > 0 {
 		args = append(args[:len(args)-1:len(args)-1], append(modelArgs, "-")...) // keep "-" (stdin prompt) last
 	}

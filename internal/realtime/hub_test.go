@@ -79,6 +79,7 @@ func newTestHub(t *testing.T, mutate func(*Options)) (*Hub, *httptest.Server, *t
 		AuthToken:            testToken,
 		MaxConcurrentActions: 4,
 		ActionTimeout:        2 * time.Second,
+		LongActionTimeout:    4 * time.Second,
 		QueueTimeout:         200 * time.Millisecond,
 		ClientBufferSize:     16,
 		MaxMessageBytes:      4096,
@@ -381,7 +382,7 @@ func TestCloseDisconnectsAndCancels(t *testing.T) {
 
 func TestRegistryRules(t *testing.T) {
 	h, err := New(Options{
-		AllowAnonymous: true, MaxConcurrentActions: 1, ActionTimeout: time.Second, QueueTimeout: time.Second,
+		AllowAnonymous: true, MaxConcurrentActions: 1, ActionTimeout: time.Second, LongActionTimeout: time.Second, QueueTimeout: time.Second,
 		ClientBufferSize: 1, MaxMessageBytes: 1024, PingInterval: time.Second, WriteTimeout: time.Second,
 		DeclaredActions: []string{"a:one", "a:two"}, Logger: slog.New(slog.DiscardHandler),
 	})
@@ -460,5 +461,61 @@ func TestTieredActionTimeout(t *testing.T) {
 	}
 	if d := h.actionTimeout(contracts.ActionDiagnosticsExport); d != 300*time.Millisecond {
 		t.Fatalf("expected 300ms for diagnostics export, got %v", d)
+	}
+}
+
+// Every contracts.LongActions entry (agent sign-in, approvals, connect...) must get the long
+// timeout; a short timeout there made the UI report ERR_TIMEOUT while the backend kept working.
+func TestEveryLongActionUsesLongTimeout(t *testing.T) {
+	h, _, _ := newTestHub(t, func(o *Options) {
+		o.ActionTimeout = 50 * time.Millisecond
+		o.LongActionTimeout = 300 * time.Millisecond
+	})
+	for _, a := range contracts.LongActions() {
+		if d := h.actionTimeout(a); d != 300*time.Millisecond {
+			t.Errorf("%s: timeout %v, want long timeout", a, d)
+		}
+	}
+	for _, a := range []string{contracts.ActionAgentLogin, contracts.ActionAgentResolveApproval, contracts.ActionAgentConnect, contracts.ActionAgentList} {
+		if !contracts.IsLongAction(a) {
+			t.Errorf("%s must be a long action", a)
+		}
+	}
+	if contracts.IsLongAction(contracts.ActionSystemPing) {
+		t.Error("system:ping must not be a long action")
+	}
+}
+
+// End to end: agent:login sends no progress while the user signs in in the browser; it must
+// finish under the long timeout even though it outlives the short one many times over.
+func TestSilentLongActionOutlivesShortTimeout(t *testing.T) {
+	h, srv, _ := newTestHub(t, func(o *Options) {
+		o.ActionTimeout = 50 * time.Millisecond
+		o.LongActionTimeout = 2 * time.Second
+		o.DeclaredActions = append(append([]string{}, testActions...), contracts.ActionAgentLogin, "t:short_silent")
+	})
+	slow := func(ctx context.Context, _ *Request, _ contracts.Empty) (contracts.Empty, error) {
+		select {
+		case <-time.After(250 * time.Millisecond):
+			return contracts.Empty{}, nil
+		case <-ctx.Done():
+			return contracts.Empty{}, ctx.Err()
+		}
+	}
+	if err := h.Mount(moduleFunc(func(r *Registry) {
+		Handle(r, contracts.ActionAgentLogin, slow)
+		Handle(r, "t:short_silent", slow)
+	})); err != nil {
+		t.Fatal(err)
+	}
+	c := mustDial(t, srv)
+	c.action("long", contracts.ActionAgentLogin, nil)
+	if f, _ := c.response("long"); f.Error != nil {
+		t.Fatalf("agent:login failed under long timeout: %+v", f.Error)
+	}
+	c.action("short", "t:short_silent", nil)
+	f, _ := c.response("short")
+	if f.Error == nil || f.Error.Code != apperr.CodeTimeout {
+		t.Fatalf("short action should time out, got %+v", f.Error)
 	}
 }

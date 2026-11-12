@@ -36,6 +36,9 @@ export const RuntimeConfigSchema = z.object({
   ws_url: z.string().min(1),
   mode: z.string().optional(),
   version: z.string().optional(),
+  action_timeout_ms: z.number().int().positive().optional(),
+  long_action_timeout_ms: z.number().int().positive().optional(),
+  ping_interval_ms: z.number().int().positive().optional(),
 });
 
 /** Parses one WebSocket text frame; returns null for anything malformed. */

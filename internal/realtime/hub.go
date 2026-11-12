@@ -79,9 +79,6 @@ type Hub struct {
 
 // New validates options and creates a hub.
 func New(o Options) (*Hub, error) {
-	if o.LongActionTimeout <= 0 {
-		o.LongActionTimeout = 15 * time.Minute
-	}
 	if err := o.validate(); err != nil {
 		return nil, fmt.Errorf("realtime: %w", err)
 	}
@@ -248,20 +245,10 @@ func (h *Hub) execute(ctx context.Context, req *Request, handler HandlerFunc, pa
 }
 
 func (h *Hub) actionTimeout(action string) time.Duration {
-	switch action {
-	case contracts.ActionBinariesDownload,
-		contracts.ActionWorkflowRunGraph,
-		contracts.ActionWorkflowRunNode,
-		contracts.ActionDiagnosticsExport,
-		contracts.ActionAgentLogin,           // browser OAuth sign-in waits for the user (agent.login_timeout)
-		contracts.ActionAgentResolveApproval: // an approved action can run a whole workflow
-		if h.opts.LongActionTimeout > 0 {
-			return h.opts.LongActionTimeout
-		}
-		return 15 * time.Minute
-	default:
-		return h.opts.ActionTimeout
+	if contracts.IsLongAction(action) {
+		return h.opts.LongActionTimeout
 	}
+	return h.opts.ActionTimeout
 }
 
 func (h *Hub) classify(ctx context.Context, req *Request, err error) error {

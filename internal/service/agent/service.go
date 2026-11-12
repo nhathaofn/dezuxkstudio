@@ -257,7 +257,7 @@ func (s *Service) Probe(ctx context.Context, id domainagent.ProviderID) (domaina
 	}
 
 	authState, accountInfo := s.probeProviderAuth(ctx, id, spec, resolved)
-	s.ensureModelCatalog(ctx, id, resolved)
+	s.refreshModelCatalogAsync(id, resolved)
 
 	s.mu.Lock()
 	if authState != domainagent.AuthUnknown {

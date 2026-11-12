@@ -15,6 +15,11 @@ type Request struct {
 
 // Progress emits an action:progress event (percent is clamped to 0-100) to the caller only.
 func (r *Request) Progress(percent float64, message string) {
+	r.ProgressKeyed(percent, message, "", nil)
+}
+
+// ProgressKeyed is Progress with a UI translation key; message is the fallback text.
+func (r *Request) ProgressKeyed(percent float64, message, key string, params map[string]string) {
 	if r == nil || r.progress == nil {
 		return
 	}
@@ -24,5 +29,5 @@ func (r *Request) Progress(percent float64, message string) {
 	case percent > 100:
 		percent = 100
 	}
-	r.progress(contracts.ActionProgress{Percent: percent, Message: message})
+	r.progress(contracts.ActionProgress{Percent: percent, Message: message, MsgKey: key, MsgParams: params})
 }

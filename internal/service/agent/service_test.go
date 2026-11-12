@@ -219,7 +219,7 @@ func (fakeBinaries) List(context.Context) ([]domainbinaries.BinaryInfo, error) {
 func (fakeBinaries) Probe(context.Context, domainbinaries.BinaryID) (domainbinaries.BinaryInfo, error) {
 	return domainbinaries.BinaryInfo{ID: "ffmpeg", Name: "FFmpeg", Status: domainbinaries.StatusAvailable}, nil
 }
-func (fakeBinaries) Download(context.Context, domainbinaries.BinaryID, func(float64, string)) (domainbinaries.BinaryInfo, error) {
+func (fakeBinaries) Download(context.Context, domainbinaries.BinaryID, domainbinaries.ProgressFunc) (domainbinaries.BinaryInfo, error) {
 	return domainbinaries.BinaryInfo{ID: "ffmpeg", Name: "FFmpeg", Status: domainbinaries.StatusAvailable}, nil
 }
 
@@ -848,7 +848,7 @@ func TestServiceConnectChatAndIsolatedCLIs(t *testing.T) {
 }
 
 func TestCodexArgsAndJSONLStream(t *testing.T) {
-	args := buildCodexExecArgs("http://127.0.0.1:12345/mcp", "DezuxkStudio only", "C:\\profile\\dezuxk-instructions.md", "")
+	args := buildCodexExecArgs("http://127.0.0.1:12345/mcp", "DezuxkStudio only", "C:\\profile\\dezuxk-instructions.md", "", 0)
 	joined := strings.Join(args, " ")
 	for _, flag := range []string{
 		"--ignore-user-config",

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"app/internal/safego"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -28,6 +29,7 @@ type modelState struct {
 	catalogs  map[domainagent.ProviderID][]domainagent.ModelOption
 	catalogOf map[domainagent.ProviderID]string // executable the catalog was read from
 	loadedAt  map[domainagent.ProviderID]time.Time
+	loading   map[domainagent.ProviderID]bool   // a background catalog load is in flight
 	current   map[domainagent.ProviderID]string // model the provider reports as active (Antigravity)
 	selection map[domainagent.ProviderID]domainagent.ModelSelection
 	// codeMode records, per provider, which models only reach tools through a code runner (Codex
@@ -40,6 +42,7 @@ func newModelState() *modelState {
 		catalogs:  make(map[domainagent.ProviderID][]domainagent.ModelOption),
 		catalogOf: make(map[domainagent.ProviderID]string),
 		loadedAt:  make(map[domainagent.ProviderID]time.Time),
+		loading:   make(map[domainagent.ProviderID]bool),
 		current:   make(map[domainagent.ProviderID]string),
 		selection: make(map[domainagent.ProviderID]domainagent.ModelSelection),
 		codeMode:  make(map[domainagent.ProviderID]map[string]bool),
@@ -220,17 +223,46 @@ func (s *Service) applyACPSessionModels(ctx context.Context, id domainagent.Prov
 	s.models.mu.Unlock()
 }
 
-// ensureModelCatalog loads the per-turn CLI model catalog once per executable.
-func (s *Service) ensureModelCatalog(ctx context.Context, id domainagent.ProviderID, executable string) {
-	if id == domainagent.ProviderAntigravity || executable == "" {
+// modelCatalogFresh reports whether id's catalog was read from executable within StatusCacheTTL.
+func (s *Service) modelCatalogFresh(id domainagent.ProviderID, executable string) bool {
+	s.models.mu.Lock()
+	defer s.models.mu.Unlock()
+	return s.models.catalogOf[id] == executable && len(s.models.catalogs[id]) > 0 &&
+		time.Since(s.models.loadedAt[id]) < s.limits.StatusCacheTTL
+}
+
+// refreshModelCatalogAsync loads a stale catalog in the background and pushes the provider's
+// status when it arrives. Probe/List use it so reading the catalog (a CLI spawn bounded by
+// agent.model_catalog_timeout) never holds up the action response.
+func (s *Service) refreshModelCatalogAsync(id domainagent.ProviderID, executable string) {
+	if id == domainagent.ProviderAntigravity || executable == "" || s.modelCatalogFresh(id, executable) {
 		return
 	}
 	s.models.mu.Lock()
-	loaded := s.models.catalogOf[id] == executable && len(s.models.catalogs[id]) > 0 &&
-		time.Since(s.models.loadedAt[id]) < s.limits.StatusCacheTTL
-	s.models.mu.Unlock()
-	if loaded {
+	if s.models.loading[id] {
+		s.models.mu.Unlock()
 		return
+	}
+	s.models.loading[id] = true
+	s.models.mu.Unlock()
+	safego.Go("agent.model_catalog", func() {
+		defer func() {
+			s.models.mu.Lock()
+			delete(s.models.loading, id)
+			s.models.mu.Unlock()
+		}()
+		ctx := context.Background()
+		if s.ensureModelCatalog(ctx, id, executable) {
+			s.emitStatusOf(ctx, id)
+		}
+	})
+}
+
+// ensureModelCatalog loads the per-turn CLI model catalog once per executable and reports
+// whether a new catalog was loaded.
+func (s *Service) ensureModelCatalog(ctx context.Context, id domainagent.ProviderID, executable string) bool {
+	if id == domainagent.ProviderAntigravity || executable == "" || s.modelCatalogFresh(id, executable) {
+		return false
 	}
 	var (
 		models []domainagent.ModelOption
@@ -246,13 +278,14 @@ func (s *Service) ensureModelCatalog(ctx context.Context, id domainagent.Provide
 	}
 	if err != nil || len(models) == 0 {
 		s.log.Warn("agent: load model catalog", "provider", id, "err", err)
-		return
+		return false
 	}
 	s.models.mu.Lock()
 	s.models.catalogs[id] = models
 	s.models.catalogOf[id] = executable
 	s.models.loadedAt[id] = time.Now()
 	s.models.mu.Unlock()
+	return true
 }
 
 type codexCatalogJSON struct {

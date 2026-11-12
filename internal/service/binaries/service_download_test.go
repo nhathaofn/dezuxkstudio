@@ -51,7 +51,8 @@ type progressRecorder struct {
 	}
 }
 
-func (r *progressRecorder) record(pct float64, msg string) {
+func (r *progressRecorder) record(p domainbinaries.Progress) {
+	pct, msg := p.Percent, p.Text
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, struct {
@@ -347,8 +348,8 @@ func TestDownload_CorruptedZipArchive(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for corrupted zip, got nil")
 	}
-	if !strings.Contains(err.Error(), "extract from zip") {
-		t.Errorf("expected 'extract from zip' in error, got: %v", err)
+	if !apperr.IsCode(err, apperr.CodeIntegrity) {
+		t.Errorf("expected ERR_INTEGRITY for a corrupted archive, got: %v", err)
 	}
 }
 

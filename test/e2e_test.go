@@ -391,3 +391,30 @@ func TestAgentRealtimeActions(t *testing.T) {
 		t.Fatalf("agent:set_ui_context failed: %+v", res.Error)
 	}
 }
+
+// Browser clients mirror the server's real timeouts from /runtime-config.json; before, they used a
+// hard-coded 30s and reported ERR_TIMEOUT while a reconfigured server was still working.
+func TestRuntimeConfigCarriesServerTimeouts(t *testing.T) {
+	h := startCore(t, func(c *config.Config) {
+		c.Realtime.ActionTimeout = 45 * time.Second
+		c.Realtime.LongActionTimeout = 20 * time.Minute
+		c.Realtime.PingInterval = 12 * time.Second
+	})
+	res, err := http.Get(h.httpURL("/runtime-config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var rc struct {
+		WSURL        string `json:"ws_url"`
+		Action       int64  `json:"action_timeout_ms"`
+		LongAction   int64  `json:"long_action_timeout_ms"`
+		PingInterval int64  `json:"ping_interval_ms"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&rc); err != nil {
+		t.Fatal(err)
+	}
+	if rc.WSURL == "" || rc.Action != 45_000 || rc.LongAction != 1_200_000 || rc.PingInterval != 12_000 {
+		t.Fatalf("runtime config: %+v", rc)
+	}
+}

@@ -282,7 +282,7 @@ func expiredContext(t *testing.T) context.Context {
 }
 
 func TestCodexPreApprovesDezuxkMCPTools(t *testing.T) {
-	args := strings.Join(codexPolicyArgs("http://127.0.0.1:1/mcp", ""), " ")
+	args := strings.Join(codexPolicyArgs("http://127.0.0.1:1/mcp", "", 0), " ")
 	if !strings.Contains(args, `mcp_servers.dezuxk.default_tools_approval_mode="approve"`) {
 		t.Fatalf("Codex would ask for approvals this session cannot grant: %s", args)
 	}

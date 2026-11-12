@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"app/internal/apperr"
@@ -24,17 +23,40 @@ type Service struct {
 	toolsDir string
 	logger   *slog.Logger
 	client   *http.Client
-	mu       sync.Mutex
+	// probeTimeout bounds one version probe (config binaries.probe_timeout).
+	probeTimeout time.Duration
+	dlSlot       chan struct{} // capacity 1: serialises downloads into toolsDir
+}
+
+// DefaultProbeTimeout mirrors config.Default().Binaries.ProbeTimeout for standalone use (tests, tools).
+const DefaultProbeTimeout = 15 * time.Second
+
+// Option customises a Service.
+type Option func(*Service)
+
+// WithProbeTimeout sets the version probe timeout; values <= 0 keep DefaultProbeTimeout.
+func WithProbeTimeout(d time.Duration) Option {
+	return func(s *Service) {
+		if d > 0 {
+			s.probeTimeout = d
+		}
+	}
 }
 
 // New creates a new binaries Service.
-func New(repo domainbinaries.Repository, toolsDir string, logger *slog.Logger) *Service {
-	return &Service{
-		repo:     repo,
-		toolsDir: toolsDir,
-		logger:   logger,
-		client:   &http.Client{},
+func New(repo domainbinaries.Repository, toolsDir string, logger *slog.Logger, opts ...Option) *Service {
+	s := &Service{
+		repo:         repo,
+		toolsDir:     toolsDir,
+		logger:       logger,
+		client:       &http.Client{},
+		probeTimeout: DefaultProbeTimeout,
+		dlSlot:       make(chan struct{}, 1),
 	}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // List inspects all registered binaries and returns their status.
@@ -155,8 +177,7 @@ func (s *Service) Probe(ctx context.Context, id domainbinaries.BinaryID) (domain
 		return info, nil
 	}
 
-	// Run probe command with 5s timeout
-	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, s.probeTimeout)
 	defer cancel()
 
 	res, err := runner.RunWithOptions(probeCtx, resolvedPath, spec.ProbeArgs, runner.RunOptions{})

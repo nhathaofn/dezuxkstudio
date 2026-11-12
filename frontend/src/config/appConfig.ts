@@ -31,7 +31,14 @@ export const appConfig = {
   } satisfies Preferences,
   /** Extra time the client waits beyond the server action timeout before giving up. */
   clientTimeoutGraceMs: 2_000,
-  /** How often the header latency badge pings the server. */
+  /** Short-lived UI feedback durations. */
+  ui: {
+    /** "Copied" confirmation after copying text. */
+    copyFeedbackMs: 1_500,
+    /** Window in which a second click confirms a delete. */
+    confirmDeleteMs: 3_000,
+  },
+  /** How often the header status pill pings the server. */
   latencyProbeIntervalMs: 5_000,
   /** Max entries kept in the live log view. */
   logBufferSize: 500,

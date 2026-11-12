@@ -1,3 +1,4 @@
+import { appConfig } from "../../config/appConfig";
 import { create } from "zustand";
 import {
   Actions,
@@ -40,7 +41,7 @@ const MIN_WIDTH = 340;
 const MAX_WIDTH = 680;
 
 /** How long "Copied" feedback stays visible after a clipboard copy in the agent panel. */
-export const COPY_FEEDBACK_MS = 1500;
+export const COPY_FEEDBACK_MS = appConfig.ui.copyFeedbackMs;
 
 /** Maps a server history result to store state. */
 function historyState(res: AgentHistoryResult): Pick<AgentState, "messages" | "conversationId"> {

@@ -56,6 +56,34 @@ const (
 	ActionAgentSetModel           = "agent:set_model"
 )
 
+// LongActions lists actions bounded by realtime.long_action_timeout instead of
+// realtime.action_timeout: they wait on the network, the user (browser sign-in,
+// approvals) or a whole workflow. Server and client both derive their timeouts
+// from this single list (the TS copy is generated).
+func LongActions() []string {
+	return []string{
+		ActionBinariesDownload,
+		ActionWorkflowRunNode,
+		ActionWorkflowRunGraph,
+		ActionDiagnosticsExport,
+		ActionAgentList,            // probes every CLI (version + auth + model catalog)
+		ActionAgentProbe,           // same chain for one CLI
+		ActionAgentConnect,         // spawns the CLI and runs the ACP handshake
+		ActionAgentLogin,           // browser OAuth sign-in waits for the user
+		ActionAgentResolveApproval, // an approved action can run a whole workflow
+	}
+}
+
+// IsLongAction reports whether action is listed in LongActions.
+func IsLongAction(action string) bool {
+	for _, a := range LongActions() {
+		if a == action {
+			return true
+		}
+	}
+	return false
+}
+
 // Server-pushed event names (WebSocket).
 const (
 	EventActionProgress     = "action:progress"

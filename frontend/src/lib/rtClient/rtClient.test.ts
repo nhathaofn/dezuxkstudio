@@ -184,6 +184,20 @@ describe("resolveEndpoint", () => {
     const https = { search: "", protocol: "https:", host: "h.test" };
     expect((await resolveEndpoint(env({ location: https })))?.url).toBe("wss://h.test/ws");
   });
+
+  it("takes the server's timeouts from runtime config instead of the hard-coded fallback", async () => {
+    const fetchJson = () =>
+      Promise.resolve({
+        ws_url: "ws://rc/ws",
+        action_timeout_ms: 45_000,
+        long_action_timeout_ms: 1_200_000,
+        ping_interval_ms: 12_000,
+      });
+    const ep = await resolveEndpoint(env({ fetchJson }));
+    expect(ep?.actionTimeoutMs).toBe(45_000);
+    expect(ep?.longActionTimeoutMs).toBe(1_200_000);
+    expect(ep?.pingIntervalMs).toBe(12_000);
+  });
 });
 
 describe("isValidWsUrl", () => {
@@ -192,5 +206,24 @@ describe("isValidWsUrl", () => {
     expect(isValidWsUrl("http://host/ws")).toBe(false);
     expect(isValidWsUrl("ws://user:pw@host/ws")).toBe(false);
     expect(isValidWsUrl("nonsense")).toBe(false);
+  });
+});
+
+describe("isLongAction", () => {
+  it("matches the server's long actions, including sign-in and approvals", async () => {
+    const { isLongAction } = await import("./client");
+    const { Actions } = await import("../../contracts/generated");
+    for (const a of [
+      Actions.AGENT_LOGIN,
+      Actions.AGENT_RESOLVE_APPROVAL,
+      Actions.AGENT_CONNECT,
+      Actions.AGENT_LIST,
+      Actions.AGENT_PROBE,
+      Actions.BINARIES_DOWNLOAD,
+      Actions.WORKFLOW_RUN_GRAPH,
+    ]) {
+      expect(isLongAction(a)).toBe(true);
+    }
+    expect(isLongAction(Actions.SYSTEM_PING)).toBe(false);
   });
 });

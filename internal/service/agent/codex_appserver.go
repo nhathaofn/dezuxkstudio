@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	domainagent "app/internal/domain/agent"
 	"app/internal/safego"
@@ -26,8 +25,7 @@ import (
 // app-server (older versions, protocol changes). The app-server protocol is marked experimental by Codex.
 
 const (
-	codexAppServerInterruptWait = 5 * time.Second // how long a cancelled turn waits for turn/completed
-	codexAppServerMaxLine       = 16 << 20        // largest JSON-RPC line accepted from the app-server
+	codexAppServerMaxLine = 16 << 20 // largest JSON-RPC line accepted from the app-server
 )
 
 // errCodexAppServerUnavailable means the app-server could not be started or initialized; the caller
@@ -302,7 +300,7 @@ func (s *Service) ensureCodexAppServer(ctx context.Context, executable, profileR
 	if err != nil {
 		return nil, err
 	}
-	args := append([]string{"app-server"}, codexPolicyArgs(mcpURL, baseFile)...)
+	args := append([]string{"app-server"}, codexPolicyArgs(mcpURL, baseFile, s.limits.MCPToolTimeout)...)
 	srv, err = s.spawnCodexAppServer(key, executable, args, providerEnv(domainagent.ProviderCodex, envMap), workspaceDir)
 	if err != nil {
 		return nil, fmt.Errorf("%w: start: %v", errCodexAppServerUnavailable, err)
@@ -615,7 +613,7 @@ func (s *Service) runCodexAppServerTurn(ctx context.Context, srv *codexAppServer
 		st.finish("failed", exitErr.Error())
 	case <-ctx.Done():
 		// Ask Codex to stop the turn and give it a moment to report what it already produced.
-		stopCtx, cancel := context.WithTimeout(context.Background(), codexAppServerInterruptWait)
+		stopCtx, cancel := context.WithTimeout(context.Background(), s.limits.InterruptWait)
 		_ = srv.call(stopCtx, "turn/interrupt", map[string]any{"threadId": threadID, "turnId": started.Turn.ID}, nil)
 		select {
 		case <-st.completed:

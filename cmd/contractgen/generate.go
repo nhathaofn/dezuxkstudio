@@ -87,6 +87,12 @@ func Generate() ([]byte, error) {
 		fmt.Fprintf(&b, "  /** %s */\n  %s: %q,\n", a.Summary, constKey(a.Name), a.Name)
 	}
 	b.WriteString("} as const;\nexport type ActionName = (typeof Actions)[keyof typeof Actions];\n\n")
+	b.WriteString("/** Actions bounded by the server's long action timeout (contracts.LongActions). */\n")
+	b.WriteString("export const LongActions: readonly ActionName[] = [\n")
+	for _, name := range contracts.LongActions() {
+		fmt.Fprintf(&b, "  %q,\n", name)
+	}
+	b.WriteString("];\n\n")
 	b.WriteString("export interface ActionMap {\n")
 	for _, a := range contracts.Actions() {
 		p, _ := g.tsType(a.Payload)

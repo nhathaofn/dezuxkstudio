@@ -22,7 +22,7 @@ type WorkflowRunner interface {
 type BinariesManager interface {
 	List(ctx context.Context) ([]domainbinaries.BinaryInfo, error)
 	Probe(ctx context.Context, id domainbinaries.BinaryID) (domainbinaries.BinaryInfo, error)
-	Download(ctx context.Context, id domainbinaries.BinaryID, onProgress func(pct float64, msg string)) (domainbinaries.BinaryInfo, error)
+	Download(ctx context.Context, id domainbinaries.BinaryID, onProgress domainbinaries.ProgressFunc) (domainbinaries.BinaryInfo, error)
 }
 
 // PreferencesManager exposes app preferences read/update to DezuxkStudio's MCP server.

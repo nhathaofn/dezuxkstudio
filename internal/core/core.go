@@ -23,6 +23,7 @@ import (
 	"app/internal/realtime/modules"
 	"app/internal/secrets"
 	"app/internal/server"
+	"app/internal/server/handlers"
 	agentsvc "app/internal/service/agent"
 	binariessvc "app/internal/service/binaries"
 	"app/internal/service/diagnostics"
@@ -135,6 +136,11 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 			MaxBroadcastBodyBytes: cfg.Server.MaxBroadcastBodyBytes,
 			DeclaredEvents:        contracts.EventNames(),
 			WSURL:                 func() string { return c.srv.WSURL() },
+			Timeouts: handlers.Timeouts{
+				Action:       cfg.Realtime.ActionTimeout,
+				LongAction:   cfg.Realtime.LongActionTimeout,
+				PingInterval: cfg.Realtime.PingInterval,
+			},
 		}),
 	})
 	if err != nil {
@@ -178,7 +184,8 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		return nil, err
 	}
 
-	binSvc := binariessvc.New(sqlite.NewBinariesRepository(c.db), o.Paths.Tools(), o.Logger)
+	binSvc := binariessvc.New(sqlite.NewBinariesRepository(c.db), o.Paths.Tools(), o.Logger,
+		binariessvc.WithProbeTimeout(cfg.Binaries.ProbeTimeout))
 
 	wfSvc, err := workflow.New(workflow.Options{
 		Paths:  o.Paths,
@@ -204,6 +211,9 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 			AuthProbeTimeout:    cfg.Agent.AuthProbeTimeout,
 			LoginTimeout:        cfg.Agent.LoginTimeout,
 			ModelCatalogTimeout: cfg.Agent.ModelCatalogTimeout,
+			// An MCP tool call may run a whole workflow, which the hub bounds by the long action timeout.
+			MCPToolTimeout:      cfg.Realtime.LongActionTimeout,
+			MCPShutdownTimeout:  cfg.Server.ShutdownTimeout,
 			StatusCacheTTL:      cfg.Agent.StatusCacheTTL,
 			ApprovalTTL:         cfg.Agent.ApprovalTTL,
 			HistoryLimit:        cfg.Agent.HistoryLimit,

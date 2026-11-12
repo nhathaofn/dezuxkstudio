@@ -15,7 +15,7 @@ import type { ActionProgress, BinaryID, BinaryInfo, BinaryStatus } from "../../c
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { getBridge, isDesktop } from "../../lib/bridge";
-import { useT, type MessageKey } from "../../lib/i18n";
+import { translateServerMessage, useT, type MessageKey } from "../../lib/i18n";
 import { useBinariesStore } from "./useBinariesStore";
 
 function getStatusBadge(status: BinaryStatus, t: (k: MessageKey) => string) {
@@ -207,7 +207,11 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
       {isDownloading && downloadProgress && (
         <div className="binary-progress-wrap">
           <div className="binary-progress-meta">
-            <span>{downloadProgress.message || t("tools.downloading")}</span>
+            <span>
+              {translateServerMessage(t, downloadProgress.msg_key, downloadProgress.msg_params) ||
+                downloadProgress.message ||
+                t("tools.downloading")}
+            </span>
             <span>{downloadProgress.percent.toFixed(1)}%</span>
           </div>
           <div className="progress">

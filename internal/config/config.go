@@ -51,6 +51,7 @@ type Config struct {
 	Storage     StorageConfig
 	Diagnostics DiagnosticsConfig
 	Update      UpdateConfig
+	Binaries    BinariesConfig
 	Desktop     DesktopConfig
 	Agent       AgentConfig
 }
@@ -108,6 +109,11 @@ type StorageConfig struct {
 // DiagnosticsConfig configures diagnostic bundle exports.
 type DiagnosticsConfig struct {
 	Keep int
+}
+
+// BinariesConfig configures external tool (ffmpeg, yt-dlp...) inspection.
+type BinariesConfig struct {
+	ProbeTimeout time.Duration // max duration of `<tool> -version`; a cold start under antivirus can take seconds
 }
 
 // UpdateConfig configures release update checks.
@@ -200,6 +206,7 @@ func Default(mode Mode) *Config {
 			BusyTimeout:   5 * time.Second,
 		},
 		Diagnostics: DiagnosticsConfig{Keep: 5},
+		Binaries:    BinariesConfig{ProbeTimeout: 15 * time.Second},
 		Update: UpdateConfig{
 			FeedURL:        buildinfo.UpdateFeedURL,
 			Timeout:        10 * time.Second,
@@ -208,7 +215,7 @@ func Default(mode Mode) *Config {
 		Agent: AgentConfig{
 			TurnTimeout:         10 * time.Minute,
 			InitializeTimeout:   15 * time.Second,
-			VersionProbeTimeout: 1500 * time.Millisecond,
+			VersionProbeTimeout: 5 * time.Second, // Node-based CLI shims cold-start slowly on Windows
 			AuthProbeTimeout:    10 * time.Second,
 			LoginTimeout:        3 * time.Minute,
 			ModelCatalogTimeout: 30 * time.Second,

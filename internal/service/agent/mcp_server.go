@@ -16,9 +16,10 @@ import (
 )
 
 type localMCPServer struct {
-	http  *http.Server
-	url   string
-	token string
+	http            *http.Server
+	shutdownTimeout time.Duration
+	url             string
+	token           string
 }
 
 func startLocalMCPServer(s *Service, log *slog.Logger) (*localMCPServer, error) {
@@ -40,8 +41,9 @@ func startLocalMCPServer(s *Service, log *slog.Logger) (*localMCPServer, error) 
 	)
 
 	srv := &localMCPServer{
-		url:   "http://" + addr + "/mcp",
-		token: token,
+		url:             "http://" + addr + "/mcp",
+		token:           token,
+		shutdownTimeout: s.limits.MCPShutdownTimeout,
 	}
 	srv.http = &http.Server{
 		ReadHeaderTimeout: 5 * time.Second,
@@ -76,7 +78,7 @@ func (m *localMCPServer) close() {
 	if m == nil || m.http == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), m.shutdownTimeout)
 	defer cancel()
 	_ = m.http.Shutdown(ctx)
 	_ = m.http.Close()
