@@ -107,7 +107,12 @@
 .providers-list {
   overflow: auto;
   min-height: 0;
-  scrollbar-width: thin;
+  /* Still scrolls (wheel, touch, arrow keys); only the bar is hidden. */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.providers-list::-webkit-scrollbar {
+  display: none;
 }
 .providers-list h3 {
   position: sticky;
