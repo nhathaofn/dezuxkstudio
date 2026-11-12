@@ -675,7 +675,16 @@ func (s *Service) Connect(ctx context.Context, id domainagent.ProviderID) (domai
 	s.mu.Unlock()
 
 	s.emitStatus(info)
+	s.rememberConnection(ctx, id)
 	return info, nil
+}
+
+// rememberConnection stores the provider the user left connected so the next app start reconnects it
+// (see RestoreConnection). Every provider kind (ACP and per-turn CLI) must go through here.
+func (s *Service) rememberConnection(ctx context.Context, id domainagent.ProviderID) {
+	if err := s.repo.SetRememberedConnection(context.WithoutCancel(ctx), id); err != nil {
+		s.log.Warn("agent: remember connection", "error", err)
+	}
 }
 
 func (s *Service) connectPerTurnCLI(
@@ -723,10 +732,7 @@ func (s *Service) connectPerTurnCLI(
 	// The model list of a per-turn CLI is read from the CLI itself. Start that now (in the background,
 	// and push the status when it arrives) so the picker is filled without the user pressing "Check".
 	s.refreshModelCatalogAsync(id, resolved)
-	// Remember it so the next app start reconnects without asking (see RestoreConnection).
-	if err := s.repo.SetRememberedConnection(context.WithoutCancel(ctx), id); err != nil {
-		s.log.Warn("agent: remember connection", "error", err)
-	}
+	s.rememberConnection(ctx, id)
 	return info, nil
 }
 

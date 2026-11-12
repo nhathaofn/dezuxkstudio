@@ -184,3 +184,24 @@ func TestListAfterRestoreShowsModels(t *testing.T) {
 		})
 	}
 }
+
+// Connecting a provider by hand must be remembered for every kind of provider, so the next start
+// reconnects the one the user left connected (not whichever was remembered before).
+func TestConnectRemembersTheProviderTheUserConnected(t *testing.T) {
+	for _, id := range restoreProviders {
+		t.Run(string(id), func(t *testing.T) {
+			e := newRestoreEnv(t, id)
+			other := domainagent.ProviderCodex
+			if id == other {
+				other = domainagent.ProviderClaude
+			}
+			e.repo.remembered = other // an earlier session left another provider connected
+			if _, err := e.svc.Connect(context.Background(), id); err != nil {
+				t.Fatal(err)
+			}
+			if e.repo.remembered != id {
+				t.Fatalf("remembered %q after connecting %q", e.repo.remembered, id)
+			}
+		})
+	}
+}
