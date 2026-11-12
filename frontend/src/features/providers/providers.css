@@ -56,7 +56,7 @@
 }
 .providers-panes {
   display: grid;
-  grid-template-columns: 224px minmax(0, 1fr);
+  grid-template-columns: minmax(224px, 30%) minmax(0, 1fr);
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -126,12 +126,12 @@
 .providers-list-row {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   width: 100%;
-  height: 44px;
-  padding: 0 var(--space-3);
+  height: 34px;
+  padding: 0 var(--space-2);
   border: 0;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-secondary);
   font: inherit;
@@ -151,12 +151,6 @@
 }
 .providers-list-row > .providers-truncate {
   flex: 1;
-  font-size: var(--text-base);
-}
-.providers-list-row .providers-avatar {
-  width: 28px;
-  height: 28px;
-  font-size: var(--text-sm);
 }
 .providers-avatar {
   display: inline-flex;
