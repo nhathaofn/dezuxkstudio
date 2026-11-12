@@ -135,7 +135,7 @@ Thứ tự ưu tiên: mặc định → `config.json` → môi trường → c�
 
 - Version lấy từ git tag `vX.Y.Z`. `task version:sync` chép version sang `wails.json` và `frontend/package.json`. Metadata (version, commit, ngày build, URL kiểm tra cập nhật) được nhúng qua `-ldflags` vào `internal/buildinfo`.
 - Build dev và prod tách nhau bằng build tag `dev` (`wails dev`). Tag `dev` nới CSP cho Vite HMR và cho phép origin localhost.
-- CI ([ci.yml](.github/workflows/ci.yml)): job Windows chạy lint, test, build desktop + bộ cài NSIS; job Ubuntu chạy audit dependency. CI **chưa** chạy race detector.
+- CI ([ci.yml](.github/workflows/ci.yml)): job Windows chạy lint, test, build desktop + bộ cài NSIS; job Windows thứ hai chạy race detector (tạm thời không chặn merge cho tới lần chạy xanh đầu tiên); job Ubuntu chạy audit dependency.
 - Release ([release.yml](.github/workflows/release.yml)) chạy khi có tag `v*`: build, ký mã Windows/macOS (bước ký tự bỏ qua nếu chưa có secret), notarize macOS, tính SHA-256, rồi đăng GitHub Release. Bản build tự trỏ tới feed `releases/latest` của repo; app chỉ **thông báo** có bản mới, không tự cài đè.
 
 Secret tùy chọn để ký mã: `WINDOWS_CERT_PFX_BASE64`, `WINDOWS_CERT_PASSWORD`, `MACOS_CERT_P12_BASE64`, `MACOS_CERT_PASSWORD`, `MACOS_SIGN_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`.
@@ -143,6 +143,11 @@ Secret tùy chọn để ký mã: `WINDOWS_CERT_PFX_BASE64`, `WINDOWS_CERT_PASSW
 ---
 
 ## 8. Thêm một tính năng mới
+
+**Bước 0: chọn dạng tính năng để agent tự dùng được, không cần viết code cho agent** (quy tắc §11 trong `.agents/rules/architecture.md`):
+
+- Tính năng **xử lý input → output** (ảnh, video, file, text): viết thành **node** trong `internal/tools/<tên>/` và thêm vào danh sách node trong `workflow.New`. UI, workflow và agent đều tự nhận qua `engine.Spec`. App từ chối khởi động nếu spec khai báo thiếu (`engine.ValidateSpec`). Xem [docs/agent-feature-integration.md](docs/agent-feature-integration.md).
+- Tính năng **khác** (cài đặt, project, điều hướng…): làm theo các bước bên dưới, rồi thêm **một MCP tool** gọi đúng service đó.
 
 Ví dụ thêm tính năng `projects` có action `projects:list`:
 
@@ -154,7 +159,8 @@ Ví dụ thêm tính năng `projects` có action `projects:list`:
 6. **Wiring**: thêm **một dòng** vào `modules()` trong [internal/core/core.go](internal/core/core.go).
 7. **Sinh hợp đồng TS**: `task generate`.
 8. **Frontend**: tạo `features/projects/` (store gọi `rtClient.request(Actions.PROJECTS_LIST, {...})`, kiểu dữ liệu lấy hoàn toàn từ file sinh tự động), thêm chuỗi i18n vào `en.ts` và `vi.ts`, và nếu cần màn hình riêng thì thêm 1 dòng vào `app/navigation.ts`.
-9. **Test**: unit test cạnh package; nếu cần thì thêm case end-to-end vào `test/e2e_test.go`.
+9. **Agent**: thêm MCP tool trong `internal/service/agent/mcp_tools.go` gọi service ở bước 3. Thao tác sửa/xoá dữ liệu người dùng phải qua `needsApproval`.
+10. **Test**: unit test cạnh package; nếu cần thì thêm case end-to-end vào `test/e2e_test.go`.
 
 Các rào chắn tự động:
 
@@ -167,4 +173,4 @@ Các rào chắn tự động:
 ## 9. Ghi chú
 
 - Windows Smart App Control có thể chặn file test `.exe` vừa build trong `%TEMP%`. Taskfile đặt `GOTMPDIR=build/.gotmp` để giảm tình trạng này; nếu vẫn bị chặn, chạy lại lệnh.
-- Race detector cần CGO và trình biên dịch C (`task test:race`, ví dụ MSYS2 `mingw-w64-ucrt-x86_64-gcc` trên Windows). CI hiện chưa chạy race.
+- Race detector cần CGO và trình biên dịch C (`task test:race`, ví dụ MSYS2 `mingw-w64-ucrt-x86_64-gcc` trên Windows). CI chạy race trên Windows.

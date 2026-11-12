@@ -11,8 +11,10 @@ Vì vậy: **một tính năng mới được viết dưới dạng node và kha
 ## 1. Checklist khi thêm một node mới
 
 1. Viết node trong `internal/tools/<ten_tinh_nang>/node.go` bằng `engine.Typed(spec, func(ctx, In) (Out, error))`.
-2. Đăng ký node trong `internal/service/workflow/service.go` (`reg.Register(...)`).
+2. Thêm node vào danh sách `nodes` trong `workflow.New` (`internal/service/workflow/service.go`).
 3. Khai báo `engine.Spec` đầy đủ (mục 2 bên dưới). Đây là "hợp đồng" duy nhất mà agent đọc.
+   `engine.ValidateSpec` kiểm tra spec lúc khởi động: thiếu `Description`, `select` không có `Options`,
+   `Default` sai, `Destructive` không phải toggle hoặc mặc định `true`… thì app **không khởi động**.
 4. Chạy `go run ./cmd/contractgen` nếu đổi struct trong `internal/engine` / `internal/contracts`.
 5. UI của tính năng nên dùng đúng `Default` / `Options` trong spec. Tốt nhất là đọc từ spec, để UI và agent không bị lệch nhau.
 6. Thêm test như `internal/service/agent/access_test.go` (`TestWorkflowRunNode…`), dùng `fakeWorkflow{specs: ...}` với spec thật của node.

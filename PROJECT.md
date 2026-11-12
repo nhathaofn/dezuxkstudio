@@ -98,6 +98,9 @@ and merge duplicated mechanisms into shared packages. Rules are in `.agents/rule
 | F21 | Download errors as ERR_UNAVAILABLE/ERR_INTEGRITY; cancellable queue; translated progress | `service/binaries` | DONE |
 | F22 | Shared packages replacing duplicates: `proc`, `lookup`, `httpclient`, `fsutil.IsFile`, single progress path, `verifyChecksum`, `LimitsFrom` | `internal/*` | DONE |
 | F23 | Frontend: chat unlock after reconnect, no heartbeat logs, `useFlash`, `fakeBridge` | `frontend/src` | DONE |
+| F24 | Agent-usable features enforced: `engine.ValidateSpec` at startup, node list in `workflow.New` | `internal/engine`, `service/workflow` | DONE |
+| F25 | Rules for logging, protocol versioning, performance limits, git workflow; log key `error` standardised | `.agents/rules/architecture.md` §11–15 | DONE |
+| F26 | Race detector job in CI (Windows, non-blocking at first) | `.github/workflows/ci.yml` | DONE |
 
 ## Known gaps
 - `go test -race` not run (no C compiler locally, not in CI).
@@ -105,3 +108,6 @@ and merge duplicated mechanisms into shared packages. Rules are in `.agents/rule
 - No client-side detection of a half-open WebSocket.
 - Portable `tools/` next to the executable is still searched (violates the paths rule; kept for portable builds).
 - Startup update check reports an error when the feed has no release.
+- Watermark node reads every input image into memory before processing (violates rules §14); switch it to `ProcessStream`.
+- Race CI job is non-blocking until its first green run; then drop `continue-on-error`.
+- Protocol rule §13 (accept the previous subprotocol during a rollout) is not implemented yet: the hub accepts only `dezuxk.v1`.

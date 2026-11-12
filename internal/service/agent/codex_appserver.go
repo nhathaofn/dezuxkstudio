@@ -351,7 +351,7 @@ func (s *Service) runCodexTurn(ctx context.Context, executable, profileRoot, wor
 			return err
 		}
 		// Remember per executable, so an old CLI does not pay the failed start on every turn.
-		s.log.Warn("agent: codex app-server unavailable, falling back to codex exec", "err", err)
+		s.log.Warn("agent: codex app-server unavailable, falling back to codex exec", "error", err)
 		s.mu.Lock()
 		s.codexAppServerBroken[executable] = true
 		s.mu.Unlock()

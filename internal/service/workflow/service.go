@@ -34,12 +34,18 @@ func New(o Options) (*Service, error) {
 
 	reg := engine.NewRegistry()
 
-	// Register built-in watermark remover node
-	wmNode := watermark.NewNode(watermark.Options{
-		MediaDir: o.Paths.Media(),
-	})
-	if err := reg.Register(wmNode); err != nil {
-		return nil, fmt.Errorf("workflow: register watermark node: %w", err)
+	// Built-in feature nodes. A new feature = one entry here: the UI, workflows and the agent
+	// (MCP workflow_* tools) all pick it up from its Spec, with no agent-specific code.
+	nodes := []engine.Node{
+		watermark.NewNode(watermark.Options{MediaDir: o.Paths.Media()}),
+	}
+	for _, n := range nodes {
+		if err := engine.ValidateSpec(n.Spec()); err != nil {
+			return nil, fmt.Errorf("workflow: incomplete node spec: %w", err)
+		}
+	}
+	if err := reg.Register(nodes...); err != nil {
+		return nil, fmt.Errorf("workflow: register nodes: %w", err)
 	}
 
 	return &Service{

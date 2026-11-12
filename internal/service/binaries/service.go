@@ -79,7 +79,7 @@ func (s *Service) List(ctx context.Context) ([]domainbinaries.BinaryInfo, error)
 	for _, id := range allIDs {
 		info, err := s.Probe(ctx, id)
 		if err != nil {
-			s.logger.WarnContext(ctx, "failed to probe binary", "id", id, "err", err)
+			s.logger.WarnContext(ctx, "failed to probe binary", "id", id, "error", err)
 			spec := domainbinaries.Registry[id]
 			_, canDownload := spec.CurrentDownloadSpec()
 			infos = append(infos, domainbinaries.BinaryInfo{
@@ -183,7 +183,7 @@ func (s *Service) Probe(ctx context.Context, id domainbinaries.BinaryID) (domain
 
 	res, err := runner.RunWithOptions(probeCtx, resolvedPath, spec.ProbeArgs, runner.RunOptions{})
 	if err != nil {
-		s.logger.WarnContext(ctx, "binary probe execution failed", "id", id, "path", resolvedPath, "err", err)
+		s.logger.WarnContext(ctx, "binary probe execution failed", "id", id, "path", resolvedPath, "error", err)
 		info.Status = domainbinaries.StatusInvalid
 		return info, nil
 	}

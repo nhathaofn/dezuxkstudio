@@ -80,3 +80,49 @@ A second copy of any of these is a review blocker; extend the shared package ins
 - Timing behaviour is tested for real (fake slow CLIs/tools as scripts, real WebSocket/HTTP servers), not only with mocks.
 - Frontend unit tests: `src/**/*.test.ts` (Vitest). Logic that needs testing is kept framework-free (e.g. `Flash` behind `useFlash`).
 - `task check` must pass before committing.
+
+## 11. Features must be agent-usable by construction
+The agent has no hard-coded feature list. Choose the feature's shape so the agent uses it with **zero agent code**:
+
+| The feature… | Build it as | The agent uses it through |
+| :--- | :--- | :--- |
+| processes input → output (files, media, text) | an **engine node** in `internal/tools/<name>/`, listed in `workflow.New` | `workflow_list_specs` / `workflow_run_node` / `workflow_run_graph` (same path as the UI) |
+| is not input → output (settings, projects, navigation…) | a service + realtime action, **plus** one MCP tool in `agent/mcp_tools.go` that calls the same service | that MCP tool |
+
+- A realtime action alone is invisible to the agent. Never put feature logic in the agent package or in an MCP tool; both call the service.
+- The node's `engine.Spec` is the agent's only contract. `engine.ValidateSpec` runs at startup (the app refuses to start on an incomplete spec): non-empty `Label`/`Description`; every param labelled; `select` has `Options`/`OptionsFrom` and a valid `Default`; integer `Default` within `Min..Max`; `Destructive` only on toggles and defaulting to `false`; `ParamRoleOutputDir` only on text params; known port types; unique names.
+- `Default` values are the UI's defaults; the UI should read them from the spec, not repeat them.
+- Node results carry counts, per-file in/out paths, status and actionable errors (the agent may only report what the result says). Nodes honour `ctx`, report with `progress.Report`, write with `fsutil`.
+- MCP tools:
+  - Anything that modifies or deletes the user's data outside trusted dirs, or turns on a `Destructive` param → `s.needsApproval(tool, title, summary, exec)`. Read-only and trusted-dir work runs directly.
+  - Every path goes through `s.policy` (`Resolve`, `ValidateRead`, `ValidateWrite`).
+  - Return `mcpJSON(...)` / `mcpError(...)`; usage guidance goes in the tool description, never in `profile/policy.md`.
+  - Add the feature to `buildCapabilitiesSnapshot` if it should appear in `studio_list_capabilities`.
+- Details and examples: `docs/agent-feature-integration.md`.
+
+## 12. Logging
+- `slog` only; use the `...Context(ctx, ...)` variants when a ctx exists.
+- Levels: `Debug` per-action/per-step trace; `Info` lifecycle (startup, connect/disconnect, migration, shutdown); `Warn` degraded but handled (fallback taken, probe failed, optional step skipped); `Error` needs attention (internal error, panic, data-loss risk). A user mistake (validation, not signed in) is not an error log.
+- Attribute keys (snake_case, reuse these): `error` (never `err`), `request_id`, `action`, `client_id`, `provider`, `id` (feature item), `path` (app-owned paths only), `duration`.
+- Never log secrets, tokens, API keys, prompt/chat content or file contents. The logger redacts known secret keys; do not rely on it.
+- `ERR_INTERNAL` is logged once, where `realtime` classifies it (with `request_id`); services do not log an error they also return.
+
+## 13. Protocol & contract versioning
+- `contracts.ProtocolVersion` (`dezuxk.v1`) changes only for a **breaking** change: a frame shape/semantics change, or removing/renaming an action, event or DTO field.
+- Additive changes keep the version: new actions/events, new optional DTO fields (`omitempty` in Go, `.optional()` in Zod, a fallback in the client).
+- While a new version rolls out, the hub accepts the previous subprotocol too and the client sends the newest it supports (client/server mode can run mixed versions; desktop ships both halves together).
+- Never reuse a removed action/event name for a different meaning. SQLite migrations follow the same rule: append-only.
+
+## 14. Performance & resource limits
+- Every limit is a config key (`realtime.max_concurrent_actions` 64, `realtime.max_message_bytes` 1 MiB, `realtime.client_buffer_size` 256, `agent.history_limit` 200, `agent.context_messages` 10 x `agent.context_message_chars` 1200, `log.max_size_mb` 10 x `log.max_backups` 3) or a named constant with a comment saying why (`maxNodeInputFiles` 10 000 per agent run, MCP request body 4 MiB, Codex JSON-RPC line 16 MiB).
+- CPU-parallel work uses a bounded worker pool; `0` workers = automatic (CPU count); the user-settable maximum is declared in the spec (watermark: 64).
+- Batches must not need memory proportional to the whole batch: stream items to workers (`ProcessStream`) instead of loading every file first.
+- Hot paths (sending a prompt, finishing a turn, status pushes) never spawn processes: use cached state (`statusInfo`) and refresh in the background.
+- Downloads and file processing stream to disk (`fsutil.WriteAtomic`); never read a whole archive into memory.
+
+## 15. Git workflow
+- Never commit to `main`. Branches: `feat/<topic>`, `fix/<topic>`, `refactor/<topic>`, `docs/<topic>`, `ci/<topic>` (kebab-case).
+- Commits follow Conventional Commits: `type(scope): summary`, English, imperative, <= 72 chars; types `feat`, `fix`, `refactor`, `docs`, `test`, `ci`, `chore`; scope = package/feature (`agent`, `binaries`, `realtime`...). The body explains why. One logical change per commit.
+- Generated files (`frontend/src/contracts/generated.ts`) are committed with the Go change that produced them.
+- Merge into `main` only through a PR with: CI green (lint, test, build; race once it is blocking), `task check` run locally, tests for new behaviour, docs/rules updated when a convention changes, and a description of user-visible changes and migrations. Merge commits; no force-push to `main`.
+- Releases are tags `vX.Y.Z` on `main` (README §7).

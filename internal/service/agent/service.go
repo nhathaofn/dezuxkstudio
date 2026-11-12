@@ -149,7 +149,7 @@ func New(o Options) (*Service, error) {
 	setProfileSecretStore(o.Secrets)
 	allowedDirs, err := o.Repo.ListAllowedDirs(context.Background())
 	if err != nil {
-		o.Logger.Warn("agent: failed to load allowed dirs", "err", err)
+		o.Logger.Warn("agent: failed to load allowed dirs", "error", err)
 	}
 	s := &Service{
 		repo:               o.Repo,
@@ -221,7 +221,7 @@ func (s *Service) List(ctx context.Context) ([]domainagent.ProviderInfo, error) 
 			defer wg.Done()
 			info, err := s.Probe(ctx, id)
 			if err != nil {
-				s.log.WarnContext(ctx, "agent: probe failed", "provider", id, "err", err)
+				s.log.WarnContext(ctx, "agent: probe failed", "provider", id, "error", err)
 				spec := domainagent.Registry[id]
 				out[i] = domainagent.ProviderInfo{
 					ID:                id,
@@ -618,7 +618,7 @@ func (s *Service) Connect(ctx context.Context, id domainagent.ProviderID) (domai
 	// before the first message; a failure here is not fatal, the first turn retries lazily.
 	eagerSessionID, sessErr := transport.NewSession(initCtx, workDir, s.systemPrompt(initCtx, id))
 	if sessErr != nil {
-		s.log.Warn("agent: eager session/new failed", "provider", id, "err", sessErr)
+		s.log.Warn("agent: eager session/new failed", "provider", id, "error", sessErr)
 		eagerSessionID = ""
 	} else {
 		s.applyACPSessionModels(initCtx, id, transport, eagerSessionID)
@@ -790,12 +790,12 @@ func (s *Service) SendPrompt(ctx context.Context, text string) (string, domainag
 		conv.Title = conversationTitle(trimmed)
 	}
 	if err := s.repo.SaveConversation(ctx, conv); err != nil {
-		s.log.Warn("agent: failed to save conversation", "err", err)
+		s.log.Warn("agent: failed to save conversation", "error", err)
 	}
 	// Read twice the replay size: error/empty rows are filtered out before the newest N are kept.
 	history, err := s.repo.ListConversationMessages(ctx, conversationID, s.limits.ContextMessages*2)
 	if err != nil {
-		s.log.Warn("agent: failed to read history before turn", "err", err)
+		s.log.Warn("agent: failed to read history before turn", "error", err)
 	}
 	if err := s.repo.AppendChatMessage(ctx, domainagent.ChatMessage{
 		ID:             userMsgID,
@@ -805,7 +805,7 @@ func (s *Service) SendPrompt(ctx context.Context, text string) (string, domainag
 		CreatedAt:      now,
 		ConversationID: conversationID,
 	}); err != nil {
-		s.log.Warn("agent: failed to persist user message", "err", err)
+		s.log.Warn("agent: failed to persist user message", "error", err)
 	}
 
 	s.emitStatusOf(ctx, providerID)
@@ -1150,7 +1150,7 @@ func (s *Service) persistAssistantMessage(providerID domainagent.ProviderID, mes
 		CreatedAt:      now,
 		ConversationID: conversationID,
 	}); err != nil {
-		s.log.Warn("agent: failed to persist assistant message", "err", err)
+		s.log.Warn("agent: failed to persist assistant message", "error", err)
 	}
 	if conversationID != "" {
 		_ = s.repo.SaveConversation(context.Background(), domainagent.Conversation{ID: conversationID, ProviderID: providerID, CreatedAt: now, UpdatedAt: now})

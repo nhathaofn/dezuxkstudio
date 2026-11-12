@@ -57,7 +57,7 @@ func (s *Service) loadModelSelections(ctx context.Context) {
 	for _, id := range domainagent.AllProviderIDs() {
 		sel, err := s.repo.GetModelSelection(ctx, id)
 		if err != nil {
-			s.log.Warn("agent: load model selection", "provider", id, "err", err)
+			s.log.Warn("agent: load model selection", "provider", id, "error", err)
 			continue
 		}
 		s.models.mu.Lock()
@@ -220,7 +220,7 @@ func (s *Service) applyACPSessionModels(ctx context.Context, id domainagent.Prov
 		return
 	}
 	if err := client.SetModel(ctx, sessionID, sel.Model); err != nil {
-		s.log.Warn("agent: apply selected model", "provider", id, "model", sel.Model, "err", err)
+		s.log.Warn("agent: apply selected model", "provider", id, "model", sel.Model, "error", err)
 		return
 	}
 	s.models.mu.Lock()
@@ -281,7 +281,7 @@ func (s *Service) ensureModelCatalog(ctx context.Context, id domainagent.Provide
 		models, err = loadClaudeModels(ctx, executable)
 	}
 	if err != nil || len(models) == 0 {
-		s.log.Warn("agent: load model catalog", "provider", id, "err", err)
+		s.log.Warn("agent: load model catalog", "provider", id, "error", err)
 		return false
 	}
 	s.models.mu.Lock()
