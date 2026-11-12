@@ -154,6 +154,8 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 // modules is the single list of feature modules mounted into the hub.
 func (c *Core) modules(o Options) ([]realtime.Module, error) {
 	cfg := o.Config
+	// One secret store for every service: OS keyring, else an encrypted file in the data dir, else memory.
+	secretStore := secrets.NewDurableStore(buildinfo.AppID, filepath.Join(o.Paths.Data, "secrets"))
 
 	sysSvc := system.New(cfg.Mode, o.Paths, o.OpenDirectory)
 
@@ -204,15 +206,14 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		MediaDir:     o.Paths.Media(),
 		ProfilesDir:  o.Paths.AgentProfiles(),
 		AppVersion:   buildinfo.Version,
-		// Provider API keys go to the OS credential store (in-memory fallback where none exists).
-		Secrets:     secrets.NewDesktopStore(buildinfo.AppID),
-		Limits:      agentsvc.LimitsFrom(cfg),
-		Logger:      o.Logger,
-		Workflow:    wfSvc,
-		Binaries:    binSvc,
-		Preferences: prefSvc,
-		System:      sysSvc,
-		Diagnostics: diagSvc,
+		Secrets:      secretStore,
+		Limits:       agentsvc.LimitsFrom(cfg),
+		Logger:       o.Logger,
+		Workflow:     wfSvc,
+		Binaries:     binSvc,
+		Preferences:  prefSvc,
+		System:       sysSvc,
+		Diagnostics:  diagSvc,
 		OnStatusChanged: func(info domainagent.ProviderInfo) {
 			c.hub.Publish(contracts.EventAgentStatusChanged, contracts.NewAgentProviderInfo(info))
 		},
