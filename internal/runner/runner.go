@@ -82,7 +82,6 @@ func RunWithOptions(ctx context.Context, executable string, args []string, opts 
 	var wg sync.WaitGroup
 
 	readLines := func(r io.Reader, buf *bytes.Buffer, onLine func(string), checkProgress bool) error {
-		defer wg.Done()
 		defer func() {
 			_, _ = io.Copy(io.Discard, r)
 		}()
@@ -113,10 +112,15 @@ func RunWithOptions(ctx context.Context, executable string, args []string, opts 
 
 	var stdoutErr, stderrErr error
 	wg.Add(2)
+	// wg.Done must run AFTER the error is stored: wg.Wait (then <-done) is what makes
+	// stdoutErr/stderrErr safe to read below. Deferring Done inside readLines released the
+	// waiter before the assignment and was a data race.
 	safego.Go("runner.stdout", func() {
+		defer wg.Done()
 		stdoutErr = readLines(stdoutPipe, &stdoutBuf, opts.OnStdoutLine, true)
 	})
 	safego.Go("runner.stderr", func() {
+		defer wg.Done()
 		stderrErr = readLines(stderrPipe, &stderrBuf, opts.OnStderrLine, true)
 	})
 

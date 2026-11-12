@@ -124,5 +124,5 @@ The agent has no hard-coded feature list. Choose the feature's shape so the agen
 - Never commit to `main`. Branches: `feat/<topic>`, `fix/<topic>`, `refactor/<topic>`, `docs/<topic>`, `ci/<topic>` (kebab-case).
 - Commits follow Conventional Commits: `type(scope): summary`, English, imperative, <= 72 chars; types `feat`, `fix`, `refactor`, `docs`, `test`, `ci`, `chore`; scope = package/feature (`agent`, `binaries`, `realtime`...). The body explains why. One logical change per commit.
 - Generated files (`frontend/src/contracts/generated.ts`) are committed with the Go change that produced them.
-- Merge into `main` only through a PR with: CI green (lint, test, build; race once it is blocking), `task check` run locally, tests for new behaviour, docs/rules updated when a convention changes, and a description of user-visible changes and migrations. Merge commits; no force-push to `main`.
+- Merge into `main` only through a PR with: CI green (lint, test, build, race), `task check` run locally, tests for new behaviour, docs/rules updated when a convention changes, and a description of user-visible changes and migrations. Merge commits; no force-push to `main`.
 - Releases are tags `vX.Y.Z` on `main` (README §7).

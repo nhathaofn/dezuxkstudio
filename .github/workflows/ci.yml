@@ -64,8 +64,6 @@ jobs:
   race:
     name: Race detector (Windows)
     runs-on: windows-latest
-    # Non-blocking until its first green run on main; then remove this line so races fail CI.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
