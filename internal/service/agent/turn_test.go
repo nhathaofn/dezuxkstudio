@@ -88,3 +88,28 @@ func TestOutputAfterDisconnectIsDropped(t *testing.T) {
 		}
 	}
 }
+
+// A turn cut off by a disconnect keeps its partial reply but sends no done/error: the UI may already be
+// waiting for the next turn on a new connection.
+func TestSupersededTurnStoresButDoesNotReport(t *testing.T) {
+	svc, repo, events := newTurnTestService(t)
+	tr := newTurn("msg-1", "conv-1", domainagent.ProviderCodex, svc.connSeq.Load(), nil, func() {})
+	svc.mu.Lock()
+	svc.activeID, svc.turn = domainagent.ProviderCodex, tr
+	svc.mu.Unlock()
+	svc.emitChat(domainagent.ChatEvent{Type: domainagent.ChatEventDelta, MessageID: "msg-1", Text: "Câu trả lời dở dang\n"})
+	if err := svc.Disconnect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	svc.endTurn(tr, errTurnCancelled)
+	for _, e := range events() {
+		if e.Type == domainagent.ChatEventDone || e.Type == domainagent.ChatEventError {
+			t.Fatalf("superseded turn reported %s", e.Type)
+		}
+	}
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	if len(repo.messages) != 1 || repo.messages[0].Text != "Câu trả lời dở dang\n" {
+		t.Fatalf("partial reply not kept: %+v", repo.messages)
+	}
+}

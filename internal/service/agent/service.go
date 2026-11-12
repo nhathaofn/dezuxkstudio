@@ -1150,7 +1150,10 @@ func (s *Service) runCLITurn(ctx context.Context, drv turnDriver, t *turn, promp
 // already ended it) do nothing.
 func (s *Service) endTurn(t *turn, err error) {
 	t.endOnce.Do(func() {
-		s.flushGuard(t)
+		// A turn whose connection was replaced (disconnect, reconnect) only stores what it produced: its
+		// last text and done/error must not reach a UI that may already be waiting for the next turn.
+		current := s.connSeq.Load() == t.connToken
+		s.flushGuard(t, current)
 		// A user cancel ends the turn normally: the partial reply is kept and nothing is reported as an error.
 		if errors.Is(err, errTurnCancelled) {
 			err = nil
@@ -1161,13 +1164,16 @@ func (s *Service) endTurn(t *turn, err error) {
 		if s.turn == t {
 			s.turn = nil
 		}
-		if err != nil && isAuthError(err) && s.connSeq.Load() == t.connToken {
+		if err != nil && isAuthError(err) && current {
 			s.states[t.providerID] = domainagent.StateUnauthenticated
 			s.authStates[t.providerID] = domainagent.AuthUnauthenticated
 			s.lastErrors[t.providerID] = err
 			delete(s.authProbes, t.providerID) // the next probe must re-check instead of serving the cache
 		}
 		s.mu.Unlock()
+		if !current {
+			return
+		}
 
 		if err != nil {
 			if appendErr := s.repo.AppendChatMessage(context.Background(), domainagent.ChatMessage{
@@ -1597,9 +1603,12 @@ func (s *Service) touchTurn(messageID string) {
 	}
 }
 
-// flushGuard finalizes the turn's guard and emits whatever safe text it was still holding.
-func (s *Service) flushGuard(t *turn) {
+// flushGuard finalizes the turn's guard and, when emit is set, sends whatever safe text it was still holding.
+func (s *Service) flushGuard(t *turn, emit bool) {
 	textTail, thoughtTail := t.guard.finalize()
+	if !emit {
+		textTail, thoughtTail = "", ""
+	}
 	if thoughtTail != "" {
 		s.emitChatRaw(domainagent.ChatEvent{Type: domainagent.ChatEventThought, ProviderID: t.providerID, MessageID: t.id, Text: thoughtTail})
 	}
