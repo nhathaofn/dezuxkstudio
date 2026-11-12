@@ -92,12 +92,15 @@ func (claudeDriver) perTurn() bool        { return true }
 func (claudeDriver) cheapAuthProbe() bool { return false }
 func (claudeDriver) release()             {}
 func (claudeDriver) toolCallHint() string { return "" }
-func (d claudeDriver) prepare() error     { _, err := prepareClaudeProfile(d.profile()); return err }
+func (d claudeDriver) prepare() error {
+	_, err := d.s.secrets.prepareClaudeProfile(d.profile())
+	return err
+}
 func (d claudeDriver) login(ctx context.Context, exe, apiKey string) error {
 	if strings.TrimSpace(apiKey) == "" {
 		return d.s.loginClaudeInteractive(ctx, exe, d.profile())
 	}
-	return loginClaude(ctx, exe, d.profile(), apiKey)
+	return d.s.secrets.loginClaude(ctx, exe, d.profile(), apiKey)
 }
 func (d claudeDriver) probeAuth(ctx context.Context, exe string) (domainagent.AuthState, string) {
 	return d.s.probeClaude(ctx, exe, d.profile())
@@ -105,7 +108,7 @@ func (d claudeDriver) probeAuth(ctx context.Context, exe string) (domainagent.Au
 
 // logout always runs: it also removes the isolated API key, which needs no executable.
 func (d claudeDriver) logout(ctx context.Context, exe string) error {
-	return logoutClaude(ctx, exe, d.profile())
+	return d.s.secrets.logoutClaude(ctx, exe, d.profile())
 }
 func (d claudeDriver) runTurn(ctx context.Context, exe, workDir, mcpURL, mcpToken, messageID, prompt string) error {
 	return d.s.runClaude(ctx, exe, d.profile(), workDir, mcpURL, mcpToken, messageID, prompt)
@@ -120,16 +123,16 @@ func (d agyDriver) release()           { cleanupAgyProfileToken(d.profile()) }
 func (agyDriver) toolCallHint() string { return "" }
 func (agyDriver) prepare() error       { return nil }
 func (d agyDriver) probeAuth(context.Context, string) (domainagent.AuthState, string) {
-	return probeAgyAuth(d.profile())
+	return d.s.secrets.probeAgyAuth(d.profile())
 }
 func (d agyDriver) login(ctx context.Context, exe, apiKey string) error {
 	if strings.TrimSpace(apiKey) != "" {
-		return saveAgyAPIKey(d.profile(), apiKey)
+		return d.s.secrets.saveAgyAPIKey(d.profile(), apiKey)
 	}
 	return d.s.loginAgyOAuth(ctx, domainagent.Registry[domainagent.ProviderAntigravity], exe)
 }
 func (d agyDriver) logout(context.Context, string) error {
-	clearAgyAuth(d.profile())
+	d.s.secrets.clearAgyAuth(d.profile())
 	cleanupAgyProfileToken(d.profile())
 	return nil
 }

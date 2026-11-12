@@ -111,6 +111,7 @@ type Service struct {
 
 	policy    *AccessPolicy
 	approvals *approvalStore
+	secrets   profileSecrets // API keys of the isolated provider profiles
 
 	toolDocsOnce sync.Once
 	docs         []toolDoc // registered MCP tools, see toolDocs
@@ -156,7 +157,10 @@ func New(o Options) (*Service, error) {
 		version = "0.0.0-dev"
 	}
 	limits := o.Limits.withDefaults()
-	setProfileSecretStore(o.Secrets)
+	secretStore := o.Secrets
+	if secretStore == nil {
+		secretStore = secrets.NewMemory()
+	}
 	allowedDirs, err := o.Repo.ListAllowedDirs(context.Background())
 	if err != nil {
 		o.Logger.Warn("agent: failed to load allowed dirs", "error", err)
@@ -190,6 +194,7 @@ func New(o Options) (*Service, error) {
 		runClaude:          o.RunClaudeTurn,
 		probeClaude:        o.ProbeClaudeAuth,
 		policy:             NewAccessPolicy(o.DataDir, o.WorkspaceDir, o.MediaDir, o.ProfilesDir, allowedDirs),
+		secrets:            profileSecrets{store: secretStore},
 		approvals:          newApprovalStore(limits.ApprovalTTL, limits.MaxPendingApprovals),
 		models:             newModelState(),
 		cliSessions:        make(map[domainagent.ProviderID]string),
@@ -221,7 +226,7 @@ func New(o Options) (*Service, error) {
 		s.runClaude = s.runClaudeTurn
 	}
 	if s.probeClaude == nil {
-		s.probeClaude = probeClaudeAuth
+		s.probeClaude = s.secrets.probeClaudeAuth
 	}
 	// Revisions must keep growing across restarts: a UI that stays open (dev reload, reconnect) holds the
 	// last revision it saw and drops anything lower.
@@ -500,7 +505,7 @@ func (s *Service) loginAgyOAuth(ctx context.Context, spec domainagent.ProviderSp
 		return err
 	}
 	profileRoot := s.profileDirFor(domainagent.ProviderAntigravity)
-	_, agyEnvMap, err := prepareAgyProfileWithMode(profileRoot, "", "", true)
+	_, agyEnvMap, err := s.secrets.prepareAgyProfileWithMode(profileRoot, "", "", true)
 	if err != nil {
 		return err
 	}
@@ -528,7 +533,7 @@ func (s *Service) loginAgyOAuth(ctx context.Context, spec domainagent.ProviderSp
 	if err != nil {
 		return fmt.Errorf("agy Google sign-in failed: %w", err)
 	}
-	return saveAgyOAuth(profileRoot, tierName)
+	return s.secrets.saveAgyOAuth(profileRoot, tierName)
 }
 
 // Connect starts the local MCP server and activates the selected isolated provider.
@@ -581,7 +586,7 @@ func (s *Service) Connect(ctx context.Context, id domainagent.ProviderID) (domai
 	}
 
 	// Antigravity isolated ACP connection: verify isolated Gemini API key before spawning agy acp.
-	authState, accountInfo := probeAgyAuth(s.profileDirFor(id))
+	authState, accountInfo := s.secrets.probeAgyAuth(s.profileDirFor(id))
 	s.mu.Lock()
 	s.authStates[id] = authState
 	s.accountInfos[id] = accountInfo
@@ -600,7 +605,7 @@ func (s *Service) Connect(ctx context.Context, id domainagent.ProviderID) (domai
 	s.mu.Unlock()
 	s.emitStatus(connectingInfo)
 
-	_, agyEnvMap, err := prepareAgyProfile(s.profileDirFor(id), mcpSrv.url, mcpSrv.token)
+	_, agyEnvMap, err := s.secrets.prepareAgyProfile(s.profileDirFor(id), mcpSrv.url, mcpSrv.token)
 	if err != nil {
 		return s.failConnect(id, spec, resolved, source, customPath, domainagent.StateError, err), apperr.Unavailable(err.Error())
 	}
