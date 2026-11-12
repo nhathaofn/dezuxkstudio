@@ -65,3 +65,13 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.ds-button--ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid transparent;
+}
+.ds-button--ghost:hover {
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
+}

@@ -200,47 +200,49 @@ export function CustomProviderForm({
             />
           </>
         )}
-        <div className="card-actions-row">
-          <Button
-            type="button"
-            disabled={!baseUrl.trim()}
-            onClick={async () => {
-              setDiscovering(true);
-              setError(null);
-              setDiscoveredCount(null);
-              try {
-                const result = await discover({
-                  custom_id: clearKey ? "" : (provider?.id ?? ""),
-                  discovery_format: protocol,
-                  base_url: baseUrl.trim(),
-                  api_key: apiKey,
-                });
-                setModels((previous) =>
-                  mergeDiscovered(
-                    previous,
-                    result.models.filter((model) =>
-                      allowed.some((entry) => entry.key === model.endpoint)
-                    )
-                  )
-                );
-                setDiscoveredCount(result.models.length);
-              } catch (err) {
-                setError(toActionError(err));
-              } finally {
-                setDiscovering(false);
-              }
-            }}
-          >
-            <RefreshCw size={14} />
-            {t(discovering ? "providers.discovering" : "providers.refreshModels")}
-          </Button>
-        </div>
         {discoveredCount !== null && (
           <p role="status" className="subtitle">
             {t("providers.discoveredCount", { count: discoveredCount })}
           </p>
         )}
         <ModelList
+          toolbar={
+            <div className="card-actions-row">
+              <Button
+                type="button"
+                disabled={!baseUrl.trim()}
+                onClick={async () => {
+                  setDiscovering(true);
+                  setError(null);
+                  setDiscoveredCount(null);
+                  try {
+                    const result = await discover({
+                      custom_id: clearKey ? "" : (provider?.id ?? ""),
+                      discovery_format: protocol,
+                      base_url: baseUrl.trim(),
+                      api_key: apiKey,
+                    });
+                    setModels((previous) =>
+                      mergeDiscovered(
+                        previous,
+                        result.models.filter((model) =>
+                          allowed.some((entry) => entry.key === model.endpoint)
+                        )
+                      )
+                    );
+                    setDiscoveredCount(result.models.length);
+                  } catch (err) {
+                    setError(toActionError(err));
+                  } finally {
+                    setDiscovering(false);
+                  }
+                }}
+              >
+                <RefreshCw size={14} />
+                {t(discovering ? "providers.discovering" : "providers.refreshModels")}
+              </Button>
+            </div>
+          }
           models={models}
           onChange={setModels}
           capabilities={allowed.map((entry) => entry.capability)}
@@ -249,8 +251,17 @@ export function CustomProviderForm({
           disabled={busy || disabled}
         />
       </fieldset>
-      {modelsOnly && (
-        <div className="card-actions-row">
+      {modelsOnly && dirty && (
+        <div className="providers-save-footer">
+          <span>{t("providers.unsaved")}</span>
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={busy}
+            onClick={() => setModels(provider?.models ?? [])}
+          >
+            {t("providers.discard")}
+          </Button>
           <Button type="submit" variant="primary" disabled={busy || disabled || !allowed.length}>
             {t(saving ? "providers.saving" : "providers.save")}
           </Button>

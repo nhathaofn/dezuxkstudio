@@ -81,38 +81,42 @@ export function ProviderActions({
         {onActivate && !active && (
           <Button
             type="button"
-            iconOnly
+            variant="ghost"
             title={t("providers.activate")}
             aria-label={t("providers.activate")}
             disabled={disabled || busy || testing}
             onClick={() => void run(onActivate)}
           >
             <Check size={14} />
+            {t("providers.use")}
           </Button>
         )}
         <Button
           type="button"
-          iconOnly
+          variant="ghost"
           title={t(testing ? "providers.testing" : "providers.test")}
           aria-label={t(testing ? "providers.testing" : "providers.test")}
           disabled={disabled || busy || testing}
           onClick={() => void run(onTest)}
         >
           <Play size={14} />
+          {t(testing ? "providers.testing" : "providers.test")}
         </Button>
         <Button
           type="button"
-          iconOnly
+          variant="ghost"
           title={t("providers.edit")}
           aria-label={t("providers.edit")}
           disabled={disabled || busy || testing}
           onClick={onEdit}
         >
           <Pencil size={14} />
+          {t("providers.edit")}
         </Button>
         <Button
           type="button"
           iconOnly
+          variant="ghost"
           className="providers-danger"
           title={t("providers.delete")}
           aria-label={t("providers.delete")}

@@ -79,13 +79,48 @@ const data: ProvidersListResult = {
 };
 
 describe("provider sidebar layout", () => {
+  it("places only dead active keys in attention, including custom providers, without duplicates", () => {
+    const broken = { ...health, dead: true };
+    const snapshot = {
+      ...data,
+      builtins: [
+        builtin("Dead", { configured: true, credentials: [key({ health: broken })] }),
+        builtin("Backup dead", {
+          configured: true,
+          credentials: [key(), key({ id: "backup", active: false, health: broken })],
+        }),
+        builtin("Timeout", {
+          configured: true,
+          credentials: [key({ health: { ...health, outcome: "network" } })],
+        }),
+      ],
+      custom: [{ ...custom("Custom dead"), health: broken }],
+    };
+    const groups = providerGroups(snapshot);
+    expect(groups.attention.map(providerName)).toEqual(["Custom dead", "Dead"]);
+    expect(groups.configured.map(providerName)).toEqual(["Backup dead", "Timeout"]);
+    expect(groups.custom).toEqual([]);
+    expect(Object.values(groups).flat()).toHaveLength(4);
+    expect(providerGroups(snapshot, "dead", "image").attention.map(providerName)).toEqual([
+      "Custom dead",
+    ]);
+    expect(
+      initialProvider({ ...snapshot, builtins: snapshot.builtins.slice(0, 1), custom: [] }, "")
+        ?.provider.id
+    ).toBe("Dead");
+  });
   it("groups built-ins by configuration and sorts each group without mutating the snapshot", () => {
     const groups = providerGroups(data);
     expect(groups.configured.map(providerName)).toEqual(["Beta", "Zulu"]);
     expect(groups.unconfigured.map(providerName)).toEqual(["Alpha"]);
     expect(groups.custom.map(providerName)).toEqual(["Custom A", "Custom Z"]);
     expect(data.builtins.map((provider) => provider.id)).toEqual(["Zulu", "Alpha", "Beta"]);
-    expect(providerGroups(null)).toEqual({ configured: [], unconfigured: [], custom: [] });
+    expect(providerGroups(null)).toEqual({
+      attention: [],
+      configured: [],
+      unconfigured: [],
+      custom: [],
+    });
   });
   it("combines case-insensitive trimmed name/id search with capability filtering", () => {
     expect(providerGroups(data, "  ZUL  ", "llm").configured.map(providerName)).toEqual(["Zulu"]);

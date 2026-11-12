@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import { ExternalLink, Play, Plus } from "lucide-react";
+import { ArrowUpRight, Play, Plus } from "lucide-react";
 import type { CustomEndpoint, ProviderCredential } from "../../contracts/generated";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -64,6 +64,9 @@ export function ProviderDetail({
     <>
       <header className="providers-detail-header">
         <div className="providers-heading">
+          <span className="providers-avatar providers-avatar--large">
+            {providerName(entry).charAt(0).toLocaleUpperCase()}
+          </span>
           <h2 title={providerName(entry)} className="providers-truncate">
             {providerName(entry)}
           </h2>
@@ -82,28 +85,26 @@ export function ProviderDetail({
           </span>
           <div className="providers-capabilities">
             {provider.capabilities.map((capability) => (
-              <Badge key={capability}>
+              <span key={capability}>
                 <CapabilityIcon value={capability} />
                 {t(`providers.capability.${capability}`)}
-              </Badge>
+              </span>
             ))}
           </div>
-        </div>
-        <div className="card-actions-row">
           {entry.kind === "builtin" && entry.provider.docs_url && (
-            <Button
+            <button
               type="button"
-              iconOnly
-              title={t("providers.docs")}
-              aria-label={t("providers.docs")}
+              className="providers-docs providers-text-button"
               onClick={() => openExternal(entry.provider.docs_url)}
             >
-              <ExternalLink size={14} />
-            </Button>
+              {t("providers.getApiKey")} <ArrowUpRight size={12} />
+            </button>
           )}
+        </div>
+        <div className="card-actions-row">
           <Button
             type="button"
-            variant="primary"
+            variant={testId ? "secondary" : "primary"}
             disabled={disabled || testing}
             onClick={() => {
               if (!testId) {
@@ -117,7 +118,13 @@ export function ProviderDetail({
             }}
           >
             {testId ? <Play size={14} /> : <Plus size={14} />}
-            {t(testId ? (testing ? "providers.testing" : "providers.test") : "providers.addKey")}
+            {t(
+              testId
+                ? testing
+                  ? "providers.testing"
+                  : "providers.testConnection"
+                : "providers.addApiKey"
+            )}
           </Button>
         </div>
       </header>
@@ -133,6 +140,14 @@ export function ProviderDetail({
             onClick={() => setTab(value)}
           >
             {t(tabLabel(value))}
+            {value === "key" && entry.kind === "builtin" && (
+              <span className="providers-tab-count">{entry.provider.credentials.length}</span>
+            )}
+            {value === "model" && (
+              <span className="providers-tab-count">
+                {provider.models.filter((model) => model.enabled).length}/{provider.models.length}
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -152,8 +167,13 @@ export function ProviderDetail({
                 <div className="providers-credential-row">
                   <div className="providers-credential-info">
                     <strong className="providers-truncate" title={credential.name}>
-                      {credential.name}
+                      {credential.name === providerName(entry)
+                        ? t("providers.apiKey")
+                        : credential.name}
                     </strong>
+                    {credential.active && (
+                      <Badge className="providers-active">{t("providers.active")}</Badge>
+                    )}
                     <div className="providers-key-values">
                       {Object.entries({ ...credential.values, ...credential.secret_hints }).map(
                         ([key, value]) => (
@@ -169,9 +189,6 @@ export function ProviderDetail({
                     </div>
                   </div>
                   <HealthBadge health={credential.health} />
-                  {credential.active && (
-                    <Badge className="providers-success">{t("providers.active")}</Badge>
-                  )}
                   <ProviderActions
                     id={credential.id}
                     disabled={disabled}
@@ -185,7 +202,7 @@ export function ProviderDetail({
                 <TestResult id={credential.id} />
               </div>
             ))}
-            <Button type="button" disabled={disabled} onClick={onAdd}>
+            <Button type="button" variant="ghost" disabled={disabled} onClick={onAdd}>
               <Plus size={14} />
               {t("providers.addKey")}
             </Button>

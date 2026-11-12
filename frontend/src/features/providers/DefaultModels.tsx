@@ -27,14 +27,15 @@ function PurposeRow({
     : t("providers.nothingUsable");
   const providers = [...new Set(value.candidates.map((candidate) => candidate.provider_id))];
   return (
-    <tr>
-      <th scope="row">
+    <div className="providers-purpose-row">
+      <div className="providers-purpose-info">
         <label htmlFor={id}>
           <CapabilityIcon value={value.purpose === "text" ? "llm" : value.purpose} />
           {t(`providers.purpose.${value.purpose}`)}
         </label>
-      </th>
-      <td>
+        <p className="providers-meta">{t(`providers.purposeHint.${value.purpose}`)}</p>
+      </div>
+      <div className="providers-purpose-selection">
         <select
           id={id}
           className="input-control"
@@ -78,8 +79,9 @@ function PurposeRow({
             );
           })}
         </select>
-      </td>
-      <td>
+        {!!value.candidates.length && !value.chosen_unavailable && !!value.chosen && (
+          <p className="providers-meta">{t("providers.usingModel", { model: label })}</p>
+        )}
         {value.chosen_unavailable && (
           <p className="providers-notice providers-notice--warning" role="status">
             <TriangleAlert size={14} />
@@ -106,8 +108,8 @@ function PurposeRow({
             {t("providers.defaultModelError")}
           </p>
         )}
-      </td>
-    </tr>
+      </div>
+    </div>
   );
 }
 
@@ -123,25 +125,16 @@ export function DefaultModels({
   return (
     <section aria-label={t("providers.defaultModels")}>
       {defaults ? (
-        <table className="providers-default-table">
-          <thead>
-            <tr>
-              <th>{t("providers.purposeColumn")}</th>
-              <th>{t("providers.modelTab")}</th>
-              <th>{t("providers.statusColumn")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {defaults.purposes.map((purpose) => (
-              <PurposeRow
-                key={purpose.purpose}
-                value={purpose}
-                disabled={disabled}
-                onConfigure={onConfigure}
-              />
-            ))}
-          </tbody>
-        </table>
+        <div className="providers-default-list">
+          {defaults.purposes.map((purpose) => (
+            <PurposeRow
+              key={purpose.purpose}
+              value={purpose}
+              disabled={disabled}
+              onConfigure={onConfigure}
+            />
+          ))}
+        </div>
       ) : (
         <p className="subtitle">{t("providers.loadingDefaults")}</p>
       )}

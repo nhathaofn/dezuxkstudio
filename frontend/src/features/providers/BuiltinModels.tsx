@@ -46,33 +46,35 @@ export function BuiltinModels({
         }}
       >
         <DiscoveryError error={error} />
-        {provider.discoverable ? (
-          <Button
-            type="button"
-            disabled={busy || disabled}
-            onClick={async () => {
-              setBusy(true);
-              setError(null);
-              setSaved(false);
-              try {
-                const result = await discover(provider.id);
-                setDraft((previous) =>
-                  previous ? mergeDiscovered(previous, result.models) : result.models
-                );
-              } catch (err) {
-                setError(toActionError(err));
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            <RefreshCw size={14} />
-            {t(busy ? "providers.discovering" : "providers.refreshModels")}
-          </Button>
-        ) : (
-          <p className="subtitle">{t("providers.noDiscovery")}</p>
-        )}
         <ModelList
+          toolbar={
+            provider.discoverable ? (
+              <Button
+                type="button"
+                disabled={busy || disabled}
+                onClick={async () => {
+                  setBusy(true);
+                  setError(null);
+                  setSaved(false);
+                  try {
+                    const result = await discover(provider.id);
+                    setDraft((previous) =>
+                      previous ? mergeDiscovered(previous, result.models) : result.models
+                    );
+                  } catch (err) {
+                    setError(toActionError(err));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                <RefreshCw size={14} />
+                {t(busy ? "providers.discovering" : "providers.refreshModels")}
+              </Button>
+            ) : (
+              <p className="subtitle">{t("providers.noDiscovery")}</p>
+            )
+          }
           models={models}
           onChange={(rows) => {
             setDraft(rows);
@@ -82,9 +84,17 @@ export function BuiltinModels({
           disabled={busy || disabled}
           error={error}
         />
-        <Button type="submit" variant="primary" disabled={busy || disabled}>
-          {t(busy ? "providers.saving" : "providers.save")}
-        </Button>
+        {draft && (
+          <div className="providers-save-footer">
+            <span>{t("providers.unsaved")}</span>
+            <Button type="button" variant="ghost" disabled={busy} onClick={() => setDraft(null)}>
+              {t("providers.discard")}
+            </Button>
+            <Button type="submit" variant="primary" disabled={busy || disabled}>
+              {t(busy ? "providers.saving" : "providers.save")}
+            </Button>
+          </div>
+        )}
         {saved && (
           <p role="status" className="providers-success">
             {t("providers.saved")}

@@ -1,0 +1,44 @@
+.ui-switch {
+  display: inline-flex;
+  align-items: center;
+  width: 32px;
+  height: 28px;
+  padding: var(--space-1);
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  position: relative;
+}
+.ui-switch::before {
+  content: "";
+  position: absolute;
+  inset: var(--space-1) 0;
+  background: var(--bg-surface-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-full);
+}
+.ui-switch[aria-checked="true"]::before {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.ui-switch span {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  border-radius: var(--radius-full);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+}
+.ui-switch[aria-checked="true"] span {
+  transform: translateX(12px);
+}
+.ui-switch:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+.ui-switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

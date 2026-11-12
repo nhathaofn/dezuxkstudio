@@ -46,11 +46,15 @@ export function providerGroups(
         providerName(a).localeCompare(providerName(b)) || a.provider.id.localeCompare(b.provider.id)
     );
   return {
-    configured: filtered.filter((entry) => entry.kind === "builtin" && entry.provider.configured),
+    attention: filtered.filter((entry) => providerStatus(entry) === "dead"),
+    configured: filtered.filter(
+      (entry) =>
+        entry.kind === "builtin" && entry.provider.configured && providerStatus(entry) !== "dead"
+    ),
+    custom: filtered.filter((entry) => entry.kind === "custom" && providerStatus(entry) !== "dead"),
     unconfigured: filtered.filter(
       (entry) => entry.kind === "builtin" && !entry.provider.configured
     ),
-    custom: filtered.filter((entry) => entry.kind === "custom"),
   };
 }
 export function parseProviderLocation(params: URLSearchParams) {
@@ -76,8 +80,11 @@ export function initialProvider(
   requested: string
 ): ProviderEntry | undefined {
   const groups = providerGroups(data);
-  const all = [...groups.configured, ...groups.unconfigured, ...groups.custom];
+  const all = [...groups.attention, ...groups.configured, ...groups.custom, ...groups.unconfigured];
   return (
-    all.find((entry) => entry.provider.id === requested) ?? groups.configured[0] ?? groups.custom[0]
+    all.find((entry) => entry.provider.id === requested) ??
+    groups.configured[0] ??
+    groups.attention[0] ??
+    groups.custom[0]
   );
 }
