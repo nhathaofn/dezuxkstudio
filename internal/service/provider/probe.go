@@ -146,8 +146,19 @@ type DiscoverRequest struct {
 
 // DiscoveredModel is a model found on a custom endpoint with its inferred endpoint.
 type DiscoveredModel struct {
-	ModelID  string
-	Endpoint domain.Endpoint
+	ModelID    string
+	Endpoint   domain.Endpoint
+	Capability domain.Capability
+}
+
+func discovered(id string, e domain.Endpoint) DiscoveredModel {
+	spec, _ := domain.EndpointByKey(e)
+	return DiscoveredModel{ModelID: id, Endpoint: e, Capability: spec.Capability}
+}
+
+// AsModel turns a discovered model into a (not yet enabled) provider model.
+func (d DiscoveredModel) AsModel() domain.Model {
+	return domain.Model{ModelID: d.ModelID, Endpoint: d.Endpoint, Capability: d.Capability}
 }
 
 // DiscoverModels lists models of a (possibly unsaved) custom provider.
@@ -171,14 +182,19 @@ func (s *Service) DiscoverModels(ctx context.Context, req DiscoverRequest) ([]Di
 	defer progress.KeepAlive(ctx)()
 	models, err := s.discover(ctx, in.DiscoveryFormat, in.BaseURL, key)
 	if err != nil {
-		var pe *probeError
-		if errors.As(err, &pe) {
-			return nil, apperr.New(apperr.CodeUnavailable, "Model discovery failed: "+redact(pe.detail, key)).
-				WithDetails(map[string]any{"outcome": string(pe.outcome), "status": pe.status})
-		}
-		return nil, apperr.Wrap(apperr.CodeUnavailable, "Model discovery failed", err)
+		return nil, discoveryError(err, key)
 	}
 	return models, nil
+}
+
+// discoveryError turns a failed model listing into an ERR_UNAVAILABLE carrying the classified outcome.
+func discoveryError(err error, key string) error {
+	var pe *probeError
+	if errors.As(err, &pe) {
+		return apperr.New(apperr.CodeUnavailable, "Model discovery failed: "+redact(pe.detail, key)).
+			WithDetails(map[string]any{"outcome": string(pe.outcome), "status": pe.status})
+	}
+	return apperr.Wrap(apperr.CodeUnavailable, "Model discovery failed", err)
 }
 
 func (r Resolved) allSecrets() []string {
@@ -473,7 +489,9 @@ func (s *Service) geminiModels(ctx context.Context, base, key string) ([]Discove
 	for _, m := range body.Models {
 		id := strings.TrimPrefix(m.Name, "models/")
 		ep := InferGeminiEndpoint(id)
-		out = append(out, DiscoveredModel{ModelID: id, Endpoint: ep})
+		if Usable(id) {
+			out = append(out, discovered(id, ep))
+		}
 	}
 	return out, nil
 }
@@ -620,7 +638,9 @@ func (s *Service) discover(ctx context.Context, f domain.DiscoveryFormat, base, 
 		ids, err := s.openAIModels(ctx, ensureOpenAIBase(base), key, nil)
 		out := make([]DiscoveredModel, 0, len(ids))
 		for _, id := range ids {
-			out = append(out, DiscoveredModel{ModelID: id, Endpoint: InferOpenAIEndpoint(id)})
+			if Usable(id) {
+				out = append(out, discovered(id, InferOpenAIEndpoint(id)))
+			}
 		}
 		return out, err
 	case domain.DiscoveryGemini:
@@ -629,7 +649,7 @@ func (s *Service) discover(ctx context.Context, f domain.DiscoveryFormat, base, 
 		ids, err := s.anthropicModels(ctx, base, key)
 		out := make([]DiscoveredModel, 0, len(ids))
 		for _, id := range ids {
-			out = append(out, DiscoveredModel{ModelID: id, Endpoint: domain.EndpointAnthropicMessages})
+			out = append(out, discovered(id, domain.EndpointAnthropicMessages))
 		}
 		return out, err
 	}
@@ -649,6 +669,13 @@ func InferGeminiEndpoint(id string) domain.Endpoint {
 	}
 	return domain.EndpointGeminiGenerate
 }
+
+// nonGenerative matches model ids that are not usable for generation (embeddings, speech-to-text,
+// moderation...), so discovery does not list them as LLMs.
+var nonGenerative = regexp.MustCompile(`embed|whisper|transcri|moderation|rerank|search|realtime|audio-preview|similarity|davinci|babbage`)
+
+// Usable reports whether a discovered model id is a generation model.
+func Usable(id string) bool { return !nonGenerative.MatchString(strings.ToLower(id)) }
 
 // InferOpenAIEndpoint guesses the endpoint of an OpenAI-compatible model from its id.
 func InferOpenAIEndpoint(id string) domain.Endpoint {

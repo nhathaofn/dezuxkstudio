@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"fmt"
 	"net"
 	"net/url"
 	"slices"
@@ -86,28 +85,15 @@ func EndpointByKey(k Endpoint) (EndpointSpec, bool) {
 	return EndpointSpec{}, false
 }
 
-// CustomModel is one model enabled on a custom provider.
-type CustomModel struct {
-	ModelID  string
-	Endpoint Endpoint
-	Enabled  bool
-	// IsDefault marks the default model for the endpoint's capability on this provider.
-	IsDefault bool
-}
-
-// Capability returns the capability of the model's endpoint.
-func (m CustomModel) Capability() Capability {
-	e, _ := EndpointByKey(m.Endpoint)
-	return e.Capability
-}
-
 // CustomProvider is a user-defined endpoint (OpenAI-compatible and similar).
 type CustomProvider struct {
 	ID              string
 	Name            string
 	DiscoveryFormat DiscoveryFormat
 	BaseURL         string
-	Models          []CustomModel
+	Models          []Model
+	// Concurrency and rate limits; unset keys use the app defaults.
+	Settings Settings
 	// KeyHint is the masked API key ("" when none is stored).
 	KeyHint   string
 	Health    Health
@@ -116,18 +102,7 @@ type CustomProvider struct {
 }
 
 // Capabilities derives the capabilities from the enabled models.
-func (p CustomProvider) Capabilities() []Capability {
-	var out []Capability
-	for _, c := range Capabilities() {
-		for _, m := range p.Models {
-			if m.Enabled && m.Capability() == c {
-				out = append(out, c)
-				break
-			}
-		}
-	}
-	return out
-}
+func (p CustomProvider) Capabilities() []Capability { return EnabledCapabilities(p.Models) }
 
 // CustomInput is a create/update request for a custom provider. An empty APIKey on update keeps the
 // stored key; ClearAPIKey removes it.
@@ -137,7 +112,7 @@ type CustomInput struct {
 	BaseURL         string
 	APIKey          string
 	ClearAPIKey     bool
-	Models          []CustomModel
+	Models          []Model
 }
 
 // Validate normalizes and checks the input.
@@ -154,33 +129,11 @@ func (in *CustomInput) Validate() error {
 	if err := ValidateBaseURL(in.BaseURL); err != nil {
 		return err
 	}
-	seen := map[string]bool{}
-	defaults := map[Capability]bool{}
-	for i := range in.Models {
-		m := &in.Models[i]
-		m.ModelID = strings.TrimSpace(m.ModelID)
-		spec, ok := EndpointByKey(m.Endpoint)
-		if m.ModelID == "" || !ok {
-			return apperr.New(apperr.CodeValidation, "Each model needs an id and a valid endpoint").
-				WithDetails(map[string]any{"field": "models"})
-		}
-		if !slices.Contains(spec.Formats, in.DiscoveryFormat) {
-			return apperr.New(apperr.CodeValidation, fmt.Sprintf("Endpoint %s does not match the protocol", m.Endpoint)).
-				WithDetails(map[string]any{"field": "models"})
-		}
-		k := m.ModelID + "\x00" + string(m.Endpoint)
-		if seen[k] {
-			return apperr.New(apperr.CodeValidation, "Duplicate model "+m.ModelID).WithDetails(map[string]any{"field": "models"})
-		}
-		seen[k] = true
-		if m.IsDefault {
-			if !m.Enabled || defaults[spec.Capability] {
-				return apperr.New(apperr.CodeValidation, "Only one enabled default model per capability").
-					WithDetails(map[string]any{"field": "models"})
-			}
-			defaults[spec.Capability] = true
-		}
+	models, err := NormalizeModels(in.Models, Capabilities(), in.DiscoveryFormat)
+	if err != nil {
+		return err
 	}
+	in.Models = models
 	return nil
 }
 

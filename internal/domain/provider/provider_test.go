@@ -56,7 +56,7 @@ func TestCheckCompleteSimple(t *testing.T) {
 
 func TestCustomInputValidate(t *testing.T) {
 	in := CustomInput{Name: " a ", DiscoveryFormat: DiscoveryOpenAI, BaseURL: "https://x/v1/",
-		Models: []CustomModel{{ModelID: "m", Endpoint: EndpointGeminiImage, Enabled: true}}}
+		Models: []Model{{ModelID: "m", Endpoint: EndpointGeminiImage, Enabled: true}}}
 	if in.Validate() == nil {
 		t.Fatal("gemini endpoint on openai protocol must fail")
 	}

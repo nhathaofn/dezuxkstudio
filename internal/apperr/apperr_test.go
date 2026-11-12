@@ -44,3 +44,10 @@ func TestCodesAreUnique(t *testing.T) {
 		seen[c] = true
 	}
 }
+
+func TestWithMsgKeepsDetails(t *testing.T) {
+	e := New(CodeValidation, "x").WithDetails(map[string]any{"field": "a"}).WithMsg("errors.provider.x", map[string]any{"n": 1})
+	if e.Details["field"] != "a" || e.Details["msg_key"] != "errors.provider.x" || e.Details["msg_params"].(map[string]any)["n"] != 1 {
+		t.Fatalf("%v", e.Details)
+	}
+}

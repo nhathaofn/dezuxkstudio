@@ -76,6 +76,7 @@ func (c *Config) Validate() error {
 		})
 		positiveInts(add, map[string]int{
 			"providers.check_concurrency":     c.Providers.CheckConcurrency,
+			"providers.default_max_workers":   c.Providers.DefaultMaxWorkers,
 			"realtime.max_concurrent_actions": c.Realtime.MaxConcurrentActions,
 			"realtime.client_buffer_size":     c.Realtime.ClientBufferSize,
 			"storage.backups_to_keep":         c.Storage.BackupsToKeep,
@@ -157,6 +158,9 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if c.Providers.DefaultRPM < 0 || c.Providers.DefaultRequestGapMs < 0 {
+		add("providers.default_rpm and providers.default_request_gap_ms must be >= 0")
+	}
 	if len(errs) > 0 {
 		return fmt.Errorf("invalid configuration:\n%w", errors.Join(errs...))
 	}

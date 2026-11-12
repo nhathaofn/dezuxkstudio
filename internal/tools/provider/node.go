@@ -21,12 +21,18 @@ const (
 	NodeTest     = "tool.provider_test"
 	NodeActivate = "tool.provider_activate"
 	NodeDelete   = "tool.provider_delete"
+	// Models, defaults and limits.
+	NodeDiscoverModels = "tool.provider_discover_models"
+	NodeSetDefault     = "tool.provider_set_default"
+	NodeSettings       = "tool.provider_settings"
 )
 
 // Option sources (engine.Param.OptionsFrom).
 const (
 	OptionsSaved       = "provider.saved"       // saved credentials and custom providers
 	OptionsCredentials = "provider.credentials" // saved credentials of built-in providers
+	OptionsOwners      = "provider.owners"      // built-in providers and custom providers (model / settings owners)
+	OptionsModels      = "provider.models"      // usable models for the selected purpose ("provider/model")
 )
 
 // Auto lets setup detect the provider / protocol.
@@ -41,6 +47,11 @@ type Service interface {
 	DeleteByID(ctx context.Context, id string) error
 	Describe(ctx context.Context, id string) (string, error)
 	SavedOptions(ctx context.Context, credentialsOnly bool) ([]engine.Option, error)
+	OwnerOptions(ctx context.Context) ([]engine.Option, error)
+	ModelOptions(ctx context.Context, purpose domain.Purpose) ([]engine.Option, error)
+	DiscoverModelsFor(ctx context.Context, ownerID string) (any, error)
+	SetDefaultModel(ctx context.Context, purpose domain.Purpose, ref string) (any, error)
+	UpdateSettings(ctx context.Context, ownerID string, raw map[string]string) (domain.Settings, error)
 }
 
 // Input is a node's settings; setup fields are dynamic (one per registry field), so the input is a map.
@@ -61,7 +72,8 @@ func (in Input) flag(name string) bool { v, _ := in[name].(bool); return v }
 
 // Nodes builds every provider node.
 func Nodes(svc Service) []engine.Node {
-	return []engine.Node{listNode(svc), setupNode(svc), testNode(svc), activateNode(svc), deleteNode(svc)}
+	return []engine.Node{listNode(svc), setupNode(svc), testNode(svc), activateNode(svc), deleteNode(svc),
+		discoverModelsNode(svc), setDefaultNode(svc), settingsNode(svc)}
 }
 
 // OptionSources returns the option sources the nodes read.
@@ -73,6 +85,12 @@ func OptionSources(svc Service) map[string]engine.OptionSource {
 		OptionsCredentials: func(ctx context.Context, _ map[string]string) ([]engine.Option, error) {
 			return svc.SavedOptions(ctx, true)
 		},
+		OptionsOwners: func(ctx context.Context, _ map[string]string) ([]engine.Option, error) {
+			return svc.OwnerOptions(ctx)
+		},
+		OptionsModels: func(ctx context.Context, selected map[string]string) ([]engine.Option, error) {
+			return svc.ModelOptions(ctx, domain.Purpose(selected["purpose"]))
+		},
 	}
 }
 
@@ -80,7 +98,8 @@ func listNode(svc Service) engine.Node {
 	return engine.Typed(engine.Spec{
 		Type: NodeList, Provider: "tool", Label: "API Providers",
 		Description: "List AI API providers (LLM, image, video, TTS): which are configured, the fields each needs, " +
-			"saved credentials with masked keys and their last test result (dead keys are flagged).",
+			"saved credentials with masked keys and their last test result (dead keys are flagged), each provider's " +
+			"enabled models and limits, and the default model per purpose (text, image, video, tts).",
 	}, func(ctx context.Context, _ Input) (any, error) { return svc.Overview(ctx) })
 }
 
@@ -226,5 +245,82 @@ func deleteNode(svc Service) engine.Node {
 			return nil, err
 		}
 		return map[string]any{"ok": true, "deleted": name}, nil
+	})
+}
+
+func discoverModelsNode(svc Service) engine.Node {
+	return engine.Typed(engine.Spec{
+		Type: NodeDiscoverModels, Provider: "tool", Label: "Refresh provider models",
+		Description: "Ask a provider's API for its model list and add new models (enabled) to it; existing choices are kept. " +
+			"Works for providers whose API lists models (OpenAI-, Gemini- and Anthropic-style and custom providers).",
+		Params: []engine.Param{{Name: "id", Label: "Provider", Kind: engine.ParamSelect, OptionsFrom: OptionsOwners}},
+	}, func(ctx context.Context, in Input) (any, error) {
+		id, err := requireID(in)
+		if err != nil {
+			return nil, err
+		}
+		return svc.DiscoverModelsFor(ctx, id)
+	})
+}
+
+func setDefaultNode(svc Service) engine.Node {
+	purposes := []string{}
+	for _, p := range domain.Purposes() {
+		purposes = append(purposes, string(p))
+	}
+	return engine.Typed(engine.Spec{
+		Type: NodeSetDefault, Provider: "tool", Label: "Set default model",
+		Description: "Choose the model generation features use for a purpose (text, image, video, tts). " +
+			"model is provider/model from tool.provider_list; empty = auto (first ready provider's default model).",
+		Params: []engine.Param{
+			{Name: "purpose", Label: "Purpose", Kind: engine.ParamSelect, Options: purposes},
+			{Name: "model", Label: "Model (empty = auto)", Kind: engine.ParamSelect, OptionsFrom: OptionsModels},
+		},
+	}, func(ctx context.Context, in Input) (any, error) {
+		p := in.str("purpose")
+		if p == "" {
+			return nil, engine.Invalid("purpose is required")
+		}
+		return svc.SetDefaultModel(ctx, domain.Purpose(p), in.str("model"))
+	})
+}
+
+func settingsNode(svc Service) engine.Node {
+	params := []engine.Param{{Name: "id", Label: "Provider", Kind: engine.ParamSelect, OptionsFrom: OptionsOwners}}
+	for _, sp := range domain.SettingSpecs() {
+		params = append(params, engine.Param{Name: sp.Key, Label: strings.ReplaceAll(sp.Key, "_", " "),
+			Kind: engine.ParamInteger, Min: sp.Min, Max: sp.Max})
+	}
+	params = append(params, engine.Param{Name: "reset", Label: "Reset these settings to default (comma separated keys)", Kind: engine.ParamText})
+	return engine.Typed(engine.Spec{
+		Type: NodeSettings, Provider: "tool", Label: "Provider limits",
+		Description: "Set a provider's limits: requests running at once (image/video/tts max workers), requests per minute " +
+			"(0 = unlimited) and the minimum gap between requests in ms. Only the settings given change; reset lists keys to " +
+			"put back to the app default.",
+		Params: params,
+	}, func(ctx context.Context, in Input) (any, error) {
+		id, err := requireID(in)
+		if err != nil {
+			return nil, err
+		}
+		raw := map[string]string{}
+		for _, sp := range domain.SettingSpecs() {
+			if v, ok := in[sp.Key]; ok && v != nil {
+				raw[sp.Key] = fmt.Sprint(v)
+			}
+		}
+		for _, k := range strings.Split(in.str("reset"), ",") {
+			if k = strings.TrimSpace(k); k != "" {
+				raw[k] = ""
+			}
+		}
+		if len(raw) == 0 {
+			return nil, engine.Invalid("give at least one setting to change or reset")
+		}
+		set, err := svc.UpdateSettings(ctx, id, raw)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true, "settings": set}, nil
 	})
 }

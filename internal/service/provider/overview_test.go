@@ -118,12 +118,12 @@ func TestAgentSetupCustomDiscoversAndSets(t *testing.T) {
 			t.Fatalf("model %s not enabled", m.ModelID)
 		}
 		if m.IsDefault {
-			defaults[m.Capability()]++
+			defaults[m.Capability]++
 		}
 	}
 	caps := map[domain.Capability]bool{}
 	for _, m := range p.Models {
-		caps[m.Capability()] = true
+		caps[m.Capability] = true
 	}
 	for c := range caps {
 		if defaults[c] != 1 {

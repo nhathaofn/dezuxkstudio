@@ -63,6 +63,21 @@ func (e *Error) WithDetails(details map[string]any) *Error {
 	return &c
 }
 
+// WithMsg returns a copy whose details name an i18n key (details.msg_key, msg_params) so the UI shows a
+// translated message; Message stays the English fallback. Existing details are kept.
+func (e *Error) WithMsg(key string, params map[string]any) *Error {
+	c := *e
+	c.Details = make(map[string]any, len(e.Details)+2)
+	for k, v := range e.Details {
+		c.Details[k] = v
+	}
+	c.Details["msg_key"] = key
+	if len(params) > 0 {
+		c.Details["msg_params"] = params
+	}
+	return &c
+}
+
 // New creates an error with the given code and message.
 func New(code Code, message string) *Error {
 	return &Error{Code: code, Message: message}

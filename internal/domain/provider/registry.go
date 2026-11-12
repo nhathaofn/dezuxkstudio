@@ -103,10 +103,11 @@ var registry = []Meta{
 	},
 	{
 		ID: IDAgnes, DisplayName: "Agnes",
-		Capabilities:   []Capability{llm, image, video},
-		Fields:         []Field{apiKey(), baseURL("https://apihub.agnes-ai.com/v1")},
-		DefaultBaseURL: "https://apihub.agnes-ai.com/v1",
-		Probe:          Probe{Kind: ProbeOpenAIModels},
+		Capabilities:       []Capability{llm, image, video},
+		Fields:             []Field{apiKey(), baseURL("https://apihub.agnes-ai.com/v1")},
+		DefaultBaseURL:     "https://apihub.agnes-ai.com/v1",
+		Probe:              Probe{Kind: ProbeOpenAIModels},
+		DefaultConcurrency: map[Capability]int{video: 1}, // the Agnes API runs one video job per key
 	},
 	{
 		ID: IDDashScope, DisplayName: "Alibaba DashScope",

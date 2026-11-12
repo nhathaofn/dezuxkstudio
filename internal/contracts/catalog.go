@@ -181,6 +181,11 @@ func Actions() []ActionSpec {
 		{ActionProvidersDeleteCustom, "Deletes a custom provider and its key.", t[ProviderIDPayload](), t[Empty]()},
 		{ActionProvidersTestCustom, "Checks a saved custom provider by listing its models.", t[ProviderIDPayload](), t[ProviderTestResult]()},
 		{ActionProvidersDiscoverModels, "Lists the models of a (possibly unsaved) custom provider.", t[DiscoverModelsPayload](), t[DiscoverModelsResult]()},
+		{ActionProvidersSetModels, "Replaces the model list of a built-in or custom provider (enable, defaults, facts, added ids).", t[SetModelsPayload](), t[ProviderModelsResult]()},
+		{ActionProvidersDiscoverBuiltin, "Lists a built-in provider's models with its active key and merges new ones into its model list.", t[ProviderIDPayload](), t[ProviderModelsResult]()},
+		{ActionProvidersUpdateSettings, "Patches a provider's concurrency / rate settings; an empty value resets a key.", t[UpdateSettingsPayload](), t[ProviderSettingsResult]()},
+		{ActionProvidersDefaults, "Default model per purpose (text, image, video, tts) with the usable candidates.", t[Empty](), t[ProviderDefaultsResult]()},
+		{ActionProvidersSetDefault, "Sets the default model of a purpose (provider/model, or empty for auto).", t[SetDefaultPayload](), t[ProviderDefaultsResult]()},
 	}
 }
 
@@ -239,6 +244,7 @@ func Enums() []EnumSpec {
 		{"ProviderDiscoveryFormat", t[provider.DiscoveryFormat](), stringsOf(provider.DiscoveryFormats())},
 		{"ProviderEndpoint", t[provider.Endpoint](), endpointKeys()},
 		{"ProviderTestOutcome", t[provider.Outcome](), stringsOf(provider.Outcomes())},
+		{"ProviderPurpose", t[provider.Purpose](), stringsOf(provider.Purposes())},
 		{"SecretBackend", t[secrets.Backend](), stringsOf(secrets.Backends())},
 	}
 }

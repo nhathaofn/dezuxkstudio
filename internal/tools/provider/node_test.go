@@ -19,6 +19,37 @@ type fakeSvc struct {
 	deleteCalls int
 	saved       []engine.Option
 	credsOnly   []bool
+
+	discoverID    string
+	defaultCalls  int
+	defaultPurp   domain.Purpose
+	defaultRef    string
+	settingsID    string
+	settingsRaw   map[string]string
+	settingsCalls int
+	modelPurpose  domain.Purpose
+}
+
+func (f *fakeSvc) OwnerOptions(context.Context) ([]engine.Option, error) {
+	return []engine.Option{{Value: "openai", Label: "OpenAI"}}, nil
+}
+func (f *fakeSvc) ModelOptions(_ context.Context, p domain.Purpose) ([]engine.Option, error) {
+	f.modelPurpose = p
+	return []engine.Option{{Value: "openai/gpt-4o", Label: "OpenAI"}}, nil
+}
+func (f *fakeSvc) DiscoverModelsFor(_ context.Context, id string) (any, error) {
+	f.discoverID = id
+	return map[string]any{"ok": true}, nil
+}
+func (f *fakeSvc) SetDefaultModel(_ context.Context, p domain.Purpose, ref string) (any, error) {
+	f.defaultCalls++
+	f.defaultPurp, f.defaultRef = p, ref
+	return map[string]any{"ok": true}, nil
+}
+func (f *fakeSvc) UpdateSettings(_ context.Context, id string, raw map[string]string) (domain.Settings, error) {
+	f.settingsCalls++
+	f.settingsID, f.settingsRaw = id, raw
+	return domain.Settings{"image_max_workers": 2}, nil
 }
 
 func (f *fakeSvc) Overview(context.Context) (any, error) { return map[string]any{"ok": 1}, nil }
@@ -65,8 +96,8 @@ func run(t *testing.T, svc Service, typ string, in map[string]any) (any, error) 
 
 func TestSpecsValid(t *testing.T) {
 	nodes := Nodes(&fakeSvc{})
-	if len(nodes) != 5 {
-		t.Fatalf("nodes = %d, want 5", len(nodes))
+	if len(nodes) != 8 {
+		t.Fatalf("nodes = %d, want 8", len(nodes))
 	}
 	for _, n := range nodes {
 		if err := engine.ValidateSpec(n.Spec()); err != nil {
@@ -238,5 +269,134 @@ func TestOptionSources(t *testing.T) {
 	_, _ = OptionSources(g)[OptionsCredentials](context.Background(), nil)
 	if !slices.Equal(g.credsOnly, []bool{false, true}) {
 		t.Errorf("credentialsOnly flags = %v", g.credsOnly)
+	}
+}
+
+func TestNewNodeSpecs(t *testing.T) {
+	f := &fakeSvc{}
+	for _, typ := range []string{NodeDiscoverModels, NodeSetDefault, NodeSettings} {
+		if err := engine.ValidateSpec(nodeOf(t, f, typ).Spec()); err != nil {
+			t.Errorf("%s: %v", typ, err)
+		}
+	}
+	// every setting spec has an integer param with the same bounds
+	params := map[string]engine.Param{}
+	for _, p := range nodeOf(t, f, NodeSettings).Spec().Params {
+		params[p.Name] = p
+	}
+	for _, sp := range domain.SettingSpecs() {
+		p, ok := params[sp.Key]
+		if !ok || p.Kind != engine.ParamInteger || p.Min != sp.Min || p.Max != sp.Max {
+			t.Errorf("setting %s: %+v", sp.Key, p)
+		}
+	}
+	if params["id"].OptionsFrom != OptionsOwners || params["reset"].Name == "" {
+		t.Errorf("params = %+v", params)
+	}
+	// set_default offers every purpose
+	for _, p := range nodeOf(t, f, NodeSetDefault).Spec().Params {
+		if p.Name == "purpose" {
+			var want []string
+			for _, pu := range domain.Purposes() {
+				want = append(want, string(pu))
+			}
+			if !slices.Equal(p.Options, want) {
+				t.Errorf("purposes = %v", p.Options)
+			}
+		}
+		if p.Name == "model" && p.OptionsFrom != OptionsModels {
+			t.Errorf("model options = %q", p.OptionsFrom)
+		}
+	}
+}
+
+func TestDiscoverModelsNode(t *testing.T) {
+	f := &fakeSvc{}
+	if _, err := run(t, f, NodeDiscoverModels, map[string]any{}); err == nil {
+		t.Fatal("id is required")
+	}
+	if _, err := run(t, f, NodeDiscoverModels, map[string]any{"id": " openai "}); err != nil || f.discoverID != "openai" {
+		t.Fatalf("%v %q", err, f.discoverID)
+	}
+}
+
+func TestSettingsNodeMapsOnlyGivenKeys(t *testing.T) {
+	f := &fakeSvc{}
+	out, err := run(t, f, NodeSettings, map[string]any{"id": "agnes", "video_max_workers": 3, "image_rpm": 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.settingsID != "agnes" || len(f.settingsRaw) != 2 || f.settingsRaw["video_max_workers"] != "3" || f.settingsRaw["image_rpm"] != "0" {
+		t.Fatalf("%q %v", f.settingsID, f.settingsRaw)
+	}
+	if m, _ := out.(map[string]any); m["ok"] != true || m["settings"] == nil {
+		t.Fatalf("out = %v", out)
+	}
+
+	// reset list -> empty values, mixed with a set
+	f = &fakeSvc{}
+	if _, err := run(t, f, NodeSettings, map[string]any{"id": "x", "image_max_workers": 2, "reset": " video_rpm , request_gap_ms,, "}); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"image_max_workers": "2", "video_rpm": "", "request_gap_ms": ""}
+	if len(f.settingsRaw) != len(want) {
+		t.Fatalf("%v", f.settingsRaw)
+	}
+	for k, v := range want {
+		if got, ok := f.settingsRaw[k]; !ok || got != v {
+			t.Errorf("%s = %q (%v)", k, got, ok)
+		}
+	}
+
+	// nothing to change / no id: the service is not called
+	f = &fakeSvc{}
+	if _, err := run(t, f, NodeSettings, map[string]any{"id": "x"}); err == nil {
+		t.Fatal("nothing given must fail")
+	}
+	if _, err := run(t, f, NodeSettings, map[string]any{"id": "x", "reset": " , "}); err == nil {
+		t.Fatal("blank reset must fail")
+	}
+	if _, err := run(t, f, NodeSettings, map[string]any{"image_rpm": 1}); err == nil {
+		t.Fatal("id is required")
+	}
+	if f.settingsCalls != 0 {
+		t.Fatal("service must not be called")
+	}
+}
+
+func TestSetDefaultNode(t *testing.T) {
+	f := &fakeSvc{}
+	if _, err := run(t, f, NodeSetDefault, map[string]any{"model": "openai/gpt-4o"}); err == nil {
+		t.Fatal("purpose is required")
+	}
+	if f.defaultCalls != 0 {
+		t.Fatal("service must not be called")
+	}
+	if _, err := run(t, f, NodeSetDefault, map[string]any{"purpose": "image", "model": " openai/gpt-image-1 "}); err != nil {
+		t.Fatal(err)
+	}
+	if f.defaultPurp != domain.PurposeImage || f.defaultRef != "openai/gpt-image-1" {
+		t.Fatalf("%q %q", f.defaultPurp, f.defaultRef)
+	}
+	// empty model = auto
+	if _, err := run(t, f, NodeSetDefault, map[string]any{"purpose": "text"}); err != nil || f.defaultRef != "" || f.defaultPurp != domain.PurposeText {
+		t.Fatalf("%v %q %q", err, f.defaultPurp, f.defaultRef)
+	}
+}
+
+func TestOwnerAndModelOptionSources(t *testing.T) {
+	f := &fakeSvc{}
+	src := OptionSources(f)
+	got, err := src[OptionsOwners](context.Background(), nil)
+	if err != nil || len(got) != 1 || got[0].Value != "openai" {
+		t.Fatalf("%v %v", got, err)
+	}
+	got, err = src[OptionsModels](context.Background(), map[string]string{"purpose": "video"})
+	if err != nil || len(got) != 1 || f.modelPurpose != domain.PurposeVideo {
+		t.Fatalf("%v %v %q", got, err, f.modelPurpose)
+	}
+	// no purpose selected yet: every purpose's models are offered
+	if _, err := src[OptionsModels](context.Background(), nil); err != nil || f.modelPurpose != "" {
+		t.Fatalf("%v %q", err, f.modelPurpose)
 	}
 }

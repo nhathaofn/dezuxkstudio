@@ -79,6 +79,9 @@ type Meta struct {
 	DocsURL string
 	// Probe declares how the connectivity test talks to this provider (ArcReel's per-provider check).
 	Probe Probe
+	// DefaultConcurrency overrides the app-wide max-workers default for some capabilities (a provider
+	// known to accept fewer parallel jobs); user settings still win.
+	DefaultConcurrency map[Capability]int
 	// Hosts are extra API hosts (regional endpoints) that identify this provider from a base URL; the
 	// host of DefaultBaseURL is always included.
 	Hosts []string
@@ -151,6 +154,11 @@ func (m Meta) Validate() error {
 	if m.Probe.ModelFilter != "" {
 		if _, err := regexp.Compile(m.Probe.ModelFilter); err != nil {
 			return fmt.Errorf("provider %s: bad model filter: %w", m.ID, err)
+		}
+	}
+	for c, n := range m.DefaultConcurrency {
+		if !m.Has(c) || c == CapabilityLLM || n < 1 {
+			return fmt.Errorf("provider %s: default concurrency %s=%d is invalid", m.ID, c, n)
 		}
 	}
 	for _, c := range m.Capabilities {
@@ -302,6 +310,15 @@ type Repository interface {
 	ActivateCredential(ctx context.Context, id string) error
 	SetCredentialHealth(ctx context.Context, id string, h Health) error
 	SetCustomHealth(ctx context.Context, id string, h Health) error
+
+	// Models and settings are keyed by owner id: a built-in provider id or a custom provider id.
+	ListModels(ctx context.Context, ownerID string) ([]Model, error)
+	ReplaceModels(ctx context.Context, ownerID string, models []Model) error
+	GetSettings(ctx context.Context, ownerID string) (Settings, error)
+	UpdateSettings(ctx context.Context, ownerID string, set Settings, clear []string) error
+	// Defaults maps purposes to the user's default model ref ("" or missing = auto).
+	GetDefaults(ctx context.Context) (map[Purpose]string, error)
+	SetDefault(ctx context.Context, p Purpose, ref string) error
 
 	ListCustom(ctx context.Context) ([]CustomProvider, error)
 	GetCustom(ctx context.Context, id string) (CustomProvider, error)

@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"app/internal/contracts"
-	domain "app/internal/domain/provider"
 	"app/internal/realtime"
 	providersvc "app/internal/service/provider"
 )
@@ -20,9 +19,10 @@ func (Providers) Name() string { return "providers" }
 func ListResult(s providersvc.Snapshot) contracts.ProvidersListResult {
 	builtins := make([]contracts.BuiltinWithCredentials, 0, len(s.Builtins))
 	for _, b := range s.Builtins {
-		builtins = append(builtins, contracts.BuiltinWithCredentials{Meta: b.Meta, Configured: b.Configured(), Credentials: b.Credentials})
+		builtins = append(builtins, contracts.BuiltinWithCredentials{Meta: b.Meta, Configured: b.Configured(), Credentials: b.Credentials,
+			Models: b.Models, Settings: b.Settings})
 	}
-	return contracts.NewProvidersListResult(s.SecretBackend, builtins, s.Custom)
+	return contracts.NewProvidersListResult(s.SecretBackend, builtins, s.Custom, s.LimitDefaults)
 }
 
 func testResult(r providersvc.TestResult) contracts.ProviderTestResult {
@@ -33,7 +33,64 @@ func testResult(r providersvc.TestResult) contracts.ProviderTestResult {
 	return contracts.ProviderTestResult{OK: r.OK(), Outcome: r.Outcome, Status: r.Status, LatencyMs: r.LatencyMs, Detail: r.Detail, Models: models}
 }
 
+func defaultsResult(ds []providersvc.PurposeDefault) contracts.ProviderDefaultsResult {
+	out := contracts.ProviderDefaultsResult{Purposes: []contracts.PurposeDefault{}}
+	for _, d := range ds {
+		pd := contracts.PurposeDefault{Purpose: d.Purpose, Capability: d.Capability, Chosen: d.Chosen.String(),
+			Effective: d.Effective.String(), ChosenUnavailable: d.ChosenUnavailable, Candidates: []contracts.ModelCandidate{}}
+		for _, c := range d.Candidates {
+			pd.Candidates = append(pd.Candidates, contracts.ModelCandidate{Ref: c.Ref.String(), ProviderID: c.Ref.ProviderID,
+				ProviderName: c.ProviderName, Custom: c.Custom, Model: contracts.NewProviderModel(c.Model), IsProviderDefault: c.IsProviderDefault})
+		}
+		out.Purposes = append(out.Purposes, pd)
+	}
+	return out
+}
+
 func (m Providers) Register(r *realtime.Registry) {
+	realtime.Handle(r, contracts.ActionProvidersSetModels,
+		func(ctx context.Context, _ *realtime.Request, p contracts.SetModelsPayload) (contracts.ProviderModelsResult, error) {
+			ms, err := m.Service.SetModels(ctx, p.OwnerID, p.ToDomain())
+			if err != nil {
+				return contracts.ProviderModelsResult{}, err
+			}
+			return contracts.ProviderModelsResult{Models: contracts.NewProviderModels(ms)}, nil
+		})
+	realtime.Handle(r, contracts.ActionProvidersDiscoverBuiltin,
+		func(ctx context.Context, _ *realtime.Request, p contracts.ProviderIDPayload) (contracts.ProviderModelsResult, error) {
+			ms, err := m.Service.DiscoverBuiltinModels(ctx, p.ID)
+			if err != nil {
+				return contracts.ProviderModelsResult{}, err
+			}
+			return contracts.ProviderModelsResult{Models: contracts.NewProviderModels(ms)}, nil
+		})
+	realtime.Handle(r, contracts.ActionProvidersUpdateSettings,
+		func(ctx context.Context, _ *realtime.Request, p contracts.UpdateSettingsPayload) (contracts.ProviderSettingsResult, error) {
+			s, err := m.Service.UpdateSettings(ctx, p.OwnerID, p.Settings)
+			if err != nil {
+				return contracts.ProviderSettingsResult{}, err
+			}
+			return contracts.NewProviderSettingsResult(s), nil
+		})
+	realtime.Handle(r, contracts.ActionProvidersDefaults,
+		func(ctx context.Context, _ *realtime.Request, _ contracts.Empty) (contracts.ProviderDefaultsResult, error) {
+			ds, err := m.Service.Defaults(ctx)
+			if err != nil {
+				return contracts.ProviderDefaultsResult{}, err
+			}
+			return defaultsResult(ds), nil
+		})
+	realtime.Handle(r, contracts.ActionProvidersSetDefault,
+		func(ctx context.Context, _ *realtime.Request, p contracts.SetDefaultPayload) (contracts.ProviderDefaultsResult, error) {
+			if err := m.Service.SetDefault(ctx, p.Purpose, p.Model); err != nil {
+				return contracts.ProviderDefaultsResult{}, err
+			}
+			ds, err := m.Service.Defaults(ctx)
+			if err != nil {
+				return contracts.ProviderDefaultsResult{}, err
+			}
+			return defaultsResult(ds), nil
+		})
 	realtime.Handle(r, contracts.ActionProvidersList,
 		func(ctx context.Context, _ *realtime.Request, _ contracts.Empty) (contracts.ProvidersListResult, error) {
 			s, err := m.Service.List(ctx)
@@ -111,8 +168,7 @@ func (m Providers) Register(r *realtime.Registry) {
 			}
 			out := contracts.DiscoverModelsResult{Models: []contracts.DiscoveredModel{}}
 			for _, d := range ms {
-				e, _ := domain.EndpointByKey(d.Endpoint)
-				out.Models = append(out.Models, contracts.DiscoveredModel{ModelID: d.ModelID, Endpoint: d.Endpoint, Capability: e.Capability})
+				out.Models = append(out.Models, contracts.DiscoveredModel{ModelID: d.ModelID, Endpoint: d.Endpoint, Capability: d.Capability})
 			}
 			return out, nil
 		})

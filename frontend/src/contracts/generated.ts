@@ -61,6 +61,9 @@ export type ProviderEndpoint = (typeof ProviderEndpointValues)[number];
 export const ProviderTestOutcomeValues = ["ok", "auth_failed", "rate_limited", "not_found", "http_error", "timeout", "network", "invalid_credentials", "secret_missing"] as const;
 export type ProviderTestOutcome = (typeof ProviderTestOutcomeValues)[number];
 
+export const ProviderPurposeValues = ["text", "image", "video", "tts"] as const;
+export type ProviderPurpose = (typeof ProviderPurposeValues)[number];
+
 export const SecretBackendValues = ["keyring", "encrypted_file", "memory"] as const;
 export type SecretBackend = (typeof SecretBackendValues)[number];
 
@@ -264,6 +267,10 @@ export interface BuiltinProvider {
   docs_url: string;
   configured: boolean;
   credentials: ProviderCredential[];
+  models: ProviderModel[];
+  settings: Record<string, number>;
+  setting_defaults: Record<string, number>;
+  discoverable: boolean;
 }
 
 export interface ClientMessage {
@@ -303,13 +310,6 @@ export interface CustomEndpoint {
   formats: ProviderDiscoveryFormat[];
 }
 
-export interface CustomModelInput {
-  model_id: string;
-  endpoint: ProviderEndpoint;
-  enabled: boolean;
-  is_default: boolean;
-}
-
 export interface CustomProvider {
   id: string;
   name: string;
@@ -318,7 +318,9 @@ export interface CustomProvider {
   key_hint: string;
   health: ProviderHealth;
   capabilities: ProviderCapability[];
-  models: CustomProviderModel[];
+  models: ProviderModel[];
+  settings: Record<string, number>;
+  setting_defaults: Record<string, number>;
   created_at: string;
   updated_at: string;
 }
@@ -329,15 +331,7 @@ export interface CustomProviderInput {
   base_url: string;
   api_key: string;
   clear_api_key: boolean;
-  models: CustomModelInput[];
-}
-
-export interface CustomProviderModel {
-  model_id: string;
-  endpoint: ProviderEndpoint;
-  enabled: boolean;
-  is_default: boolean;
-  capability: ProviderCapability;
+  models: ProviderModel[];
 }
 
 export interface DiagnosticsBundle {
@@ -404,6 +398,22 @@ export interface GraphNode {
 export interface GraphResult {
   order: string[];
   nodes: Record<string, NodeRun>;
+}
+
+export interface ModelCandidate {
+  ref: string;
+  provider_id: string;
+  provider_name: string;
+  custom: boolean;
+  model: ProviderModel;
+  is_provider_default: boolean;
+}
+
+export interface ModelFacts {
+  durations: number[];
+  resolutions: string[];
+  audio: boolean;
+  max_output_tokens: number;
 }
 
 export interface ModelOption {
@@ -481,6 +491,10 @@ export interface ProviderCredential {
   updated_at: string;
 }
 
+export interface ProviderDefaultsResult {
+  purposes: PurposeDefault[];
+}
+
 export interface ProviderField {
   key: string;
   kind: ProviderFieldKind;
@@ -501,6 +515,25 @@ export interface ProviderIDPayload {
   id: string;
 }
 
+export interface ProviderModel {
+  model_id: string;
+  display_name: string;
+  capability: ProviderCapability;
+  endpoint: ProviderEndpoint;
+  enabled: boolean;
+  is_default: boolean;
+  user_added: boolean;
+  facts: ModelFacts;
+}
+
+export interface ProviderModelsResult {
+  models: ProviderModel[];
+}
+
+export interface ProviderSettingsResult {
+  settings: Record<string, number>;
+}
+
 export interface ProviderTestResult {
   ok: boolean;
   outcome: ProviderTestOutcome;
@@ -515,6 +548,16 @@ export interface ProvidersListResult {
   builtins: BuiltinProvider[];
   custom: CustomProvider[];
   endpoints: CustomEndpoint[];
+  setting_specs: SettingSpec[];
+}
+
+export interface PurposeDefault {
+  purpose: ProviderPurpose;
+  capability: ProviderCapability;
+  chosen: string;
+  effective: string;
+  chosen_unavailable: boolean;
+  candidates: ModelCandidate[];
 }
 
 export interface ResponseMessage {
@@ -532,6 +575,23 @@ export interface RuntimeInfo {
   sys_mb: number;
   gc_cycles: number;
   uptime_seconds: number;
+}
+
+export interface SetDefaultPayload {
+  purpose: ProviderPurpose;
+  model: string;
+}
+
+export interface SetModelsPayload {
+  owner_id: string;
+  models: ProviderModel[];
+}
+
+export interface SettingSpec {
+  key: string;
+  capability: ProviderCapability;
+  min: number;
+  max: number;
 }
 
 export interface Spec {
@@ -568,6 +628,11 @@ export interface UpdateInfo {
   release_url: string;
   release_notes: string;
   checked_at: number;
+}
+
+export interface UpdateSettingsPayload {
+  owner_id: string;
+  settings: Record<string, string>;
 }
 
 export interface WorkflowRunGraphPayload {
@@ -686,6 +751,16 @@ export const Actions = {
   PROVIDERS_TEST_CUSTOM: "providers:test_custom",
   /** Lists the models of a (possibly unsaved) custom provider. */
   PROVIDERS_DISCOVER_MODELS: "providers:discover_models",
+  /** Replaces the model list of a built-in or custom provider (enable, defaults, facts, added ids). */
+  PROVIDERS_SET_MODELS: "providers:set_models",
+  /** Lists a built-in provider's models with its active key and merges new ones into its model list. */
+  PROVIDERS_DISCOVER_BUILTIN_MODELS: "providers:discover_builtin_models",
+  /** Patches a provider's concurrency / rate settings; an empty value resets a key. */
+  PROVIDERS_UPDATE_SETTINGS: "providers:update_settings",
+  /** Default model per purpose (text, image, video, tts) with the usable candidates. */
+  PROVIDERS_DEFAULTS: "providers:defaults",
+  /** Sets the default model of a purpose (provider/model, or empty for auto). */
+  PROVIDERS_SET_DEFAULT: "providers:set_default",
 } as const;
 export type ActionName = (typeof Actions)[keyof typeof Actions];
 
@@ -746,6 +821,11 @@ export interface ActionMap {
   "providers:delete_custom": { payload: ProviderIDPayload; result: Empty };
   "providers:test_custom": { payload: ProviderIDPayload; result: ProviderTestResult };
   "providers:discover_models": { payload: DiscoverModelsPayload; result: DiscoverModelsResult };
+  "providers:set_models": { payload: SetModelsPayload; result: ProviderModelsResult };
+  "providers:discover_builtin_models": { payload: ProviderIDPayload; result: ProviderModelsResult };
+  "providers:update_settings": { payload: UpdateSettingsPayload; result: ProviderSettingsResult };
+  "providers:defaults": { payload: Empty; result: ProviderDefaultsResult };
+  "providers:set_default": { payload: SetDefaultPayload; result: ProviderDefaultsResult };
 }
 
 export const Events = {

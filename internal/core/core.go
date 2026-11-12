@@ -18,6 +18,7 @@ import (
 	"app/internal/contracts"
 	domainagent "app/internal/domain/agent"
 	domainprefs "app/internal/domain/preferences"
+	domainprovider "app/internal/domain/provider"
 	"app/internal/httpclient"
 	"app/internal/paths"
 	"app/internal/realtime"
@@ -208,6 +209,8 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		Secrets:     secretStore,
 		Client:      o.HTTPClient,
 		TestTimeout: cfg.Providers.TestTimeout,
+		LimitDefaults: domainprovider.LimitDefaults{MaxWorkers: cfg.Providers.DefaultMaxWorkers,
+			RPM: cfg.Providers.DefaultRPM, RequestGapMs: cfg.Providers.DefaultRequestGapMs},
 		OnChanged: func() {
 			// Runs after the mutation committed; a fresh snapshot keeps every client in sync.
 			if snap, err := provSvc.List(context.Background()); err == nil {

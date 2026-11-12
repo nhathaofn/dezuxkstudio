@@ -406,7 +406,7 @@ func TestResolveFor(t *testing.T) {
 func TestCustomProviderLifecycle(t *testing.T) {
 	e := newEnv(t, 2*time.Second)
 	ctx := context.Background()
-	models := []domain.CustomModel{
+	models := []domain.Model{
 		{ModelID: "gpt-4o", Endpoint: domain.EndpointOpenAIChat, Enabled: true, IsDefault: true},
 	}
 	p, err := e.svc.CreateCustom(ctx, domain.CustomInput{
@@ -506,7 +506,7 @@ func TestStatuses(t *testing.T) {
 	ctx := context.Background()
 	e.create(t, domain.IDOpenAI, apiKeyIn(testKey, nil))
 	if _, err := e.svc.CreateCustom(ctx, domain.CustomInput{Name: "c", DiscoveryFormat: domain.DiscoveryOpenAI, BaseURL: "https://a.test",
-		Models: []domain.CustomModel{{ModelID: "m", Endpoint: domain.EndpointOpenAIChat, Enabled: true}}}); err != nil {
+		Models: []domain.Model{{ModelID: "m", Endpoint: domain.EndpointOpenAIChat, Enabled: true}}}); err != nil {
 		t.Fatal(err)
 	}
 	st, err := e.svc.Statuses(ctx)

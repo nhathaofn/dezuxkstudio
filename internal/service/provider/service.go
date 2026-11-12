@@ -29,17 +29,20 @@ type Options struct {
 	Secrets     secrets.Store
 	Client      *http.Client
 	TestTimeout time.Duration
+	// LimitDefaults are the app-wide concurrency / rate defaults for unset provider settings.
+	LimitDefaults domain.LimitDefaults
 	// OnChanged is called after every successful mutation (the core publishes providers:changed).
 	OnChanged func()
 }
 
 // Service implements the provider use cases.
 type Service struct {
-	repo        domain.Repository
-	secrets     secrets.Store
-	client      *http.Client
-	testTimeout time.Duration
-	onChanged   func()
+	repo          domain.Repository
+	secrets       secrets.Store
+	client        *http.Client
+	testTimeout   time.Duration
+	limitDefaults domain.LimitDefaults
+	onChanged     func()
 }
 
 // New validates the registry and builds the service.
@@ -50,7 +53,7 @@ func New(o Options) (*Service, error) {
 	if o.Repo == nil || o.Secrets == nil || o.Client == nil || o.TestTimeout <= 0 {
 		return nil, errors.New("provider: incomplete options")
 	}
-	return &Service{repo: o.Repo, secrets: o.Secrets, client: o.Client, testTimeout: o.TestTimeout, onChanged: o.OnChanged}, nil
+	return &Service{repo: o.Repo, secrets: o.Secrets, client: o.Client, testTimeout: o.TestTimeout, limitDefaults: o.LimitDefaults, onChanged: o.OnChanged}, nil
 }
 
 func (s *Service) changed() {
@@ -61,6 +64,7 @@ func (s *Service) changed() {
 
 // Snapshot is everything the settings screen shows.
 type Snapshot struct {
+	LimitDefaults domain.LimitDefaults
 	SecretBackend secrets.Backend
 	Builtins      []BuiltinView
 	Custom        []domain.CustomProvider
@@ -70,6 +74,8 @@ type Snapshot struct {
 type BuiltinView struct {
 	Meta        domain.Meta
 	Credentials []domain.Credential
+	Models      []domain.Model
+	Settings    domain.Settings
 }
 
 // Configured reports whether the provider has an active credential.
@@ -87,9 +93,15 @@ func (s *Service) List(ctx context.Context) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	out := Snapshot{SecretBackend: secrets.BackendOf(s.secrets), Custom: custom}
+	out := Snapshot{LimitDefaults: s.limitDefaults, SecretBackend: secrets.BackendOf(s.secrets), Custom: custom}
 	for _, m := range domain.Registry() {
 		v := BuiltinView{Meta: m}
+		if v.Models, err = s.repo.ListModels(ctx, m.ID); err != nil {
+			return Snapshot{}, err
+		}
+		if v.Settings, err = s.repo.GetSettings(ctx, m.ID); err != nil {
+			return Snapshot{}, err
+		}
 		for _, c := range creds {
 			if c.ProviderID == m.ID {
 				v.Credentials = append(v.Credentials, c)
@@ -347,9 +359,9 @@ func (s *Service) ActivateCredential(ctx context.Context, id string) error {
 
 // ---- custom providers ----
 
-func customModelsOrEmpty(m []domain.CustomModel) []domain.CustomModel {
+func customModelsOrEmpty(m []domain.Model) []domain.Model {
 	if m == nil {
-		return []domain.CustomModel{}
+		return []domain.Model{}
 	}
 	return m
 }

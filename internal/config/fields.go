@@ -75,6 +75,9 @@ func fields(c *Config) []field {
 		{key: "providers.test_timeout", usage: "max duration of a provider connectivity test or model discovery", val: durationValue{&c.Providers.TestTimeout}},
 		{key: "providers.check_on_startup", usage: "test every saved provider key in the background at start-up", val: boolValue{&c.Providers.CheckOnStartup}},
 		{key: "providers.check_concurrency", usage: "max provider key tests running at once during the start-up check", val: intValue{&c.Providers.CheckConcurrency}},
+		{key: "providers.default_max_workers", usage: "generation requests per provider and capability at once (unless set per provider)", val: intValue{&c.Providers.DefaultMaxWorkers}},
+		{key: "providers.default_rpm", usage: "requests per minute per provider and capability, 0 = unlimited (unless set per provider)", val: intValue{&c.Providers.DefaultRPM}},
+		{key: "providers.default_request_gap_ms", usage: "minimum pause between requests to a provider in ms (unless set per provider)", val: intValue{&c.Providers.DefaultRequestGapMs}},
 		{key: "binaries.probe_timeout", usage: "max duration of an external tool version probe", val: durationValue{&c.Binaries.ProbeTimeout}},
 
 		{key: "agent.turn_timeout", usage: "an agent chat turn is stopped after this long without activity (text, tool calls, tool progress)", val: durationValue{&c.Agent.TurnTimeout}},

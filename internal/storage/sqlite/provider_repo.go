@@ -198,7 +198,7 @@ func (r *ProviderRepository) ListCustom(ctx context.Context) ([]provider.CustomP
 		return nil, err
 	}
 	for i := range out {
-		if out[i].Models, err = r.models(ctx, out[i].ID); err != nil {
+		if err := r.fillCustom(ctx, &out[i]); err != nil {
 			return nil, err
 		}
 	}
@@ -219,25 +219,142 @@ func scanCustom(s rowScanner) (provider.CustomProvider, error) {
 	return p, nil
 }
 
-func (r *ProviderRepository) models(ctx context.Context, id string) ([]provider.CustomModel, error) {
-	rows, err := r.db.sql.QueryContext(ctx,
-		`SELECT model_id, endpoint, enabled, is_default FROM custom_provider_models WHERE provider_id = ? ORDER BY position ASC`, id)
+// querier is satisfied by *sql.DB and *sql.Tx.
+type querier interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func listModels(ctx context.Context, q querier, ownerID string) ([]provider.Model, error) {
+	rows, err := q.QueryContext(ctx, `SELECT model_id, capability, endpoint, display_name, enabled, is_default, user_added, facts_json
+		FROM provider_models WHERE owner_id = ? ORDER BY position ASC, model_id ASC`, ownerID)
 	if err != nil {
-		return nil, fmt.Errorf("sqlite: list custom models: %w", err)
+		return nil, fmt.Errorf("sqlite: list provider models: %w", err)
 	}
 	defer rows.Close()
-	var out []provider.CustomModel
+	out := []provider.Model{}
 	for rows.Next() {
-		var m provider.CustomModel
-		var endpoint string
-		var enabled, def int
-		if err := rows.Scan(&m.ModelID, &endpoint, &enabled, &def); err != nil {
-			return nil, fmt.Errorf("sqlite: scan custom model: %w", err)
+		var m provider.Model
+		var capability, endpoint, facts string
+		var enabled, def, user int
+		if err := rows.Scan(&m.ModelID, &capability, &endpoint, &m.DisplayName, &enabled, &def, &user, &facts); err != nil {
+			return nil, fmt.Errorf("sqlite: scan provider model: %w", err)
 		}
-		m.Endpoint, m.Enabled, m.IsDefault = provider.Endpoint(endpoint), enabled == 1, def == 1
+		m.Capability, m.Endpoint = provider.Capability(capability), provider.Endpoint(endpoint)
+		m.Enabled, m.IsDefault, m.UserAdded = enabled == 1, def == 1, user == 1
+		_ = json.Unmarshal([]byte(facts), &m.Facts)
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+func writeModels(ctx context.Context, q querier, ownerID string, models []provider.Model) error {
+	if _, err := q.ExecContext(ctx, `DELETE FROM provider_models WHERE owner_id = ?`, ownerID); err != nil {
+		return fmt.Errorf("sqlite: clear provider models: %w", err)
+	}
+	for i, m := range models {
+		facts, err := json.Marshal(m.Facts)
+		if err != nil {
+			return fmt.Errorf("sqlite: encode model facts: %w", err)
+		}
+		if _, err := q.ExecContext(ctx, `INSERT INTO provider_models
+			(owner_id, model_id, capability, endpoint, display_name, enabled, is_default, user_added, facts_json, position)
+			VALUES (?,?,?,?,?,?,?,?,?,?)`,
+			ownerID, m.ModelID, string(m.Capability), string(m.Endpoint), m.DisplayName,
+			boolInt(m.Enabled), boolInt(m.IsDefault), boolInt(m.UserAdded), string(facts), i); err != nil {
+			return fmt.Errorf("sqlite: insert provider model: %w", err)
+		}
+	}
+	return nil
+}
+
+// ListModels implements provider.Repository.
+func (r *ProviderRepository) ListModels(ctx context.Context, ownerID string) ([]provider.Model, error) {
+	return listModels(ctx, r.db.sql, ownerID)
+}
+
+// ReplaceModels implements provider.Repository.
+func (r *ProviderRepository) ReplaceModels(ctx context.Context, ownerID string, models []provider.Model) error {
+	return r.db.inTx(ctx, func(tx *sql.Tx) error { return writeModels(ctx, tx, ownerID, models) })
+}
+
+// GetSettings implements provider.Repository.
+func (r *ProviderRepository) GetSettings(ctx context.Context, ownerID string) (provider.Settings, error) {
+	rows, err := r.db.sql.QueryContext(ctx, `SELECT key, value FROM provider_settings WHERE owner_id = ?`, ownerID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list provider settings: %w", err)
+	}
+	defer rows.Close()
+	out := provider.Settings{}
+	for rows.Next() {
+		var k string
+		var v int
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, fmt.Errorf("sqlite: scan provider setting: %w", err)
+		}
+		out[k] = v
+	}
+	return out, rows.Err()
+}
+
+// UpdateSettings implements provider.Repository.
+func (r *ProviderRepository) UpdateSettings(ctx context.Context, ownerID string, set provider.Settings, clear []string) error {
+	return r.db.inTx(ctx, func(tx *sql.Tx) error {
+		for k, v := range set {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO provider_settings (owner_id, key, value) VALUES (?,?,?)
+				ON CONFLICT(owner_id, key) DO UPDATE SET value = excluded.value`, ownerID, k, v); err != nil {
+				return fmt.Errorf("sqlite: set provider setting: %w", err)
+			}
+		}
+		for _, k := range clear {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM provider_settings WHERE owner_id = ? AND key = ?`, ownerID, k); err != nil {
+				return fmt.Errorf("sqlite: clear provider setting: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
+// GetDefaults implements provider.Repository.
+func (r *ProviderRepository) GetDefaults(ctx context.Context) (map[provider.Purpose]string, error) {
+	rows, err := r.db.sql.QueryContext(ctx, `SELECT purpose, model_ref FROM provider_defaults`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list provider defaults: %w", err)
+	}
+	defer rows.Close()
+	out := map[provider.Purpose]string{}
+	for rows.Next() {
+		var p, ref string
+		if err := rows.Scan(&p, &ref); err != nil {
+			return nil, fmt.Errorf("sqlite: scan provider default: %w", err)
+		}
+		out[provider.Purpose(p)] = ref
+	}
+	return out, rows.Err()
+}
+
+// SetDefault implements provider.Repository ("" removes the choice, i.e. back to auto).
+func (r *ProviderRepository) SetDefault(ctx context.Context, p provider.Purpose, ref string) error {
+	var err error
+	if ref == "" {
+		_, err = r.db.sql.ExecContext(ctx, `DELETE FROM provider_defaults WHERE purpose = ?`, string(p))
+	} else {
+		_, err = r.db.sql.ExecContext(ctx, `INSERT INTO provider_defaults (purpose, model_ref) VALUES (?, ?)
+			ON CONFLICT(purpose) DO UPDATE SET model_ref = excluded.model_ref`, string(p), ref)
+	}
+	if err != nil {
+		return fmt.Errorf("sqlite: set provider default: %w", err)
+	}
+	return nil
+}
+
+func (r *ProviderRepository) fillCustom(ctx context.Context, p *provider.CustomProvider) error {
+	var err error
+	if p.Models, err = r.ListModels(ctx, p.ID); err != nil {
+		return err
+	}
+	p.Settings, err = r.GetSettings(ctx, p.ID)
+	return err
 }
 
 // GetCustom implements provider.Repository.
@@ -250,22 +367,7 @@ func (r *ProviderRepository) GetCustom(ctx context.Context, id string) (provider
 	if err != nil {
 		return provider.CustomProvider{}, fmt.Errorf("sqlite: get custom provider: %w", err)
 	}
-	p.Models, err = r.models(ctx, id)
-	return p, err
-}
-
-func writeModels(ctx context.Context, tx *sql.Tx, id string, models []provider.CustomModel) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM custom_provider_models WHERE provider_id = ?`, id); err != nil {
-		return fmt.Errorf("sqlite: clear custom models: %w", err)
-	}
-	for i, m := range models {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO custom_provider_models (provider_id, model_id, endpoint, enabled, is_default, position) VALUES (?,?,?,?,?,?)`,
-			id, m.ModelID, string(m.Endpoint), boolInt(m.Enabled), boolInt(m.IsDefault), i); err != nil {
-			return fmt.Errorf("sqlite: insert custom model: %w", err)
-		}
-	}
-	return nil
+	return p, r.fillCustom(ctx, &p)
 }
 
 // CreateCustom implements provider.Repository.
@@ -305,8 +407,10 @@ func (r *ProviderRepository) UpdateCustom(ctx context.Context, p provider.Custom
 // DeleteCustom implements provider.Repository.
 func (r *ProviderRepository) DeleteCustom(ctx context.Context, id string) error {
 	return r.db.inTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM custom_provider_models WHERE provider_id = ?`, id); err != nil {
-			return fmt.Errorf("sqlite: delete custom models: %w", err)
+		for _, table := range []string{"provider_models", "provider_settings"} {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE owner_id = ?`, id); err != nil {
+				return fmt.Errorf("sqlite: delete custom provider %s: %w", table, err)
+			}
 		}
 		res, err := tx.ExecContext(ctx, `DELETE FROM custom_providers WHERE id = ?`, id)
 		if err != nil {
