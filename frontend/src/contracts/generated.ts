@@ -55,7 +55,7 @@ export type ProviderFieldKind = (typeof ProviderFieldKindValues)[number];
 export const ProviderDiscoveryFormatValues = ["openai", "gemini", "anthropic"] as const;
 export type ProviderDiscoveryFormat = (typeof ProviderDiscoveryFormatValues)[number];
 
-export const ProviderEndpointValues = ["openai-chat", "openai-responses", "gemini-generate", "anthropic-messages", "openai-images", "openai-images-generations", "openai-images-edits", "openai-chat-image", "openrouter-images", "gemini-image", "openai-video", "openai-tts"] as const;
+export const ProviderEndpointValues = ["openai-chat", "openai-responses", "gemini-generate", "anthropic-messages", "openai-images", "openai-images-generations", "openai-images-edits", "openai-chat-image", "openrouter-images", "gemini-image", "openai-video", "openai-tts", "gemini-video", "gemini-tts"] as const;
 export type ProviderEndpoint = (typeof ProviderEndpointValues)[number];
 
 export const ProviderTestOutcomeValues = ["ok", "auth_failed", "rate_limited", "not_found", "http_error", "timeout", "network", "invalid_credentials", "secret_missing"] as const;

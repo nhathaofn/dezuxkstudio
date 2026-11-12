@@ -173,6 +173,9 @@ func (s *Service) CreateCredential(ctx context.Context, providerID string, in do
 	if err := checkSecretFields(m, in); err != nil {
 		return domain.Credential{}, err
 	}
+	if err := checkSingleGroup(m, in.Secrets); err != nil {
+		return domain.Credential{}, err
+	}
 	if err := m.CheckComplete(in.Values, func(k string) bool { return in.Secrets[k] != "" }); err != nil {
 		return domain.Credential{}, err
 	}
@@ -215,6 +218,23 @@ func (s *Service) UpdateCredential(ctx context.Context, id string, in domain.Inp
 			return domain.Credential{}, apperr.New(apperr.CodeValidation, "Unknown secret field "+k).WithDetails(map[string]any{"field": k})
 		}
 	}
+	if err := checkSingleGroup(m, in.Secrets); err != nil {
+		return domain.Credential{}, err
+	}
+	// Group switch (ArcReel _resolve_credential_group_switch): completing a group that was not complete
+	// before clears the other groups, otherwise the old auth mode would silently keep winning.
+	for _, g := range m.CredentialGroups {
+		if groupComplete(g, func(k string) bool { return in.Secrets[k] != "" }) &&
+			!groupComplete(g, func(k string) bool { return c.SecretHints[k] != "" }) {
+			for _, other := range m.CredentialGroups {
+				for _, k := range other {
+					if !slices.Contains(g, k) && !slices.Contains(clear, k) {
+						clear = append(clear, k)
+					}
+				}
+			}
+		}
+	}
 	present := func(k string) bool {
 		if in.Secrets[k] != "" {
 			return true
@@ -223,6 +243,22 @@ func (s *Service) UpdateCredential(ctx context.Context, id string, in domain.Inp
 	}
 	if err := m.CheckComplete(in.Values, present); err != nil {
 		return domain.Credential{}, err
+	}
+	// Snapshot every secret this update touches so a failed DB write can put them back.
+	previous := map[string]string{}
+	for _, k := range append(slices.Collect(maps.Keys(in.Secrets)), clear...) {
+		if v, err := s.secrets.Get(credSecretKey(id, k)); err == nil {
+			previous[k] = v
+		}
+	}
+	restore := func() {
+		for _, k := range append(slices.Collect(maps.Keys(in.Secrets)), clear...) {
+			if v, ok := previous[k]; ok {
+				_ = s.secrets.Set(credSecretKey(id, k), v)
+			} else {
+				_ = s.secrets.Delete(credSecretKey(id, k))
+			}
+		}
 	}
 	if err := s.writeSecrets(id, in.Secrets); err != nil {
 		return domain.Credential{}, err
@@ -243,6 +279,7 @@ func (s *Service) UpdateCredential(ctx context.Context, id string, in domain.Inp
 	}
 	c.Name, c.Values, c.SecretHints = in.Name, in.Values, newHints
 	if err := s.repo.UpdateCredential(ctx, c); err != nil {
+		restore()
 		return domain.Credential{}, err
 	}
 	if len(in.Secrets) > 0 || len(clear) > 0 || !maps.Equal(c.Values, oldValues) {
@@ -250,6 +287,30 @@ func (s *Service) UpdateCredential(ctx context.Context, id string, in domain.Inp
 	}
 	s.changed()
 	return s.repo.GetCredential(ctx, id)
+}
+
+func groupComplete(g []string, has func(string) bool) bool {
+	for _, k := range g {
+		if !has(k) {
+			return false
+		}
+	}
+	return true
+}
+
+// checkSingleGroup rejects a submission whose secrets span several credential groups (ArcReel 422).
+func checkSingleGroup(m domain.Meta, secretsIn map[string]string) error {
+	touched := 0
+	for _, g := range m.CredentialGroups {
+		if slices.ContainsFunc(g, func(k string) bool { return secretsIn[k] != "" }) {
+			touched++
+		}
+	}
+	if touched > 1 {
+		return apperr.New(apperr.CodeValidation, "Fill in only one group of credentials").
+			WithDetails(map[string]any{"groups": m.CredentialGroups})
+	}
+	return nil
 }
 
 func (s *Service) deleteSecrets(credID string, m domain.Meta) {

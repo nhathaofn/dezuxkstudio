@@ -389,7 +389,7 @@ func TestProbeGeminiAIStudio(t *testing.T) {
 	defer srv.Close()
 	e := newEnv(t, 2*time.Second)
 	res := e.testCred(t, domain.IDGeminiAIStudio, srv.URL, map[string]string{"api_key": probeKey})
-	if !res.OK() || !slices.Equal(res.Models, []string{"gemini-2.5-pro", "imagen-4"}) {
+	if !res.OK() || !slices.Equal(res.Models, []string{"imagen-4"}) {
 		t.Fatalf("result = %+v", res)
 	}
 }

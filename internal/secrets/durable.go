@@ -65,6 +65,9 @@ type Durable struct {
 	backend Backend
 }
 
+// Dir is the folder of the encrypted-file fallback inside the app data dir.
+func Dir(dataDir string) string { return filepath.Join(dataDir, "secrets") }
+
 // NewDurableStore builds the application secret store. dir is the app data directory used by the
 // encrypted-file fallback.
 func NewDurableStore(service, dir string) *Durable {

@@ -129,6 +129,7 @@ func (s *shell) startCore(ctx context.Context) error {
 		AuthToken:     token,
 		OpenDirectory: platform.OpenDirectory,
 		HTTPClient:    s.o.HTTPClient,
+		Secrets:       s.o.Secrets,
 	})
 	if err != nil {
 		return err

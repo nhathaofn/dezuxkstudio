@@ -37,7 +37,9 @@ func (f *fakeProviders) AgentDelete(_ context.Context, id string) error {
 	f.deleted = append(f.deleted, id)
 	return nil
 }
-func (f *fakeProviders) Describe(context.Context, string) (string, error) { return "OpenAI / Work", nil }
+func (f *fakeProviders) Describe(context.Context, string) (string, error) {
+	return "OpenAI / Work", nil
+}
 
 func newProvidersFixture(t *testing.T) (*Service, *fakeRepo, *fakeProviders, *mcp.ClientSession) {
 	t.Helper()

@@ -121,8 +121,20 @@ func TestKeyringChunksLargeValues(t *testing.T) {
 	if v, _ := k.Get("big"); v != "small" {
 		t.Fatal(v)
 	}
-	if _, err := keyring.Get("test", chunkKey("big", 0)); err == nil {
-		t.Fatal("stale chunk left behind")
+	if v, err := keyring.Get("test", "big"); err != nil || v != "small" {
+		t.Fatalf("head must hold the plain value: %q %v", v, err)
+	}
+	// overwrite big → big: the value read back is always the newest
+	big2 := strings.Repeat("y", keyringChunk*3)
+	_ = k.Set("big", big)
+	_ = k.Set("big", big2)
+	if v, _ := k.Get("big"); v != big2 {
+		t.Fatal("overwrite lost")
+	}
+	// a head pointing at missing chunks reads as not found (user re-enters the key)
+	_ = keyring.Set("test", "broken", chunkMarker+"zz:2")
+	if _, err := k.Get("broken"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want not found, got %v", err)
 	}
 	_ = k.Delete("big")
 	if _, err := k.Get("big"); !errors.Is(err, ErrNotFound) {

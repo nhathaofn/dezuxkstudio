@@ -46,6 +46,9 @@ type Options struct {
 	AllowAnonymous bool   // server mode on loopback without token
 	OpenDirectory  func(dir string) error
 	HTTPClient     *http.Client
+	// Secrets is the app secret store; nil builds secrets.NewDurableStore in the data dir. The desktop
+	// shell passes its own so the bridge and the core share one store (one owner of the encrypted file).
+	Secrets secrets.Store
 }
 
 func (o Options) validate() error {
@@ -160,7 +163,10 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 func (c *Core) modules(o Options) ([]realtime.Module, error) {
 	cfg := o.Config
 	// One secret store for every service: OS keyring, else an encrypted file in the data dir, else memory.
-	secretStore := secrets.NewDurableStore(buildinfo.AppID, filepath.Join(o.Paths.Data, "secrets"))
+	secretStore := o.Secrets
+	if secretStore == nil {
+		secretStore = secrets.NewDurableStore(buildinfo.AppID, secrets.Dir(o.Paths.Data))
+	}
 
 	sysSvc := system.New(cfg.Mode, o.Paths, o.OpenDirectory)
 

@@ -223,12 +223,25 @@ func (s *Service) run(ctx context.Context, secretVals []string, probe func(conte
 	return res, nil
 }
 
+var authPattern = regexp.MustCompile(`(?i)(bearer|token|basic)\s+[A-Za-z0-9._~+/=-]{8,}|((?:api[_-]?key|access[_-]?token|key|secret)["']?\s*[:=]\s*["']?)[^\s"'&,}]{6,}`)
+
+// redact removes the secret (also URL-encoded) and anything that looks like a credential, then trims to
+// 200 runes without splitting a character.
 func redact(text, secret string) string {
-	if len(secret) >= 4 {
+	if secret != "" {
 		text = strings.ReplaceAll(text, secret, "[redacted]")
+		if esc := url.QueryEscape(secret); esc != secret {
+			text = strings.ReplaceAll(text, esc, "[redacted]")
+		}
 	}
-	if len(text) > 200 {
-		text = text[:200] + "..."
+	text = authPattern.ReplaceAllStringFunc(text, func(m string) string {
+		if sm := authPattern.FindStringSubmatch(m); sm[2] != "" {
+			return sm[2] + "[redacted]"
+		}
+		return strings.Fields(m)[0] + " [redacted]"
+	})
+	if r := []rune(text); len(r) > 200 {
+		text = string(r[:200]) + "..."
 	}
 	return text
 }
@@ -300,10 +313,11 @@ func bearer(key string) map[string]string { return map[string]string{"Authorizat
 // ---- built-in probes (ArcReel server/routers/providers.py connectivity checks) ----
 
 var (
-	modelFilterOpenAI    = regexp.MustCompile(`gpt|sora|dall|o1|o3|o4|image|tts`)
-	modelFilterGemini    = regexp.MustCompile(`veo|imagen|image|gemini|tts`)
+	// Model filters of ArcReel's connectivity checks (server/routers/providers.py).
+	modelFilterOpenAI    = regexp.MustCompile(`gpt|sora|dall|o1|o3|o4`)
+	modelFilterGemini    = regexp.MustCompile(`veo|imagen|image`)
 	modelFilterDashScope = regexp.MustCompile(`qwen|wan`)
-	modelFilterMiniMax   = regexp.MustCompile(`(?i)minimax|abab|hailuo|speech`)
+	modelFilterMiniMax   = regexp.MustCompile(`minimax|abab`)
 )
 
 func (s *Service) probeBuiltin(ctx context.Context, m domain.Meta, r Resolved) ([]string, error) {
@@ -373,26 +387,28 @@ func filterIDs(ids []string, filter *regexp.Regexp) []string {
 // dashScopeHost strips known API suffixes from a DashScope base URL (ArcReel dashscope_shared.py).
 func dashScopeHost(base string) string {
 	base = strings.TrimRight(base, "/")
-	for _, suf := range []string{"/compatible-mode/v1", "/api/v1", "/api"} {
-		base = strings.TrimSuffix(base, suf)
+	for _, suf := range []string{"/compatible-mode/v1", "/api/v1"} { // ArcReel _KNOWN_SUFFIXES, first match
+		if strings.HasSuffix(base, suf) {
+			return strings.TrimSuffix(base, suf)
+		}
 	}
 	return base
 }
 
 func minimaxHost(base string) string {
 	base = strings.TrimRight(base, "/")
-	for _, suf := range []string{"/v1", "/v2"} {
-		base = strings.TrimSuffix(base, suf)
-	}
-	return base
+	return strings.TrimSuffix(base, "/v1") // ArcReel _minimax_host
 }
 
 func (s *Service) probeVidu(ctx context.Context, base, key string) error {
 	// ArcReel test_vidu_connection: a valid token on a non-existent task returns 404.
 	_, status, err := s.do(ctx, request{method: http.MethodGet, url: base + "/tasks/0/creations",
 		headers: map[string]string{"Authorization": "Token " + key}})
-	if status == http.StatusNotFound || err == nil {
+	switch {
+	case status == http.StatusNotFound:
 		return nil
+	case err == nil: // a 2xx on a non-existent task is not Vidu (proxy, captive portal): undecidable
+		return fail(OutcomeHTTPError, status, "unexpected response; cannot confirm the key")
 	}
 	return err
 }
@@ -470,10 +486,7 @@ func (s *Service) geminiModels(ctx context.Context, base, key string) ([]Discove
 	var out []DiscoveredModel
 	for _, m := range body.Models {
 		id := strings.TrimPrefix(m.Name, "models/")
-		ep := domain.EndpointGeminiGenerate
-		if strings.Contains(id, "image") || strings.Contains(id, "imagen") {
-			ep = domain.EndpointGeminiImage
-		}
+		ep := InferGeminiEndpoint(id)
 		out = append(out, DiscoveredModel{ModelID: id, Endpoint: ep})
 	}
 	return out, nil
@@ -595,7 +608,7 @@ func (s *Service) anthropicModels(ctx context.Context, base, key string) ([]stri
 
 // ---- custom discovery ----
 
-var versionSuffix = regexp.MustCompile(`/v\d+[a-z0-9]*$`)
+var versionSuffix = regexp.MustCompile(`/v\d+$`) // ArcReel ensure_openai_base_url
 
 // ensureOpenAIBase appends /v1 when the base has no version suffix (ArcReel ensure_openai_base_url).
 func ensureOpenAIBase(base string) string {
@@ -626,6 +639,20 @@ func (s *Service) discover(ctx context.Context, f domain.DiscoveryFormat, base, 
 		return out, err
 	}
 	return nil, fail(OutcomeInvalid, 0, "unknown protocol")
+}
+
+// InferGeminiEndpoint guesses the endpoint of a Gemini-API model from its id.
+func InferGeminiEndpoint(id string) domain.Endpoint {
+	l := strings.ToLower(id)
+	switch {
+	case strings.Contains(l, "veo"):
+		return domain.EndpointGeminiVideo
+	case strings.Contains(l, "tts"):
+		return domain.EndpointGeminiTTS
+	case strings.Contains(l, "image") || strings.Contains(l, "imagen"):
+		return domain.EndpointGeminiImage
+	}
+	return domain.EndpointGeminiGenerate
 }
 
 // InferOpenAIEndpoint guesses the endpoint of an OpenAI-compatible model from its id.

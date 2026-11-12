@@ -264,27 +264,39 @@ func TestUpdateCredentialKeepsAndClearsSecrets(t *testing.T) {
 	wantCode(t, err, apperr.CodeNotFound)
 }
 
-func TestUpdateCredentialClearSecretsOnKling(t *testing.T) {
+func TestKlingGroupSwitchAndSpan(t *testing.T) {
 	e := newEnv(t, 2*time.Second)
 	ctx := context.Background()
-	c := e.create(t, domain.IDKling, domain.Input{Secrets: map[string]string{
-		"api_key": "kling-token-1234567", "access_key": "ak-1234567890", "secret_key": "sk-1234567890"}})
 
-	u, err := e.svc.UpdateCredential(ctx, c.ID, domain.Input{ClearSecrets: []string{"api_key"}})
+	// a submission spanning both groups is rejected (ArcReel 422)
+	_, err := e.svc.CreateCredential(ctx, domain.IDKling, domain.Input{Secrets: map[string]string{
+		"api_key": "kling-token-1234567", "access_key": "ak-1234567890", "secret_key": "sk-1234567890"}})
+	wantCode(t, err, apperr.CodeValidation)
+
+	c := e.create(t, domain.IDKling, domain.Input{Secrets: map[string]string{"api_key": "kling-token-1234567"}})
+
+	// completing the AK/SK group switches modes: the api_key is cleared
+	u, err := e.svc.UpdateCredential(ctx, c.ID, domain.Input{Secrets: map[string]string{
+		"access_key": "ak-1234567890", "secret_key": "sk-1234567890"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := secretOf(t, e.store, c.ID, "api_key"); err != secrets.ErrNotFound {
-		t.Fatalf("api_key should be removed, err = %v", err)
+		t.Fatalf("api_key should be removed after switch, err = %v", err)
 	}
 	if _, ok := u.SecretHints["api_key"]; ok {
 		t.Fatalf("hint remains: %v", u.SecretHints)
 	}
-	if _, err := secretOf(t, e.store, c.ID, "access_key"); err != nil {
-		t.Fatal(err)
+	r, err := e.svc.Resolve(ctx, domain.IDKling)
+	if err != nil || r.Secrets["access_key"] == "" || r.Secrets["api_key"] != "" {
+		t.Fatalf("resolve after switch: %+v %v", r.Secrets != nil, err)
 	}
 
-	// clearing one of the remaining group fields leaves it incomplete
+	// re-sending only one half of the current group keeps the other group untouched
+	if _, err := e.svc.UpdateCredential(ctx, c.ID, domain.Input{Secrets: map[string]string{"secret_key": "sk-0987654321"}}); err != nil {
+		t.Fatal(err)
+	}
+	// clearing one field of the only complete group fails and keeps the secret
 	_, err = e.svc.UpdateCredential(ctx, c.ID, domain.Input{ClearSecrets: []string{"secret_key"}})
 	wantCode(t, err, apperr.CodeValidation)
 	if _, err := secretOf(t, e.store, c.ID, "secret_key"); err != nil {

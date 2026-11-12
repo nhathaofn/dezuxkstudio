@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"slices"
 	"strings"
@@ -40,6 +41,8 @@ const (
 	EndpointGeminiImage             Endpoint = "gemini-image"
 	EndpointOpenAIVideo             Endpoint = "openai-video"
 	EndpointOpenAITTS               Endpoint = "openai-tts"
+	EndpointGeminiVideo             Endpoint = "gemini-video"
+	EndpointGeminiTTS               Endpoint = "gemini-tts"
 )
 
 // EndpointSpec describes a custom-provider endpoint.
@@ -68,6 +71,8 @@ func Endpoints() []EndpointSpec {
 		{EndpointGeminiImage, CapabilityImage, "POST", "/models/{model}:generateContent", []DiscoveryFormat{DiscoveryGemini}},
 		{EndpointOpenAIVideo, CapabilityVideo, "POST", "/videos", o},
 		{EndpointOpenAITTS, CapabilityTTS, "POST", "/audio/speech", o},
+		{EndpointGeminiVideo, CapabilityVideo, "POST", "/models/{model}:predictLongRunning", []DiscoveryFormat{DiscoveryGemini}},
+		{EndpointGeminiTTS, CapabilityTTS, "POST", "/models/{model}:generateContent", []DiscoveryFormat{DiscoveryGemini}},
 	}
 }
 
@@ -179,12 +184,26 @@ func (in *CustomInput) Validate() error {
 	return nil
 }
 
-// ValidateBaseURL accepts absolute http(s) URLs only.
+// ValidateBaseURL accepts absolute http(s) URLs without credentials, query or fragment, and refuses
+// link-local / cloud-metadata hosts (ArcReel validate_anthropic_base_url + artifact_http_client).
+// Loopback and private ranges stay allowed for local servers (Ollama, LM Studio).
 func ValidateBaseURL(raw string) error {
+	bad := func(msg string) error {
+		return apperr.New(apperr.CodeValidation, msg).WithDetails(map[string]any{"field": "base_url"})
+	}
 	u, err := url.Parse(raw)
 	if raw == "" || err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return apperr.New(apperr.CodeValidation, "Base URL must be an http(s) URL").
-			WithDetails(map[string]any{"field": "base_url"})
+		return bad("Base URL must be an http(s) URL")
+	}
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return bad("Base URL must not contain credentials, a query or a fragment")
+	}
+	h := strings.ToLower(u.Hostname())
+	if ip := net.ParseIP(h); ip != nil && (ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()) {
+		return bad("Base URL points at a link-local address")
+	}
+	if h == "metadata.google.internal" || h == "metadata" || strings.HasSuffix(h, ".internal.") {
+		return bad("Base URL points at a cloud metadata service")
 	}
 	return nil
 }
