@@ -279,6 +279,7 @@ type AgentProviderInfo struct {
 	CurrentModel       string                `json:"current_model"`
 	SelectedModel      string                `json:"selected_model"`
 	SelectedEffort     string                `json:"selected_effort"`
+	Revision           int64                 `json:"revision"`
 }
 
 // AgentSetModelPayload selects the model (and optional reasoning effort) used by a provider.

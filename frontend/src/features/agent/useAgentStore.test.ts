@@ -30,6 +30,7 @@ const mockProviders: AgentProviderInfo[] = [
     current_model: "",
     selected_model: "",
     selected_effort: "",
+    revision: 1,
   },
   {
     id: "codex",
@@ -57,6 +58,7 @@ const mockProviders: AgentProviderInfo[] = [
     current_model: "",
     selected_model: "",
     selected_effort: "",
+    revision: 1,
   },
 ];
 
@@ -381,5 +383,54 @@ describe("tool spinners", () => {
       { name: "y", status: "done" },
     ]);
     expect(finishRunningTools(undefined, "done")).toBeUndefined();
+  });
+});
+
+describe("provider status snapshots", () => {
+  const base = mockProviders[1];
+  const connectedWithModels = {
+    ...base,
+    state: "connected" as const,
+    active: true,
+    models: [{ id: "gpt-x", name: "GPT X", description: "", efforts: [], default_effort: "" }],
+    revision: 20,
+  };
+  const staleListSnapshot = {
+    ...base,
+    state: "connected" as const,
+    active: true,
+    models: [],
+    revision: 10,
+  };
+
+  beforeEach(() => {
+    useAgentStore.setState({ providers: [] });
+  });
+
+  it("a late agent:list answer does not overwrite a newer event with models", async () => {
+    useAgentStore.getState().receiveStatus(connectedWithModels);
+    vi.spyOn(rtClient, "request").mockResolvedValueOnce({ providers: [staleListSnapshot] });
+    await useAgentStore.getState().fetchProviders();
+    const codex = useAgentStore.getState().providers.find((p) => p.id === "codex");
+    expect(codex?.models).toHaveLength(1);
+  });
+
+  it("a stale event is ignored too, and does not demote the active provider", () => {
+    const active = { ...connectedWithModels, id: "claude" as const, revision: 30 };
+    useAgentStore.getState().receiveStatus(active);
+    useAgentStore
+      .getState()
+      .receiveStatus({ ...staleListSnapshot, id: "claude" as const, revision: 5 });
+    expect(useAgentStore.getState().providers.find((p) => p.id === "claude")?.models).toHaveLength(
+      1
+    );
+  });
+
+  it("a newer snapshot replaces an older one", () => {
+    useAgentStore.getState().receiveStatus(staleListSnapshot);
+    useAgentStore.getState().receiveStatus(connectedWithModels);
+    expect(useAgentStore.getState().providers.find((p) => p.id === "codex")?.models).toHaveLength(
+      1
+    );
   });
 });

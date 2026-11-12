@@ -187,6 +187,7 @@ export interface AgentProviderInfo {
   current_model: string;
   selected_model: string;
   selected_effort: string;
+  revision: number;
 }
 
 export interface AgentResolveApprovalPayload {

@@ -130,6 +130,17 @@ interface AgentState {
   receiveApprovals: (approvals: AgentApprovalRequest[]) => void;
 }
 
+/**
+ * The newer of two snapshots of one provider. Revision only grows, so a slow agent:list response that
+ * was built before a "connected, with models" event can never overwrite it.
+ */
+export function newerInfo(
+  current: AgentProviderInfo | undefined,
+  incoming: AgentProviderInfo
+): AgentProviderInfo {
+  return current && current.revision > incoming.revision ? current : incoming;
+}
+
 /** Marks every still-running tool of a finished reply with status (done or error). */
 export function finishRunningTools<T extends { status: "running" | "done" | "error" }>(
   tools: T[] | undefined,
@@ -183,7 +194,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         // (fetchHistory, run on the same connect, brings the stored final text).
         const turnOver = s.sending && !res.providers.some((p) => p.busy);
         return {
-          providers: res.providers,
+          providers: res.providers.map((next) =>
+            newerInfo(
+              s.providers.find((p) => p.id === next.id),
+              next
+            )
+          ),
           loadingProviders: false,
           ...(turnOver
             ? {
@@ -481,7 +497,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   receiveStatus: (info) => {
     set((s) => {
-      const exists = s.providers.some((p) => p.id === info.id);
+      const current = s.providers.find((p) => p.id === info.id);
+      if (current && newerInfo(current, info) === current) return s; // a stale snapshot: keep what we have
+      const exists = !!current;
       const next = exists
         ? s.providers.map((p) => {
             if (p.id === info.id) return info;

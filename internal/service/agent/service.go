@@ -73,6 +73,9 @@ type Options struct {
 
 // Service manages isolated external AI agent connections, MCP tooling, approvals, and chat turns.
 type Service struct {
+	// statusRevision numbers the status snapshots (ProviderInfo.Revision); it only ever grows.
+	statusRevision atomic.Int64
+
 	// turnTools lists, per assistant message, the tools it called (in order, once each). It is stored
 	// with the message so history shows which tools an answer was based on. Guarded by mu.
 	turnTools map[string][]string
@@ -214,6 +217,9 @@ func New(o Options) (*Service, error) {
 	if s.probeClaude == nil {
 		s.probeClaude = probeClaudeAuth
 	}
+	// Revisions must keep growing across restarts: a UI that stays open (dev reload, reconnect) holds the
+	// last revision it saw and drops anything lower.
+	s.statusRevision.Store(time.Now().UnixMicro())
 	s.loadModelSelections(context.Background())
 	return s, nil
 }
@@ -699,6 +705,9 @@ func (s *Service) connectPerTurnCLI(
 	info := s.buildInfoLocked(spec, resolved, source, customPath, version)
 	s.mu.Unlock()
 	s.emitStatus(info)
+	// The model list of a per-turn CLI is read from the CLI itself. Start that now (in the background,
+	// and push the status when it arrives) so the picker is filled without the user pressing "Check".
+	s.refreshModelCatalogAsync(id, resolved)
 	// Remember it so the next app start reconnects without asking (see RestoreConnection).
 	if err := s.repo.SetRememberedConnection(context.WithoutCancel(ctx), id); err != nil {
 		s.log.Warn("agent: remember connection", "error", err)
@@ -1481,6 +1490,7 @@ func (s *Service) buildInfoLocked(spec domainagent.ProviderSpec, resolved string
 		}
 	}
 	s.fillModelInfo(&info)
+	info.Revision = s.statusRevision.Add(1)
 	return info
 }
 

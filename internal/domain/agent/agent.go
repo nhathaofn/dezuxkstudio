@@ -233,6 +233,9 @@ type ProviderInfo struct {
 	CurrentModel       string            `json:"current_model"`
 	SelectedModel      string            `json:"selected_model"`
 	SelectedEffort     string            `json:"selected_effort"`
+	// Revision grows with every status snapshot the service builds. A snapshot that reaches the UI
+	// late (a slow agent:list) must never replace a newer one (e.g. "connected, with models").
+	Revision int64 `json:"revision"`
 }
 
 // ChatEvent is broadcast when an active agent streams text, thoughts, tool calls, or completion updates.
