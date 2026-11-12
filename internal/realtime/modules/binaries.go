@@ -50,9 +50,7 @@ func (m Binaries) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionBinariesDownload,
 		func(ctx context.Context, req *realtime.Request, p contracts.BinaryIDPayload) (contracts.BinaryInfo, error) {
-			info, err := m.Service.Download(ctx, p.ID, func(pr binaries.Progress) {
-				req.ProgressKeyed(pr.Percent, pr.Text, pr.Key, pr.Params)
-			})
+			info, err := m.Service.Download(ctx, p.ID)
 			if err != nil {
 				return contracts.BinaryInfo{}, err
 			}

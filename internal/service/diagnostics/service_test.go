@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"app/internal/contracts"
+	"app/internal/progress"
 )
 
 func newService(t *testing.T, keep int) (*Service, string, string) {
@@ -39,12 +40,13 @@ func newService(t *testing.T, keep int) (*Service, string, string) {
 func TestExportBundlesLogsAndMetadata(t *testing.T) {
 	s, _, _ := newService(t, 3)
 	var last float64
-	bundle, err := s.Export(context.Background(), func(p float64, _ string) {
-		if p < last {
-			t.Errorf("progress went backwards: %v → %v", last, p)
+	ctx := progress.With(context.Background(), progress.Sink{Report: func(u progress.Update) {
+		if u.Percent < last {
+			t.Errorf("progress went backwards: %v → %v", last, u.Percent)
 		}
-		last = p
-	})
+		last = u.Percent
+	}})
+	bundle, err := s.Export(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +78,7 @@ func TestExportBundlesLogsAndMetadata(t *testing.T) {
 func TestExportPrunesOldBundles(t *testing.T) {
 	s, out, _ := newService(t, 2)
 	for i := 0; i < 4; i++ {
-		if _, err := s.Export(context.Background(), nil); err != nil {
+		if _, err := s.Export(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -90,7 +92,7 @@ func TestExportHonoursCancellation(t *testing.T) {
 	s, out, _ := newService(t, 2)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := s.Export(ctx, nil); !errors.Is(err, context.Canceled) {
+	if _, err := s.Export(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
 	}
 	entries, _ := os.ReadDir(out)

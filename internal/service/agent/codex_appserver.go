@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 
 	domainagent "app/internal/domain/agent"
+	"app/internal/proc"
 	"app/internal/safego"
 )
 
@@ -83,7 +84,7 @@ func newCodexAppServerConn(key string, stdin io.WriteCloser, stdout, stderr io.R
 
 // startCodexAppServer launches `codex app-server` with DezuxkStudio's isolated profile and policy.
 func startCodexAppServer(key, executable string, args, env []string, workDir string) (*codexAppServer, error) {
-	cmd := buildCommand(context.Background(), executable, args...)
+	cmd := proc.Command(context.Background(), executable, args...)
 	cmd.Dir = workDir
 	cmd.Env = env
 	stdin, err := cmd.StdinPipe()
@@ -101,7 +102,7 @@ func startCodexAppServer(key, executable string, args, env []string, workDir str
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	c := newCodexAppServerConn(key, stdin, stdout, stderr, func() { killCommandTree(cmd) })
+	c := newCodexAppServerConn(key, stdin, stdout, stderr, func() { proc.KillTree(cmd) })
 	safego.Go("agent.codex.appserver.wait", func() { c.markExited(waitErr(cmd)) })
 	return c, nil
 }

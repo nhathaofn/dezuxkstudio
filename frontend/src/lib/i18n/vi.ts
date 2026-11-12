@@ -131,6 +131,8 @@ export const vi: Record<MessageKey, string> = {
   "tools.probing": "Probing…",
   "tools.download": "Tải về",
   "tools.downloading": "Đang tải…",
+  "workflow.progress.running": "Đang chạy {node} ({type})…",
+  "workflow.progress.completed": "Đã xong {node}",
   "workflow.progress.items": "Đã xử lý {done} / {total} ảnh",
   "tools.progress.connecting": "Đang kết nối để tải {name}…",
   "tools.progress.downloaded": "Đã tải {done} / {total} MB",

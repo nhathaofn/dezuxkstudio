@@ -174,22 +174,18 @@ func (s *session) handleAction(msg contracts.ClientMessage) {
 		return
 	}
 
-	req := &Request{
-		ID:       msg.ID,
-		Action:   msg.Action,
-		ClientID: s.id,
-		progress: func(p contracts.ActionProgress) {
-			resetTimeout()
-			s.emit(contracts.EventActionProgress, msg.ID, p)
-		},
+	req := &Request{ID: msg.ID, Action: msg.Action, ClientID: s.id}
+	// The single progress path: any report or beat re-arms the idle timeout here and, through the
+	// action:progress frame, on the client too.
+	send := func(p contracts.ActionProgress) {
+		resetTimeout()
+		s.emit(contracts.EventActionProgress, msg.ID, p)
 	}
-	// Same model as the binaries download: any report re-arms the idle timeout on both ends.
 	actionCtx := progress.With(ctx, progress.Sink{
-		Report: func(u progress.Update) { req.ProgressKeyed(u.Percent, u.Message, u.Key, u.Params) },
-		Beat: func() {
-			resetTimeout()
-			s.emit(contracts.EventActionProgress, msg.ID, contracts.ActionProgress{Heartbeat: true})
+		Report: func(u progress.Update) {
+			send(contracts.ActionProgress{Percent: clampPercent(u.Percent), Message: u.Message, MsgKey: u.Key, MsgParams: u.Params})
 		},
+		Beat:     func() { send(contracts.ActionProgress{Heartbeat: true}) },
 		Interval: s.hub.opts.KeepAliveInterval,
 	})
 
@@ -249,4 +245,14 @@ func (s *session) close(code websocket.StatusCode, reason string) {
 	if err := s.conn.Close(code, reason); err != nil && !errors.Is(err, context.Canceled) {
 		s.hub.log.Debug("realtime: close connection", "client_id", s.id, "error", err)
 	}
+}
+
+func clampPercent(p float64) float64 {
+	switch {
+	case p < 0:
+		return 0
+	case p > 100:
+		return 100
+	}
+	return p
 }

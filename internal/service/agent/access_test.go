@@ -11,6 +11,7 @@ import (
 
 	"app/internal/engine"
 	"app/internal/tools/watermark"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

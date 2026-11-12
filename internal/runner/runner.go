@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"app/internal/domain/binaries"
+	"app/internal/proc"
+	"app/internal/progress"
 	"app/internal/safego"
 )
 
@@ -32,7 +34,8 @@ type RunOptions struct {
 	OnStdoutLine   func(line string)
 	OnStderrLine   func(line string)
 	ProgressParser LineParser
-	OnProgress     ProgressCallback
+	// OnProgress overrides where parsed progress goes; nil sends it to ctx's progress sink.
+	OnProgress ProgressCallback
 }
 
 // RunResult holds the output and exit status of a command execution.
@@ -49,14 +52,18 @@ func Run(ctx context.Context, executable string, args ...string) (*RunResult, er
 
 // RunWithOptions executes a command with full lifecycle management, line streaming, and cancellation.
 func RunWithOptions(ctx context.Context, executable string, args []string, opts RunOptions) (*RunResult, error) {
-	cmd := exec.Command(executable, args...)
+	// Same process setup as every other external tool (no console window, own process group,
+	// .cmd/.bat support); runner itself stops the tree when ctx ends.
+	if opts.ProgressParser != nil && opts.OnProgress == nil {
+		opts.OnProgress = progress.Func(ctx)
+	}
+	cmd := proc.Command(context.Background(), executable, args...)
 	if opts.Dir != "" {
 		cmd.Dir = opts.Dir
 	}
 	if len(opts.Env) > 0 {
 		cmd.Env = opts.Env
 	}
-	prepareCmd(cmd)
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -122,7 +129,7 @@ func RunWithOptions(ctx context.Context, executable string, args []string, opts 
 
 	select {
 	case <-ctx.Done():
-		_ = killProcessTree(cmd)
+		proc.KillTree(cmd)
 		<-done // ensure wait finishes
 		return &RunResult{
 			Stdout:   stdoutBuf.String(),

@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 
 	domainagent "app/internal/domain/agent"
+	"app/internal/proc"
 	"app/internal/safego"
 )
 
@@ -107,7 +108,7 @@ type ACPClient struct {
 
 // SpawnACP starts an ACP agent executable inside an isolated working directory and environment.
 func SpawnACP(ctx context.Context, executable string, args []string, workDir string, env []string, log *slog.Logger, onEvent func(SessionUpdate), onExit func(error)) (*ACPClient, error) {
-	cmd := buildCommand(ctx, executable, args...)
+	cmd := proc.Command(ctx, executable, args...)
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
@@ -307,7 +308,7 @@ func (c *ACPClient) Close() error {
 		_ = c.stdin.Close()
 	}
 	if c.cmd != nil {
-		killCommandTree(c.cmd)
+		proc.KillTree(c.cmd)
 	} else {
 		if c.stdout != nil {
 			_ = c.stdout.Close()

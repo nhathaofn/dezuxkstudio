@@ -15,6 +15,7 @@ import (
 
 	"app/internal/apperr"
 	domainagent "app/internal/domain/agent"
+	"app/internal/proc"
 	"app/internal/progress"
 	"app/internal/safego"
 	"app/internal/secrets"
@@ -1554,7 +1555,7 @@ func (s *Service) probeVersion(ctx context.Context, executable string, versionAr
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, s.limits.VersionProbeTimeout)
 	defer cancel()
-	cmd := buildCommand(probeCtx, executable, versionArgs...)
+	cmd := proc.Command(probeCtx, executable, versionArgs...)
 	out, err := cmd.CombinedOutput()
 	if err != nil && len(out) == 0 {
 		return ""

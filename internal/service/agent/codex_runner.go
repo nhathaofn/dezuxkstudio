@@ -13,6 +13,7 @@ import (
 
 	domainagent "app/internal/domain/agent"
 	"app/internal/fsutil"
+	"app/internal/proc"
 )
 
 func prepareCodexProfile(profileRoot string) (map[string]string, error) {
@@ -36,7 +37,7 @@ func probeCodexAuth(ctx context.Context, executable, profileRoot string) (domain
 		return domainagent.AuthUnknown, ""
 	}
 	// The caller bounds ctx (Limits.AuthProbeTimeout).
-	cmd := buildCommand(ctx, executable, "login", "status")
+	cmd := proc.Command(ctx, executable, "login", "status")
 	cmd.Env = providerEnv(domainagent.ProviderCodex, envMap)
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
@@ -65,7 +66,7 @@ func loginCodex(ctx context.Context, executable, profileRoot, apiKey string) err
 	} else {
 		args = []string{"login"}
 	}
-	cmd := buildCommand(ctx, executable, args...) // the caller bounds ctx (Limits.LoginTimeout)
+	cmd := proc.Command(ctx, executable, args...) // the caller bounds ctx (Limits.LoginTimeout)
 	cmd.Env = providerEnv(domainagent.ProviderCodex, envMap)
 	if trimmedKey != "" {
 		cmd.Stdin = strings.NewReader(trimmedKey + "\n")
@@ -86,7 +87,7 @@ func logoutCodex(ctx context.Context, executable, profileRoot string) error {
 	if err != nil {
 		return err
 	}
-	cmd := buildCommand(ctx, executable, "logout") // the caller bounds ctx (Limits.AuthProbeTimeout)
+	cmd := proc.Command(ctx, executable, "logout") // the caller bounds ctx (Limits.AuthProbeTimeout)
 	cmd.Env = providerEnv(domainagent.ProviderCodex, envMap)
 	out, err := cmd.CombinedOutput()
 	if err != nil && !strings.Contains(strings.ToLower(string(out)), "not logged in") {
@@ -361,7 +362,7 @@ func (s *Service) runStreamJSONCommand(
 	emptyHint string,
 	acc streamJSONAccumulator,
 ) error {
-	cmd := buildCommand(ctx, executable, args...)
+	cmd := proc.Command(ctx, executable, args...)
 	cmd.Dir = workDir
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Env = env

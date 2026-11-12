@@ -161,19 +161,7 @@ type Repository interface {
 	SetCustomPath(ctx context.Context, id BinaryID, customPath string) error
 }
 
-// Progress is one download progress report. Key/Params name a UI translation (tools.progress.*);
-// Text is the English fallback for logs and clients without that key.
-type Progress struct {
-	Percent float64
-	Key     string
-	Params  map[string]string
-	Text    string
-}
-
-// ProgressFunc receives download progress; it may be nil.
-type ProgressFunc func(Progress)
-
-// Progress message keys (translated by the frontend under the same names).
+// Download progress message keys (translated by the frontend under the same names).
 const (
 	ProgressConnecting  = "tools.progress.connecting"  // {name}
 	ProgressDownloaded  = "tools.progress.downloaded"  // {done} {total} (MB)

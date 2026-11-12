@@ -21,7 +21,6 @@ import (
 	domainbinaries "app/internal/domain/binaries"
 	domainprefs "app/internal/domain/preferences"
 	"app/internal/engine"
-	"app/internal/service/diagnostics"
 )
 
 type fakeRepo struct {
@@ -207,7 +206,7 @@ func (w *fakeWorkflow) RunNode(_ context.Context, nodeType string, input json.Ra
 	w.lastInput = input
 	return map[string]any{"status": "done", "node": nodeType}, nil
 }
-func (w *fakeWorkflow) RunGraph(context.Context, engine.Graph, ...func(float64, string)) (engine.GraphResult, error) {
+func (w *fakeWorkflow) RunGraph(context.Context, engine.Graph) (engine.GraphResult, error) {
 	return engine.GraphResult{}, nil
 }
 
@@ -219,7 +218,7 @@ func (fakeBinaries) List(context.Context) ([]domainbinaries.BinaryInfo, error) {
 func (fakeBinaries) Probe(context.Context, domainbinaries.BinaryID) (domainbinaries.BinaryInfo, error) {
 	return domainbinaries.BinaryInfo{ID: "ffmpeg", Name: "FFmpeg", Status: domainbinaries.StatusAvailable}, nil
 }
-func (fakeBinaries) Download(context.Context, domainbinaries.BinaryID, domainbinaries.ProgressFunc) (domainbinaries.BinaryInfo, error) {
+func (fakeBinaries) Download(context.Context, domainbinaries.BinaryID) (domainbinaries.BinaryInfo, error) {
 	return domainbinaries.BinaryInfo{ID: "ffmpeg", Name: "FFmpeg", Status: domainbinaries.StatusAvailable}, nil
 }
 
@@ -240,7 +239,7 @@ func (f fakeSys) Info() contracts.SystemInfo {
 
 type fakeDiag struct{}
 
-func (fakeDiag) Export(context.Context, diagnostics.Progress) (contracts.DiagnosticsBundle, error) {
+func (fakeDiag) Export(context.Context) (contracts.DiagnosticsBundle, error) {
 	return contracts.DiagnosticsBundle{Path: "diag.zip"}, nil
 }
 

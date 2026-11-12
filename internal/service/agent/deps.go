@@ -8,21 +8,20 @@ import (
 	domainbinaries "app/internal/domain/binaries"
 	domainprefs "app/internal/domain/preferences"
 	"app/internal/engine"
-	"app/internal/service/diagnostics"
 )
 
 // WorkflowRunner exposes registered workflow node specs and execution to DezuxkStudio's MCP server.
 type WorkflowRunner interface {
 	Specs(ctx context.Context) []engine.Spec
 	RunNode(ctx context.Context, nodeType string, input json.RawMessage) (any, error)
-	RunGraph(ctx context.Context, g engine.Graph, onProgress ...func(percent float64, message string)) (engine.GraphResult, error)
+	RunGraph(ctx context.Context, g engine.Graph) (engine.GraphResult, error)
 }
 
 // BinariesManager exposes external binary inspection and installation to DezuxkStudio's MCP server.
 type BinariesManager interface {
 	List(ctx context.Context) ([]domainbinaries.BinaryInfo, error)
 	Probe(ctx context.Context, id domainbinaries.BinaryID) (domainbinaries.BinaryInfo, error)
-	Download(ctx context.Context, id domainbinaries.BinaryID, onProgress domainbinaries.ProgressFunc) (domainbinaries.BinaryInfo, error)
+	Download(ctx context.Context, id domainbinaries.BinaryID) (domainbinaries.BinaryInfo, error)
 }
 
 // PreferencesManager exposes app preferences read/update to DezuxkStudio's MCP server.
@@ -38,5 +37,5 @@ type SystemInspector interface {
 
 // DiagnosticsExporter exposes diagnostic bundle export to DezuxkStudio's MCP server.
 type DiagnosticsExporter interface {
-	Export(ctx context.Context, progress diagnostics.Progress) (contracts.DiagnosticsBundle, error)
+	Export(ctx context.Context) (contracts.DiagnosticsBundle, error)
 }

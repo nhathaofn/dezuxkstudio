@@ -34,14 +34,14 @@ func TestDownloadNetworkErrorsAreUserFacing(t *testing.T) {
 		w.WriteHeader(http.StatusBadGateway)
 	}))
 	pointFFmpegAt(t, srv.URL+"/ffmpeg.zip")
-	_, err := svc.Download(context.Background(), domainbinaries.IDFFmpeg, nil)
+	_, err := svc.Download(context.Background(), domainbinaries.IDFFmpeg)
 	if !apperr.IsCode(err, apperr.CodeUnavailable) {
 		t.Fatalf("bad status: want ERR_UNAVAILABLE, got %v", err)
 	}
 	srv.Close()
 
 	// The server is gone now: connection refused.
-	_, err = svc.Download(context.Background(), domainbinaries.IDFFmpeg, nil)
+	_, err = svc.Download(context.Background(), domainbinaries.IDFFmpeg)
 	if !apperr.IsCode(err, apperr.CodeUnavailable) {
 		t.Fatalf("unreachable: want ERR_UNAVAILABLE, got %v", err)
 	}
@@ -67,13 +67,13 @@ func TestQueuedDownloadHonoursCancellation(t *testing.T) {
 
 	firstCtx, cancelFirst := context.WithCancel(context.Background())
 	defer cancelFirst()
-	go func() { _, _ = svc.Download(firstCtx, domainbinaries.IDFFmpeg, nil) }()
+	go func() { _, _ = svc.Download(firstCtx, domainbinaries.IDFFmpeg) }()
 	time.Sleep(200 * time.Millisecond) // first download now holds the slot
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err := svc.Download(ctx, domainbinaries.IDFFmpeg, nil)
+	_, err := svc.Download(ctx, domainbinaries.IDFFmpeg)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("want context deadline, got %v", err)
 	}

@@ -544,7 +544,7 @@ func TestAdversarial_Scenario3_BinaryTampering_SHA256(t *testing.T) {
 
 		svc := binariessvc.New(&dummyBinRepo{}, toolsDir, slog.New(slog.DiscardHandler))
 
-		_, err := svc.Download(context.Background(), domainbinaries.IDFFmpeg, nil)
+		_, err := svc.Download(context.Background(), domainbinaries.IDFFmpeg)
 		if err == nil {
 			t.Fatalf("ADVERSARIAL FAILURE: tampered zip binary was accepted without error!")
 		}
@@ -593,7 +593,7 @@ func TestAdversarial_Scenario3_BinaryTampering_SHA256(t *testing.T) {
 
 		svc := binariessvc.New(&dummyBinRepo{}, toolsDir, slog.New(slog.DiscardHandler))
 
-		_, err := svc.Download(context.Background(), domainbinaries.IDYtDlp, nil)
+		_, err := svc.Download(context.Background(), domainbinaries.IDYtDlp)
 		if err == nil {
 			t.Fatalf("ADVERSARIAL FAILURE: tampered raw binary was accepted without error!")
 		}
@@ -635,7 +635,7 @@ func TestAdversarial_Scenario3_BinaryTampering_SHA256(t *testing.T) {
 		svc := binariessvc.New(&dummyBinRepo{}, toolsDir, slog.New(slog.DiscardHandler))
 
 		targetPath := filepath.Join(toolsDir, origManifest.ExecutableName())
-		_, _ = svc.Download(context.Background(), domainbinaries.IDYtDlp, nil)
+		_, _ = svc.Download(context.Background(), domainbinaries.IDYtDlp)
 
 		data, err := os.ReadFile(targetPath)
 		if err != nil {

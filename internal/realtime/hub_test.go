@@ -40,7 +40,7 @@ func (m *testModule) Register(r *Registry) {
 	Handle(r, "t:echo", func(_ context.Context, _ *Request, p echoPayload) (echoPayload, error) { return p, nil })
 	Handle(r, "t:slow", func(ctx context.Context, req *Request, _ contracts.Empty) (contracts.Empty, error) {
 		m.started.Add(1)
-		req.Progress(50, "half")
+		progress.Report(ctx, progress.Update{Percent: 50, Message: "half"})
 		<-ctx.Done()
 		return contracts.Empty{}, ctx.Err()
 	})
@@ -60,7 +60,7 @@ func (m *testModule) Register(r *Registry) {
 			if ctx.Err() != nil {
 				return contracts.Empty{}, ctx.Err()
 			}
-			req.Progress(float64(i*30), "progressing")
+			progress.Report(ctx, progress.Update{Percent: float64(i * 30), Message: "progressing"})
 		}
 		return contracts.Empty{}, nil
 	})

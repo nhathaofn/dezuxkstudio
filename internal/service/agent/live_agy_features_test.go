@@ -30,8 +30,8 @@ func (w registryWorkflow) Specs(context.Context) []engine.Spec { return w.reg.Sp
 func (w registryWorkflow) RunNode(ctx context.Context, t string, in json.RawMessage) (any, error) {
 	return w.reg.Run(ctx, t, in)
 }
-func (w registryWorkflow) RunGraph(ctx context.Context, g engine.Graph, p ...func(float64, string)) (engine.GraphResult, error) {
-	return w.reg.RunGraph(ctx, g, p...)
+func (w registryWorkflow) RunGraph(ctx context.Context, g engine.Graph) (engine.GraphResult, error) {
+	return w.reg.RunGraph(ctx, g)
 }
 
 func writeLiveImage(t *testing.T, path string, watermarked bool) {

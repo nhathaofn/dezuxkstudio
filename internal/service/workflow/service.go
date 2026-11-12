@@ -10,7 +10,6 @@ import (
 
 	"app/internal/engine"
 	"app/internal/paths"
-	"app/internal/progress"
 	"app/internal/tools/watermark"
 )
 
@@ -67,12 +66,7 @@ func (s *Service) RunNode(ctx context.Context, nodeType string, input json.RawMe
 }
 
 // RunGraph executes a complete workflow graph.
-func (s *Service) RunGraph(ctx context.Context, g engine.Graph, onProgress ...func(percent float64, message string)) (engine.GraphResult, error) {
+func (s *Service) RunGraph(ctx context.Context, g engine.Graph) (engine.GraphResult, error) {
 	s.log.Info("workflow: running graph", "nodes_count", len(g.Nodes), "edges_count", len(g.Edges))
-	if len(onProgress) == 0 || onProgress[0] == nil {
-		// Callers without their own callback (agent approvals, MCP tools) still re-arm the
-		// action's idle timeout through the context's progress sink.
-		onProgress = []func(float64, string){progress.Func(ctx)}
-	}
-	return s.registry.RunGraph(ctx, g, onProgress...)
+	return s.registry.RunGraph(ctx, g)
 }

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"app/internal/proc"
 	"app/internal/progress"
 	"app/internal/safego"
 	"context"
@@ -311,7 +312,7 @@ func (s *Service) loadCodexModels(ctx context.Context, executable string) ([]dom
 	if err != nil {
 		return nil, err
 	}
-	cmd := buildCommand(ctx, executable, "debug", "models") // ensureModelCatalog bounds ctx
+	cmd := proc.Command(ctx, executable, "debug", "models") // ensureModelCatalog bounds ctx
 	cmd.Env = providerEnv(domainagent.ProviderCodex, envMap)
 	out, err := cmd.Output()
 	if err != nil {
@@ -403,7 +404,7 @@ func parseCodexCatalog(raw []byte) ([]domainagent.ModelOption, error) {
 }
 
 func loadClaudeModels(ctx context.Context, executable string) ([]domainagent.ModelOption, error) {
-	cmd := buildCommand(ctx, executable, "--help") // ensureModelCatalog bounds ctx
+	cmd := proc.Command(ctx, executable, "--help") // ensureModelCatalog bounds ctx
 	cmd.Env = providerEnv(domainagent.ProviderClaude, nil)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

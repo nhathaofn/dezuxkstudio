@@ -22,6 +22,7 @@ import (
 	"app/internal/apperr"
 	"app/internal/buildinfo"
 	domainbinaries "app/internal/domain/binaries"
+	"app/internal/progress"
 )
 
 // createDummyZip creates an in-memory zip archive containing entryName with the given payload.
@@ -51,8 +52,13 @@ type progressRecorder struct {
 	}
 }
 
-func (r *progressRecorder) record(p domainbinaries.Progress) {
-	pct, msg := p.Percent, p.Text
+// ctx returns ctx with a progress sink that records every report (what the realtime hub installs).
+func (r *progressRecorder) ctx(ctx context.Context) context.Context {
+	return progress.With(ctx, progress.Sink{Report: r.record})
+}
+
+func (r *progressRecorder) record(p progress.Update) {
+	pct, msg := p.Percent, p.Message
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, struct {
@@ -135,7 +141,7 @@ func TestDownload_ZipArchive_Success(t *testing.T) {
 	})
 
 	recorder := &progressRecorder{}
-	info, err := svc.Download(ctx, domainbinaries.IDFFmpeg, recorder.record)
+	info, err := svc.Download(recorder.ctx(ctx), domainbinaries.IDFFmpeg)
 	if err != nil {
 		t.Fatalf("Download failed: %v", err)
 	}
@@ -232,7 +238,7 @@ func TestDownload_RawBinary_Success(t *testing.T) {
 	})
 
 	recorder := &progressRecorder{}
-	info, err := svc.Download(ctx, domainbinaries.IDYtDlp, recorder.record)
+	info, err := svc.Download(recorder.ctx(ctx), domainbinaries.IDYtDlp)
 	if err != nil {
 		t.Fatalf("Download failed: %v", err)
 	}
@@ -293,7 +299,7 @@ func TestDownload_HTTPError(t *testing.T) {
 		domainbinaries.Registry[domainbinaries.IDFFmpeg] = origSpec
 	})
 
-	_, err := svc.Download(ctx, domainbinaries.IDFFmpeg, nil)
+	_, err := svc.Download(ctx, domainbinaries.IDFFmpeg)
 	if err == nil {
 		t.Fatal("expected download error for 404 response, got nil")
 	}
@@ -344,7 +350,7 @@ func TestDownload_CorruptedZipArchive(t *testing.T) {
 		domainbinaries.Registry[domainbinaries.IDFFmpeg] = origSpec
 	})
 
-	_, err := svc.Download(ctx, domainbinaries.IDFFmpeg, nil)
+	_, err := svc.Download(ctx, domainbinaries.IDFFmpeg)
 	if err == nil {
 		t.Fatal("expected error for corrupted zip, got nil")
 	}
@@ -390,7 +396,7 @@ func TestDownload_MissingEntryInZip(t *testing.T) {
 		domainbinaries.Registry[domainbinaries.IDFFmpeg] = origSpec
 	})
 
-	_, err := svc.Download(ctx, domainbinaries.IDFFmpeg, nil)
+	_, err := svc.Download(ctx, domainbinaries.IDFFmpeg)
 	if err == nil {
 		t.Fatal("expected error for missing entry in zip, got nil")
 	}
@@ -409,7 +415,7 @@ func TestDownload_ContextCancellation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc := New(repo, toolsDir, logger)
 
-	_, err := svc.Download(ctx, domainbinaries.IDFFmpeg, nil)
+	_, err := svc.Download(ctx, domainbinaries.IDFFmpeg)
 	if err == nil {
 		t.Fatal("expected error on cancelled context, got nil")
 	}
@@ -424,7 +430,7 @@ func TestDownload_ValidationErrors(t *testing.T) {
 	svc := New(repo, toolsDir, logger)
 
 	// Unknown binary ID
-	_, err := svc.Download(ctx, domainbinaries.BinaryID("unknown_tool"), nil)
+	_, err := svc.Download(ctx, domainbinaries.BinaryID("unknown_tool"))
 	if err == nil {
 		t.Error("expected error for unknown binary, got nil")
 	}
@@ -438,7 +444,7 @@ func TestDownload_ValidationErrors(t *testing.T) {
 		domainbinaries.Registry[domainbinaries.IDFFmpeg] = origSpec
 	})
 
-	_, err = svc.Download(ctx, domainbinaries.IDFFmpeg, nil)
+	_, err = svc.Download(ctx, domainbinaries.IDFFmpeg)
 	if err == nil {
 		t.Error("expected error when no download spec exists for platform, got nil")
 	}
@@ -519,7 +525,7 @@ func TestDownload_IndeterminateChunkedProgress(t *testing.T) {
 	})
 
 	recorder := &progressRecorder{}
-	info, err := svc.Download(ctx, domainbinaries.IDFFmpeg, recorder.record)
+	info, err := svc.Download(recorder.ctx(ctx), domainbinaries.IDFFmpeg)
 	if err != nil {
 		t.Fatalf("Download failed: %v", err)
 	}
@@ -601,7 +607,7 @@ func TestDownload_ExactZipEntryMatching(t *testing.T) {
 		domainbinaries.Registry[domainbinaries.IDFFmpeg] = origSpec
 	})
 
-	_, err := svc.Download(ctx, domainbinaries.IDFFmpeg, nil)
+	_, err := svc.Download(ctx, domainbinaries.IDFFmpeg)
 	if err != nil {
 		t.Fatalf("Download failed: %v", err)
 	}
@@ -657,7 +663,7 @@ func TestDownload_ZipSlipDefense(t *testing.T) {
 		domainbinaries.Registry[domainbinaries.IDFFmpeg] = origSpec
 	})
 
-	_, err := svc.Download(ctx, domainbinaries.IDFFmpeg, nil)
+	_, err := svc.Download(ctx, domainbinaries.IDFFmpeg)
 	if err == nil {
 		t.Fatalf("expected error due to zip slip entry rejection, got nil")
 	}
@@ -704,7 +710,7 @@ func TestDownload_SHA256_Mismatch_Zip(t *testing.T) {
 		domainbinaries.Registry[domainbinaries.IDFFmpeg] = origSpec
 	})
 
-	_, err := svc.Download(ctx, domainbinaries.IDFFmpeg, nil)
+	_, err := svc.Download(ctx, domainbinaries.IDFFmpeg)
 	if err == nil {
 		t.Fatal("expected ERR_INTEGRITY error on checksum mismatch, got nil")
 	}
@@ -761,7 +767,7 @@ func TestDownload_SHA256_Mismatch_Raw(t *testing.T) {
 		domainbinaries.Registry[domainbinaries.IDYtDlp] = origSpec
 	})
 
-	_, err := svc.Download(ctx, domainbinaries.IDYtDlp, nil)
+	_, err := svc.Download(ctx, domainbinaries.IDYtDlp)
 	if err == nil {
 		t.Fatal("expected ERR_INTEGRITY on raw checksum mismatch, got nil")
 	}
@@ -814,7 +820,7 @@ func TestDownload_SHA256_Success(t *testing.T) {
 		domainbinaries.Registry[domainbinaries.IDYtDlp] = origSpec
 	})
 
-	info, err := svc.Download(ctx, domainbinaries.IDYtDlp, nil)
+	info, err := svc.Download(ctx, domainbinaries.IDYtDlp)
 	if err != nil {
 		t.Fatalf("expected successful download when SHA256 matches, got error: %v", err)
 	}

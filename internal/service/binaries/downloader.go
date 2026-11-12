@@ -18,6 +18,7 @@ import (
 	"app/internal/buildinfo"
 	domainbinaries "app/internal/domain/binaries"
 	"app/internal/fsutil"
+	"app/internal/progress"
 )
 
 type readerFunc func(p []byte) (int, error)
@@ -25,11 +26,11 @@ type readerFunc func(p []byte) (int, error)
 func (rf readerFunc) Read(p []byte) (int, error) { return rf(p) }
 
 // Download downloads the static build of the binary, extracts it into toolsDir, and verifies it.
-func (s *Service) Download(ctx context.Context, id domainbinaries.BinaryID, onProgress domainbinaries.ProgressFunc) (domainbinaries.BinaryInfo, error) {
+// Progress goes to the context's progress sink (internal/progress); each report re-arms the
+// action's idle timeout, which is what lets a large download run as long as data keeps flowing.
+func (s *Service) Download(ctx context.Context, id domainbinaries.BinaryID) (domainbinaries.BinaryInfo, error) {
 	report := func(pct float64, key string, params map[string]string, text string) {
-		if onProgress != nil {
-			onProgress(domainbinaries.Progress{Percent: pct, Key: key, Params: params, Text: text})
-		}
+		progress.Report(ctx, progress.Update{Percent: pct, Key: key, Params: params, Message: text})
 	}
 	// One download at a time (they share toolsDir); a waiting request honours cancellation
 	// instead of blocking silently until the running download ends.
@@ -83,7 +84,7 @@ func (s *Service) Download(ctx context.Context, id domainbinaries.BinaryID, onPr
 	progressReader := io.Reader(readerFunc(func(p []byte) (int, error) {
 		n, err := resp.Body.Read(p)
 		downloaded += int64(n)
-		if onProgress != nil {
+		{
 			now := time.Now()
 			if totalSize > 0 {
 				pct := (float64(downloaded) / float64(totalSize)) * 100

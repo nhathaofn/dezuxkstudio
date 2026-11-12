@@ -12,6 +12,7 @@ import (
 
 	domainagent "app/internal/domain/agent"
 	"app/internal/fsutil"
+	"app/internal/proc"
 
 	"github.com/google/uuid"
 )
@@ -93,7 +94,7 @@ func probeClaudeAuth(ctx context.Context, executable, profileRoot string) (domai
 	if err != nil {
 		return domainagent.AuthUnknown, ""
 	}
-	cmd := buildCommand(ctx, executable, "auth", "status", "--json") // the caller bounds ctx
+	cmd := proc.Command(ctx, executable, "auth", "status", "--json") // the caller bounds ctx
 	cmd.Env = env
 	out, cmdErr := cmd.CombinedOutput()
 
@@ -133,7 +134,7 @@ func loginClaude(ctx context.Context, executable, profileRoot, apiKey string) er
 	if err != nil {
 		return err
 	}
-	cmd := buildCommand(ctx, executable, "auth", "login") // the caller bounds ctx (Limits.LoginTimeout)
+	cmd := proc.Command(ctx, executable, "auth", "login") // the caller bounds ctx (Limits.LoginTimeout)
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -161,7 +162,7 @@ func logoutClaude(ctx context.Context, executable, profileRoot string) error {
 	if err != nil {
 		return err
 	}
-	cmd := buildCommand(ctx, executable, "auth", "logout") // the caller bounds ctx
+	cmd := proc.Command(ctx, executable, "auth", "logout") // the caller bounds ctx
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	lower := strings.ToLower(string(out))

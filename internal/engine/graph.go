@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"app/internal/apperr"
+	"app/internal/progress"
 )
 
 // Graph is a set of node instances wired output port -> input port.
@@ -79,23 +80,25 @@ type plannedNode struct {
 }
 
 // RunGraph checks a graph and runs it one node at a time in dependency order.
-func (r *Registry) RunGraph(ctx context.Context, g Graph, onProgress ...func(percent float64, message string)) (GraphResult, error) {
+// Progress goes to the context's progress sink (see internal/progress), so every caller — the
+// workflow screen, an agent approval, an MCP tool — gets it without passing a callback.
+func (r *Registry) RunGraph(ctx context.Context, g Graph) (GraphResult, error) {
 	plan, order, err := r.plan(g)
 	if err != nil {
 		return GraphResult{}, err
-	}
-	var progress func(float64, string)
-	if len(onProgress) > 0 && onProgress[0] != nil {
-		progress = onProgress[0]
 	}
 	res := GraphResult{Order: order, Nodes: make(map[string]NodeRun, len(order))}
 	outputs := make(map[string]map[string]json.RawMessage, len(order))
 	total := len(order)
 	for idx, id := range order {
 		p := plan[id]
-		if progress != nil && total > 0 {
-			pct := float64(idx) / float64(total) * 100.0
-			progress(pct, fmt.Sprintf("Running node %s (%s)", id, p.GraphNode.Type))
+		if total > 0 {
+			progress.Report(ctx, progress.Update{
+				Percent: float64(idx) / float64(total) * 100.0,
+				Message: fmt.Sprintf("Running node %s (%s)", id, p.GraphNode.Type),
+				Key:     "workflow.progress.running",
+				Params:  map[string]string{"node": id, "type": p.GraphNode.Type},
+			})
 		}
 		if ctx.Err() != nil {
 			res.Nodes[id] = NodeRun{Status: RunCancelled, Error: "Cancelled before execution."}
@@ -119,9 +122,13 @@ func (r *Registry) RunGraph(ctx context.Context, g Graph, onProgress ...func(per
 		if out != nil {
 			outputs[id] = out
 		}
-		if progress != nil && total > 0 {
-			pct := float64(idx+1) / float64(total) * 100.0
-			progress(pct, fmt.Sprintf("Completed node %s", id))
+		if total > 0 {
+			progress.Report(ctx, progress.Update{
+				Percent: float64(idx+1) / float64(total) * 100.0,
+				Message: fmt.Sprintf("Completed node %s", id),
+				Key:     "workflow.progress.completed",
+				Params:  map[string]string{"node": id},
+			})
 		}
 	}
 	return res, nil
