@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/zalando/go-keyring"
@@ -36,6 +38,14 @@ type Keyring struct{ service string }
 // NewKeyring creates a keyring-backed store; service is normally the AppID.
 func NewKeyring(service string) *Keyring { return &Keyring{service: service} }
 
+// keyringChunk keeps every keyring entry well below the Windows Credential Manager blob limit
+// (2560 bytes); larger values (e.g. service-account JSON) are split over several entries.
+const keyringChunk = 1000
+
+const chunkMarker = "dezuxk-chunked-secret:"
+
+func chunkKey(key Key, i int) string { return fmt.Sprintf("%s#%d", key, i) }
+
 func (k *Keyring) Get(key Key) (string, error) {
 	v, err := keyring.Get(k.service, string(key))
 	if errors.Is(err, keyring.ErrNotFound) {
@@ -44,20 +54,68 @@ func (k *Keyring) Get(key Key) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("secrets: get %s: %w", key, err)
 	}
-	return v, nil
+	n, ok := chunkCount(v)
+	if !ok {
+		return v, nil
+	}
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		part, err := keyring.Get(k.service, chunkKey(key, i))
+		if err != nil {
+			return "", fmt.Errorf("secrets: get %s part %d: %w", key, i, err)
+		}
+		b.WriteString(part)
+	}
+	return b.String(), nil
+}
+
+func chunkCount(v string) (int, bool) {
+	if !strings.HasPrefix(v, chunkMarker) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(v, chunkMarker))
+	return n, err == nil && n > 0
 }
 
 func (k *Keyring) Set(key Key, value string) error {
 	if value == "" {
 		return k.Delete(key)
 	}
-	if err := keyring.Set(k.service, string(key), value); err != nil {
+	_ = k.deleteChunks(key)
+	if len(value) <= keyringChunk {
+		if err := keyring.Set(k.service, string(key), value); err != nil {
+			return fmt.Errorf("secrets: set %s: %w", key, err)
+		}
+		return nil
+	}
+	n := 0
+	for off := 0; off < len(value); off += keyringChunk {
+		end := min(off+keyringChunk, len(value))
+		if err := keyring.Set(k.service, chunkKey(key, n), value[off:end]); err != nil {
+			return fmt.Errorf("secrets: set %s part %d: %w", key, n, err)
+		}
+		n++
+	}
+	if err := keyring.Set(k.service, string(key), chunkMarker+strconv.Itoa(n)); err != nil {
 		return fmt.Errorf("secrets: set %s: %w", key, err)
 	}
 	return nil
 }
 
+func (k *Keyring) deleteChunks(key Key) error {
+	v, err := keyring.Get(k.service, string(key))
+	if err != nil {
+		return err
+	}
+	n, _ := chunkCount(v)
+	for i := 0; i < n; i++ {
+		_ = keyring.Delete(k.service, chunkKey(key, i))
+	}
+	return nil
+}
+
 func (k *Keyring) Delete(key Key) error {
+	_ = k.deleteChunks(key)
 	err := keyring.Delete(k.service, string(key))
 	if err != nil && !errors.Is(err, keyring.ErrNotFound) {
 		return fmt.Errorf("secrets: delete %s: %w", key, err)

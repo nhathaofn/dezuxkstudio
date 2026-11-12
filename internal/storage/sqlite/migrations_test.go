@@ -42,16 +42,16 @@ func TestMigrations(t *testing.T) {
 		if err := db.sql.QueryRow("SELECT MAX(version) FROM _schema_migrations").Scan(&maxVer); err != nil {
 			t.Fatalf("failed to query max version: %v", err)
 		}
-		if maxVer != 8 {
-			t.Fatalf("expected latest version 8, got %d", maxVer)
+		if maxVer != latestMigration(t) {
+			t.Fatalf("expected version %d, got %d", latestMigration(t), maxVer)
 		}
 
 		var count int
 		if err := db.sql.QueryRow("SELECT COUNT(*) FROM _schema_migrations").Scan(&count); err != nil {
 			t.Fatalf("failed to count migrations: %v", err)
 		}
-		if count != 8 {
-			t.Fatalf("expected 8 recorded migrations, got %d", count)
+		if count != latestMigration(t) {
+			t.Fatalf("expected %d recorded migrations, got %d", latestMigration(t), count)
 		}
 
 		// Ensure dynamic provider tables do not exist
@@ -129,8 +129,8 @@ func TestMigrations(t *testing.T) {
 		if err := db.sql.QueryRow("SELECT MAX(version) FROM _schema_migrations").Scan(&maxVer); err != nil {
 			t.Fatal(err)
 		}
-		if maxVer != 8 {
-			t.Fatalf("expected version 8 after upgrade from v1, got %d", maxVer)
+		if maxVer != latestMigration(t) {
+			t.Fatalf("expected version %d after upgrade from v1, got %d", latestMigration(t), maxVer)
 		}
 
 		// Verify existing data preserved
@@ -204,8 +204,8 @@ func TestMigrations(t *testing.T) {
 		if err := db.sql.QueryRow("SELECT MAX(version) FROM _schema_migrations").Scan(&maxVer); err != nil {
 			t.Fatal(err)
 		}
-		if maxVer != 8 {
-			t.Fatalf("expected version 8 after upgrade from v2, got %d", maxVer)
+		if maxVer != latestMigration(t) {
+			t.Fatalf("expected version %d after upgrade from v2, got %d", latestMigration(t), maxVer)
 		}
 
 		var customPath string
@@ -291,8 +291,8 @@ func TestMigrations(t *testing.T) {
 		if err := db.sql.QueryRow("SELECT MAX(version) FROM _schema_migrations").Scan(&maxVer); err != nil {
 			t.Fatal(err)
 		}
-		if maxVer != 8 {
-			t.Fatalf("expected version 8 after upgrade from v3, got %d", maxVer)
+		if maxVer != latestMigration(t) {
+			t.Fatalf("expected version %d after upgrade from v3, got %d", latestMigration(t), maxVer)
 		}
 
 		// Verify ALL 7 dynamic provider tables are dropped and DO NOT exist in sqlite_master
@@ -324,8 +324,8 @@ func TestMigrations(t *testing.T) {
 				name TEXT NOT NULL,
 				applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 			);
-			INSERT INTO _schema_migrations (version, name) VALUES (9, '009_future.sql');
-		`); err != nil {
+			INSERT INTO _schema_migrations (version, name) VALUES (?, '999_future.sql');
+		`, latestMigration(t)+1); err != nil {
 			raw.Close()
 			t.Fatal(err)
 		}
@@ -339,10 +339,20 @@ func TestMigrations(t *testing.T) {
 			Logger:        slog.New(slog.DiscardHandler),
 		})
 		if err == nil {
-			t.Fatalf("expected error for future version 9, got nil")
+			t.Fatalf("expected error for a future version, got nil")
 		}
 		if !errors.Is(err, ErrSchemaTooNew) {
 			t.Fatalf("expected ErrSchemaTooNew, got: %v", err)
 		}
 	})
+}
+
+// latestMigration is the highest embedded migration version, so tests need no edit per migration.
+func latestMigration(t *testing.T) int {
+	t.Helper()
+	ms, err := loadMigrations(migrationFS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ms[len(ms)-1].version
 }

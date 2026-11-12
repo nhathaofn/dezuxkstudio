@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zalando/go-keyring"
 )
 
 type brokenStore struct{}
@@ -100,5 +102,30 @@ func TestDurableMigratesFileIntoKeyring(t *testing.T) {
 	}
 	if _, err := primary.Get(probeKey); !errors.Is(err, ErrNotFound) {
 		t.Fatal("probe key left behind")
+	}
+}
+
+func TestKeyringChunksLargeValues(t *testing.T) {
+	keyring.MockInit()
+	k := NewKeyring("test")
+	big := strings.Repeat("x", keyringChunk*2+7)
+	if err := k.Set("big", big); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := k.Get("big"); err != nil || v != big {
+		t.Fatalf("len %d %v", len(v), err)
+	}
+	if err := k.Set("big", "small"); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := k.Get("big"); v != "small" {
+		t.Fatal(v)
+	}
+	if _, err := keyring.Get("test", chunkKey("big", 0)); err == nil {
+		t.Fatal("stale chunk left behind")
+	}
+	_ = k.Delete("big")
+	if _, err := k.Get("big"); !errors.Is(err, ErrNotFound) {
+		t.Fatal("not deleted")
 	}
 }
