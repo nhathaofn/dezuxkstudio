@@ -109,6 +109,7 @@ type Service struct {
 	runClaude          CodexTurnRunner
 	probeClaude        CodexAuthProber
 
+	drivers   map[domainagent.ProviderID]providerDriver
 	policy    *AccessPolicy
 	approvals *approvalStore
 	secrets   profileSecrets // API keys of the isolated provider profiles
@@ -209,6 +210,7 @@ func New(o Options) (*Service, error) {
 		codexAppServerBroken: make(map[string]bool),
 		spawnCodexAppServer:  startCodexAppServer,
 	}
+	s.drivers = newDrivers(s)
 	if s.spawnTransport == nil {
 		// The process outlives the Connect call that starts it, so it is not bound to that call's ctx;
 		// Disconnect/Close end it.
@@ -373,13 +375,8 @@ func (s *Service) SetCustomPath(ctx context.Context, id domainagent.ProviderID, 
 	s.mu.Lock()
 	delete(s.lastErrors, id)
 	wasActive := s.activeID == id
-	if id == domainagent.ProviderCodex {
-		clear(s.codexAppServerBroken) // a different executable gets a fresh app-server attempt
-	}
 	s.mu.Unlock()
-	if drv := s.driver(id); drv.perTurn() {
-		drv.release()
-	}
+	s.driver(id).release() // a running CLI process still belongs to the previous executable
 
 	if wasActive {
 		_ = s.Disconnect(ctx)
@@ -418,9 +415,7 @@ func (s *Service) Login(ctx context.Context, id domainagent.ProviderID, apiKey s
 	drv := s.driver(id)
 	loginErr := drv.login(loginCtx, resolved, apiKey)
 	s.invalidateStatus(id)
-	if drv.perTurn() {
-		drv.release() // a long-lived CLI process (Codex app-server) still holds the previous credentials
-	}
+	drv.release() // a long-lived CLI process (Codex app-server) still holds the previous credentials
 	if loginErr != nil {
 		s.mu.Lock()
 		s.lastErrors[id] = localize(loginErr, msgSignInFailed, map[string]string{"detail": loginErr.Error()})
@@ -499,43 +494,6 @@ func (s *Service) Logout(ctx context.Context, id domainagent.ProviderID) (domain
 	return info, nil
 }
 
-func (s *Service) loginAgyOAuth(ctx context.Context, spec domainagent.ProviderSpec, executable string) error {
-	workDir, err := s.ensureWorkspaceDir()
-	if err != nil {
-		return err
-	}
-	profileRoot := s.profileDirFor(domainagent.ProviderAntigravity)
-	_, agyEnvMap, err := s.secrets.prepareAgyProfileWithMode(profileRoot, "", "", true)
-	if err != nil {
-		return err
-	}
-	procEnv := providerEnv(domainagent.ProviderAntigravity, agyEnvMap)
-
-	// ctx is already bounded by Login (Limits.LoginTimeout).
-	transport, err := s.spawnTransport(ctx, executable, spec.ACPArgs, workDir, procEnv, nil, nil)
-	if err != nil {
-		return fmt.Errorf("agy login failed: %w", err)
-	}
-	defer func() { _ = transport.Close() }()
-
-	initCtx, initCancel := context.WithTimeout(ctx, s.limits.InitializeTimeout)
-	defer initCancel()
-	initRes, err := transport.Initialize(initCtx, clientName, s.appVersion)
-	if err != nil {
-		return fmt.Errorf("agy login initialize failed: %w", err)
-	}
-	methodID, err := pickAuthMethod(spec, initRes)
-	if err != nil {
-		return err
-	}
-
-	tierName, err := transport.Authenticate(ctx, methodID)
-	if err != nil {
-		return fmt.Errorf("agy Google sign-in failed: %w", err)
-	}
-	return s.secrets.saveAgyOAuth(profileRoot, tierName)
-}
-
 // Connect starts the local MCP server and activates the selected isolated provider.
 func (s *Service) Connect(ctx context.Context, id domainagent.ProviderID) (domainagent.ProviderInfo, error) {
 	if err := domainagent.ValidateProviderID(id); err != nil {
@@ -581,18 +539,22 @@ func (s *Service) Connect(ctx context.Context, id domainagent.ProviderID) (domai
 		return domainagent.ProviderInfo{}, apperr.Unavailable(err.Error())
 	}
 
-	if s.isPerTurn(id) {
-		return s.connectPerTurnCLI(ctx, startToken, id, spec, resolved, source, customPath)
+	if td, ok := s.turnDriverFor(id); ok {
+		return s.connectPerTurnCLI(ctx, startToken, id, td, spec, resolved, source, customPath)
+	}
+	sd, ok := s.driver(id).(sessionDriver)
+	if !ok {
+		return domainagent.ProviderInfo{}, apperr.Validation(fmt.Sprintf("%s cannot be connected", spec.Name))
 	}
 
-	// Antigravity isolated ACP connection: verify isolated Gemini API key before spawning agy acp.
-	authState, accountInfo := s.secrets.probeAgyAuth(s.profileDirFor(id))
+	// The isolated profile must be signed in before the ACP process is spawned.
+	authState, accountInfo := sd.probeAuth(ctx, resolved)
 	s.mu.Lock()
 	s.authStates[id] = authState
 	s.accountInfos[id] = accountInfo
 	s.mu.Unlock()
 	if authState != domainagent.AuthAuthenticated {
-		err := localize(fmt.Errorf("isolated %s profile is not signed in; click Sign in or enter a Gemini API key first", spec.Name), msgNotSignedIn, map[string]string{"name": spec.Name})
+		err := localize(fmt.Errorf("isolated %s profile is not signed in; click Sign in or enter an API key first", spec.Name), msgNotSignedIn, map[string]string{"name": spec.Name})
 		return s.failConnect(id, spec, resolved, source, customPath, domainagent.StateUnauthenticated, err), toUserError(apperr.CodeUnauthorized, err)
 	}
 
@@ -605,11 +567,10 @@ func (s *Service) Connect(ctx context.Context, id domainagent.ProviderID) (domai
 	s.mu.Unlock()
 	s.emitStatus(connectingInfo)
 
-	_, agyEnvMap, err := s.secrets.prepareAgyProfile(s.profileDirFor(id), mcpSrv.url, mcpSrv.token)
+	procEnv, err := sd.sessionEnv(mcpSrv.url, mcpSrv.token)
 	if err != nil {
 		return s.failConnect(id, spec, resolved, source, customPath, domainagent.StateError, err), apperr.Unavailable(err.Error())
 	}
-	procEnv := providerEnv(domainagent.ProviderAntigravity, agyEnvMap)
 
 	transport, err := s.spawnTransport(
 		ctx,
@@ -685,6 +646,7 @@ func (s *Service) connectPerTurnCLI(
 	ctx context.Context,
 	startToken int64,
 	id domainagent.ProviderID,
+	drv turnDriver,
 	spec domainagent.ProviderSpec,
 	resolved string,
 	source domainagent.Source,
@@ -699,7 +661,7 @@ func (s *Service) connectPerTurnCLI(
 		err := localize(fmt.Errorf("isolated %s profile is not signed in; click Sign in first", spec.Name), msgNotSignedIn, map[string]string{"name": spec.Name})
 		return s.failConnect(id, spec, resolved, source, customPath, domainagent.StateUnauthenticated, err), toUserError(apperr.CodeUnauthorized, err)
 	}
-	if prepErr := s.driver(id).prepare(); prepErr != nil {
+	if prepErr := drv.prepare(); prepErr != nil {
 		return s.failConnect(id, spec, resolved, source, customPath, domainagent.StateError, prepErr), apperr.Unavailable(prepErr.Error())
 	}
 	version := s.probeVersionCached(ctx, id, resolved, spec.VersionArgs)
@@ -1089,8 +1051,8 @@ func (s *Service) waitTurns() {
 // runTurn runs one turn on its provider. Text and tool events reach the UI (and the turn's guard) through
 // emitChat as they stream; endTurn stores the result.
 func (s *Service) runTurn(ctx context.Context, t *turn, client Transport, sessionID, prompt string, history []domainagent.ChatMessage, ui UIContext) error {
-	if s.isPerTurn(t.providerID) {
-		return s.runCLITurn(ctx, t, prompt, history, ui)
+	if drv, ok := s.turnDriverFor(t.providerID); ok {
+		return s.runCLITurn(ctx, drv, t, prompt, history, ui)
 	}
 	if client == nil {
 		return fmt.Errorf("agent transport is not connected")
@@ -1135,7 +1097,7 @@ func (s *Service) runTurn(ctx context.Context, t *turn, client Transport, sessio
 
 // runCLITurn runs a turn as its own CLI invocation (Codex, Claude), resuming the provider's session when
 // there is one and falling back to a fresh session primed with the history when it is gone.
-func (s *Service) runCLITurn(ctx context.Context, t *turn, prompt string, history []domainagent.ChatMessage, ui UIContext) error {
+func (s *Service) runCLITurn(ctx context.Context, drv turnDriver, t *turn, prompt string, history []domainagent.ChatMessage, ui UIContext) error {
 	mcpSrv, err := s.ensureMCPServer()
 	if err != nil {
 		return err
@@ -1152,7 +1114,6 @@ func (s *Service) runCLITurn(ctx context.Context, t *turn, prompt string, histor
 	if resolved == "" {
 		return fmt.Errorf("%s executable not found", spec.ExecutableLabel)
 	}
-	drv := s.driver(t.providerID)
 	run := func(withHistory bool) error {
 		h := history
 		sessionKey := "" // a new session always receives the screen context

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -211,4 +212,42 @@ func cleanupAgyProfileToken(profileRoot string) {
 	if _, err := os.Stat(mcpFile); err == nil {
 		_ = fsutil.WriteFileAtomic(mcpFile, []byte("{\"mcpServers\":{}}\n"), 0o600)
 	}
+}
+
+// loginAgyOAuth signs the isolated profile in with Google through the agent's own ACP authenticate flow.
+func (s *Service) loginAgyOAuth(ctx context.Context, spec domainagent.ProviderSpec, executable string) error {
+	workDir, err := s.ensureWorkspaceDir()
+	if err != nil {
+		return err
+	}
+	profileRoot := s.profileDirFor(domainagent.ProviderAntigravity)
+	_, agyEnvMap, err := s.secrets.prepareAgyProfileWithMode(profileRoot, "", "", true)
+	if err != nil {
+		return err
+	}
+	procEnv := providerEnv(domainagent.ProviderAntigravity, agyEnvMap)
+
+	// ctx is already bounded by Login (Limits.LoginTimeout).
+	transport, err := s.spawnTransport(ctx, executable, spec.ACPArgs, workDir, procEnv, nil, nil)
+	if err != nil {
+		return fmt.Errorf("agy login failed: %w", err)
+	}
+	defer func() { _ = transport.Close() }()
+
+	initCtx, initCancel := context.WithTimeout(ctx, s.limits.InitializeTimeout)
+	defer initCancel()
+	initRes, err := transport.Initialize(initCtx, clientName, s.appVersion)
+	if err != nil {
+		return fmt.Errorf("agy login initialize failed: %w", err)
+	}
+	methodID, err := pickAuthMethod(spec, initRes)
+	if err != nil {
+		return err
+	}
+
+	tierName, err := transport.Authenticate(ctx, methodID)
+	if err != nil {
+		return fmt.Errorf("agy Google sign-in failed: %w", err)
+	}
+	return s.secrets.saveAgyOAuth(profileRoot, tierName)
 }
