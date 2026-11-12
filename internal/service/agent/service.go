@@ -67,6 +67,7 @@ type Options struct {
 	OnStatusChanged    func(domainagent.ProviderInfo)
 	OnChatEvent        func(domainagent.ChatEvent)
 	OnApprovalsChanged func([]domainagent.ApprovalRequest)
+	OnLoginPrompt      func(domainagent.LoginPrompt) // the page/code the user must use to finish a running sign-in
 	SpawnTransport     TransportFactory
 	RunCodexTurn       CodexTurnRunner
 	ProbeCodexAuth     CodexAuthProber
@@ -101,6 +102,9 @@ type Service struct {
 	autoInstall        bool
 	autoUpdate         bool
 	provisioning       map[domainagent.ProviderID]provisionState
+	onLoginPrompt      func(domainagent.LoginPrompt)
+	loginMu            sync.Mutex
+	logins             map[domainagent.ProviderID]*loginSession
 	preferences        PreferencesManager
 	system             SystemInspector
 	diagnostics        DiagnosticsExporter
@@ -184,6 +188,8 @@ func New(o Options) (*Service, error) {
 		autoInstall:        o.AutoInstall,
 		autoUpdate:         o.AutoUpdate,
 		provisioning:       make(map[domainagent.ProviderID]provisionState),
+		onLoginPrompt:      o.OnLoginPrompt,
+		logins:             make(map[domainagent.ProviderID]*loginSession),
 		preferences:        o.Preferences,
 		system:             o.System,
 		diagnostics:        o.Diagnostics,
@@ -251,7 +257,6 @@ func (s *Service) List(ctx context.Context) ([]domainagent.ProviderInfo, error) 
 				out[i] = domainagent.ProviderInfo{
 					ID:                id,
 					Name:              spec.Name,
-					Description:       spec.Description,
 					Executable:        spec.ExecutableLabel,
 					Source:            domainagent.SourceNone,
 					State:             domainagent.StateError,
@@ -259,7 +264,6 @@ func (s *Service) List(ctx context.Context) ([]domainagent.ProviderInfo, error) 
 					UnsupportedReason: spec.UnsupportedReason,
 					AuthState:         domainagent.AuthUnknown,
 					LastError:         err.Error(),
-					InstallHint:       spec.InstallHint,
 				}
 				return
 			}
@@ -1462,7 +1466,6 @@ func (s *Service) buildInfoLocked(spec domainagent.ProviderSpec, resolved string
 	info := domainagent.ProviderInfo{
 		ID:                 spec.ID,
 		Name:               spec.Name,
-		Description:        spec.Description,
 		Executable:         spec.ExecutableLabel,
 		ResolvedPath:       resolved,
 		CustomPath:         customPath,
@@ -1475,7 +1478,6 @@ func (s *Service) buildInfoLocked(spec domainagent.ProviderSpec, resolved string
 		AccountInfo:        s.accountInfos[spec.ID],
 		IsolatedProfileDir: s.profileDirFor(spec.ID),
 		LastError:          errText(s.lastErrors[spec.ID]),
-		InstallHint:        spec.InstallHint,
 		Active:             isActive,
 		Busy:               isActive && s.busy,
 	}

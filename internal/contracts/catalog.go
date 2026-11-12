@@ -40,6 +40,8 @@ const (
 	ActionAgentSetPath            = "agent:set_path"
 	ActionAgentLogin              = "agent:login"
 	ActionAgentLogout             = "agent:logout"
+	ActionAgentLoginCode          = "agent:login_code"
+	ActionAgentLoginCancel        = "agent:login_cancel"
 	ActionAgentConnect            = "agent:connect"
 	ActionAgentDisconnect         = "agent:disconnect"
 	ActionAgentSendPrompt         = "agent:send_prompt"
@@ -91,6 +93,7 @@ const (
 	EventAgentStatusChanged = "agent:status_changed"
 	EventAgentChatEvent     = "agent:chat_event"
 	EventAgentApprovals     = "agent:approvals"
+	EventAgentLoginPrompt   = "agent:login_prompt"
 )
 
 // Native event names emitted through the Wails runtime (desktop shell only).
@@ -153,6 +156,8 @@ func Actions() []ActionSpec {
 		{ActionAgentProbe, "Probes an agent provider executable, isolated auth, and version.", t[AgentProviderIDPayload](), t[AgentProviderInfo]()},
 		{ActionAgentSetPath, "Sets or clears a custom executable path for an agent provider.", t[AgentSetPathPayload](), t[AgentProviderInfo]()},
 		{ActionAgentLogin, "Authenticates the isolated DezuxkStudio profile for an agent provider.", t[AgentLoginPayload](), t[AgentProviderInfo]()},
+		{ActionAgentLoginCode, "Gives a running agent sign-in the code the user copied from the sign-in page.", t[AgentLoginCodePayload](), t[Empty]()},
+		{ActionAgentLoginCancel, "Cancels a running agent sign-in.", t[AgentProviderIDPayload](), t[Empty]()},
 		{ActionAgentLogout, "Clears isolated DezuxkStudio credentials for an agent provider.", t[AgentProviderIDPayload](), t[AgentProviderInfo]()},
 		{ActionAgentConnect, "Starts and initializes an isolated agent connection with DezuxkStudio MCP tools.", t[AgentProviderIDPayload](), t[AgentProviderInfo]()},
 		{ActionAgentDisconnect, "Disconnects the active agent connection.", t[Empty](), t[AgentListResult]()},
@@ -196,6 +201,7 @@ func Events() []EventSpec {
 		{EventPreferencesUpdated, "Preferences changed (from any client).", t[Preferences]()},
 		{EventAgentStatusChanged, "Agent provider discovery or connection state changed.", t[AgentProviderInfo]()},
 		{EventAgentChatEvent, "Streamed text, thought, tool call, or completion update from the active agent turn.", t[AgentChatEvent]()},
+		{EventAgentLoginPrompt, "A running agent sign-in needs the user: a page to open, a one-time code or a code to paste back.", t[AgentLoginPrompt]()},
 		{EventAgentApprovals, "Pending agent approval queue changed.", t[AgentApprovalListResult]()},
 		{EventProvidersChanged, "Provider credentials or custom providers changed.", t[ProvidersListResult]()},
 	}

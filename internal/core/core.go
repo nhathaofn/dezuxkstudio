@@ -272,6 +272,9 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		OnChatEvent: func(evt domainagent.ChatEvent) {
 			c.hub.Publish(contracts.EventAgentChatEvent, contracts.NewAgentChatEvent(evt))
 		},
+		OnLoginPrompt: func(p domainagent.LoginPrompt) {
+			c.hub.Publish(contracts.EventAgentLoginPrompt, contracts.NewAgentLoginPrompt(p))
+		},
 		OnApprovalsChanged: func(approvals []domainagent.ApprovalRequest) {
 			c.hub.Publish(contracts.EventAgentApprovals, contracts.NewAgentApprovalListResult(approvals))
 		},

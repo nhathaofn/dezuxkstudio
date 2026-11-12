@@ -3,6 +3,7 @@ import { create } from "zustand";
 import {
   Actions,
   type AgentApprovalRequest,
+  type AgentLoginPrompt,
   type AgentChatEvent,
   type AgentConversation,
   type AgentHistoryResult,
@@ -81,6 +82,8 @@ interface AgentState {
   allowedDirs: string[];
   loadingProviders: boolean;
   busyAction: boolean;
+  /** What the user must do to finish a sign-in that is running right now, by provider. */
+  loginPrompts: Partial<Record<AgentProviderID, AgentLoginPrompt>>;
   sending: boolean;
   error: ActionError | null;
   prompt: string;
@@ -108,6 +111,9 @@ interface AgentState {
   setModel: (id: AgentProviderID, model: string, effort: string) => Promise<void>;
   loginProvider: (id: AgentProviderID, apiKey?: string) => Promise<void>;
   logoutProvider: (id: AgentProviderID) => Promise<void>;
+  submitLoginCode: (id: AgentProviderID, code: string) => Promise<void>;
+  cancelLogin: (id: AgentProviderID) => Promise<void>;
+  receiveLoginPrompt: (prompt: AgentLoginPrompt) => void;
   connectProvider: (id: AgentProviderID) => Promise<void>;
   disconnect: () => Promise<void>;
   sendPrompt: () => Promise<void>;
@@ -159,6 +165,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   allowedDirs: [],
   loadingProviders: false,
   busyAction: false,
+  loginPrompts: {},
   sending: false,
   error: null,
   prompt: "",
@@ -288,6 +295,28 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     } catch (err) {
       set({ error: toActionError(err), busyAction: false });
       void get().fetchProviders();
+    } finally {
+      set((s) => ({ loginPrompts: { ...s.loginPrompts, [id]: undefined } }));
+    }
+  },
+
+  receiveLoginPrompt: (prompt) =>
+    set((s) => ({ loginPrompts: { ...s.loginPrompts, [prompt.provider_id]: prompt } })),
+
+  submitLoginCode: async (id, code) => {
+    try {
+      await rtClient.request(Actions.AGENT_LOGIN_CODE, { id, code });
+    } catch (err) {
+      set({ error: toActionError(err) });
+    }
+  },
+
+  cancelLogin: async (id) => {
+    set((s) => ({ loginPrompts: { ...s.loginPrompts, [id]: undefined } }));
+    try {
+      await rtClient.request(Actions.AGENT_LOGIN_CANCEL, { id });
+    } catch {
+      /* the sign-in already ended */
     }
   },
 

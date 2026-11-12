@@ -67,6 +67,9 @@ func (d codexDriver) toolCallHint() string {
 }
 func (d codexDriver) prepare() error { _, err := prepareCodexProfile(d.profile()); return err }
 func (d codexDriver) login(ctx context.Context, exe, apiKey string) error {
+	if strings.TrimSpace(apiKey) == "" {
+		return d.s.loginCodexInteractive(ctx, exe, d.profile())
+	}
 	return loginCodex(ctx, exe, d.profile(), apiKey)
 }
 func (d codexDriver) probeAuth(ctx context.Context, exe string) (domainagent.AuthState, string) {
@@ -91,6 +94,9 @@ func (claudeDriver) release()             {}
 func (claudeDriver) toolCallHint() string { return "" }
 func (d claudeDriver) prepare() error     { _, err := prepareClaudeProfile(d.profile()); return err }
 func (d claudeDriver) login(ctx context.Context, exe, apiKey string) error {
+	if strings.TrimSpace(apiKey) == "" {
+		return d.s.loginClaudeInteractive(ctx, exe, d.profile())
+	}
 	return loginClaude(ctx, exe, d.profile(), apiKey)
 }
 func (d claudeDriver) probeAuth(ctx context.Context, exe string) (domainagent.AuthState, string) {

@@ -7,7 +7,6 @@ const mockProviders: AgentProviderInfo[] = [
   {
     id: "antigravity",
     name: "Google Antigravity",
-    description: "Runs inside isolated DezuxkStudio home profile.",
     executable: "agy",
     resolved_path: "C:\\tools\\agy.exe",
     custom_path: "",
@@ -23,7 +22,6 @@ const mockProviders: AgentProviderInfo[] = [
     agent_name: "",
     agent_version: "",
     last_error: "",
-    install_hint: "agy acp --login",
     active: false,
     busy: false,
     models: [],
@@ -37,7 +35,6 @@ const mockProviders: AgentProviderInfo[] = [
   {
     id: "codex",
     name: "OpenAI Codex",
-    description: "Runs via isolated CODEX_HOME.",
     executable: "codex",
     resolved_path: "",
     custom_path: "",
@@ -53,7 +50,6 @@ const mockProviders: AgentProviderInfo[] = [
     agent_name: "",
     agent_version: "",
     last_error: "",
-    install_hint: "Use Sign in below",
     active: false,
     busy: false,
     models: [],

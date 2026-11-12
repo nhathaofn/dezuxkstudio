@@ -52,3 +52,23 @@ type ManagedCopy struct {
 	Version string
 	Path    string
 }
+
+// LoginSpec declares how a CLI signs the app's isolated profile in interactively.
+type LoginSpec struct {
+	// Args is the sign-in command, run with the isolated profile's environment. Empty: no such command
+	// (the provider signs in over its own protocol).
+	Args []string
+	// PasteCode: the CLI waits for the code the web page shows, read from its stdin.
+	PasteCode bool
+	// OpensBrowser: the CLI opens the sign-in page itself; otherwise the app opens it.
+	OpensBrowser bool
+}
+
+// LoginPrompt is what the user must do to finish a sign-in that is running right now.
+type LoginPrompt struct {
+	ProviderID ProviderID
+	URL        string // page to open
+	Code       string // one-time code to type on that page ("" when the page needs none)
+	PasteCode  bool   // after signing in on the page, the code it shows must be pasted back
+	OpenURL    bool   // the app should open URL (the CLI does not)
+}

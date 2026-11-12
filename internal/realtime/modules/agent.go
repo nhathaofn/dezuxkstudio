@@ -49,6 +49,17 @@ func (m Agent) Register(r *realtime.Registry) {
 			return contracts.NewAgentProviderInfo(info), nil
 		})
 
+	realtime.Handle(r, contracts.ActionAgentLoginCode,
+		func(ctx context.Context, _ *realtime.Request, p contracts.AgentLoginCodePayload) (contracts.Empty, error) {
+			return contracts.Empty{}, m.Service.SubmitLoginCode(ctx, p.ID, p.Code)
+		})
+
+	realtime.Handle(r, contracts.ActionAgentLoginCancel,
+		func(ctx context.Context, _ *realtime.Request, p contracts.AgentProviderIDPayload) (contracts.Empty, error) {
+			m.Service.CancelLogin(ctx, p.ID)
+			return contracts.Empty{}, nil
+		})
+
 	realtime.Handle(r, contracts.ActionAgentLogout,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentProviderIDPayload) (contracts.AgentProviderInfo, error) {
 			info, err := m.Service.Logout(ctx, p.ID)

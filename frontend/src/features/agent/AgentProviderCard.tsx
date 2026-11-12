@@ -1,9 +1,7 @@
 import React, { useState } from "react";
 import {
   AlertTriangle,
-  Check,
   CheckCircle2,
-  Copy,
   FolderOpen,
   KeyRound,
   LogIn,
@@ -25,8 +23,8 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { getBridge, isDesktop } from "../../lib/bridge";
 import { translateServerMessage, useT, type MessageKey } from "../../lib/i18n";
-import { useFlash } from "../../lib/hooks/useFlash";
-import { COPY_FEEDBACK_MS, useAgentStore } from "./useAgentStore";
+import { LoginPromptDialog } from "./LoginPromptDialog";
+import { useAgentStore } from "./useAgentStore";
 
 function statusMeta(state: AgentConnectionState, t: (k: MessageKey) => string) {
   switch (state) {
@@ -110,13 +108,31 @@ interface ModelPickerProps {
   onChange: (model: string, effort: string) => void;
 }
 
+/**
+ * A model's name/description. Models the CLI cannot enumerate itself (aliases such as "opus") come from the
+ * registry without text, so the UI supplies it in the user's language; models the CLI lists keep its own text.
+ */
+function modelText(
+  t: ReturnType<typeof useT>,
+  model: { id: string; name: string; description?: string } | undefined,
+  field: "name" | "description"
+): string {
+  if (!model) return "";
+  const key = `agent.model.alias.${model.id}.${field}`;
+  return (
+    translateServerMessage(t, key, undefined) ??
+    (field === "name" ? model.name : (model.description ?? ""))
+  );
+}
+
 // ModelPicker lists exactly the models the provider's CLI reports (never a hardcoded list).
 const ModelPicker: React.FC<ModelPickerProps> = ({ provider, disabled, onChange }) => {
   const t = useT();
   const models = provider.models ?? [];
   const selected = models.find((m) => m.id === provider.selected_model);
   const efforts = selected?.efforts ?? [];
-  const currentName = models.find((m) => m.id === provider.current_model)?.name;
+  const currentModel = models.find((m) => m.id === provider.current_model);
+  const currentName = currentModel && modelText(t, currentModel, "name");
 
   if (models.length === 0) {
     return (
@@ -142,12 +158,12 @@ const ModelPicker: React.FC<ModelPickerProps> = ({ provider, disabled, onChange 
         value={provider.selected_model}
         onChange={(e) => onChange(e.target.value, "")}
         disabled={disabled}
-        title={selected?.description || ""}
+        title={modelText(t, selected, "description")}
       >
         <option value="">{t("agent.model.providerDefault")}</option>
         {models.map((m) => (
-          <option key={m.id} value={m.id} title={m.description || m.id}>
-            {m.name}
+          <option key={m.id} value={m.id} title={modelText(t, m, "description") || m.id}>
+            {modelText(t, m, "name")}
           </option>
         ))}
       </select>
@@ -192,10 +208,10 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
   const connectProvider = useAgentStore((s) => s.connectProvider);
   const disconnect = useAgentStore((s) => s.disconnect);
   const busyAction = useAgentStore((s) => s.busyAction);
+  const loginPrompt = useAgentStore((s) => s.loginPrompts[provider.id]);
 
   const [probing, setProbing] = useState(false);
   const [customDraft, setCustomDraft] = useState<string | null>(null);
-  const [copiedHint, flashCopiedHint] = useFlash(COPY_FEEDBACK_MS);
   const [showKeyForm, setShowKeyForm] = useState(false);
   const [apiKeyDraft, setApiKeyDraft] = useState("");
 
@@ -261,15 +277,6 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
     }
   };
 
-  const handleCopyHint = async () => {
-    try {
-      await navigator.clipboard.writeText(provider.install_hint);
-      flashCopiedHint(true);
-    } catch {
-      // Ignore clipboard failures outside secure context
-    }
-  };
-
   const handleKeyLogin = async () => {
     await loginProvider(provider.id, apiKeyDraft.trim());
     setApiKeyDraft("");
@@ -284,7 +291,9 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
             <span className="agent-provider-card__name">{provider.name}</span>
             <Badge>{provider.executable}</Badge>
           </div>
-          <p className="agent-provider-card__desc">{provider.description}</p>
+          <p className="agent-provider-card__desc">
+            {t(`agent.provider.${provider.id}.description`)}
+          </p>
         </div>
 
         <span className="agent-provider-card__status">
@@ -351,20 +360,8 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
         />
       )}
 
-      {provider.install_hint && provider.supported && (
-        <div className="agent-hint-row">
-          <span className="agent-hint-row__label">{t("agent.connections.installHint")}:</span>
-          <code className="agent-hint-row__code">{provider.install_hint}</code>
-          <Button
-            size="sm"
-            iconOnly
-            onClick={() => void handleCopyHint()}
-            title={t("agent.connections.copyCommand")}
-            aria-label={t("agent.connections.copyCommand")}
-          >
-            {copiedHint ? <Check size={12} /> : <Copy size={12} />}
-          </Button>
-        </div>
+      {provider.supported && provider.auth_state !== "authenticated" && (
+        <p className="agent-provider-note">{t(`agent.provider.${provider.id}.signInHint`)}</p>
       )}
 
       {provider.last_error && (
@@ -503,6 +500,7 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
           </Button>
         )}
       </div>
+      {loginPrompt && <LoginPromptDialog provider={provider} prompt={loginPrompt} />}
     </div>
   );
 };

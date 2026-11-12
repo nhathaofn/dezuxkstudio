@@ -113,13 +113,11 @@ func AllChatEventTypes() []ChatEventType {
 type ProviderSpec struct {
 	ID                   ProviderID
 	Name                 string
-	Description          string
 	ExecutableLabel      string
 	CandidateExecutables []string
 	KnownPaths           []string
 	ACPArgs              []string
 	VersionArgs          []string
-	InstallHint          string
 	// CredentialEnv lists provider credential variables stripped from the inherited environment so the
 	// isolated profile never silently uses the user's personal keys.
 	CredentialEnv []string
@@ -130,6 +128,7 @@ type ProviderSpec struct {
 	ModelAliases []ModelOption
 	// Install says where the CLI is published so the app can keep a private, self-updating copy.
 	Install           InstallSpec
+	Login             LoginSpec
 	Supported         bool
 	UnsupportedReason string
 }
@@ -139,13 +138,11 @@ var Registry = map[ProviderID]ProviderSpec{
 	ProviderAntigravity: {
 		ID:                   ProviderAntigravity,
 		Name:                 "Google Antigravity",
-		Description:          "Runs via agy acp with isolated MCP tools, settings & history. Supports Google sign-in or an isolated Gemini API key.",
 		ExecutableLabel:      "agy",
 		CandidateExecutables: []string{"agy", "agy.exe", "agy.cmd"},
 		KnownPaths:           []string{"${LOCALAPPDATA}/agy/bin/agy.exe"},
 		ACPArgs:              []string{"acp", "--include-default-customizations=false", "--sandbox"},
 		VersionArgs:          []string{"--version"},
-		InstallHint:          "Use Sign in or API key below",
 		CredentialEnv:        []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"},
 		AuthMethodPreference: []string{"oauth-personal"},
 		Install: InstallSpec{
@@ -159,7 +156,6 @@ var Registry = map[ProviderID]ProviderSpec{
 	ProviderCodex: {
 		ID:                   ProviderCodex,
 		Name:                 "OpenAI Codex",
-		Description:          "Runs via official codex CLI with an isolated CODEX_HOME account, read-only sandbox, and DezuxkStudio MCP tools.",
 		ExecutableLabel:      "codex",
 		CandidateExecutables: []string{"codex", "codex.exe", "codex.cmd"},
 		KnownPaths: []string{
@@ -169,8 +165,8 @@ var Registry = map[ProviderID]ProviderSpec{
 		},
 		ACPArgs:       nil,
 		VersionArgs:   []string{"--version"},
-		InstallHint:   "Use Sign in below (isolated CODEX_HOME)",
 		CredentialEnv: []string{"OPENAI_API_KEY"},
+		Login:         LoginSpec{Args: []string{"login", "--device-auth"}},
 		Install: InstallSpec{
 			Scheme:        SchemeReleasePackage,
 			BaseURL:       "https://github.com/openai/codex/releases/download",
@@ -186,7 +182,6 @@ var Registry = map[ProviderID]ProviderSpec{
 	ProviderClaude: {
 		ID:                   ProviderClaude,
 		Name:                 "Anthropic Claude",
-		Description:          "Runs via official claude CLI with an isolated CLAUDE_CONFIG_DIR account, restricted sandbox, and DezuxkStudio MCP tools.",
 		ExecutableLabel:      "claude",
 		CandidateExecutables: []string{"claude", "claude.exe", "claude.cmd"},
 		KnownPaths: []string{
@@ -195,8 +190,8 @@ var Registry = map[ProviderID]ProviderSpec{
 		},
 		ACPArgs:       nil,
 		VersionArgs:   []string{"--version"},
-		InstallHint:   "Use Sign in below (isolated CLAUDE_CONFIG_DIR)",
 		CredentialEnv: []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"},
+		Login:         LoginSpec{Args: []string{"auth", "login"}, PasteCode: true, OpensBrowser: true},
 		Install: InstallSpec{
 			Scheme:     SchemeVersionFile,
 			BaseURL:    "https://downloads.claude.ai/claude-code-releases",
@@ -236,7 +231,6 @@ type ModelSelection struct {
 type ProviderInfo struct {
 	ID                 ProviderID        `json:"id"`
 	Name               string            `json:"name"`
-	Description        string            `json:"description"`
 	Executable         string            `json:"executable"`
 	ResolvedPath       string            `json:"resolved_path"`
 	CustomPath         string            `json:"custom_path"`
@@ -254,7 +248,6 @@ type ProviderInfo struct {
 	LastError          string            `json:"last_error"`
 	LastErrorKey       string            `json:"last_error_key,omitempty"`    // frontend i18n key for LastError
 	LastErrorParams    map[string]string `json:"last_error_params,omitempty"` // values for the key's placeholders
-	InstallHint        string            `json:"install_hint"`
 	Active             bool              `json:"active"`
 	Busy               bool              `json:"busy"`
 	Models             []ModelOption     `json:"models"`

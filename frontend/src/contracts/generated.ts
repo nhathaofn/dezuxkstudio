@@ -144,9 +144,22 @@ export interface AgentListResult {
   providers: AgentProviderInfo[];
 }
 
+export interface AgentLoginCodePayload {
+  id: AgentProviderID;
+  code: string;
+}
+
 export interface AgentLoginPayload {
   id: AgentProviderID;
   api_key: string;
+}
+
+export interface AgentLoginPrompt {
+  provider_id: AgentProviderID;
+  url: string;
+  code: string;
+  paste_code: boolean;
+  open_url: boolean;
 }
 
 export interface AgentPromptResult {
@@ -162,7 +175,6 @@ export interface AgentProviderIDPayload {
 export interface AgentProviderInfo {
   id: AgentProviderID;
   name: string;
-  description: string;
   executable: string;
   resolved_path: string;
   custom_path: string;
@@ -180,7 +192,6 @@ export interface AgentProviderInfo {
   last_error: string;
   last_error_key?: string;
   last_error_params?: Record<string, string>;
-  install_hint: string;
   active: boolean;
   busy: boolean;
   models: ModelOption[];
@@ -700,6 +711,10 @@ export const Actions = {
   AGENT_SET_PATH: "agent:set_path",
   /** Authenticates the isolated DezuxkStudio profile for an agent provider. */
   AGENT_LOGIN: "agent:login",
+  /** Gives a running agent sign-in the code the user copied from the sign-in page. */
+  AGENT_LOGIN_CODE: "agent:login_code",
+  /** Cancels a running agent sign-in. */
+  AGENT_LOGIN_CANCEL: "agent:login_cancel",
   /** Clears isolated DezuxkStudio credentials for an agent provider. */
   AGENT_LOGOUT: "agent:logout",
   /** Starts and initializes an isolated agent connection with DezuxkStudio MCP tools. */
@@ -798,6 +813,8 @@ export interface ActionMap {
   "agent:probe": { payload: AgentProviderIDPayload; result: AgentProviderInfo };
   "agent:set_path": { payload: AgentSetPathPayload; result: AgentProviderInfo };
   "agent:login": { payload: AgentLoginPayload; result: AgentProviderInfo };
+  "agent:login_code": { payload: AgentLoginCodePayload; result: Empty };
+  "agent:login_cancel": { payload: AgentProviderIDPayload; result: Empty };
   "agent:logout": { payload: AgentProviderIDPayload; result: AgentProviderInfo };
   "agent:connect": { payload: AgentProviderIDPayload; result: AgentProviderInfo };
   "agent:disconnect": { payload: Empty; result: AgentListResult };
@@ -842,6 +859,8 @@ export const Events = {
   AGENT_STATUS_CHANGED: "agent:status_changed",
   /** Streamed text, thought, tool call, or completion update from the active agent turn. */
   AGENT_CHAT_EVENT: "agent:chat_event",
+  /** A running agent sign-in needs the user: a page to open, a one-time code or a code to paste back. */
+  AGENT_LOGIN_PROMPT: "agent:login_prompt",
   /** Pending agent approval queue changed. */
   AGENT_APPROVALS: "agent:approvals",
   /** Provider credentials or custom providers changed. */
@@ -854,6 +873,7 @@ export interface EventMap {
   "preferences:updated": Preferences;
   "agent:status_changed": AgentProviderInfo;
   "agent:chat_event": AgentChatEvent;
+  "agent:login_prompt": AgentLoginPrompt;
   "agent:approvals": AgentApprovalListResult;
   "providers:changed": ProvidersListResult;
 }

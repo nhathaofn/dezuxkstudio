@@ -26,6 +26,7 @@ export function bootstrap(): void {
   rtClient.on(Events.PREFERENCES_UPDATED, (p) => usePreferencesStore.getState().receive(p));
   rtClient.on(Events.PROVIDERS_CHANGED, (p) => useProvidersStore.getState().receive(p));
   rtClient.on(Events.AGENT_STATUS_CHANGED, (p) => useAgentStore.getState().receiveStatus(p));
+  rtClient.on(Events.AGENT_LOGIN_PROMPT, (p) => useAgentStore.getState().receiveLoginPrompt(p));
   rtClient.on(Events.AGENT_CHAT_EVENT, (p) => useAgentStore.getState().receiveChatEvent(p));
   rtClient.on(Events.AGENT_APPROVALS, (p) =>
     useAgentStore.getState().receiveApprovals(p.approvals)

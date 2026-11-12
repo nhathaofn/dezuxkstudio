@@ -254,7 +254,6 @@ type WorkflowRunGraphResult struct {
 type AgentProviderInfo struct {
 	ID                 agent.ProviderID      `json:"id"`
 	Name               string                `json:"name"`
-	Description        string                `json:"description"`
 	Executable         string                `json:"executable"`
 	ResolvedPath       string                `json:"resolved_path"`
 	CustomPath         string                `json:"custom_path"`
@@ -272,7 +271,6 @@ type AgentProviderInfo struct {
 	LastError          string                `json:"last_error"`
 	LastErrorKey       string                `json:"last_error_key,omitempty"`
 	LastErrorParams    map[string]string     `json:"last_error_params,omitempty"`
-	InstallHint        string                `json:"install_hint"`
 	Active             bool                  `json:"active"`
 	Busy               bool                  `json:"busy"`
 	Models             []agent.ModelOption   `json:"models"`
@@ -326,6 +324,29 @@ type AgentLoginPayload struct {
 func (p AgentLoginPayload) Validate() error {
 	return agent.ValidateProviderID(p.ID)
 }
+
+// AgentLoginCodePayload carries the code the user copied from a sign-in page.
+type AgentLoginCodePayload struct {
+	ID   agent.ProviderID `json:"id"`
+	Code string           `json:"code"`
+}
+
+// Validate checks the provider identifier.
+func (p AgentLoginCodePayload) Validate() error {
+	return agent.ValidateProviderID(p.ID)
+}
+
+// AgentLoginPrompt tells the UI what the user must do to finish a running sign-in.
+type AgentLoginPrompt struct {
+	ProviderID agent.ProviderID `json:"provider_id"`
+	URL        string           `json:"url"`
+	Code       string           `json:"code"`
+	PasteCode  bool             `json:"paste_code"`
+	OpenURL    bool             `json:"open_url"`
+}
+
+// NewAgentLoginPrompt converts the domain prompt into the wire DTO.
+func NewAgentLoginPrompt(in agent.LoginPrompt) AgentLoginPrompt { return AgentLoginPrompt(in) }
 
 // AgentSetPathPayload sets or clears a custom executable path for a provider.
 type AgentSetPathPayload struct {
