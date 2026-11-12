@@ -129,22 +129,24 @@ func loginClaude(ctx context.Context, executable, profileRoot, apiKey string) er
 		return nil
 	}
 
+	return fmt.Errorf("claude: an API key is required (interactive sign-in is loginClaudeInteractive)")
+}
+
+// loginClaudeInteractive signs the isolated CLAUDE_CONFIG_DIR in through the browser: the CLI opens the
+// page and waits for the code it shows, which the user pastes in the app.
+func (s *Service) loginClaudeInteractive(ctx context.Context, executable, profileRoot string) error {
+	if _, err := prepareClaudeProfile(profileRoot); err != nil {
+		return err
+	}
 	removeProfileSecret(claudeAPIKeyPath(profileRoot))
 	env, err := claudeIsolatedEnv(profileRoot)
 	if err != nil {
 		return err
 	}
-	cmd := proc.Command(ctx, executable, "auth", "login") // the caller bounds ctx (Limits.LoginTimeout)
-	cmd.Env = env
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := redactSecrets(strings.TrimSpace(string(out)))
-		if msg == "" {
-			msg = err.Error()
-		}
-		return fmt.Errorf("claude login failed: %s", msg)
+	if err := s.interactiveLogin(ctx, domainagent.ProviderClaude, executable, env); err != nil {
+		return err
 	}
-	if state, _ := probeClaudeAuth(ctx, executable, profileRoot); state != domainagent.AuthAuthenticated {
+	if state, _ := s.probeClaude(ctx, executable, profileRoot); state != domainagent.AuthAuthenticated {
 		return fmt.Errorf("claude login completed without active credentials in isolated profile")
 	}
 	return nil

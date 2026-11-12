@@ -6,7 +6,7 @@
   padding: 2px var(--space-2);
   border-radius: var(--radius-sm);
   background-color: var(--bg-surface-elevated);
-  border: 1px solid var(--border-subtle);
+  border: var(--border-width) solid var(--border-subtle);
   color: var(--text-muted);
   white-space: nowrap;
   flex-shrink: 0;

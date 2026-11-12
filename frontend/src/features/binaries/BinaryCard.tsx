@@ -22,13 +22,15 @@ function getStatusBadge(status: BinaryStatus, t: (k: MessageKey) => string) {
   switch (status) {
     case "available":
       return {
-        color: "var(--status-connected)",
+        // label stays in the normal text colour; only errors are red
+        color: undefined,
         icon: <CheckCircle2 size={13} style={{ color: "var(--status-connected)" }} />,
         label: t("tools.status.available"),
       };
     case "missing":
       return {
-        color: "var(--status-connecting)",
+        // label stays in the normal text colour; only errors are red
+        color: undefined,
         icon: <Search size={13} style={{ color: "var(--status-connecting)" }} />,
         label: t("tools.status.missing"),
       };

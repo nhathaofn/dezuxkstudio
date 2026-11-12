@@ -60,17 +60,12 @@ func loginCodex(ctx context.Context, executable, profileRoot, apiKey string) err
 		return err
 	}
 	trimmedKey := strings.TrimSpace(apiKey)
-	var args []string
-	if trimmedKey != "" {
-		args = []string{"login", "--with-api-key"}
-	} else {
-		args = []string{"login"}
+	if trimmedKey == "" {
+		return fmt.Errorf("codex: an API key is required (interactive sign-in is loginCodexInteractive)")
 	}
-	cmd := proc.Command(ctx, executable, args...) // the caller bounds ctx (Limits.LoginTimeout)
+	cmd := proc.Command(ctx, executable, "login", "--with-api-key") // the caller bounds ctx (Limits.LoginTimeout)
 	cmd.Env = providerEnv(domainagent.ProviderCodex, envMap)
-	if trimmedKey != "" {
-		cmd.Stdin = strings.NewReader(trimmedKey + "\n")
-	}
+	cmd.Stdin = strings.NewReader(trimmedKey + "\n")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := redactSecrets(strings.TrimSpace(string(out)))
@@ -80,6 +75,16 @@ func loginCodex(ctx context.Context, executable, profileRoot, apiKey string) err
 		return fmt.Errorf("codex login failed: %s", msg)
 	}
 	return nil
+}
+
+// loginCodexInteractive signs the isolated CODEX_HOME in with the device-code flow: the UI shows the page
+// and one-time code, so it works the same on a machine without a browser callback.
+func (s *Service) loginCodexInteractive(ctx context.Context, executable, profileRoot string) error {
+	envMap, err := prepareCodexProfile(profileRoot)
+	if err != nil {
+		return err
+	}
+	return s.interactiveLogin(ctx, domainagent.ProviderCodex, executable, providerEnv(domainagent.ProviderCodex, envMap))
 }
 
 func logoutCodex(ctx context.Context, executable, profileRoot string) error {

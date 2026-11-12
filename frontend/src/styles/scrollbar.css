@@ -1,0 +1,46 @@
+/* ==========================================================================
+   SCROLLBARS - ONE STYLE FOR THE WHOLE APP
+   The look of the agent chat: a thin 6px pill, transparent track, colour from the tokens.
+   Never style a scrollbar anywhere else (scripts/check-styles.mjs enforces it); to change how
+   every scrollbar looks, change this file or --scrollbar-thumb / --scrollbar-thumb-hover.
+   ========================================================================== */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+/* Panes whose content height changes (a group is expanded, a tab switched) reserve the bar's width,
+   so the content never jumps sideways when the bar appears or disappears. Not applied to the page
+   itself, where it would only waste a strip at the edge of the window. */
+.scrollable-pane,
+.providers-detail,
+.providers-defaults-pane,
+.ui-dialog-body {
+  scrollbar-gutter: stable;
+}
+
+/* Engines without the standard properties. */
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: var(--radius-full);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+
+/* The one exception: the provider list in Settings has no visible bar (it still scrolls by wheel,
+   touch and keyboard). Opt in with this class instead of styling scrollbars in a feature. */
+.scroll-hidden {
+  scrollbar-width: none;
+  scrollbar-gutter: auto;
+}
+.scroll-hidden::-webkit-scrollbar {
+  display: none;
+}

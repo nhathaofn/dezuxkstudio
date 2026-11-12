@@ -116,7 +116,7 @@ func run() (code int) {
 		Paths:        appPaths,
 		Logger:       lg.Logger,
 		Assets:       dist,
-		Secrets:      secrets.NewDesktopStore(buildinfo.AppID),
+		Secrets:      secrets.NewDurableStore(buildinfo.AppID, secrets.Dir(appPaths.Data)),
 		HTTPClient:   streamingClient,
 		StartupError: cfgErr,
 	})

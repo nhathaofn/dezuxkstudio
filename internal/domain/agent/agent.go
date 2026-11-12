@@ -73,12 +73,14 @@ type Source string
 const (
 	SourceCustom Source = "custom"
 	SourceSystem Source = "system"
-	SourceNone   Source = "none"
+	// SourceManaged is the private copy the app downloaded and keeps up to date itself.
+	SourceManaged Source = "managed"
+	SourceNone    Source = "none"
 )
 
 // AllSources returns every valid Source.
 func AllSources() []Source {
-	return []Source{SourceCustom, SourceSystem, SourceNone}
+	return []Source{SourceCustom, SourceManaged, SourceSystem, SourceNone}
 }
 
 // ChatEventType classifies streamed events sent from an active agent turn to the UI.
@@ -111,13 +113,11 @@ func AllChatEventTypes() []ChatEventType {
 type ProviderSpec struct {
 	ID                   ProviderID
 	Name                 string
-	Description          string
 	ExecutableLabel      string
 	CandidateExecutables []string
 	KnownPaths           []string
 	ACPArgs              []string
 	VersionArgs          []string
-	InstallHint          string
 	// CredentialEnv lists provider credential variables stripped from the inherited environment so the
 	// isolated profile never silently uses the user's personal keys.
 	CredentialEnv []string
@@ -125,7 +125,10 @@ type ProviderSpec struct {
 	// first one the agent advertises in initialize wins.
 	AuthMethodPreference []string
 	// ModelAliases are model choices the CLI accepts but cannot enumerate itself.
-	ModelAliases      []ModelOption
+	ModelAliases []ModelOption
+	// Install says where the CLI is published so the app can keep a private, self-updating copy.
+	Install           InstallSpec
+	Login             LoginSpec
 	Supported         bool
 	UnsupportedReason string
 }
@@ -135,21 +138,25 @@ var Registry = map[ProviderID]ProviderSpec{
 	ProviderAntigravity: {
 		ID:                   ProviderAntigravity,
 		Name:                 "Google Antigravity",
-		Description:          "Runs via agy acp with isolated MCP tools, settings & history. Supports Google sign-in or an isolated Gemini API key.",
 		ExecutableLabel:      "agy",
 		CandidateExecutables: []string{"agy", "agy.exe", "agy.cmd"},
 		KnownPaths:           []string{"${LOCALAPPDATA}/agy/bin/agy.exe"},
 		ACPArgs:              []string{"acp", "--include-default-customizations=false", "--sandbox"},
 		VersionArgs:          []string{"--version"},
-		InstallHint:          "Use Sign in or API key below",
 		CredentialEnv:        []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"},
 		AuthMethodPreference: []string{"oauth-personal"},
-		Supported:            true,
+		Install: InstallSpec{
+			Scheme:     SchemeManifest,
+			BaseURL:    "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app",
+			Platforms:  map[string]string{"windows_amd64": "windows_amd64", "windows_arm64": "windows_arm64"},
+			Executable: "agy.exe",
+			Env:        map[string]string{"AGY_CLI_DISABLE_AUTO_UPDATE": "1"},
+		},
+		Supported: true,
 	},
 	ProviderCodex: {
 		ID:                   ProviderCodex,
 		Name:                 "OpenAI Codex",
-		Description:          "Runs via official codex CLI with an isolated CODEX_HOME account, read-only sandbox, and DezuxkStudio MCP tools.",
 		ExecutableLabel:      "codex",
 		CandidateExecutables: []string{"codex", "codex.exe", "codex.cmd"},
 		KnownPaths: []string{
@@ -159,14 +166,23 @@ var Registry = map[ProviderID]ProviderSpec{
 		},
 		ACPArgs:       nil,
 		VersionArgs:   []string{"--version"},
-		InstallHint:   "Use Sign in below (isolated CODEX_HOME)",
 		CredentialEnv: []string{"OPENAI_API_KEY"},
-		Supported:     true,
+		Login:         LoginSpec{Args: []string{"login", "--device-auth"}},
+		Install: InstallSpec{
+			Scheme:        SchemeReleasePackage,
+			BaseURL:       "https://github.com/openai/codex/releases/download",
+			LatestAPI:     "https://api.github.com/repos/openai/codex/releases/latest",
+			TagPrefix:     "rust-v",
+			Platforms:     map[string]string{"windows_amd64": "x86_64-pc-windows-msvc", "windows_arm64": "aarch64-pc-windows-msvc"},
+			Executable:    "bin/codex.exe",
+			PackageAsset:  "codex-package-{platform}.tar.gz",
+			ChecksumAsset: "codex-package_SHA256SUMS",
+		},
+		Supported: true,
 	},
 	ProviderClaude: {
 		ID:                   ProviderClaude,
 		Name:                 "Anthropic Claude",
-		Description:          "Runs via official claude CLI with an isolated CLAUDE_CONFIG_DIR account, restricted sandbox, and DezuxkStudio MCP tools.",
 		ExecutableLabel:      "claude",
 		CandidateExecutables: []string{"claude", "claude.exe", "claude.cmd"},
 		KnownPaths: []string{
@@ -175,8 +191,16 @@ var Registry = map[ProviderID]ProviderSpec{
 		},
 		ACPArgs:       nil,
 		VersionArgs:   []string{"--version"},
-		InstallHint:   "Use Sign in below (isolated CLAUDE_CONFIG_DIR)",
 		CredentialEnv: []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"},
+		Login:         LoginSpec{Args: []string{"auth", "login"}, PasteCode: true, OpensBrowser: true},
+		Install: InstallSpec{
+			Scheme:     SchemeVersionFile,
+			BaseURL:    "https://downloads.claude.ai/claude-code-releases",
+			LatestPath: "latest",
+			Platforms:  map[string]string{"windows_amd64": "win32-x64", "windows_arm64": "win32-arm64"},
+			Executable: "claude.exe",
+			Env:        map[string]string{"DISABLE_AUTOUPDATER": "1"},
+		},
 		// Claude Code's built-in aliases; the CLI maps each one to the latest model of that family.
 		ModelAliases: []ModelOption{
 			{ID: "fable", Name: "Claude Fable (latest)", Description: "Most capable model family"},
@@ -208,7 +232,6 @@ type ModelSelection struct {
 type ProviderInfo struct {
 	ID                 ProviderID        `json:"id"`
 	Name               string            `json:"name"`
-	Description        string            `json:"description"`
 	Executable         string            `json:"executable"`
 	ResolvedPath       string            `json:"resolved_path"`
 	CustomPath         string            `json:"custom_path"`
@@ -226,13 +249,18 @@ type ProviderInfo struct {
 	LastError          string            `json:"last_error"`
 	LastErrorKey       string            `json:"last_error_key,omitempty"`    // frontend i18n key for LastError
 	LastErrorParams    map[string]string `json:"last_error_params,omitempty"` // values for the key's placeholders
-	InstallHint        string            `json:"install_hint"`
 	Active             bool              `json:"active"`
 	Busy               bool              `json:"busy"`
 	Models             []ModelOption     `json:"models"`
 	CurrentModel       string            `json:"current_model"`
 	SelectedModel      string            `json:"selected_model"`
 	SelectedEffort     string            `json:"selected_effort"`
+	// Revision grows with every status snapshot the service builds. A snapshot that reaches the UI
+	// late (a slow agent:list) must never replace a newer one (e.g. "connected, with models").
+	Revision int64 `json:"revision"`
+	// Installing is true while the app downloads or updates its own copy of the CLI; InstallPercent is 0-100.
+	Installing     bool    `json:"installing"`
+	InstallPercent float64 `json:"install_percent"`
 }
 
 // ChatEvent is broadcast when an active agent streams text, thoughts, tool calls, or completion updates.
@@ -297,6 +325,8 @@ type Repository interface {
 	AppendChatMessage(ctx context.Context, msg ChatMessage) error
 	ListChatMessages(ctx context.Context, limit int) ([]ChatMessage, error)
 	ClearChatMessages(ctx context.Context) error
+	// RedactChatMessages replaces every occurrence of secret in stored chat text.
+	RedactChatMessages(ctx context.Context, secret, replacement string) error
 	// SaveConversation creates the conversation or updates its provider and updated_at; a non-empty
 	// title is only set when the conversation has none yet.
 	SaveConversation(ctx context.Context, c Conversation) error
@@ -308,4 +338,7 @@ type Repository interface {
 	RemoveAllowedDir(ctx context.Context, dir string) error
 	GetModelSelection(ctx context.Context, id ProviderID) (ModelSelection, error)
 	SetModelSelection(ctx context.Context, id ProviderID, sel ModelSelection) error
+	// RememberedConnection is the provider the user left connected ("" = none); it is reconnected at start-up.
+	RememberedConnection(ctx context.Context) (ProviderID, error)
+	SetRememberedConnection(ctx context.Context, id ProviderID) error
 }

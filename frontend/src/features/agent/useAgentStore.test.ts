@@ -1,13 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Actions, type AgentProviderInfo } from "../../contracts/generated";
 import { ActionError, rtClient } from "../../lib/rtClient";
-import { clampDrawerWidth, useAgentStore } from "./useAgentStore";
+import { clampDrawerWidth, finishRunningTools, useAgentStore } from "./useAgentStore";
 
 const mockProviders: AgentProviderInfo[] = [
   {
     id: "antigravity",
     name: "Google Antigravity",
-    description: "Runs inside isolated DezuxkStudio home profile.",
     executable: "agy",
     resolved_path: "C:\\tools\\agy.exe",
     custom_path: "",
@@ -23,18 +22,19 @@ const mockProviders: AgentProviderInfo[] = [
     agent_name: "",
     agent_version: "",
     last_error: "",
-    install_hint: "agy acp --login",
     active: false,
     busy: false,
     models: [],
     current_model: "",
     selected_model: "",
     selected_effort: "",
+    revision: 1,
+    installing: false,
+    install_percent: 0,
   },
   {
     id: "codex",
     name: "OpenAI Codex",
-    description: "Runs via isolated CODEX_HOME.",
     executable: "codex",
     resolved_path: "",
     custom_path: "",
@@ -50,13 +50,15 @@ const mockProviders: AgentProviderInfo[] = [
     agent_name: "",
     agent_version: "",
     last_error: "",
-    install_hint: "Use Sign in below",
     active: false,
     busy: false,
     models: [],
     current_model: "",
     selected_model: "",
     selected_effort: "",
+    revision: 1,
+    installing: false,
+    install_percent: 0,
   },
 ];
 
@@ -328,5 +330,107 @@ describe("conversations", () => {
     expect(s.conversations.map((c) => c.id)).toEqual(["c2"]);
     expect(s.conversationId).toBe("");
     expect(s.messages).toEqual([]);
+  });
+});
+
+describe("tool spinners", () => {
+  const evt = (type: "tool_call" | "tool_result" | "done" | "error", tool = "", error = "") => ({
+    type,
+    provider_id: "antigravity" as const,
+    message_id: "m-tools",
+    text: tool,
+    tool,
+    error,
+  });
+
+  beforeEach(() => {
+    useAgentStore.setState({ messages: [], sending: true });
+  });
+
+  it("ends a running tool even when the result is titled differently", () => {
+    const s = useAgentStore.getState();
+    s.receiveChatEvent(evt("tool_call", "dezuxk/workflow_run_node"));
+    s.receiveChatEvent(evt("tool_result", "Run Watermark Remover"));
+    const tools = useAgentStore.getState().messages[0].tools ?? [];
+    expect(tools).toHaveLength(1);
+    expect(tools[0].status).toBe("done");
+  });
+
+  it("stops every spinner when the reply is done", () => {
+    const s = useAgentStore.getState();
+    s.receiveChatEvent(evt("tool_call", "a"));
+    s.receiveChatEvent(evt("tool_call", "b"));
+    s.receiveChatEvent(evt("done"));
+    const msg = useAgentStore.getState().messages[0];
+    expect(msg.tools?.every((t) => t.status === "done")).toBe(true);
+    expect(msg.streaming).toBe(false);
+  });
+
+  it("marks running tools as failed when the reply errors", () => {
+    const s = useAgentStore.getState();
+    s.receiveChatEvent(evt("tool_call", "a"));
+    s.receiveChatEvent(evt("error", "", "boom"));
+    expect(useAgentStore.getState().messages[0].tools?.[0].status).toBe("error");
+  });
+
+  it("finishRunningTools leaves finished tools alone", () => {
+    const tools = [
+      { name: "x", status: "error" as const },
+      { name: "y", status: "running" as const },
+    ];
+    expect(finishRunningTools(tools, "done")).toEqual([
+      { name: "x", status: "error" },
+      { name: "y", status: "done" },
+    ]);
+    expect(finishRunningTools(undefined, "done")).toBeUndefined();
+  });
+});
+
+describe("provider status snapshots", () => {
+  const base = mockProviders[1];
+  const connectedWithModels = {
+    ...base,
+    state: "connected" as const,
+    active: true,
+    models: [{ id: "gpt-x", name: "GPT X", description: "", efforts: [], default_effort: "" }],
+    revision: 20,
+  };
+  const staleListSnapshot = {
+    ...base,
+    state: "connected" as const,
+    active: true,
+    models: [],
+    revision: 10,
+  };
+
+  beforeEach(() => {
+    useAgentStore.setState({ providers: [] });
+  });
+
+  it("a late agent:list answer does not overwrite a newer event with models", async () => {
+    useAgentStore.getState().receiveStatus(connectedWithModels);
+    vi.spyOn(rtClient, "request").mockResolvedValueOnce({ providers: [staleListSnapshot] });
+    await useAgentStore.getState().fetchProviders();
+    const codex = useAgentStore.getState().providers.find((p) => p.id === "codex");
+    expect(codex?.models).toHaveLength(1);
+  });
+
+  it("a stale event is ignored too, and does not demote the active provider", () => {
+    const active = { ...connectedWithModels, id: "claude" as const, revision: 30 };
+    useAgentStore.getState().receiveStatus(active);
+    useAgentStore
+      .getState()
+      .receiveStatus({ ...staleListSnapshot, id: "claude" as const, revision: 5 });
+    expect(useAgentStore.getState().providers.find((p) => p.id === "claude")?.models).toHaveLength(
+      1
+    );
+  });
+
+  it("a newer snapshot replaces an older one", () => {
+    useAgentStore.getState().receiveStatus(staleListSnapshot);
+    useAgentStore.getState().receiveStatus(connectedWithModels);
+    expect(useAgentStore.getState().providers.find((p) => p.id === "codex")?.models).toHaveLength(
+      1
+    );
   });
 });

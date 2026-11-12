@@ -10,6 +10,7 @@ import (
 
 	"app/internal/engine"
 	"app/internal/paths"
+	providernodes "app/internal/tools/provider"
 	"app/internal/tools/watermark"
 )
 
@@ -17,6 +18,8 @@ import (
 type Options struct {
 	Paths  paths.Paths
 	Logger *slog.Logger
+	// Providers backs the API-provider nodes (nil leaves them out, e.g. in tests).
+	Providers providernodes.Service
 }
 
 // Service manages DezuxkStudio's workflow runtime and registered nodes.
@@ -39,6 +42,12 @@ func New(o Options) (*Service, error) {
 	nodes := []engine.Node{
 		watermark.NewNode(watermark.Options{MediaDir: o.Paths.Media()}),
 	}
+	if o.Providers != nil {
+		nodes = append(nodes, providernodes.Nodes(o.Providers)...)
+		if err := reg.RegisterOptions(providernodes.OptionSources(o.Providers)); err != nil {
+			return nil, fmt.Errorf("workflow: register option sources: %w", err)
+		}
+	}
 	for _, n := range nodes {
 		if err := engine.ValidateSpec(n.Spec()); err != nil {
 			return nil, fmt.Errorf("workflow: incomplete node spec: %w", err)
@@ -46,6 +55,9 @@ func New(o Options) (*Service, error) {
 	}
 	if err := reg.Register(nodes...); err != nil {
 		return nil, fmt.Errorf("workflow: register nodes: %w", err)
+	}
+	if err := reg.Check(); err != nil {
+		return nil, fmt.Errorf("workflow: %w", err)
 	}
 
 	return &Service{

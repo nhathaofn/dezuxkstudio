@@ -34,10 +34,30 @@ type runNodeToolInput struct {
 	Recursive bool           `json:"recursive,omitempty" jsonschema:"Include sub-folders"`
 }
 
+// graphNodeToolInput mirrors engine.GraphNode with params as an object: GraphNode.Params is a
+// json.RawMessage, which the MCP schema generator types as "null or array" and so rejects every object.
+type graphNodeToolInput struct {
+	ID     string         `json:"id"`
+	Type   string         `json:"type"`
+	Params map[string]any `json:"params,omitempty" jsonschema:"Same input keys as workflow_run_node"`
+}
+
 type runGraphToolInput struct {
-	Nodes     []engine.GraphNode `json:"nodes" jsonschema:"Graph nodes (same input keys as workflow_run_node)"`
-	Edges     []engine.Edge      `json:"edges,omitempty"`
-	Recursive bool               `json:"recursive,omitempty" jsonschema:"Include sub-folders"`
+	Nodes     []graphNodeToolInput `json:"nodes" jsonschema:"Graph nodes (same input keys as workflow_run_node)"`
+	Edges     []engine.Edge        `json:"edges,omitempty"`
+	Recursive bool                 `json:"recursive,omitempty" jsonschema:"Include sub-folders"`
+}
+
+func (in runGraphToolInput) graphNodes() []engine.GraphNode {
+	out := make([]engine.GraphNode, 0, len(in.Nodes))
+	for _, n := range in.Nodes {
+		var raw json.RawMessage
+		if len(n.Params) > 0 {
+			raw, _ = json.Marshal(n.Params) // a map[string]any decoded from JSON always re-encodes
+		}
+		out = append(out, engine.GraphNode{ID: n.ID, Type: n.Type, Params: raw})
+	}
+	return out
 }
 
 type binaryIDToolInput struct {
@@ -67,6 +87,25 @@ type moveFileToolInput struct {
 	Destination string `json:"destination" jsonschema:"File path or folder; extension must not change"`
 	Overwrite   bool   `json:"overwrite,omitempty" jsonschema:"Replace an existing file (needs approval)"`
 }
+
+// scrubSecretParams removes the values of a node's secret settings (engine.Param.Secret, e.g. an API key
+// the user pasted) from the stored chat history once the node ran: the app keeps them in the credential
+// store only.
+func (s *Service) scrubSecretParams(ctx context.Context, spec engine.Spec, input map[string]any) {
+	for _, p := range spec.Params {
+		if !p.Secret {
+			continue
+		}
+		if v, _ := input[p.Name].(string); len(strings.TrimSpace(v)) >= minScrubbedSecret {
+			if err := s.repo.RedactChatMessages(ctx, strings.TrimSpace(v), "[secret saved]"); err != nil {
+				s.log.Warn("agent: scrub secret from chat history", "error", err)
+			}
+		}
+	}
+}
+
+// minScrubbedSecret avoids rewriting history for trivially short values that are not real keys.
+const minScrubbedSecret = 8
 
 type deleteFileToolInput struct {
 	Path string `json:"path" jsonschema:"File to delete"`
@@ -175,7 +214,10 @@ func (s *Service) buildMCPServer() *mcp.Server {
 			if err != nil {
 				return mcpError(fmt.Sprintf("invalid input: %v", err))
 			}
-			run := func(execCtx context.Context) (any, error) { return s.workflow.RunNode(execCtx, nodeType, raw) }
+			run := func(execCtx context.Context) (any, error) {
+				defer s.scrubSecretParams(context.WithoutCancel(execCtx), spec, prep.Input)
+				return s.workflow.RunNode(execCtx, nodeType, raw)
+			}
 			if len(prep.Destructive) > 0 {
 				return s.needsApproval("workflow_run_node", "Run "+spec.Label, prep.summary(spec), run)
 			}
@@ -193,7 +235,7 @@ func (s *Service) buildMCPServer() *mcp.Server {
 				return mcpError("workflow service is unavailable")
 			}
 			specs := s.workflow.Specs(ctx)
-			g, prepared, err := s.prepareGraph(specs, engine.Graph{Nodes: in.Nodes, Edges: in.Edges}, in.Recursive)
+			g, prepared, err := s.prepareGraph(specs, engine.Graph{Nodes: in.graphNodes(), Edges: in.Edges}, in.Recursive)
 			if err != nil {
 				return mcpError(err.Error())
 			}
@@ -205,7 +247,15 @@ func (s *Service) buildMCPServer() *mcp.Server {
 				destructive = destructive || len(p.Destructive) > 0
 			}
 			summary := fmt.Sprintf("Workflow (%d steps): %s", len(g.Nodes), strings.Join(parts, " → "))
-			run := func(execCtx context.Context) (any, error) { return s.workflow.RunGraph(execCtx, g) }
+			run := func(execCtx context.Context) (any, error) {
+				defer func() {
+					for i, p := range prepared {
+						spec, _ := specByType(specs, g.Nodes[i].Type)
+						s.scrubSecretParams(context.WithoutCancel(execCtx), spec, p.Input)
+					}
+				}()
+				return s.workflow.RunGraph(execCtx, g)
+			}
 			if destructive {
 				return s.needsApproval("workflow_run_graph", "Run workflow", summary, run)
 			}
@@ -532,6 +582,10 @@ func (s *Service) buildCapabilitiesSnapshot(ctx context.Context) map[string]any 
 		if prefs, err := s.preferences.Get(ctx); err == nil {
 			appFeatures["preferences"] = prefs
 		}
+	}
+
+	if providers := s.providerSnapshot(ctx); providers != nil {
+		appFeatures["providers"] = providers
 	}
 
 	// Group 2: what the assistant does by itself. These are NOT DezuxkStudio features and must never be presented as such.

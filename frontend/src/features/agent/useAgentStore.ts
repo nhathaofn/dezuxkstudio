@@ -3,6 +3,7 @@ import { create } from "zustand";
 import {
   Actions,
   type AgentApprovalRequest,
+  type AgentLoginPrompt,
   type AgentChatEvent,
   type AgentConversation,
   type AgentHistoryResult,
@@ -81,6 +82,8 @@ interface AgentState {
   allowedDirs: string[];
   loadingProviders: boolean;
   busyAction: boolean;
+  /** What the user must do to finish a sign-in that is running right now, by provider. */
+  loginPrompts: Partial<Record<AgentProviderID, AgentLoginPrompt>>;
   sending: boolean;
   error: ActionError | null;
   prompt: string;
@@ -108,6 +111,9 @@ interface AgentState {
   setModel: (id: AgentProviderID, model: string, effort: string) => Promise<void>;
   loginProvider: (id: AgentProviderID, apiKey?: string) => Promise<void>;
   logoutProvider: (id: AgentProviderID) => Promise<void>;
+  submitLoginCode: (id: AgentProviderID, code: string) => Promise<void>;
+  cancelLogin: (id: AgentProviderID) => Promise<void>;
+  receiveLoginPrompt: (prompt: AgentLoginPrompt) => void;
   connectProvider: (id: AgentProviderID) => Promise<void>;
   disconnect: () => Promise<void>;
   sendPrompt: () => Promise<void>;
@@ -130,6 +136,26 @@ interface AgentState {
   receiveApprovals: (approvals: AgentApprovalRequest[]) => void;
 }
 
+/**
+ * The newer of two snapshots of one provider. Revision only grows, so a slow agent:list response that
+ * was built before a "connected, with models" event can never overwrite it.
+ */
+export function newerInfo(
+  current: AgentProviderInfo | undefined,
+  incoming: AgentProviderInfo
+): AgentProviderInfo {
+  return current && current.revision > incoming.revision ? current : incoming;
+}
+
+/** Marks every still-running tool of a finished reply with status (done or error). */
+export function finishRunningTools<T extends { status: "running" | "done" | "error" }>(
+  tools: T[] | undefined,
+  status: "done" | "error"
+): T[] | undefined {
+  if (!tools?.some((t) => t.status === "running")) return tools;
+  return tools.map((t) => (t.status === "running" ? { ...t, status } : t));
+}
+
 export const useAgentStore = create<AgentState>((set, get) => ({
   panelOpen: true,
   panelWidth: readSavedWidth(),
@@ -139,6 +165,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   allowedDirs: [],
   loadingProviders: false,
   busyAction: false,
+  loginPrompts: {},
   sending: false,
   error: null,
   prompt: "",
@@ -174,12 +201,21 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         // (fetchHistory, run on the same connect, brings the stored final text).
         const turnOver = s.sending && !res.providers.some((p) => p.busy);
         return {
-          providers: res.providers,
+          providers: res.providers.map((next) =>
+            newerInfo(
+              s.providers.find((p) => p.id === next.id),
+              next
+            )
+          ),
           loadingProviders: false,
           ...(turnOver
             ? {
                 sending: false,
-                messages: s.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
+                messages: s.messages.map((m) =>
+                  m.streaming
+                    ? { ...m, streaming: false, tools: finishRunningTools(m.tools, "done") }
+                    : m
+                ),
               }
             : {}),
         };
@@ -259,6 +295,28 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     } catch (err) {
       set({ error: toActionError(err), busyAction: false });
       void get().fetchProviders();
+    } finally {
+      set((s) => ({ loginPrompts: { ...s.loginPrompts, [id]: undefined } }));
+    }
+  },
+
+  receiveLoginPrompt: (prompt) =>
+    set((s) => ({ loginPrompts: { ...s.loginPrompts, [prompt.provider_id]: prompt } })),
+
+  submitLoginCode: async (id, code) => {
+    try {
+      await rtClient.request(Actions.AGENT_LOGIN_CODE, { id, code });
+    } catch (err) {
+      set({ error: toActionError(err) });
+    }
+  },
+
+  cancelLogin: async (id) => {
+    set((s) => ({ loginPrompts: { ...s.loginPrompts, [id]: undefined } }));
+    try {
+      await rtClient.request(Actions.AGENT_LOGIN_CANCEL, { id });
+    } catch {
+      /* the sign-in already ended */
     }
   },
 
@@ -468,7 +526,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   receiveStatus: (info) => {
     set((s) => {
-      const exists = s.providers.some((p) => p.id === info.id);
+      const current = s.providers.find((p) => p.id === info.id);
+      if (current && newerInfo(current, info) === current) return s; // a stale snapshot: keep what we have
+      const exists = !!current;
       const next = exists
         ? s.providers.map((p) => {
             if (p.id === info.id) return info;
@@ -546,9 +606,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         case "tool_result": {
           const name = evt.tool || evt.text;
           const prevTools = [...(target.tools ?? [])];
-          const matchIdx = prevTools.findIndex(
+          let matchIdx = prevTools.findIndex(
             (item) => item.status === "running" && (!name || item.name === name)
           );
+          // Agents may title the result differently from the call: end the oldest running tool instead
+          // of leaving it spinning next to a duplicate finished row.
+          if (matchIdx < 0) matchIdx = prevTools.findIndex((item) => item.status === "running");
           // The backend signals failure through `error`; the text is tool output and may mention "error".
           const nextStatus = evt.error ? "error" : "done";
           if (matchIdx >= 0) {
@@ -562,10 +625,13 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         }
         case "done":
           target.streaming = false;
+          // The turn is over, so no tool can still be running (a lost or unmatched result event).
+          target.tools = finishRunningTools(target.tools, "done");
           msgs[idx] = target;
           return { messages: msgs, sending: false };
         case "error":
           target.streaming = false;
+          target.tools = finishRunningTools(target.tools, "error");
           target.errorKey = evt.error_key;
           target.errorParams = evt.error_params;
           if (!target.text) {

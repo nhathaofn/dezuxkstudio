@@ -1,6 +1,6 @@
 .app-header {
   background-color: var(--bg-surface);
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: var(--border-width) solid var(--border-subtle);
   flex-shrink: 0;
 }
 
@@ -57,7 +57,7 @@
   font-weight: var(--weight-medium);
   background-color: var(--bg-surface-elevated);
   color: var(--text-secondary);
-  border: 1px solid var(--border-default);
+  border: var(--border-width) solid var(--border-default);
   border-radius: var(--radius-sm);
   transition:
     background-color var(--transition-fast),

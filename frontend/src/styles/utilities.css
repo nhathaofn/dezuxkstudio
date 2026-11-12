@@ -97,7 +97,7 @@
   background-repeat: no-repeat;
   background-position: right 7px center;
   color: var(--text-primary);
-  border: 1px solid var(--border-default);
+  border: var(--border-width) solid var(--border-default);
   border-radius: var(--radius-sm);
   appearance: none;
   -webkit-appearance: none;
@@ -113,7 +113,7 @@
   height: 6px;
   width: 100%;
   background: var(--bg-surface-elevated);
-  border: 1px solid var(--border-subtle);
+  border: var(--border-width) solid var(--border-subtle);
   border-radius: var(--radius-full);
   overflow: hidden;
 }
@@ -155,7 +155,7 @@
   justify-content: center;
   text-align: center;
   padding: var(--space-6) var(--space-4);
-  border: 1px dashed var(--border-subtle);
+  border: var(--border-width) dashed var(--border-subtle);
   border-radius: var(--radius-md);
   background-color: var(--bg-canvas);
   color: var(--text-muted);

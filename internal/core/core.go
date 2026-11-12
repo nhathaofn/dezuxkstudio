@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"app/internal/buildinfo"
@@ -18,17 +19,21 @@ import (
 	"app/internal/contracts"
 	domainagent "app/internal/domain/agent"
 	domainprefs "app/internal/domain/preferences"
+	domainprovider "app/internal/domain/provider"
 	"app/internal/httpclient"
 	"app/internal/paths"
 	"app/internal/realtime"
 	"app/internal/realtime/modules"
+	"app/internal/safego"
 	"app/internal/secrets"
 	"app/internal/server"
 	"app/internal/server/handlers"
 	agentsvc "app/internal/service/agent"
+	agentclisvc "app/internal/service/agentcli"
 	binariessvc "app/internal/service/binaries"
 	"app/internal/service/diagnostics"
 	"app/internal/service/preferences"
+	providersvc "app/internal/service/provider"
 	"app/internal/service/system"
 	"app/internal/service/update"
 	"app/internal/service/workflow"
@@ -44,6 +49,9 @@ type Options struct {
 	AllowAnonymous bool   // server mode on loopback without token
 	OpenDirectory  func(dir string) error
 	HTTPClient     *http.Client
+	// Secrets is the app secret store; nil builds secrets.NewDurableStore in the data dir. The desktop
+	// shell passes its own so the bridge and the core share one store (one owner of the encrypted file).
+	Secrets secrets.Store
 }
 
 func (o Options) validate() error {
@@ -55,11 +63,16 @@ func (o Options) validate() error {
 
 // Core is a fully wired, not yet started application core.
 type Core struct {
-	log       *slog.Logger
-	db        *sqlite.DB
-	hub       *realtime.Hub
-	srv       *server.Server
-	agentSvc  *agentsvc.Service
+	log      *slog.Logger
+	db       *sqlite.DB
+	hub      *realtime.Hub
+	srv      *server.Server
+	agentSvc *agentsvc.Service
+	provSvc  *providersvc.Service
+	// background work tied to the core lifetime (e.g. the start-up provider key check)
+	bgCtx     context.Context
+	bgCancel  context.CancelFunc
+	bgWG      sync.WaitGroup
 	shutdown  time.Duration
 	startedAt time.Time
 }
@@ -154,6 +167,11 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 // modules is the single list of feature modules mounted into the hub.
 func (c *Core) modules(o Options) ([]realtime.Module, error) {
 	cfg := o.Config
+	// One secret store for every service: OS keyring, else an encrypted file in the data dir, else memory.
+	secretStore := o.Secrets
+	if secretStore == nil {
+		secretStore = secrets.NewDurableStore(buildinfo.AppID, secrets.Dir(o.Paths.Data))
+	}
 
 	sysSvc := system.New(cfg.Mode, o.Paths, o.OpenDirectory)
 
@@ -189,13 +207,46 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 	binSvc := binariessvc.New(sqlite.NewBinariesRepository(c.db), o.Paths.Tools(), o.Logger,
 		binariessvc.WithProbeTimeout(cfg.Binaries.ProbeTimeout), binariessvc.WithHTTPClient(o.HTTPClient))
 
-	wfSvc, err := workflow.New(workflow.Options{
-		Paths:  o.Paths,
-		Logger: o.Logger,
+	var provSvc *providersvc.Service
+	provSvc, err = providersvc.New(providersvc.Options{
+		Repo:        sqlite.NewProviderRepository(c.db),
+		Secrets:     secretStore,
+		Client:      o.HTTPClient,
+		TestTimeout: cfg.Providers.TestTimeout,
+		AutoCheck:   cfg.Providers.AutoCheck,
+		LimitDefaults: domainprovider.LimitDefaults{MaxWorkers: cfg.Providers.DefaultMaxWorkers,
+			RPM: cfg.Providers.DefaultRPM, RequestGapMs: cfg.Providers.DefaultRequestGapMs},
+		OnChanged: func() {
+			// Runs after the mutation committed; a fresh snapshot keeps every client in sync.
+			if snap, err := provSvc.List(context.Background()); err == nil {
+				c.hub.Publish(contracts.EventProvidersChanged, modules.ListResult(snap))
+			}
+		},
 	})
 	if err != nil {
 		return nil, err
 	}
+	c.provSvc = provSvc
+
+	if cfg.Providers.CheckOnStartup {
+		c.background("provider-startup-check", func(ctx context.Context) {
+			provSvc.CheckAll(ctx, cfg.Providers.CheckConcurrency)
+		})
+	}
+
+	wfSvc, err := workflow.New(workflow.Options{
+		Paths:     o.Paths,
+		Logger:    o.Logger,
+		Providers: provSvc,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// The app's own copies of the agent CLIs live in one folder of its data; nothing installed elsewhere is touched.
+	agentCLIs := agentclisvc.New(agentclisvc.Options{
+		Dir: o.Paths.AgentCLIs(), Client: o.HTTPClient, Logger: o.Logger, UserAgent: buildinfo.ProductName + "/" + buildinfo.Version,
+	})
 
 	agentSvc, err := agentsvc.New(agentsvc.Options{
 		Repo:         sqlite.NewAgentRepository(c.db),
@@ -204,20 +255,25 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		MediaDir:     o.Paths.Media(),
 		ProfilesDir:  o.Paths.AgentProfiles(),
 		AppVersion:   buildinfo.Version,
-		// Provider API keys go to the OS credential store (in-memory fallback where none exists).
-		Secrets:     secrets.NewDesktopStore(buildinfo.AppID),
-		Limits:      agentsvc.LimitsFrom(cfg),
-		Logger:      o.Logger,
-		Workflow:    wfSvc,
-		Binaries:    binSvc,
-		Preferences: prefSvc,
-		System:      sysSvc,
-		Diagnostics: diagSvc,
+		Secrets:      secretStore,
+		Limits:       agentsvc.LimitsFrom(cfg),
+		Logger:       o.Logger,
+		Workflow:     wfSvc,
+		Binaries:     binSvc,
+		Managed:      agentCLIs,
+		AutoInstall:  cfg.Agent.AutoInstallCLI,
+		AutoUpdate:   cfg.Agent.AutoUpdateCLI,
+		Preferences:  prefSvc,
+		System:       sysSvc,
+		Diagnostics:  diagSvc,
 		OnStatusChanged: func(info domainagent.ProviderInfo) {
 			c.hub.Publish(contracts.EventAgentStatusChanged, contracts.NewAgentProviderInfo(info))
 		},
 		OnChatEvent: func(evt domainagent.ChatEvent) {
 			c.hub.Publish(contracts.EventAgentChatEvent, contracts.NewAgentChatEvent(evt))
+		},
+		OnLoginPrompt: func(p domainagent.LoginPrompt) {
+			c.hub.Publish(contracts.EventAgentLoginPrompt, contracts.NewAgentLoginPrompt(p))
 		},
 		OnApprovalsChanged: func(approvals []domainagent.ApprovalRequest) {
 			c.hub.Publish(contracts.EventAgentApprovals, contracts.NewAgentApprovalListResult(approvals))
@@ -227,6 +283,10 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		return nil, err
 	}
 	c.agentSvc = agentSvc
+	c.background("agent-provision-clis", agentSvc.ProvisionCLIs)
+	if cfg.Agent.RestoreConnection {
+		c.background("agent-restore-connection", agentSvc.RestoreConnection)
+	}
 
 	return []realtime.Module{
 		modules.System{Info: sysSvc, Update: updSvc},
@@ -235,7 +295,20 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		modules.Binaries{Service: binSvc},
 		modules.Workflow{Service: wfSvc},
 		modules.Agent{Service: agentSvc},
+		modules.Providers{Service: provSvc},
 	}, nil
+}
+
+// background runs start-up work tied to the core lifetime: Close cancels it and waits (bounded).
+func (c *Core) background(name string, fn func(ctx context.Context)) {
+	if c.bgCancel == nil {
+		c.bgCtx, c.bgCancel = context.WithCancel(context.Background())
+	}
+	c.bgWG.Add(1)
+	safego.Go(name, func() {
+		defer c.bgWG.Done()
+		fn(c.bgCtx)
+	})
 }
 
 // Start begins accepting connections.
@@ -253,6 +326,18 @@ func (c *Core) Errors() <-chan error { return c.srv.Errors() }
 func (c *Core) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), c.shutdown)
 	defer cancel()
+	if c.bgCancel != nil {
+		c.bgCancel()
+		done := make(chan struct{})
+		safego.Go("core-background-wait", func() { c.bgWG.Wait(); close(done) })
+		select {
+		case <-done:
+		case <-ctx.Done():
+		}
+	}
+	if c.provSvc != nil {
+		c.provSvc.Close() // running key checks write to the database: finish them first
+	}
 	var agentErr error
 	if c.agentSvc != nil {
 		agentErr = c.agentSvc.Close()

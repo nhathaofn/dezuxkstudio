@@ -83,6 +83,21 @@ func (r *AgentRepository) AppendChatMessage(ctx context.Context, msg agent.ChatM
 	return nil
 }
 
+// RedactChatMessages implements agent.Repository.
+func (r *AgentRepository) RedactChatMessages(ctx context.Context, secret, replacement string) error {
+	if secret == "" {
+		return nil
+	}
+	_, err := r.db.sql.ExecContext(ctx, `
+		UPDATE agent_chat_messages SET
+			text = REPLACE(text, ?1, ?2), thought = REPLACE(thought, ?1, ?2), tool = REPLACE(tool, ?1, ?2)
+		WHERE instr(text, ?1) > 0 OR instr(thought, ?1) > 0 OR instr(tool, ?1) > 0`, secret, replacement)
+	if err != nil {
+		return fmt.Errorf("sqlite: redact agent chat messages: %w", err)
+	}
+	return nil
+}
+
 // ListChatMessages returns the most recent chat messages in chronological order.
 func (r *AgentRepository) ListChatMessages(ctx context.Context, limit int) ([]agent.ChatMessage, error) {
 	if limit <= 0 {
@@ -202,18 +217,15 @@ func (r *AgentRepository) ListConversationMessages(ctx context.Context, conversa
 
 // DeleteConversation removes a conversation and its messages.
 func (r *AgentRepository) DeleteConversation(ctx context.Context, conversationID string) error {
-	tx, err := r.db.sql.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("sqlite: delete agent conversation: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_chat_messages WHERE conversation_id = ?`, conversationID); err != nil {
-		return fmt.Errorf("sqlite: delete conversation messages: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_conversations WHERE id = ?`, conversationID); err != nil {
-		return fmt.Errorf("sqlite: delete conversation: %w", err)
-	}
-	return tx.Commit()
+	return r.db.inTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM agent_chat_messages WHERE conversation_id = ?`, conversationID); err != nil {
+			return fmt.Errorf("sqlite: delete conversation messages: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM agent_conversations WHERE id = ?`, conversationID); err != nil {
+			return fmt.Errorf("sqlite: delete conversation: %w", err)
+		}
+		return nil
+	})
 }
 
 // ClearChatMessages removes all persisted DezuxkStudio agent chat messages.
@@ -285,6 +297,39 @@ func (r *AgentRepository) SetModelSelection(ctx context.Context, id agent.Provid
 		string(id), sel.Model, sel.Effort)
 	if err != nil {
 		return fmt.Errorf("sqlite: set agent model for %s: %w", id, err)
+	}
+	return nil
+}
+
+// rememberedConnectionKey is the user_settings row holding the provider left connected.
+const rememberedConnectionKey = "agent.connected_provider"
+
+// RememberedConnection implements agent.Repository.
+func (r *AgentRepository) RememberedConnection(ctx context.Context) (agent.ProviderID, error) {
+	var v string
+	err := r.db.sql.QueryRowContext(ctx, "SELECT value FROM user_settings WHERE key = ?", rememberedConnectionKey).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("sqlite: get remembered agent connection: %w", err)
+	}
+	return agent.ProviderID(v), nil
+}
+
+// SetRememberedConnection implements agent.Repository ("" forgets it).
+func (r *AgentRepository) SetRememberedConnection(ctx context.Context, id agent.ProviderID) error {
+	var err error
+	if id == "" {
+		_, err = r.db.sql.ExecContext(ctx, "DELETE FROM user_settings WHERE key = ?", rememberedConnectionKey)
+	} else {
+		_, err = r.db.sql.ExecContext(ctx, `
+			INSERT INTO user_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+			ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP;`,
+			rememberedConnectionKey, string(id))
+	}
+	if err != nil {
+		return fmt.Errorf("sqlite: set remembered agent connection: %w", err)
 	}
 	return nil
 }

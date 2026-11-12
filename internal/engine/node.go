@@ -73,6 +73,9 @@ type Param struct {
 	Role ParamRole `json:"role,omitempty"`
 	// Destructive marks a toggle that, when true, modifies or replaces the user's original files.
 	Destructive bool `json:"destructive,omitempty"`
+	// Secret marks a text param that carries a credential (API key...). Its value is never shown in
+	// summaries or approval cards, and the agent removes it from the stored chat history after a run.
+	Secret bool `json:"secret,omitempty"`
 }
 
 // Spec describes a node type: identity, ports and settings.

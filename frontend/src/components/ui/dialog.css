@@ -1,0 +1,55 @@
+.ui-dialog {
+  /* The global reset zeroes margins, which also removes the auto margin that centres a <dialog>. */
+  margin: auto;
+  width: min(var(--dialog-width, var(--dialog-width-md)), calc(100vw - var(--space-8)));
+  max-height: calc(100dvh - var(--space-8));
+  padding: 0;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+}
+.ui-dialog--sm {
+  --dialog-width: var(--dialog-width-sm);
+}
+.ui-dialog--md {
+  --dialog-width: var(--dialog-width-md);
+}
+.ui-dialog--lg {
+  --dialog-width: var(--dialog-width-lg);
+}
+.ui-dialog::backdrop {
+  background: var(--overlay-bg);
+}
+.ui-dialog[open] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ui-dialog-header,
+.ui-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-6);
+  flex-shrink: 0;
+}
+.ui-dialog-header {
+  border-bottom: var(--border-width) solid var(--border-subtle);
+}
+.ui-dialog-header h2 {
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+}
+.ui-dialog-body {
+  padding: var(--space-6);
+  min-height: 0;
+  overflow: auto;
+}
+.ui-dialog-footer {
+  justify-content: flex-end;
+  border-top: var(--border-width) solid var(--border-subtle);
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"app/internal/contracts"
+	domainagent "app/internal/domain/agent"
 	domainbinaries "app/internal/domain/binaries"
 	domainprefs "app/internal/domain/preferences"
 	"app/internal/engine"
@@ -22,6 +23,15 @@ type BinariesManager interface {
 	List(ctx context.Context) ([]domainbinaries.BinaryInfo, error)
 	Probe(ctx context.Context, id domainbinaries.BinaryID) (domainbinaries.BinaryInfo, error)
 	Download(ctx context.Context, id domainbinaries.BinaryID) (domainbinaries.BinaryInfo, error)
+}
+
+// ManagedCLIs is the app's own, self-updating copy of each agent CLI. It never reads or changes a CLI
+// that is installed elsewhere on the machine.
+type ManagedCLIs interface {
+	Supported(id domainagent.ProviderID) bool
+	Current(id domainagent.ProviderID) (domainagent.ManagedCopy, bool)
+	// Install makes the newest official release current; changed is false when it already was.
+	Install(ctx context.Context, id domainagent.ProviderID) (cur domainagent.ManagedCopy, changed bool, err error)
 }
 
 // PreferencesManager exposes app preferences read/update to DezuxkStudio's MCP server.

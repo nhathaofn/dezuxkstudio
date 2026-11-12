@@ -24,6 +24,7 @@ import (
 )
 
 type fakeRepo struct {
+	remembered  domainagent.ProviderID
 	mu          sync.Mutex
 	paths       map[domainagent.ProviderID]string
 	messages    []domainagent.ChatMessage
@@ -91,6 +92,30 @@ func (r *fakeRepo) ListChatMessages(_ context.Context, limit int) ([]domainagent
 	cp := make([]domainagent.ChatMessage, limit)
 	copy(cp, r.messages[len(r.messages)-limit:])
 	return cp, nil
+}
+
+func (r *fakeRepo) RedactChatMessages(_ context.Context, secret, replacement string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.messages {
+		r.messages[i].Text = strings.ReplaceAll(r.messages[i].Text, secret, replacement)
+		r.messages[i].Thought = strings.ReplaceAll(r.messages[i].Thought, secret, replacement)
+		r.messages[i].Tool = strings.ReplaceAll(r.messages[i].Tool, secret, replacement)
+	}
+	return nil
+}
+
+func (r *fakeRepo) RememberedConnection(_ context.Context) (domainagent.ProviderID, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.remembered, nil
+}
+
+func (r *fakeRepo) SetRememberedConnection(_ context.Context, id domainagent.ProviderID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.remembered = id
+	return nil
 }
 
 func (r *fakeRepo) ClearChatMessages(_ context.Context) error {

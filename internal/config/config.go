@@ -52,6 +52,7 @@ type Config struct {
 	Diagnostics DiagnosticsConfig
 	Update      UpdateConfig
 	Binaries    BinariesConfig
+	Providers   ProvidersConfig
 	Network     NetworkConfig
 	Desktop     DesktopConfig
 	Agent       AgentConfig
@@ -122,6 +123,17 @@ type NetworkConfig struct {
 	MaxIdleConnsPerHost int
 }
 
+// ProvidersConfig configures API provider credential checks.
+type ProvidersConfig struct {
+	TestTimeout         time.Duration // max duration of a provider connectivity test or model discovery
+	CheckOnStartup      bool          // test every saved key in the background when the app starts
+	AutoCheck           bool          // check a key (alive? which models?) in the background when it is saved, changed or activated
+	CheckConcurrency    int           // max start-up key tests running at once
+	DefaultMaxWorkers   int           // generation requests per provider and capability running at once, unless set per provider
+	DefaultRPM          int           // requests per minute per provider and capability (0 = unlimited), unless set per provider
+	DefaultRequestGapMs int           // minimum pause between two requests to a provider (0 = none), unless set per provider
+}
+
 // BinariesConfig configures external tool (ffmpeg, yt-dlp...) inspection.
 type BinariesConfig struct {
 	ProbeTimeout time.Duration // max duration of `<tool> -version`; a cold start under antivirus can take seconds
@@ -136,6 +148,7 @@ type UpdateConfig struct {
 
 // AgentConfig tunes the external AI agent integration (timeouts, caches, chat context size).
 type AgentConfig struct {
+	RestoreConnection   bool          // reconnect the agent left connected when the app last ran
 	TurnTimeout         time.Duration // max silence (no streamed output or tool activity) in one chat turn
 	InitializeTimeout   time.Duration // max wait for an ACP agent handshake
 	VersionProbeTimeout time.Duration // max duration of `<cli> --version`
@@ -144,6 +157,9 @@ type AgentConfig struct {
 	ModelCatalogTimeout time.Duration // max duration of reading a CLI's model catalog
 	InterruptWait       time.Duration // how long a cancelled turn waits for the CLI to report what it produced
 	StatusCacheTTL      time.Duration // how long CLI auth/version probe results are reused
+	AutoInstallCLI      bool          // download the agent CLIs into the app's own folder when they are missing
+	AutoUpdateCLI       bool          // keep the app's own agent CLIs on the newest official release
+	CLIUpdateInterval   time.Duration // how often to look for a newer agent CLI release
 	ApprovalTTL         time.Duration // pending approvals expire after this long
 	HistoryLimit        int           // messages returned to the chat UI
 	ContextMessages     int           // past user/assistant messages replayed into a new session
@@ -220,13 +236,16 @@ func Default(mode Mode) *Config {
 		},
 		Diagnostics: DiagnosticsConfig{Keep: 5},
 		Binaries:    BinariesConfig{ProbeTimeout: 15 * time.Second},
-		Network:     NetworkConfig{IdleConnTimeout: 90 * time.Second, MaxIdleConns: 100, MaxIdleConnsPerHost: 10},
+		Providers: ProvidersConfig{TestTimeout: 15 * time.Second, CheckOnStartup: true, AutoCheck: true, CheckConcurrency: 4,
+			DefaultMaxWorkers: 2, DefaultRPM: 0, DefaultRequestGapMs: 0}, // ArcReel _CONNECTIVITY_CHECK_TIMEOUT
+		Network: NetworkConfig{IdleConnTimeout: 90 * time.Second, MaxIdleConns: 100, MaxIdleConnsPerHost: 10},
 		Update: UpdateConfig{
 			FeedURL:        buildinfo.UpdateFeedURL,
 			Timeout:        10 * time.Second,
 			CheckOnStartup: true,
 		},
 		Agent: AgentConfig{
+			RestoreConnection:   true,
 			TurnTimeout:         10 * time.Minute,
 			InitializeTimeout:   15 * time.Second,
 			VersionProbeTimeout: 5 * time.Second, // Node-based CLI shims cold-start slowly on Windows
@@ -235,6 +254,9 @@ func Default(mode Mode) *Config {
 			ModelCatalogTimeout: 30 * time.Second,
 			InterruptWait:       5 * time.Second,
 			StatusCacheTTL:      5 * time.Minute,
+			AutoInstallCLI:      true,
+			AutoUpdateCLI:       true,
+			CLIUpdateInterval:   6 * time.Hour,
 			ApprovalTTL:         30 * time.Minute,
 			HistoryLimit:        200,
 			ContextMessages:     10,

@@ -58,12 +58,16 @@ type Options struct {
 	Logger             *slog.Logger
 	Workflow           WorkflowRunner
 	Binaries           BinariesManager
+	Managed            ManagedCLIs // the app's own agent CLI copies; nil keeps using what is on the machine
+	AutoInstall        bool        // install a missing managed copy in the background
+	AutoUpdate         bool        // move managed copies to newer official releases
 	Preferences        PreferencesManager
 	System             SystemInspector
 	Diagnostics        DiagnosticsExporter
 	OnStatusChanged    func(domainagent.ProviderInfo)
 	OnChatEvent        func(domainagent.ChatEvent)
 	OnApprovalsChanged func([]domainagent.ApprovalRequest)
+	OnLoginPrompt      func(domainagent.LoginPrompt) // the page/code the user must use to finish a running sign-in
 	SpawnTransport     TransportFactory
 	RunCodexTurn       CodexTurnRunner
 	ProbeCodexAuth     CodexAuthProber
@@ -73,6 +77,17 @@ type Options struct {
 
 // Service manages isolated external AI agent connections, MCP tooling, approvals, and chat turns.
 type Service struct {
+	// statusRevision numbers the status snapshots (ProviderInfo.Revision); it only ever grows.
+	statusRevision atomic.Int64
+
+	// turnTools lists, per assistant message, the tools it called (in order, once each). It is stored
+	// with the message so history shows which tools an answer was based on. Guarded by mu.
+	turnTools map[string][]string
+
+	// acpToolTitles maps ACP toolCallId -> the title shown when the tool started, so the matching
+	// tool_call_update (often untitled or titled differently) ends the same tool row. Guarded by mu.
+	acpToolTitles map[string]string
+
 	repo               domainagent.Repository
 	dataDir            string
 	workspaceDir       string
@@ -83,6 +98,13 @@ type Service struct {
 	log                *slog.Logger
 	workflow           WorkflowRunner
 	binaries           BinariesManager
+	managed            ManagedCLIs
+	autoInstall        bool
+	autoUpdate         bool
+	provisioning       map[domainagent.ProviderID]provisionState
+	onLoginPrompt      func(domainagent.LoginPrompt)
+	loginMu            sync.Mutex
+	logins             map[domainagent.ProviderID]*loginSession
 	preferences        PreferencesManager
 	system             SystemInspector
 	diagnostics        DiagnosticsExporter
@@ -162,6 +184,12 @@ func New(o Options) (*Service, error) {
 		log:                o.Logger,
 		workflow:           o.Workflow,
 		binaries:           o.Binaries,
+		managed:            o.Managed,
+		autoInstall:        o.AutoInstall,
+		autoUpdate:         o.AutoUpdate,
+		provisioning:       make(map[domainagent.ProviderID]provisionState),
+		onLoginPrompt:      o.OnLoginPrompt,
+		logins:             make(map[domainagent.ProviderID]*loginSession),
 		preferences:        o.Preferences,
 		system:             o.System,
 		diagnostics:        o.Diagnostics,
@@ -206,6 +234,9 @@ func New(o Options) (*Service, error) {
 	if s.probeClaude == nil {
 		s.probeClaude = probeClaudeAuth
 	}
+	// Revisions must keep growing across restarts: a UI that stays open (dev reload, reconnect) holds the
+	// last revision it saw and drops anything lower.
+	s.statusRevision.Store(time.Now().UnixMicro())
 	s.loadModelSelections(context.Background())
 	return s, nil
 }
@@ -226,7 +257,6 @@ func (s *Service) List(ctx context.Context) ([]domainagent.ProviderInfo, error) 
 				out[i] = domainagent.ProviderInfo{
 					ID:                id,
 					Name:              spec.Name,
-					Description:       spec.Description,
 					Executable:        spec.ExecutableLabel,
 					Source:            domainagent.SourceNone,
 					State:             domainagent.StateError,
@@ -234,7 +264,6 @@ func (s *Service) List(ctx context.Context) ([]domainagent.ProviderInfo, error) 
 					UnsupportedReason: spec.UnsupportedReason,
 					AuthState:         domainagent.AuthUnknown,
 					LastError:         err.Error(),
-					InstallHint:       spec.InstallHint,
 				}
 				return
 			}
@@ -691,7 +720,44 @@ func (s *Service) connectPerTurnCLI(
 	info := s.buildInfoLocked(spec, resolved, source, customPath, version)
 	s.mu.Unlock()
 	s.emitStatus(info)
+	// The model list of a per-turn CLI is read from the CLI itself. Start that now (in the background,
+	// and push the status when it arrives) so the picker is filled without the user pressing "Check".
+	s.refreshModelCatalogAsync(id, resolved)
+	// Remember it so the next app start reconnects without asking (see RestoreConnection).
+	if err := s.repo.SetRememberedConnection(context.WithoutCancel(ctx), id); err != nil {
+		s.log.Warn("agent: remember connection", "error", err)
+	}
 	return info, nil
+}
+
+// DisconnectByUser ends the connection the user chose to close: unlike app shutdown or a reconnect, the
+// provider is no longer reconnected at the next start.
+func (s *Service) DisconnectByUser(ctx context.Context) error {
+	if err := s.Disconnect(ctx); err != nil {
+		return err
+	}
+	return s.repo.SetRememberedConnection(ctx, "")
+}
+
+// RestoreConnection reconnects the provider the user left connected when the app last ran. If it can no
+// longer connect (CLI removed, sign-in expired...), the provider is forgotten and its error state shown,
+// so the user reconnects by hand once instead of on every start.
+func (s *Service) RestoreConnection(ctx context.Context) {
+	id, err := s.repo.RememberedConnection(ctx)
+	if err != nil || id == "" {
+		return
+	}
+	if domainagent.ValidateProviderID(id) != nil {
+		_ = s.repo.SetRememberedConnection(ctx, "")
+		return
+	}
+	if _, err := s.Connect(ctx, id); err != nil {
+		if ctx.Err() != nil {
+			return // app is closing: keep it for the next start
+		}
+		s.log.Warn("agent: restore connection failed", "provider", id, "error", err)
+		_ = s.repo.SetRememberedConnection(context.WithoutCancel(ctx), "")
+	}
 }
 
 // Disconnect terminates the currently active agent connection, if any.
@@ -1147,6 +1213,7 @@ func (s *Service) persistAssistantMessage(providerID domainagent.ProviderID, mes
 		Role:           "assistant",
 		Text:           text,
 		Thought:        thought,
+		Tool:           s.takeTools(messageID),
 		CreatedAt:      now,
 		ConversationID: conversationID,
 	}); err != nil {
@@ -1241,6 +1308,8 @@ func (s *Service) handleSessionUpdate(connToken int64, upd SessionUpdate) {
 		s.activeTurnBuf.WriteString(upd.Text)
 	case "agent_thought_chunk", "thought_message_chunk":
 		s.activeThoughtBuf.WriteString(upd.Text)
+	case "tool_call", "tool_call_update":
+		upd.Tool = s.trackACPTool(upd)
 	}
 	s.mu.Unlock()
 
@@ -1276,6 +1345,15 @@ func (s *Service) handleSessionUpdate(connToken int64, upd SessionUpdate) {
 			Tool:       upd.Tool,
 			Text:       upd.Tool,
 		})
+		// Some agents report a tool that already finished in the tool_call itself (no update follows).
+		if upd.Status == toolStatusCompleted || upd.Status == toolStatusFailed {
+			evt := domainagent.ChatEvent{Type: domainagent.ChatEventToolResult, ProviderID: providerID,
+				MessageID: messageID, Tool: upd.Tool, Text: upd.Status}
+			if upd.Status == toolStatusFailed {
+				evt.Error = toolStatusFailed
+			}
+			s.emitChat(evt)
+		}
 	case "tool_call_update":
 		if upd.Status == toolStatusCompleted || upd.Status == toolStatusFailed {
 			evt := domainagent.ChatEvent{
@@ -1388,7 +1466,6 @@ func (s *Service) buildInfoLocked(spec domainagent.ProviderSpec, resolved string
 	info := domainagent.ProviderInfo{
 		ID:                 spec.ID,
 		Name:               spec.Name,
-		Description:        spec.Description,
 		Executable:         spec.ExecutableLabel,
 		ResolvedPath:       resolved,
 		CustomPath:         customPath,
@@ -1401,9 +1478,11 @@ func (s *Service) buildInfoLocked(spec domainagent.ProviderSpec, resolved string
 		AccountInfo:        s.accountInfos[spec.ID],
 		IsolatedProfileDir: s.profileDirFor(spec.ID),
 		LastError:          errText(s.lastErrors[spec.ID]),
-		InstallHint:        spec.InstallHint,
 		Active:             isActive,
 		Busy:               isActive && s.busy,
+	}
+	if p, ok := s.provisioning[spec.ID]; ok && p.active {
+		info.Installing, info.InstallPercent = true, p.percent
 	}
 	if isActive && s.activeInit != nil {
 		info.ProtocolVersion = s.activeInit.ProtocolVersion
@@ -1427,6 +1506,7 @@ func (s *Service) buildInfoLocked(spec domainagent.ProviderSpec, resolved string
 		}
 	}
 	s.fillModelInfo(&info)
+	info.Revision = s.statusRevision.Add(1)
 	return info
 }
 
@@ -1467,6 +1547,7 @@ func (s *Service) resolveExecutable(ctx context.Context, spec domainagent.Provid
 	}
 	path, src, ok := lookup.First(
 		lookup.Candidate[domainagent.Source]{Source: domainagent.SourceCustom, Find: lookup.File(customPath)},
+		lookup.Candidate[domainagent.Source]{Source: domainagent.SourceManaged, Find: s.managedFinder(spec.ID)},
 		lookup.Candidate[domainagent.Source]{Source: domainagent.SourceSystem, Find: lookup.OnPath(spec.CandidateExecutables...)},
 		lookup.Candidate[domainagent.Source]{Source: domainagent.SourceSystem, Find: lookup.Files(expandKnownPath, spec.KnownPaths...)},
 	)
@@ -1596,7 +1677,42 @@ func (s *Service) emitStatus(info domainagent.ProviderInfo) {
 
 // emitChat is the single exit point for chat events. Answer and reasoning text of the active turn is
 // filtered by the output guard so source code never reaches the UI, whichever provider produced it.
+// noteTool records that the reply messageID called tool.
+func (s *Service) noteTool(messageID, tool string) {
+	if messageID == "" || tool == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.turnTools == nil {
+		s.turnTools = map[string][]string{}
+	}
+	for _, t := range s.turnTools[messageID] {
+		if t == tool {
+			return
+		}
+	}
+	if len(s.turnTools[messageID]) < maxRecordedTools {
+		s.turnTools[messageID] = append(s.turnTools[messageID], tool)
+	}
+}
+
+// takeTools returns and forgets the tools recorded for messageID, joined for storage.
+func (s *Service) takeTools(messageID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	names := s.turnTools[messageID]
+	delete(s.turnTools, messageID)
+	return strings.Join(names, ", ")
+}
+
+// maxRecordedTools bounds the audit list of one reply.
+const maxRecordedTools = 24
+
 func (s *Service) emitChat(evt domainagent.ChatEvent) {
+	if evt.Type == domainagent.ChatEventToolCall {
+		s.noteTool(evt.MessageID, evt.Tool)
+	}
 	if evt.Type == domainagent.ChatEventDelta || evt.Type == domainagent.ChatEventThought {
 		if g := s.guardFor(evt.MessageID); g != nil {
 			if evt.Type == domainagent.ChatEventDelta {
@@ -1696,4 +1812,28 @@ func isMissingCLISessionError(err error) bool {
 	return strings.Contains(msg, "no rollout found") || // codex exec resume
 		strings.Contains(msg, "thread/resume failed") ||
 		strings.Contains(msg, "no conversation found with session id") // claude --resume
+}
+
+// trackACPTool returns the title to show for an ACP tool event: the title recorded when the tool started
+// (keyed by toolCallId), so start and end events name the same tool row. Finished tools are forgotten.
+// Caller holds s.mu.
+func (s *Service) trackACPTool(upd SessionUpdate) string {
+	if upd.ToolCallID == "" {
+		return upd.Tool
+	}
+	if s.acpToolTitles == nil {
+		s.acpToolTitles = map[string]string{}
+	}
+	title, known := s.acpToolTitles[upd.ToolCallID]
+	if !known && upd.Tool != "" {
+		title = upd.Tool
+		s.acpToolTitles[upd.ToolCallID] = title
+	}
+	if upd.Status == toolStatusCompleted || upd.Status == toolStatusFailed {
+		delete(s.acpToolTitles, upd.ToolCallID)
+	}
+	if title == "" {
+		return upd.Tool
+	}
+	return title
 }

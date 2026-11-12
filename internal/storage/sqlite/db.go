@@ -75,3 +75,20 @@ func (db *DB) Close() error {
 	}
 	return db.sql.Close()
 }
+
+// inTx runs fn in one transaction: committed when fn returns nil, rolled back otherwise.
+// Repositories share it instead of opening transactions by hand.
+func (db *DB) inTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite: commit: %w", err)
+	}
+	return nil
+}

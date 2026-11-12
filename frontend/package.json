@@ -29,7 +29,7 @@
     "dev": "vite",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\"",
-    "lint": "eslint . --max-warnings 0",
+    "lint": "eslint . --max-warnings 0 && node scripts/check-styles.mjs",
     "test": "vitest run",
     "test:run": "vitest run",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json"

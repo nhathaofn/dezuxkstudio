@@ -33,6 +33,8 @@ export const appConfig = {
   clientTimeoutGraceMs: 2_000,
   /** Short-lived UI feedback durations. */
   ui: {
+    /** Upper bound for model previews in provider connectivity results. */
+    providerTestModelLimit: 10,
     /** "Copied" confirmation after copying text. */
     copyFeedbackMs: 1_500,
     /** Window in which a second click confirms a delete. */
@@ -42,6 +44,20 @@ export const appConfig = {
   latencyProbeIntervalMs: 5_000,
   /** Max entries kept in the live log view. */
   logBufferSize: 500,
+  /** Client-only shortcuts; saved provider configuration remains server-owned. */
+  providerPresets: [
+    { name: "OpenRouter", protocol: "openai", baseUrl: "https://openrouter.ai/api/v1" },
+    { name: "DeepSeek", protocol: "openai", baseUrl: "https://api.deepseek.com/v1" },
+    { name: "Ollama", protocol: "openai", baseUrl: "http://localhost:11434/v1" },
+    { name: "LM Studio", protocol: "openai", baseUrl: "http://localhost:1234/v1" },
+    { name: "SiliconFlow", protocol: "openai", baseUrl: "https://api.siliconflow.cn/v1" },
+    {
+      name: "Google AI Studio-compatible",
+      protocol: "gemini",
+      baseUrl: "https://generativelanguage.googleapis.com",
+    },
+    { name: "Anthropic-compatible", protocol: "anthropic", baseUrl: "https://api.anthropic.com" },
+  ],
   /** Browser-mode runtime config endpoint served by the core server. */
   runtimeConfigPath: "/runtime-config.json",
   /** Path of the WebSocket endpoint when deriving it from window.location. */
