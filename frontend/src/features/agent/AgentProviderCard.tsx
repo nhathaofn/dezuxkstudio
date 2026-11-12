@@ -25,6 +25,7 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { getBridge, isDesktop } from "../../lib/bridge";
 import { translateServerMessage, useT, type MessageKey } from "../../lib/i18n";
+import { useFlash } from "../../lib/hooks/useFlash";
 import { COPY_FEEDBACK_MS, useAgentStore } from "./useAgentStore";
 
 function statusMeta(state: AgentConnectionState, t: (k: MessageKey) => string) {
@@ -189,7 +190,7 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
 
   const [probing, setProbing] = useState(false);
   const [customDraft, setCustomDraft] = useState<string | null>(null);
-  const [copiedHint, setCopiedHint] = useState(false);
+  const [copiedHint, flashCopiedHint] = useFlash(COPY_FEEDBACK_MS);
   const [showKeyForm, setShowKeyForm] = useState(false);
   const [apiKeyDraft, setApiKeyDraft] = useState("");
 
@@ -246,8 +247,7 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
   const handleCopyHint = async () => {
     try {
       await navigator.clipboard.writeText(provider.install_hint);
-      setCopiedHint(true);
-      setTimeout(() => setCopiedHint(false), COPY_FEEDBACK_MS);
+      flashCopiedHint(true);
     } catch {
       // Ignore clipboard failures outside secure context
     }

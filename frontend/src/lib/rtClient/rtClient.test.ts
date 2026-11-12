@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ErrorCodeValues } from "../../contracts/generated";
+import { ErrorCodeValues, type BridgeApi } from "../../contracts/generated";
 import { backoffDelay } from "./backoff";
 import { resolveEndpoint, isValidWsUrl, type EndpointEnv } from "./endpoint";
 import { ActionError, toActionError } from "./errors";
@@ -140,9 +140,23 @@ const env = (over: Partial<EndpointEnv> = {}): EndpointEnv => ({
   ...over,
 });
 
+/** A desktop bridge whose unused methods are inert; override what the test exercises. */
+function fakeBridge(over: Partial<BridgeApi>): BridgeApi {
+  return {
+    GetConnectionInfo: () => Promise.reject(new Error("unused")),
+    GetBuildInfo: () => Promise.reject(new Error("unused")),
+    SetRemoteToken: () => Promise.resolve(),
+    BrowseExecutable: () => Promise.resolve(""),
+    BrowseImage: () => Promise.resolve(""),
+    BrowseImages: () => Promise.resolve([]),
+    BrowseDirectory: () => Promise.resolve(""),
+    ...over,
+  };
+}
+
 describe("resolveEndpoint", () => {
   it("prefers the desktop bridge and carries the token", async () => {
-    const bridge = {
+    const bridge = fakeBridge({
       GetConnectionInfo: () =>
         Promise.resolve({
           mode: "desktop" as const,
@@ -153,13 +167,7 @@ describe("resolveEndpoint", () => {
           ping_interval_ms: 20,
           check_updates_on_startup: true,
         }),
-      GetBuildInfo: () => Promise.reject(new Error("unused")),
-      SetRemoteToken: () => Promise.resolve(),
-      BrowseExecutable: () => Promise.resolve(""),
-      BrowseImage: () => Promise.resolve(""),
-      BrowseImages: () => Promise.resolve([]),
-      BrowseDirectory: () => Promise.resolve(""),
-    };
+    });
     const ep = await resolveEndpoint(env({ bridge }));
     expect(ep).toMatchObject({
       url: "ws://127.0.0.1:1/ws",
@@ -177,7 +185,7 @@ describe("resolveEndpoint", () => {
       message: "the application core is still starting",
       details: { starting: true },
     });
-    const bridge = {
+    const bridge = fakeBridge({
       GetConnectionInfo: () => {
         calls++;
         if (calls < 3) return Promise.reject(new Error(starting)); // Wails ErrorFormatter shape
@@ -191,28 +199,16 @@ describe("resolveEndpoint", () => {
           check_updates_on_startup: false,
         });
       },
-      GetBuildInfo: () => Promise.reject(new Error("unused")),
-      SetRemoteToken: () => Promise.resolve(),
-      BrowseExecutable: () => Promise.resolve(""),
-      BrowseImage: () => Promise.resolve(""),
-      BrowseImages: () => Promise.resolve([]),
-      BrowseDirectory: () => Promise.resolve(""),
-    };
+    });
     const ep = await resolveEndpoint(env({ bridge }));
     expect(calls).toBe(3);
     expect(ep?.source).toBe("bridge");
   });
 
   it("re-throws bridge failures as ActionError (fatal screen)", async () => {
-    const bridge = {
+    const bridge = fakeBridge({
       GetConnectionInfo: () => Promise.reject({ code: "ERR_UNAVAILABLE", message: "db locked" }),
-      GetBuildInfo: () => Promise.reject(new Error("unused")),
-      SetRemoteToken: () => Promise.resolve(),
-      BrowseExecutable: () => Promise.resolve(""),
-      BrowseImage: () => Promise.resolve(""),
-      BrowseImages: () => Promise.resolve([]),
-      BrowseDirectory: () => Promise.resolve(""),
-    };
+    });
     await expect(resolveEndpoint(env({ bridge }))).rejects.toMatchObject({
       code: "ERR_UNAVAILABLE",
     });

@@ -1,5 +1,6 @@
 import { appConfig } from "../../config/appConfig";
-import React, { useEffect, useState } from "react";
+import React from "react";
+import { useFlash } from "../../lib/hooks/useFlash";
 import { ArrowLeft, Loader2, MessageSquare, Trash2 } from "lucide-react";
 import type { AgentConversation } from "../../contracts/generated";
 import { Button } from "../../components/ui/Button";
@@ -29,13 +30,7 @@ const HistoryItem: React.FC<{ conv: AgentConversation; current: boolean; disable
   const providers = useAgentStore((s) => s.providers);
   const openConversation = useAgentStore((s) => s.openConversation);
   const deleteConversation = useAgentStore((s) => s.deleteConversation);
-  const [confirm, setConfirm] = useState(false);
-
-  useEffect(() => {
-    if (!confirm) return;
-    const timer = setTimeout(() => setConfirm(false), CONFIRM_DELETE_MS);
-    return () => clearTimeout(timer);
-  }, [confirm]);
+  const [confirm, armConfirm, disarmConfirm] = useFlash(CONFIRM_DELETE_MS);
 
   const provider = providers.find((p) => p.id === conv.provider_id)?.name ?? conv.provider_id;
 
@@ -63,7 +58,7 @@ const HistoryItem: React.FC<{ conv: AgentConversation; current: boolean; disable
           size="sm"
           className="agent-clear-confirm"
           onClick={() => {
-            setConfirm(false);
+            disarmConfirm();
             void deleteConversation(conv.id);
           }}
           disabled={disabled}
@@ -74,7 +69,7 @@ const HistoryItem: React.FC<{ conv: AgentConversation; current: boolean; disable
         <Button
           size="sm"
           iconOnly
-          onClick={() => setConfirm(true)}
+          onClick={() => armConfirm(true)}
           disabled={disabled}
           title={t("agent.history.delete")}
           aria-label={t("agent.history.delete")}

@@ -1,5 +1,6 @@
 import { appConfig } from "../../config/appConfig";
-import React, { useState } from "react";
+import React from "react";
+import { useFlash } from "../../lib/hooks/useFlash";
 import { Layers, FileImage, Loader2, CheckCircle2, Check, AlertCircle, Copy } from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -9,14 +10,13 @@ import { useWatermarkStore } from "./useWatermarkStore";
 
 export const WatermarkResultsCard: React.FC = () => {
   const t = useT();
-  const [copiedPath, setCopiedPath] = useState<string | null>(null);
+  const [copiedPath, flashCopiedPath] = useFlash<string>(appConfig.ui.copyFeedbackMs);
 
   const { inputPath, inputPaths, loading, result } = useWatermarkStore();
 
   const handleCopy = (text: string) => {
     void navigator.clipboard.writeText(text);
-    setCopiedPath(text);
-    setTimeout(() => setCopiedPath(null), appConfig.ui.copyFeedbackMs);
+    flashCopiedPath(text);
   };
 
   const totalFiles = inputPaths.length > 0 ? inputPaths.length : inputPath ? 1 : 0;
