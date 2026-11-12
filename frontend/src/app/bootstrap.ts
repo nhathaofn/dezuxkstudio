@@ -1,6 +1,7 @@
 import { Events, NativeEvents } from "../contracts/generated";
 import { useAgentStore } from "../features/agent/useAgentStore";
 import { useBinariesStore } from "../features/binaries/useBinariesStore";
+import { useProvidersStore } from "../features/providers/useProvidersStore";
 import { useConnectionStore } from "../features/connection/useConnectionStore";
 import { uiLog } from "../features/logs/useLogStore";
 import { usePreferencesStore } from "../features/preferences/usePreferencesStore";
@@ -23,6 +24,7 @@ export function bootstrap(): void {
   });
 
   rtClient.on(Events.PREFERENCES_UPDATED, (p) => usePreferencesStore.getState().receive(p));
+  rtClient.on(Events.PROVIDERS_CHANGED, (p) => useProvidersStore.getState().receive(p));
   rtClient.on(Events.AGENT_STATUS_CHANGED, (p) => useAgentStore.getState().receiveStatus(p));
   rtClient.on(Events.AGENT_CHAT_EVENT, (p) => useAgentStore.getState().receiveChatEvent(p));
   rtClient.on(Events.AGENT_APPROVALS, (p) =>
@@ -40,6 +42,7 @@ export function bootstrap(): void {
     void usePreferencesStore.getState().load();
     void useSystemStore.getState().loadInfo();
     void useBinariesStore.getState().fetchBinaries();
+    void useProvidersStore.getState().list();
     void useAgentStore.getState().fetchProviders();
     void useAgentStore.getState().fetchHistory();
     void useAgentStore.getState().fetchApprovals();

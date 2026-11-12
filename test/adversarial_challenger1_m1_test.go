@@ -134,8 +134,8 @@ func TestAdversarial_Scenario1_MigrationsResilience(t *testing.T) {
 		if err := checkDB.QueryRow("SELECT MAX(version) FROM _schema_migrations").Scan(&maxVer); err != nil {
 			t.Fatalf("query max version failed: %v", err)
 		}
-		if maxVer != 8 {
-			t.Fatalf("expected version 8, got %d", maxVer)
+		if maxVer != latestMigrationVersion(t) {
+			t.Fatalf("expected version %d, got %d", latestMigrationVersion(t), maxVer)
 		}
 
 		var metaVal string
@@ -214,8 +214,8 @@ func TestAdversarial_Scenario1_MigrationsResilience(t *testing.T) {
 		if err := checkDB.QueryRow("SELECT MAX(version) FROM _schema_migrations").Scan(&maxVer); err != nil {
 			t.Fatalf("query max version failed: %v", err)
 		}
-		if maxVer != 8 {
-			t.Fatalf("expected version 8, got %d", maxVer)
+		if maxVer != latestMigrationVersion(t) {
+			t.Fatalf("expected version %d, got %d", latestMigrationVersion(t), maxVer)
 		}
 
 		var customPath string
@@ -439,8 +439,8 @@ func TestAdversarial_Scenario1_MigrationsResilience(t *testing.T) {
 		}
 
 		var maxVer int
-		if err := checkDB.QueryRow("SELECT MAX(version) FROM _schema_migrations").Scan(&maxVer); err != nil || maxVer != 8 {
-			t.Fatalf("expected max version 8, got %d (err: %v)", maxVer, err)
+		if err := checkDB.QueryRow("SELECT MAX(version) FROM _schema_migrations").Scan(&maxVer); err != nil || maxVer != latestMigrationVersion(t) {
+			t.Fatalf("expected max version %d, got %d (err: %v)", latestMigrationVersion(t), maxVer, err)
 		}
 	})
 
@@ -460,9 +460,9 @@ func TestAdversarial_Scenario1_MigrationsResilience(t *testing.T) {
 				name TEXT NOT NULL,
 				applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 			);
-			INSERT INTO _schema_migrations (version, name) VALUES (9, '009_future_unsupported.sql');
+			INSERT INTO _schema_migrations (version, name) VALUES (?, '999_future_unsupported.sql');
 		`
-		if _, err := rawDB.Exec(futureSQL); err != nil {
+		if _, err := rawDB.Exec(futureSQL, latestMigrationVersion(t)+1); err != nil {
 			rawDB.Close()
 			t.Fatalf("failed to seed v7 future db: %v", err)
 		}
@@ -476,7 +476,7 @@ func TestAdversarial_Scenario1_MigrationsResilience(t *testing.T) {
 			Logger:        slog.New(slog.DiscardHandler),
 		})
 		if err == nil {
-			t.Fatalf("ADVERSARIAL FAILURE: expected sqlite.Open to reject future schema version 9, got nil")
+			t.Fatalf("ADVERSARIAL FAILURE: expected sqlite.Open to reject a future schema version, got nil")
 		}
 		if !errors.Is(err, sqlite.ErrSchemaTooNew) {
 			t.Fatalf("ADVERSARIAL FAILURE: expected ErrSchemaTooNew, got: %v", err)

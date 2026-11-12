@@ -1,11 +1,23 @@
 import React from "react";
 import { useSearchParams } from "react-router-dom";
-import { Code2, Globe, Monitor, Moon, Sliders, Sun, Terminal, Wrench, Zap } from "lucide-react";
+import {
+  Code2,
+  Globe,
+  KeyRound,
+  Monitor,
+  Moon,
+  Sliders,
+  Sun,
+  Terminal,
+  Wrench,
+  Zap,
+} from "lucide-react";
 import { ThemeValues, LanguageValues, type Language, type Theme } from "../../contracts/generated";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { BinariesView } from "../binaries/BinariesView";
+import { ProvidersView } from "../providers/ProvidersView";
 import { ConnectionCard } from "../connection/ConnectionCard";
 import { DiagnosticsCard } from "../diagnostics/DiagnosticsCard";
 import { LiveLogView } from "../logs/LiveLogView";
@@ -14,7 +26,7 @@ import { SystemCard } from "../system/SystemCard";
 import { useT } from "../../lib/i18n";
 import { usePreferencesStore } from "./usePreferencesStore";
 
-const TABS = ["general", "tools", "logs", "devtools"] as const;
+const TABS = ["general", "tools", "providers", "logs", "devtools"] as const;
 type TabKey = (typeof TABS)[number];
 
 export const SettingsView: React.FC = () => {
@@ -67,6 +79,15 @@ export const SettingsView: React.FC = () => {
           >
             <Terminal size={14} />
             {t("settings.tabs.logs")}
+          </button>
+
+          <button
+            type="button"
+            className={`settings-nav-btn ${effectiveTab === "providers" ? "active" : ""}`}
+            onClick={() => setTab("providers")}
+          >
+            <KeyRound size={14} />
+            {t("settings.tabs.providers")}
           </button>
 
           {devMode && (
@@ -170,6 +191,7 @@ export const SettingsView: React.FC = () => {
         )}
 
         {effectiveTab === "tools" && <BinariesView />}
+        {effectiveTab === "providers" && <ProvidersView />}
 
         {effectiveTab === "logs" && <LiveLogView />}
 

@@ -65,9 +65,9 @@ func TestAdversarial_SQLite_CleanDatabaseMigration(t *testing.T) {
 		recorded = append(recorded, rm)
 	}
 
-	// Clean database migration runner must apply migrations 1 through 8
-	if len(recorded) != 8 {
-		t.Fatalf("expected exactly 8 applied migrations, got %d: %+v", len(recorded), recorded)
+	// Clean database migration runner must apply every embedded migration
+	if len(recorded) != latestMigrationVersion(t) {
+		t.Fatalf("expected exactly %d applied migrations, got %d: %+v", latestMigrationVersion(t), len(recorded), recorded)
 	}
 	if recorded[0].version != 1 || recorded[0].name != "001_initial_schema.sql" {
 		t.Errorf("migration 1 mismatch: got %+v", recorded[0])
@@ -94,13 +94,13 @@ func TestAdversarial_SQLite_CleanDatabaseMigration(t *testing.T) {
 		t.Errorf("migration 8 mismatch: got %+v", recorded[7])
 	}
 
-	// Verify maximum version in _schema_migrations is 8
+	// Verify maximum version in _schema_migrations is the latest migration
 	var maxVer int
 	if err := rawDB.QueryRow("SELECT MAX(version) FROM _schema_migrations").Scan(&maxVer); err != nil {
 		t.Fatalf("failed to get max version: %v", err)
 	}
-	if maxVer != 8 {
-		t.Errorf("expected max version 8, got %d", maxVer)
+	if maxVer != latestMigrationVersion(t) {
+		t.Errorf("expected max version %d, got %d", latestMigrationVersion(t), maxVer)
 	}
 
 	// Verify expected tables exist
