@@ -111,6 +111,7 @@ export function ModelList({
   error,
   disabled = false,
   toolbar,
+  notice,
 }: {
   models: ProviderModel[];
   onChange: (models: ProviderModel[]) => void;
@@ -119,6 +120,8 @@ export function ModelList({
   error?: ActionError | null;
   disabled?: boolean;
   toolbar?: ReactNode;
+  /** Explanation shown on its own row under the toolbar (never inside it: long text would crowd the controls). */
+  notice?: string;
 }) {
   const t = useT();
   const id = useId();
@@ -232,6 +235,7 @@ export function ModelList({
           </Button>
         </div>
       </div>
+      {notice && <p className="providers-model-notice">{notice}</p>}
       {(error?.details?.field === "models" || error?.details?.field === "facts") && (
         <p className="providers-danger" role="alert">
           {t(error.details.field === "facts" ? "providers.factsError" : "providers.modelsError")}
@@ -270,7 +274,7 @@ export function ModelList({
             </section>
           );
         })}
-        {!filtered.length && (
+        {!filtered.length && !(notice && !models.length) && (
           <p className="subtitle">{t(models.length ? "providers.empty" : "providers.noModels")}</p>
         )}
       </div>

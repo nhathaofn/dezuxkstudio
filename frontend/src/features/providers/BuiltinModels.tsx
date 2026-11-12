@@ -71,10 +71,9 @@ export function BuiltinModels({
                 <RefreshCw size={14} />
                 {t(busy ? "providers.discovering" : "providers.refreshModels")}
               </Button>
-            ) : (
-              <p className="subtitle">{t("providers.noDiscovery")}</p>
-            )
+            ) : undefined
           }
+          notice={provider.discoverable ? undefined : t("providers.noDiscovery")}
           models={models}
           onChange={(rows) => {
             setDraft(rows);

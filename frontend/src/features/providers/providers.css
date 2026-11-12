@@ -574,6 +574,15 @@
 .providers-model-toolbar-actions .card-actions-row {
   margin-top: 0;
 }
+.providers-model-notice {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--line-normal);
+}
 .providers-model-toolbar-sub {
   grid-column: 1 / -1;
   display: flex;
