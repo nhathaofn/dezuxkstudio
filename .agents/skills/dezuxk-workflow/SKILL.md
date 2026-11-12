@@ -37,6 +37,10 @@ On Windows without Task: `powershell -ExecutionPolicy Bypass -File scripts/manag
            return m.Service.List(ctx, p.Filter)
        })
    ```
+   Long work reports progress from the service with `progress.Report(ctx, progress.Update{...})`
+   (re-arms the idle timeout); bounded waits use `defer progress.KeepAlive(ctx)()`; actions with a
+   possibly long silent step go into `contracts.LongActions()`. Processes: `internal/proc`;
+   executable lookup: `internal/lookup`; outbound HTTP: the shared client from `internal/httpclient`.
 6. One line in `modules()` in `internal/core/core.go`.
 7. `task generate`, then in the frontend:
    ```ts

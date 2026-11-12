@@ -77,7 +77,7 @@ Agent **chỉ được báo cáo dựa trên kết quả tool trả về**. Vì 
 - danh sách theo từng file: đường dẫn vào, đường dẫn ra, trạng thái, lỗi (nếu có);
 - thông báo lỗi có thể hành động được (nói rõ sai gì và sửa thế nào), không chỉ "failed".
 
-Node nên tôn trọng `ctx` (huỷ/timeout), ghi file bằng `fsutil.WriteFileAtomic`, và không tự ghi đè file gốc trừ khi
+Node nên tôn trọng `ctx` (huỷ/timeout), báo tiến độ bằng `progress.Report(ctx, ...)` để không bị idle timeout khi chạy lâu (qua UI, duyệt agent hay MCP tool đều nhận được), ghi file bằng `fsutil.WriteFileAtomic`, và không tự ghi đè file gốc trừ khi
 có tham số `Destructive` được bật.
 
 ## 6. Tính năng không phải dạng node (project, điều hướng UI, …)
