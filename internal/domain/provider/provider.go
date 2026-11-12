@@ -161,6 +161,7 @@ type Credential struct {
 	// SecretHints maps each stored secret field to a masked preview ("sk-…abcd").
 	SecretHints map[string]string
 	Active      bool
+	Health      Health
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
@@ -256,6 +257,8 @@ type Repository interface {
 	UpdateCredential(ctx context.Context, c Credential) error
 	DeleteCredential(ctx context.Context, id string) error
 	ActivateCredential(ctx context.Context, id string) error
+	SetCredentialHealth(ctx context.Context, id string, h Health) error
+	SetCustomHealth(ctx context.Context, id string, h Health) error
 
 	ListCustom(ctx context.Context) ([]CustomProvider, error)
 	GetCustom(ctx context.Context, id string) (CustomProvider, error)

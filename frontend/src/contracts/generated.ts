@@ -58,7 +58,7 @@ export type ProviderDiscoveryFormat = (typeof ProviderDiscoveryFormatValues)[num
 export const ProviderEndpointValues = ["openai-chat", "openai-responses", "gemini-generate", "anthropic-messages", "openai-images", "openai-images-generations", "openai-images-edits", "openai-chat-image", "openrouter-images", "gemini-image", "openai-video", "openai-tts"] as const;
 export type ProviderEndpoint = (typeof ProviderEndpointValues)[number];
 
-export const ProviderTestOutcomeValues = ["ok", "auth_failed", "rate_limited", "not_found", "http_error", "timeout", "network", "invalid_credentials"] as const;
+export const ProviderTestOutcomeValues = ["ok", "auth_failed", "rate_limited", "not_found", "http_error", "timeout", "network", "invalid_credentials", "secret_missing"] as const;
 export type ProviderTestOutcome = (typeof ProviderTestOutcomeValues)[number];
 
 export const SecretBackendValues = ["keyring", "encrypted_file", "memory"] as const;
@@ -316,6 +316,7 @@ export interface CustomProvider {
   discovery_format: ProviderDiscoveryFormat;
   base_url: string;
   key_hint: string;
+  health: ProviderHealth;
   capabilities: ProviderCapability[];
   models: CustomProviderModel[];
   created_at: string;
@@ -474,6 +475,7 @@ export interface ProviderCredential {
   values: Record<string, string>;
   secret_hints: Record<string, string>;
   active: boolean;
+  health: ProviderHealth;
   created_at: string;
   updated_at: string;
 }
@@ -484,6 +486,14 @@ export interface ProviderField {
   secret: boolean;
   required: boolean;
   placeholder: string;
+}
+
+export interface ProviderHealth {
+  tested: boolean;
+  outcome: ProviderTestOutcome;
+  detail: string;
+  tested_at: string;
+  dead: boolean;
 }
 
 export interface ProviderIDPayload {

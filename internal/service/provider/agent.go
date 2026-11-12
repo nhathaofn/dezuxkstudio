@@ -27,6 +27,7 @@ func (s *Service) AgentOverview(ctx context.Context) (any, error) {
 		Active      bool              `json:"active"`
 		Values      map[string]string `json:"values,omitempty"`
 		SecretHints map[string]string `json:"secret_hints,omitempty"`
+		Health      map[string]any    `json:"health,omitempty"`
 	}
 	type builtin struct {
 		ID               string              `json:"id"`
@@ -47,6 +48,7 @@ func (s *Service) AgentOverview(ctx context.Context) (any, error) {
 		Capabilities    []domain.Capability    `json:"capabilities"`
 		DefaultModels   map[string]string      `json:"default_models,omitempty"`
 		EnabledModels   int                    `json:"enabled_models"`
+		Health          map[string]any         `json:"health,omitempty"`
 	}
 	var bs []builtin
 	for _, b := range snap.Builtins {
@@ -56,14 +58,14 @@ func (s *Service) AgentOverview(ctx context.Context) (any, error) {
 			v.Fields = append(v.Fields, field{Key: f.Key, Secret: f.Secret, Required: f.Required})
 		}
 		for _, c := range b.Credentials {
-			v.Credentials = append(v.Credentials, cred{ID: c.ID, Name: c.Name, Active: c.Active, Values: c.Values, SecretHints: c.SecretHints})
+			v.Credentials = append(v.Credentials, cred{ID: c.ID, Name: c.Name, Active: c.Active, Values: c.Values, SecretHints: c.SecretHints, Health: agentHealth(c.Health)})
 		}
 		bs = append(bs, v)
 	}
 	var cs []custom
 	for _, c := range snap.Custom {
 		v := custom{ID: c.ID, Name: c.Name, DiscoveryFormat: c.DiscoveryFormat, BaseURL: c.BaseURL, KeyHint: c.KeyHint,
-			Capabilities: c.Capabilities(), DefaultModels: map[string]string{}}
+			Capabilities: c.Capabilities(), DefaultModels: map[string]string{}, Health: agentHealth(c.Health)}
 		for _, m := range c.Models {
 			if m.Enabled {
 				v.EnabledModels++
@@ -215,4 +217,11 @@ func agentTest(r TestResult) map[string]any {
 		}
 	}
 	return out
+}
+
+func agentHealth(h domain.Health) map[string]any {
+	if h.TestedAt.IsZero() {
+		return nil
+	}
+	return map[string]any{"outcome": h.Outcome, "dead": h.Outcome.Dead(), "tested_at": h.TestedAt, "detail": h.Detail}
 }

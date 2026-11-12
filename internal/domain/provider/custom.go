@@ -105,6 +105,7 @@ type CustomProvider struct {
 	Models          []CustomModel
 	// KeyHint is the masked API key ("" when none is stored).
 	KeyHint   string
+	Health    Health
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

@@ -22,6 +22,7 @@ import (
 	"app/internal/paths"
 	"app/internal/realtime"
 	"app/internal/realtime/modules"
+	"app/internal/safego"
 	"app/internal/secrets"
 	"app/internal/server"
 	"app/internal/server/handlers"
@@ -56,11 +57,14 @@ func (o Options) validate() error {
 
 // Core is a fully wired, not yet started application core.
 type Core struct {
-	log       *slog.Logger
-	db        *sqlite.DB
-	hub       *realtime.Hub
-	srv       *server.Server
-	agentSvc  *agentsvc.Service
+	log      *slog.Logger
+	db       *sqlite.DB
+	hub      *realtime.Hub
+	srv      *server.Server
+	agentSvc *agentsvc.Service
+	// background work tied to the core lifetime (e.g. the start-up provider key check)
+	bgCancel  context.CancelFunc
+	bgDone    chan struct{}
 	shutdown  time.Duration
 	startedAt time.Time
 }
@@ -209,6 +213,15 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		return nil, err
 	}
 
+	if cfg.Providers.CheckOnStartup {
+		bgCtx, cancel := context.WithCancel(context.Background())
+		c.bgCancel, c.bgDone = cancel, make(chan struct{})
+		safego.Go("provider-startup-check", func() {
+			defer close(c.bgDone)
+			provSvc.CheckAll(bgCtx, cfg.Providers.CheckConcurrency)
+		})
+	}
+
 	wfSvc, err := workflow.New(workflow.Options{
 		Paths:  o.Paths,
 		Logger: o.Logger,
@@ -274,6 +287,13 @@ func (c *Core) Errors() <-chan error { return c.srv.Errors() }
 func (c *Core) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), c.shutdown)
 	defer cancel()
+	if c.bgCancel != nil {
+		c.bgCancel()
+		select {
+		case <-c.bgDone:
+		case <-ctx.Done():
+		}
+	}
 	var agentErr error
 	if c.agentSvc != nil {
 		agentErr = c.agentSvc.Close()

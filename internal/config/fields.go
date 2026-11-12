@@ -73,6 +73,8 @@ func fields(c *Config) []field {
 		{key: "network.max_idle_conns", usage: "max idle outbound HTTP connections", val: intValue{&c.Network.MaxIdleConns}},
 		{key: "network.max_idle_conns_per_host", usage: "max idle outbound HTTP connections per host", val: intValue{&c.Network.MaxIdleConnsPerHost}},
 		{key: "providers.test_timeout", usage: "max duration of a provider connectivity test or model discovery", val: durationValue{&c.Providers.TestTimeout}},
+		{key: "providers.check_on_startup", usage: "test every saved provider key in the background at start-up", val: boolValue{&c.Providers.CheckOnStartup}},
+		{key: "providers.check_concurrency", usage: "max provider key tests running at once during the start-up check", val: intValue{&c.Providers.CheckConcurrency}},
 		{key: "binaries.probe_timeout", usage: "max duration of an external tool version probe", val: durationValue{&c.Binaries.ProbeTimeout}},
 
 		{key: "agent.turn_timeout", usage: "an agent chat turn is stopped after this long without activity (text, tool calls, tool progress)", val: durationValue{&c.Agent.TurnTimeout}},

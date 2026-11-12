@@ -32,14 +32,15 @@ import (
 type Outcome = domain.Outcome
 
 const (
-	OutcomeOK          = domain.OutcomeOK
-	OutcomeAuthFailed  = domain.OutcomeAuthFailed
-	OutcomeRateLimited = domain.OutcomeRateLimited
-	OutcomeNotFound    = domain.OutcomeNotFound
-	OutcomeHTTPError   = domain.OutcomeHTTPError
-	OutcomeTimeout     = domain.OutcomeTimeout
-	OutcomeNetwork     = domain.OutcomeNetwork
-	OutcomeInvalid     = domain.OutcomeInvalid
+	OutcomeOK            = domain.OutcomeOK
+	OutcomeAuthFailed    = domain.OutcomeAuthFailed
+	OutcomeRateLimited   = domain.OutcomeRateLimited
+	OutcomeNotFound      = domain.OutcomeNotFound
+	OutcomeHTTPError     = domain.OutcomeHTTPError
+	OutcomeTimeout       = domain.OutcomeTimeout
+	OutcomeNetwork       = domain.OutcomeNetwork
+	OutcomeInvalid       = domain.OutcomeInvalid
+	OutcomeSecretMissing = domain.OutcomeSecretMissing
 )
 
 // TestResult is the outcome of a connectivity test. Detail never contains a secret.
@@ -78,22 +79,59 @@ func (s *Service) TestCredential(ctx context.Context, id string) (TestResult, er
 		return TestResult{}, err
 	}
 	r, err := s.resolveCredential(m, c)
-	if err != nil {
+	var res TestResult
+	switch {
+	case isSecretMissing(err):
+		res = TestResult{Outcome: domain.OutcomeSecretMissing, Detail: "the stored key is gone; enter it again"}
+	case err != nil:
 		return TestResult{}, err
+	default:
+		res, err = s.run(ctx, r.allSecrets(), func(ctx context.Context) ([]string, error) { return s.probeBuiltin(ctx, m, r) })
+		if err != nil {
+			return TestResult{}, err
+		}
 	}
-	return s.run(ctx, r.allSecrets(), func(ctx context.Context) ([]string, error) { return s.probeBuiltin(ctx, m, r) })
+	s.recordHealth(ctx, func(h domain.Health) error { return s.repo.SetCredentialHealth(ctx, id, h) }, res)
+	return res, nil
+}
+
+func isSecretMissing(err error) bool {
+	var ae *apperr.Error
+	if !errors.As(err, &ae) || ae.Code != apperr.CodeIntegrity {
+		return false
+	}
+	v, _ := ae.Details["secret_missing"].(bool)
+	return v
+}
+
+// recordHealth stores a test result and notifies listeners (best effort: a failed write only loses the badge).
+func (s *Service) recordHealth(ctx context.Context, set func(domain.Health) error, r TestResult) {
+	if set(domain.Health{Outcome: r.Outcome, Detail: r.Detail, TestedAt: time.Now()}) == nil {
+		s.changed()
+	}
+	_ = ctx
 }
 
 // TestCustom checks a saved custom provider by listing its models.
 func (s *Service) TestCustom(ctx context.Context, id string) (TestResult, error) {
 	rc, err := s.ResolveCustom(ctx, id)
-	if err != nil {
+	var res TestResult
+	switch {
+	case isSecretMissing(err):
+		res = TestResult{Outcome: domain.OutcomeSecretMissing, Detail: "the stored key is gone; enter it again"}
+	case err != nil:
 		return TestResult{}, err
+	default:
+		res, err = s.run(ctx, []string{rc.APIKey}, func(ctx context.Context) ([]string, error) {
+			models, err := s.discover(ctx, rc.Provider.DiscoveryFormat, rc.Provider.BaseURL, rc.APIKey)
+			return discoveredIDs(models), err
+		})
+		if err != nil {
+			return TestResult{}, err
+		}
 	}
-	return s.run(ctx, []string{rc.APIKey}, func(ctx context.Context) ([]string, error) {
-		models, err := s.discover(ctx, rc.Provider.DiscoveryFormat, rc.Provider.BaseURL, rc.APIKey)
-		return discoveredIDs(models), err
-	})
+	s.recordHealth(ctx, func(h domain.Health) error { return s.repo.SetCustomHealth(ctx, id, h) }, res)
+	return res, nil
 }
 
 // DiscoverRequest lists the models of a custom endpoint. When CustomID is set and APIKey is empty the

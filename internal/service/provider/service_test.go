@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,7 +42,12 @@ func newEnv(t *testing.T, timeout time.Duration) *env {
 	repo := sqlite.NewProviderRepository(db)
 	store := secrets.NewMemory()
 	n := 0
-	svc, err := New(Options{Repo: repo, Secrets: store, Client: http.DefaultClient, TestTimeout: timeout, OnChanged: func() { n++ }})
+	var mu sync.Mutex // OnChanged runs concurrently during CheckAll
+	svc, err := New(Options{Repo: repo, Secrets: store, Client: http.DefaultClient, TestTimeout: timeout, OnChanged: func() {
+		mu.Lock()
+		n++
+		mu.Unlock()
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}

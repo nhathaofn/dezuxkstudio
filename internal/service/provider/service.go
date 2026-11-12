@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -201,6 +202,7 @@ func (s *Service) UpdateCredential(ctx context.Context, id string, in domain.Inp
 		return domain.Credential{}, err
 	}
 	clear := in.ClearSecrets
+	oldValues := c.Values
 	in = in.Normalize()
 	if in.Name == "" {
 		in.Name = c.Name
@@ -242,6 +244,9 @@ func (s *Service) UpdateCredential(ctx context.Context, id string, in domain.Inp
 	c.Name, c.Values, c.SecretHints = in.Name, in.Values, newHints
 	if err := s.repo.UpdateCredential(ctx, c); err != nil {
 		return domain.Credential{}, err
+	}
+	if len(in.Secrets) > 0 || len(clear) > 0 || !maps.Equal(c.Values, oldValues) {
+		_ = s.repo.SetCredentialHealth(ctx, id, domain.Health{}) // the old result no longer describes this key
 	}
 	s.changed()
 	return s.repo.GetCredential(ctx, id)
@@ -331,9 +336,13 @@ func (s *Service) UpdateCustom(ctx context.Context, id string, in domain.CustomI
 		_ = s.secrets.Delete(customSecretKey(id))
 		p.KeyHint = ""
 	}
+	keyChanged := in.APIKey != "" || in.ClearAPIKey || in.BaseURL != p.BaseURL || in.DiscoveryFormat != p.DiscoveryFormat
 	p.Name, p.DiscoveryFormat, p.BaseURL, p.Models = in.Name, in.DiscoveryFormat, in.BaseURL, customModelsOrEmpty(in.Models)
 	if err := s.repo.UpdateCustom(ctx, p); err != nil {
 		return domain.CustomProvider{}, err
+	}
+	if keyChanged {
+		_ = s.repo.SetCustomHealth(ctx, id, domain.Health{})
 	}
 	s.changed()
 	return s.repo.GetCustom(ctx, id)

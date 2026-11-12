@@ -23,6 +23,8 @@ func NewProviderRepository(db *DB) *ProviderRepository { return &ProviderReposit
 
 const credentialColumns = `id, provider_id, name, values_json, secret_hints_json, is_active, created_at, updated_at`
 
+const healthColumns = `last_outcome, last_detail, last_tested_at`
+
 type rowScanner interface{ Scan(dest ...any) error }
 
 func scanCredential(s rowScanner) (provider.Credential, error) {
@@ -32,7 +34,9 @@ func scanCredential(s rowScanner) (provider.Credential, error) {
 		active           int
 		created, updated int64
 	)
-	if err := s.Scan(&c.ID, &c.ProviderID, &c.Name, &values, &hints, &active, &created, &updated); err != nil {
+	var outcome, detail string
+	var tested int64
+	if err := s.Scan(&c.ID, &c.ProviderID, &c.Name, &values, &hints, &active, &created, &updated, &outcome, &detail, &tested); err != nil {
 		return provider.Credential{}, err
 	}
 	c.Values = map[string]string{}
@@ -42,6 +46,7 @@ func scanCredential(s rowScanner) (provider.Credential, error) {
 	c.Active = active == 1
 	c.CreatedAt = time.UnixMilli(created)
 	c.UpdatedAt = time.UnixMilli(updated)
+	c.Health = health(outcome, detail, tested)
 	return c, nil
 }
 
@@ -56,7 +61,7 @@ func encodeMap(m map[string]string) string {
 // ListCredentials implements provider.Repository.
 func (r *ProviderRepository) ListCredentials(ctx context.Context) ([]provider.Credential, error) {
 	rows, err := r.db.sql.QueryContext(ctx,
-		`SELECT `+credentialColumns+` FROM provider_credentials ORDER BY provider_id, created_at ASC, id ASC`)
+		`SELECT `+credentialColumns+`, `+healthColumns+` FROM provider_credentials ORDER BY provider_id, created_at ASC, id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list provider credentials: %w", err)
 	}
@@ -75,7 +80,7 @@ func (r *ProviderRepository) ListCredentials(ctx context.Context) ([]provider.Cr
 // GetCredential implements provider.Repository.
 func (r *ProviderRepository) GetCredential(ctx context.Context, id string) (provider.Credential, error) {
 	c, err := scanCredential(r.db.sql.QueryRowContext(ctx,
-		`SELECT `+credentialColumns+` FROM provider_credentials WHERE id = ?`, id))
+		`SELECT `+credentialColumns+`, `+healthColumns+` FROM provider_credentials WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return provider.Credential{}, provider.ErrNotFound(id)
 	}
@@ -190,7 +195,7 @@ func (r *ProviderRepository) ActivateCredential(ctx context.Context, id string) 
 // ListCustom implements provider.Repository.
 func (r *ProviderRepository) ListCustom(ctx context.Context) ([]provider.CustomProvider, error) {
 	rows, err := r.db.sql.QueryContext(ctx,
-		`SELECT id, name, discovery_format, base_url, key_hint, created_at, updated_at FROM custom_providers ORDER BY created_at ASC, id ASC`)
+		`SELECT id, name, discovery_format, base_url, key_hint, created_at, updated_at, `+healthColumns+` FROM custom_providers ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list custom providers: %w", err)
 	}
@@ -218,12 +223,14 @@ func (r *ProviderRepository) ListCustom(ctx context.Context) ([]provider.CustomP
 func scanCustom(s rowScanner) (provider.CustomProvider, error) {
 	var p provider.CustomProvider
 	var format string
-	var created, updated int64
-	if err := s.Scan(&p.ID, &p.Name, &format, &p.BaseURL, &p.KeyHint, &created, &updated); err != nil {
+	var created, updated, tested int64
+	var outcome, detail string
+	if err := s.Scan(&p.ID, &p.Name, &format, &p.BaseURL, &p.KeyHint, &created, &updated, &outcome, &detail, &tested); err != nil {
 		return provider.CustomProvider{}, err
 	}
 	p.DiscoveryFormat = provider.DiscoveryFormat(format)
 	p.CreatedAt, p.UpdatedAt = time.UnixMilli(created), time.UnixMilli(updated)
+	p.Health = health(outcome, detail, tested)
 	return p, nil
 }
 
@@ -251,7 +258,7 @@ func (r *ProviderRepository) models(ctx context.Context, id string) ([]provider.
 // GetCustom implements provider.Repository.
 func (r *ProviderRepository) GetCustom(ctx context.Context, id string) (provider.CustomProvider, error) {
 	p, err := scanCustom(r.db.sql.QueryRowContext(ctx,
-		`SELECT id, name, discovery_format, base_url, key_hint, created_at, updated_at FROM custom_providers WHERE id = ?`, id))
+		`SELECT id, name, discovery_format, base_url, key_hint, created_at, updated_at, `+healthColumns+` FROM custom_providers WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return provider.CustomProvider{}, provider.ErrNotFound(id)
 	}
@@ -340,4 +347,42 @@ func boolInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+func health(outcome, detail string, tested int64) provider.Health {
+	h := provider.Health{Outcome: provider.Outcome(outcome), Detail: detail}
+	if tested > 0 {
+		h.TestedAt = time.UnixMilli(tested)
+	}
+	return h
+}
+
+func healthArgs(h provider.Health) (string, string, int64) {
+	var at int64
+	if !h.TestedAt.IsZero() {
+		at = h.TestedAt.UnixMilli()
+	}
+	return string(h.Outcome), h.Detail, at
+}
+
+// SetCredentialHealth implements provider.Repository.
+func (r *ProviderRepository) SetCredentialHealth(ctx context.Context, id string, h provider.Health) error {
+	o, d, at := healthArgs(h)
+	res, err := r.db.sql.ExecContext(ctx,
+		`UPDATE provider_credentials SET last_outcome = ?, last_detail = ?, last_tested_at = ? WHERE id = ?`, o, d, at, id)
+	if err != nil {
+		return fmt.Errorf("sqlite: set credential health: %w", err)
+	}
+	return affected(res, id)
+}
+
+// SetCustomHealth implements provider.Repository.
+func (r *ProviderRepository) SetCustomHealth(ctx context.Context, id string, h provider.Health) error {
+	o, d, at := healthArgs(h)
+	res, err := r.db.sql.ExecContext(ctx,
+		`UPDATE custom_providers SET last_outcome = ?, last_detail = ?, last_tested_at = ? WHERE id = ?`, o, d, at, id)
+	if err != nil {
+		return fmt.Errorf("sqlite: set custom health: %w", err)
+	}
+	return affected(res, id)
 }

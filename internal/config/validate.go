@@ -75,6 +75,7 @@ func (c *Config) Validate() error {
 			"agent.approval_ttl":           c.Agent.ApprovalTTL,
 		})
 		positiveInts(add, map[string]int{
+			"providers.check_concurrency":     c.Providers.CheckConcurrency,
 			"realtime.max_concurrent_actions": c.Realtime.MaxConcurrentActions,
 			"realtime.client_buffer_size":     c.Realtime.ClientBufferSize,
 			"storage.backups_to_keep":         c.Storage.BackupsToKeep,
