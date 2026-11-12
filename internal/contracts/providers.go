@@ -296,7 +296,7 @@ type CreateCredentialPayload struct {
 // Validate checks the provider id.
 func (p CreateCredentialPayload) Validate() error {
 	if p.ProviderID == "" {
-		return apperr.New(apperr.CodeBadRequest, "provider_id is required")
+		return apperr.New(apperr.CodeBadRequest, "provider_id is required").WithMsg("errors.provider.provider_id_required", nil)
 	}
 	return nil
 }
@@ -320,7 +320,7 @@ func (p ProviderIDPayload) Validate() error { return requireID(p.ID) }
 
 func requireID(id string) error {
 	if id == "" {
-		return apperr.New(apperr.CodeBadRequest, "id is required")
+		return apperr.New(apperr.CodeBadRequest, "id is required").WithMsg("errors.provider.id_required", nil)
 	}
 	return nil
 }
@@ -451,7 +451,7 @@ type SetDefaultPayload struct {
 // Validate checks the purpose is set.
 func (p SetDefaultPayload) Validate() error {
 	if p.Purpose == "" {
-		return apperr.New(apperr.CodeBadRequest, "purpose is required")
+		return apperr.New(apperr.CodeBadRequest, "purpose is required").WithMsg("errors.provider.purpose_required", nil)
 	}
 	return nil
 }

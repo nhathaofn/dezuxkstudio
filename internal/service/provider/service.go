@@ -121,7 +121,7 @@ func customSecretKey(id string) secrets.Key { return secrets.Key("provider_custo
 func lookup(id string) (domain.Meta, error) {
 	m, ok := domain.Lookup(id)
 	if !ok {
-		return domain.Meta{}, apperr.New(apperr.CodeNotFound, "Unknown provider").WithDetails(map[string]any{"provider_id": id})
+		return domain.Meta{}, apperr.New(apperr.CodeNotFound, "Unknown provider").WithDetails(map[string]any{"provider_id": id}).WithMsg("errors.provider.unknown_provider", map[string]any{"provider": id})
 	}
 	return m, nil
 }
@@ -129,13 +129,13 @@ func lookup(id string) (domain.Meta, error) {
 func checkSecretFields(m domain.Meta, in domain.Input) error {
 	for k := range in.Secrets {
 		if f, ok := m.Field(k); !ok || !f.Secret {
-			return apperr.New(apperr.CodeValidation, "Unknown secret field "+k).WithDetails(map[string]any{"field": k})
+			return apperr.New(apperr.CodeValidation, "Unknown secret field "+k).WithDetails(map[string]any{"field": k}).WithMsg("errors.provider.unknown_field", map[string]any{"field": k})
 		}
 	}
 	for k, v := range in.Values {
 		if f, _ := m.Field(k); f.Kind == domain.FieldURL {
 			if err := domain.ValidateBaseURL(v); err != nil {
-				return apperr.New(apperr.CodeValidation, "Invalid URL").WithDetails(map[string]any{"field": k})
+				return apperr.New(apperr.CodeValidation, "Invalid URL").WithDetails(map[string]any{"field": k}).WithMsg("errors.provider.invalid_url", map[string]any{"field": k})
 			}
 		}
 	}
@@ -158,7 +158,7 @@ func (s *Service) writeSecrets(credID string, vals map[string]string) error {
 			for _, w := range written {
 				_ = s.secrets.Delete(w)
 			}
-			return apperr.Wrap(apperr.CodeUnavailable, "Could not save the secret in the credential store", err)
+			return apperr.Wrap(apperr.CodeUnavailable, "Could not save the secret in the credential store", err).WithMsg("errors.provider.secret_store_unavailable", nil)
 		}
 		written = append(written, key)
 	}
@@ -228,7 +228,7 @@ func (s *Service) UpdateCredential(ctx context.Context, id string, in domain.Inp
 	}
 	for _, k := range clear {
 		if f, ok := m.Field(k); !ok || !f.Secret {
-			return domain.Credential{}, apperr.New(apperr.CodeValidation, "Unknown secret field "+k).WithDetails(map[string]any{"field": k})
+			return domain.Credential{}, apperr.New(apperr.CodeValidation, "Unknown secret field "+k).WithDetails(map[string]any{"field": k}).WithMsg("errors.provider.unknown_field", map[string]any{"field": k})
 		}
 	}
 	if err := checkSingleGroup(m, in.Secrets); err != nil {
@@ -321,7 +321,7 @@ func checkSingleGroup(m domain.Meta, secretsIn map[string]string) error {
 	}
 	if touched > 1 {
 		return apperr.New(apperr.CodeValidation, "Fill in only one group of credentials").
-			WithDetails(map[string]any{"groups": m.CredentialGroups})
+			WithDetails(map[string]any{"groups": m.CredentialGroups}).WithMsg("errors.provider.one_group_only", nil)
 	}
 	return nil
 }
@@ -375,7 +375,7 @@ func (s *Service) CreateCustom(ctx context.Context, in domain.CustomInput) (doma
 	hint := ""
 	if in.APIKey != "" {
 		if err := s.secrets.Set(customSecretKey(id), in.APIKey); err != nil {
-			return domain.CustomProvider{}, apperr.Wrap(apperr.CodeUnavailable, "Could not save the secret in the credential store", err)
+			return domain.CustomProvider{}, apperr.Wrap(apperr.CodeUnavailable, "Could not save the secret in the credential store", err).WithMsg("errors.provider.secret_store_unavailable", nil)
 		}
 		hint = domain.MaskSecret(in.APIKey)
 	}
@@ -403,7 +403,7 @@ func (s *Service) UpdateCustom(ctx context.Context, id string, in domain.CustomI
 	switch {
 	case in.APIKey != "":
 		if err := s.secrets.Set(customSecretKey(id), in.APIKey); err != nil {
-			return domain.CustomProvider{}, apperr.Wrap(apperr.CodeUnavailable, "Could not save the secret in the credential store", err)
+			return domain.CustomProvider{}, apperr.Wrap(apperr.CodeUnavailable, "Could not save the secret in the credential store", err).WithMsg("errors.provider.secret_store_unavailable", nil)
 		}
 		p.KeyHint = domain.MaskSecret(in.APIKey)
 	case in.ClearAPIKey:
@@ -459,7 +459,7 @@ func (s *Service) Resolve(ctx context.Context, providerID string) (Resolved, err
 		}
 	}
 	return Resolved{}, apperr.New(apperr.CodeValidation, m.DisplayName+" has no active credential").
-		WithDetails(map[string]any{"provider_id": providerID, "not_configured": true})
+		WithDetails(map[string]any{"provider_id": providerID, "not_configured": true}).WithMsg("errors.provider.no_active_credential", map[string]any{"provider": m.DisplayName})
 }
 
 // ResolveFor is Resolve that also checks the provider offers capability c.
@@ -469,7 +469,7 @@ func (s *Service) ResolveFor(ctx context.Context, c domain.Capability, providerI
 		return Resolved{}, err
 	}
 	if !m.Has(c) {
-		return Resolved{}, apperr.New(apperr.CodeValidation, fmt.Sprintf("%s does not support %s", m.DisplayName, c))
+		return Resolved{}, apperr.New(apperr.CodeValidation, fmt.Sprintf("%s does not support %s", m.DisplayName, c)).WithMsg("errors.provider.capability_unsupported", map[string]any{"provider": m.DisplayName, "capability": string(c)})
 	}
 	return s.Resolve(ctx, providerID)
 }
@@ -485,7 +485,7 @@ func (s *Service) resolveCredential(m domain.Meta, c domain.Credential) (Resolve
 			continue
 		}
 		if err != nil {
-			return Resolved{}, apperr.Wrap(apperr.CodeUnavailable, "Could not read the credential store", err)
+			return Resolved{}, apperr.Wrap(apperr.CodeUnavailable, "Could not read the credential store", err).WithMsg("errors.provider.secret_store_unavailable", nil)
 		}
 		r.Secrets[k] = v
 	}
@@ -493,7 +493,7 @@ func (s *Service) resolveCredential(m domain.Meta, c domain.Credential) (Resolve
 	if err := m.CheckComplete(r.Values, present); err != nil {
 		// Typically: secrets were held in memory (no keyring) and the app restarted.
 		return Resolved{}, apperr.New(apperr.CodeIntegrity, "Stored secret is missing; enter the key again").
-			WithDetails(map[string]any{"provider_id": m.ID, "credential_id": c.ID, "secret_missing": true})
+			WithDetails(map[string]any{"provider_id": m.ID, "credential_id": c.ID, "secret_missing": true}).WithMsg("errors.provider.secret_missing", nil)
 	}
 	r.BaseURL = strings.TrimRight(cmp.Or(r.Values[domain.FieldBaseURL], m.DefaultBaseURL), "/")
 	return r, nil
@@ -525,10 +525,10 @@ func (s *Service) customKey(p domain.CustomProvider) (string, error) {
 	v, err := s.secrets.Get(customSecretKey(p.ID))
 	if errors.Is(err, secrets.ErrNotFound) {
 		return "", apperr.New(apperr.CodeIntegrity, "Stored secret is missing; enter the key again").
-			WithDetails(map[string]any{"custom_id": p.ID, "secret_missing": true})
+			WithDetails(map[string]any{"custom_id": p.ID, "secret_missing": true}).WithMsg("errors.provider.secret_missing", nil)
 	}
 	if err != nil {
-		return "", apperr.Wrap(apperr.CodeUnavailable, "Could not read the credential store", err)
+		return "", apperr.Wrap(apperr.CodeUnavailable, "Could not read the credential store", err).WithMsg("errors.provider.secret_store_unavailable", nil)
 	}
 	return v, nil
 }

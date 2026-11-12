@@ -19,27 +19,27 @@ type ModelFacts struct {
 
 // Validate checks the facts against the model's capability.
 func (f ModelFacts) Validate(c Capability) error {
-	bad := func(msg string) error {
-		return apperr.New(apperr.CodeValidation, msg).WithDetails(map[string]any{"field": "facts"})
+	bad := func(key, msg string) error {
+		return apperr.New(apperr.CodeValidation, msg).WithDetails(map[string]any{"field": "facts"}).WithMsg(key, nil)
 	}
 	for _, d := range f.Durations {
 		if d <= 0 {
-			return bad("Durations must be positive seconds")
+			return bad("errors.provider.durations_positive", "Durations must be positive seconds")
 		}
 	}
 	for _, r := range f.Resolutions {
 		if strings.TrimSpace(r) == "" {
-			return bad("Resolutions must not be empty")
+			return bad("errors.provider.resolutions_empty", "Resolutions must not be empty")
 		}
 	}
 	if f.MaxOutputTokens < 0 {
-		return bad("max_output_tokens must not be negative")
+		return bad("errors.provider.max_tokens_negative", "max_output_tokens must not be negative")
 	}
 	if c != CapabilityVideo && (len(f.Durations) > 0 || f.Audio) {
-		return bad("Durations and audio apply to video models only")
+		return bad("errors.provider.durations_video_only", "Durations and audio apply to video models only")
 	}
 	if c != CapabilityLLM && f.MaxOutputTokens > 0 {
-		return bad("max_output_tokens applies to LLM models only")
+		return bad("errors.provider.max_tokens_llm_only", "max_output_tokens applies to LLM models only")
 	}
 	return nil
 }
@@ -70,8 +70,8 @@ func (m Model) Label() string {
 // NormalizeModels trims, validates and checks uniqueness / one default per capability.
 // forFormat is the custom provider protocol ("" for built-in providers, whose models carry no endpoint).
 func NormalizeModels(models []Model, allowed []Capability, forFormat DiscoveryFormat) ([]Model, error) {
-	bad := func(msg string) error {
-		return apperr.New(apperr.CodeValidation, msg).WithDetails(map[string]any{"field": "models"})
+	bad := func(key, msg string, params map[string]any) error {
+		return apperr.New(apperr.CodeValidation, msg).WithDetails(map[string]any{"field": "models"}).WithMsg(key, params)
 	}
 	out := make([]Model, 0, len(models))
 	seen := map[string]bool{}
@@ -80,31 +80,31 @@ func NormalizeModels(models []Model, allowed []Capability, forFormat DiscoveryFo
 		m.ModelID = strings.TrimSpace(m.ModelID)
 		m.DisplayName = strings.TrimSpace(m.DisplayName)
 		if m.ModelID == "" {
-			return nil, bad("Each model needs an id")
+			return nil, bad("errors.provider.model_id_required", "Each model needs an id", nil)
 		}
 		if forFormat != "" {
 			spec, ok := EndpointByKey(m.Endpoint)
 			if !ok || !slices.Contains(spec.Formats, forFormat) {
-				return nil, bad("Endpoint " + string(m.Endpoint) + " does not match the protocol")
+				return nil, bad("errors.provider.endpoint_mismatch", "Endpoint "+string(m.Endpoint)+" does not match the protocol", map[string]any{"endpoint": string(m.Endpoint)})
 			}
 			m.Capability = spec.Capability
 		} else if m.Endpoint != "" {
-			return nil, bad("Built-in provider models have no endpoint")
+			return nil, bad("errors.provider.builtin_no_endpoint", "Built-in provider models have no endpoint", nil)
 		}
 		if !slices.Contains(allowed, m.Capability) {
-			return nil, bad("Model " + m.ModelID + " has a capability this provider does not offer")
+			return nil, bad("errors.provider.capability_not_offered", "Model "+m.ModelID+" has a capability this provider does not offer", map[string]any{"model": m.ModelID})
 		}
 		if err := m.Facts.Validate(m.Capability); err != nil {
 			return nil, err
 		}
 		k := m.ModelID + "\x00" + string(m.Capability)
 		if seen[k] {
-			return nil, bad("Duplicate model " + m.ModelID)
+			return nil, bad("errors.provider.duplicate_model", "Duplicate model "+m.ModelID, map[string]any{"model": m.ModelID})
 		}
 		seen[k] = true
 		if m.IsDefault {
 			if !m.Enabled || defaults[m.Capability] {
-				return nil, bad("Only one enabled default model per capability")
+				return nil, bad("errors.provider.one_default_per_capability", "Only one enabled default model per capability", nil)
 			}
 			defaults[m.Capability] = true
 		}

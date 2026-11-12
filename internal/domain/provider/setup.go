@@ -94,14 +94,14 @@ func PlanSetup(req SetupRequest) (SetupPlan, error) {
 		default:
 			return SetupPlan{}, apperr.New(apperr.CodeValidation,
 				"Cannot tell which provider this key belongs to: give provider_id or base_url").
-				WithDetails(map[string]any{"field": "provider_id"})
+				WithDetails(map[string]any{"field": "provider_id"}).WithMsg("errors.provider.cannot_infer_provider", nil)
 		}
 	}
 	if id != "" {
 		m, ok := Lookup(id)
 		if !ok {
 			return SetupPlan{}, apperr.New(apperr.CodeValidation, "Unknown provider_id "+id).
-				WithDetails(map[string]any{"field": "provider_id"})
+				WithDetails(map[string]any{"field": "provider_id"}).WithMsg("errors.provider.unknown_provider", map[string]any{"provider": id})
 		}
 		plan := SetupPlan{Kind: SetupBuiltin, ProviderID: id, Name: cmp.Or(strings.TrimSpace(req.Name), m.DisplayName)}
 		if base != "" && base != strings.TrimRight(m.DefaultBaseURL, "/") {

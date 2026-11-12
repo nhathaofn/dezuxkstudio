@@ -60,7 +60,7 @@ func ParseSettings(raw map[string]string) (set Settings, clear []string, err err
 	for k, v := range raw {
 		spec, ok := SettingSpecFor(k)
 		if !ok {
-			return nil, nil, apperr.New(apperr.CodeValidation, "Unknown setting "+k).WithDetails(map[string]any{"field": k})
+			return nil, nil, apperr.New(apperr.CodeValidation, "Unknown setting "+k).WithDetails(map[string]any{"field": k}).WithMsg("errors.provider.unknown_setting", map[string]any{"field": k})
 		}
 		v = strings.TrimSpace(v)
 		if v == "" {
@@ -70,7 +70,7 @@ func ParseSettings(raw map[string]string) (set Settings, clear []string, err err
 		n, convErr := strconv.Atoi(v)
 		if convErr != nil || n < spec.Min || n > spec.Max {
 			return nil, nil, apperr.New(apperr.CodeValidation, fmt.Sprintf("%s must be an integer between %d and %d", k, spec.Min, spec.Max)).
-				WithDetails(map[string]any{"field": k, "min": spec.Min, "max": spec.Max})
+				WithDetails(map[string]any{"field": k, "min": spec.Min, "max": spec.Max}).WithMsg("errors.provider.setting_range", map[string]any{"field": k, "min": spec.Min, "max": spec.Max})
 		}
 		set[k] = n
 	}

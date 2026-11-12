@@ -90,6 +90,30 @@ Quản lý provider được đóng gói thành **node** giống `tool.watermark
   4. Host lạ thì tạo custom provider. Phải discover model thành công thì mới lưu.
 - CLI agent (Claude, Codex, Gemini) vẫn có thể giữ transcript riêng trong profile của nó. Muốn an toàn tuyệt đối thì nhập key ở Settings → Providers.
 
+## Model, giới hạn và model mặc định
+- **Model**: bảng `provider_models` dùng chung cho provider có sẵn và custom (`owner_id`). Mỗi model gồm loại
+  (llm/image/video/tts), `display_name`, bật/tắt, mặc định theo loại (mỗi loại chỉ một model), `user_added`, và `facts`
+  (`durations`, `resolutions`, `audio`, `max_output_tokens`) do người dùng sửa. Catalog **không lấy từ ArcReel**
+  (AGPL), mà xây dựng từ:
+  1. API của chính provider: `tool.provider_discover_models` hoặc nút "Refresh from API". Model không dùng để sinh
+     nội dung (embedding, whisper…) bị bỏ qua. Khi discover lại, lựa chọn cũ của người dùng được giữ nguyên.
+  2. Model người dùng tự thêm theo ID. Đây là cách duy nhất cho Kling, Vidu, Ark, Vertex vì API của họ không có
+     danh sách model.
+- **Giới hạn** (`provider_settings`, khai báo trong `domain.SettingSpecs`): `image/video/tts_max_workers`, `image/video_rpm`,
+  `request_gap_ms`. Thứ tự ưu tiên khi lấy giá trị: người dùng đặt > `Meta.DefaultConcurrency` (ví dụ Agnes video = 1) > config
+  (`providers.default_max_workers`, `providers.default_rpm`, `providers.default_request_gap_ms`).
+- **Model mặc định theo mục đích** (`provider_defaults`, khai báo trong `domain.PurposeSpecs`: text, image, video, tts):
+  - Giá trị lưu dạng `provider/model`. Để trống nghĩa là **auto**: lấy model mặc định của provider sẵn sàng đầu tiên,
+    provider có sẵn theo thứ tự registry, sau đó tới custom.
+  - Provider bị coi là không sẵn sàng khi không có key active hoặc key active đã chết.
+  - Nếu model đã chọn không còn dùng được thì hiện cảnh báo và tạm dùng auto.
+- **Dùng trong tính năng mới**:
+  ```go
+  m, err := providers.ResolveModel(ctx, provider.PurposeImage, "") // "" = default/auto, hoặc "openai/gpt-image-1"
+  // m.Model (id, facts), m.Limits (max workers, rpm, gap), m.Builtin (key, base URL) hoặc m.Custom (endpoint, key)
+  ```
+  Chưa có model dùng được thì trả `ERR_VALIDATION` với `details.not_configured`.
+
 ## Kiểm tra sức khỏe key
 - Khi app mở (`providers.check_on_startup`, mặc định bật), mọi credential và custom provider được test ở chế độ nền,
   tối đa `providers.check_concurrency` (mặc định 4) test chạy cùng lúc. Việc test không làm chậm lúc mở app, và dừng lại khi tắt app.
@@ -103,3 +127,5 @@ Quản lý provider được đóng gói thành **node** giống `tool.watermark
 - Vertex: test bằng cách đổi service account lấy OAuth token. ArcReel gọi `models.list`, nên bắt được thêm trường hợp Vertex API bị tắt.
 - Agnes: ArcReel không có test, ở đây gọi `GET {base}/models`. Nếu trả 404 thì hiện vàng, không bị coi là key chết.
 - Đoán endpoint cho custom provider chỉ dựa trên ID model, đơn giản hơn `infer_endpoint` của ArcReel. Người dùng sửa được trong bảng model.
+- Không có catalog model dựng sẵn (giá, vòng đời model, đồng bộ chính thức). Đây là lựa chọn có chủ ý để không chép dữ liệu AGPL.
+- Không làm: tính tiền và hệ số giá, ComfyUI, endpoint khai báo bằng JSON hoặc do người dùng tự định nghĩa, `path_overrides`, credential agent Anthropic theo tier.

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 
+	"app/internal/apperr"
 	domain "app/internal/domain/provider"
 	"app/internal/engine"
 )
@@ -172,7 +173,7 @@ func setupNode(svc Service) engine.Node {
 			}
 		}
 		if req.APIKey == "" && len(req.Secrets) == 0 {
-			return nil, engine.Invalid("api_key (or the provider's secret fields) is required")
+			return nil, apperr.Validation("api_key (or the provider's secret fields) is required").WithMsg("errors.provider.api_key_required", nil)
 		}
 		return svc.Setup(ctx, req)
 	})
@@ -185,7 +186,7 @@ func idParam(source string) engine.Param {
 func requireID(in Input) (string, error) {
 	id := in.str("id")
 	if id == "" {
-		return "", engine.Invalid("id is required (see " + NodeList + ")")
+		return "", apperr.Validation("id is required (see "+NodeList+")").WithMsg("errors.provider.id_required", nil)
 	}
 	return id, nil
 }
@@ -235,7 +236,7 @@ func deleteNode(svc Service) engine.Node {
 			return nil, err
 		}
 		if !in.flag("confirm") {
-			return nil, engine.Invalid("set confirm=true to delete")
+			return nil, apperr.Validation("set confirm=true to delete").WithMsg("errors.provider.confirm_required", nil)
 		}
 		name, err := svc.Describe(ctx, id)
 		if err != nil {
@@ -279,7 +280,7 @@ func setDefaultNode(svc Service) engine.Node {
 	}, func(ctx context.Context, in Input) (any, error) {
 		p := in.str("purpose")
 		if p == "" {
-			return nil, engine.Invalid("purpose is required")
+			return nil, apperr.Validation("purpose is required").WithMsg("errors.provider.purpose_required", nil)
 		}
 		return svc.SetDefaultModel(ctx, domain.Purpose(p), in.str("model"))
 	})
@@ -315,7 +316,7 @@ func settingsNode(svc Service) engine.Node {
 			}
 		}
 		if len(raw) == 0 {
-			return nil, engine.Invalid("give at least one setting to change or reset")
+			return nil, apperr.Validation("give at least one setting to change or reset").WithMsg("errors.provider.settings_required", nil)
 		}
 		set, err := svc.UpdateSettings(ctx, id, raw)
 		if err != nil {

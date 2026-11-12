@@ -256,7 +256,7 @@ func (m Meta) CheckComplete(values map[string]string, present func(key string) b
 		f, ok := m.Field(k)
 		if !ok || f.Secret {
 			return apperr.New(apperr.CodeValidation, "Unknown field "+k).
-				WithDetails(map[string]any{"field": k})
+				WithDetails(map[string]any{"field": k}).WithMsg("errors.provider.unknown_field", map[string]any{"field": k})
 		}
 	}
 	if len(m.CredentialGroups) > 0 {
@@ -275,7 +275,7 @@ func (m Meta) CheckComplete(values map[string]string, present func(key string) b
 			}
 		}
 		return apperr.New(apperr.CodeValidation, "Fill in one complete group of credentials").
-			WithDetails(map[string]any{"groups": m.CredentialGroups})
+			WithDetails(map[string]any{"groups": m.CredentialGroups}).WithMsg("errors.provider.complete_group_required", nil)
 	}
 	for _, f := range m.Fields {
 		if f.Required && !has(f) {
@@ -287,7 +287,7 @@ func (m Meta) CheckComplete(values map[string]string, present func(key string) b
 
 func missing(key string) error {
 	return apperr.New(apperr.CodeValidation, "Missing required field "+key).
-		WithDetails(map[string]any{"field": key})
+		WithDetails(map[string]any{"field": key}).WithMsg("errors.provider.missing_field", map[string]any{"field": key})
 }
 
 // MaskSecret shows the first 3 and last 4 characters of long secrets, "••••" otherwise.
@@ -329,5 +329,5 @@ type Repository interface {
 
 // ErrNotFound builds the not-found error for a credential or custom provider id.
 func ErrNotFound(id string) error {
-	return apperr.New(apperr.CodeNotFound, "Provider credential not found").WithDetails(map[string]any{"id": id})
+	return apperr.New(apperr.CodeNotFound, "Provider credential not found").WithDetails(map[string]any{"id": id}).WithMsg("errors.provider.credential_not_found", nil)
 }

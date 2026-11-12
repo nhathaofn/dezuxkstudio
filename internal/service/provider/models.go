@@ -83,7 +83,7 @@ func (s *Service) DiscoverBuiltinModels(ctx context.Context, providerID string) 
 		found, err = s.discover(ctx, domain.DiscoveryAnthropic, host, key)
 	default:
 		return nil, apperr.New(apperr.CodeValidation, m.DisplayName+" has no model list; add model ids by hand").
-			WithDetails(map[string]any{"provider_id": providerID, "no_discovery": true})
+			WithDetails(map[string]any{"provider_id": providerID, "no_discovery": true}).WithMsg("errors.provider.no_discovery", map[string]any{"provider": m.DisplayName})
 	}
 	if err != nil {
 		return nil, discoveryError(err, key)
@@ -243,7 +243,7 @@ func autoPick(c []Candidate) domain.ModelRef { return c[0].Ref }
 func (s *Service) SetDefault(ctx context.Context, p domain.Purpose, ref string) error {
 	c, ok := domain.PurposeCapability(p)
 	if !ok {
-		return apperr.New(apperr.CodeValidation, "Unknown purpose "+string(p)).WithDetails(map[string]any{"field": "purpose"})
+		return apperr.New(apperr.CodeValidation, "Unknown purpose "+string(p)).WithDetails(map[string]any{"field": "purpose"}).WithMsg("errors.provider.unknown_purpose", map[string]any{"purpose": string(p)})
 	}
 	r, err := domain.ParseModelRef(ref)
 	if err != nil {
@@ -256,7 +256,7 @@ func (s *Service) SetDefault(ctx context.Context, p domain.Purpose, ref string) 
 		}
 		if !slices.ContainsFunc(cands[c], func(x Candidate) bool { return x.Ref == r }) {
 			return apperr.New(apperr.CodeValidation, "That model is not an enabled "+string(c)+" model of a ready provider").
-				WithDetails(map[string]any{"field": "model", "capability": string(c)})
+				WithDetails(map[string]any{"field": "model", "capability": string(c)}).WithMsg("errors.provider.model_not_ready", map[string]any{"capability": string(c)})
 		}
 	}
 	if err := s.repo.SetDefault(ctx, p, r.String()); err != nil {
@@ -282,7 +282,7 @@ type ResolvedModel struct {
 func (s *Service) ResolveModel(ctx context.Context, p domain.Purpose, ref string) (ResolvedModel, error) {
 	c, ok := domain.PurposeCapability(p)
 	if !ok {
-		return ResolvedModel{}, apperr.New(apperr.CodeValidation, "Unknown purpose "+string(p))
+		return ResolvedModel{}, apperr.New(apperr.CodeValidation, "Unknown purpose "+string(p)).WithMsg("errors.provider.unknown_purpose", map[string]any{"purpose": string(p)})
 	}
 	want, err := domain.ParseModelRef(ref)
 	if err != nil {
@@ -297,7 +297,7 @@ func (s *Service) ResolveModel(ctx context.Context, p domain.Purpose, ref string
 		i := slices.IndexFunc(cands[c], func(x Candidate) bool { return x.Ref == want })
 		if i < 0 {
 			return ResolvedModel{}, apperr.New(apperr.CodeValidation, "Model "+want.String()+" is not usable for "+string(p)).
-				WithDetails(map[string]any{"model": want.String(), "not_configured": true})
+				WithDetails(map[string]any{"model": want.String(), "not_configured": true}).WithMsg("errors.provider.model_not_usable", map[string]any{"model": want.String(), "purpose": string(p)})
 		}
 		pick = cands[c][i]
 	} else {
@@ -308,7 +308,7 @@ func (s *Service) ResolveModel(ctx context.Context, p domain.Purpose, ref string
 		i := slices.IndexFunc(defs, func(d PurposeDefault) bool { return d.Purpose == p })
 		if i < 0 || defs[i].Effective.ProviderID == "" {
 			return ResolvedModel{}, apperr.New(apperr.CodeValidation, "No provider is set up for "+string(p)).
-				WithDetails(map[string]any{"purpose": string(p), "not_configured": true})
+				WithDetails(map[string]any{"purpose": string(p), "not_configured": true}).WithMsg("errors.provider.not_configured", map[string]any{"purpose": string(p)})
 		}
 		e := defs[i].Effective
 		pick = defs[i].Candidates[slices.IndexFunc(defs[i].Candidates, func(x Candidate) bool { return x.Ref == e })]

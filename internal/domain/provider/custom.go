@@ -121,10 +121,10 @@ func (in *CustomInput) Validate() error {
 	in.BaseURL = strings.TrimRight(strings.TrimSpace(in.BaseURL), "/")
 	in.APIKey = strings.TrimSpace(in.APIKey)
 	if in.Name == "" {
-		return apperr.New(apperr.CodeValidation, "Name is required").WithDetails(map[string]any{"field": "name"})
+		return apperr.New(apperr.CodeValidation, "Name is required").WithDetails(map[string]any{"field": "name"}).WithMsg("errors.provider.name_required", nil)
 	}
 	if !slices.Contains(DiscoveryFormats(), in.DiscoveryFormat) {
-		return apperr.New(apperr.CodeValidation, "Unknown protocol").WithDetails(map[string]any{"field": "discovery_format"})
+		return apperr.New(apperr.CodeValidation, "Unknown protocol").WithDetails(map[string]any{"field": "discovery_format"}).WithMsg("errors.provider.unknown_protocol", nil)
 	}
 	if err := ValidateBaseURL(in.BaseURL); err != nil {
 		return err
@@ -141,22 +141,22 @@ func (in *CustomInput) Validate() error {
 // link-local / cloud-metadata hosts (ArcReel validate_anthropic_base_url + artifact_http_client).
 // Loopback and private ranges stay allowed for local servers (Ollama, LM Studio).
 func ValidateBaseURL(raw string) error {
-	bad := func(msg string) error {
-		return apperr.New(apperr.CodeValidation, msg).WithDetails(map[string]any{"field": "base_url"})
+	bad := func(key, msg string) error {
+		return apperr.New(apperr.CodeValidation, msg).WithDetails(map[string]any{"field": "base_url"}).WithMsg(key, nil)
 	}
 	u, err := url.Parse(raw)
 	if raw == "" || err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return bad("Base URL must be an http(s) URL")
+		return bad("errors.provider.base_url_scheme", "Base URL must be an http(s) URL")
 	}
 	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
-		return bad("Base URL must not contain credentials, a query or a fragment")
+		return bad("errors.provider.base_url_parts", "Base URL must not contain credentials, a query or a fragment")
 	}
 	h := strings.ToLower(u.Hostname())
 	if ip := net.ParseIP(h); ip != nil && (ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()) {
-		return bad("Base URL points at a link-local address")
+		return bad("errors.provider.base_url_link_local", "Base URL points at a link-local address")
 	}
 	if h == "metadata.google.internal" || h == "metadata" || strings.HasSuffix(h, ".internal.") {
-		return bad("Base URL points at a cloud metadata service")
+		return bad("errors.provider.base_url_metadata", "Base URL points at a cloud metadata service")
 	}
 	return nil
 }

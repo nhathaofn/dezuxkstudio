@@ -77,7 +77,7 @@ func ParseModelRef(s string) (ModelRef, error) {
 	p, m, ok := strings.Cut(s, "/")
 	if !ok || p == "" || strings.TrimSpace(m) == "" {
 		return ModelRef{}, apperr.New(apperr.CodeValidation, "A model must be written provider/model").
-			WithDetails(map[string]any{"field": "model"})
+			WithDetails(map[string]any{"field": "model"}).WithMsg("errors.provider.model_ref_format", nil)
 	}
 	return ModelRef{ProviderID: p, ModelID: strings.TrimSpace(m)}, nil
 }

@@ -192,9 +192,9 @@ func discoveryError(err error, key string) error {
 	var pe *probeError
 	if errors.As(err, &pe) {
 		return apperr.New(apperr.CodeUnavailable, "Model discovery failed: "+redact(pe.detail, key)).
-			WithDetails(map[string]any{"outcome": string(pe.outcome), "status": pe.status})
+			WithDetails(map[string]any{"outcome": string(pe.outcome), "status": pe.status}).WithMsg("errors.provider.discovery_failed", map[string]any{"detail": redact(pe.detail, key)})
 	}
-	return apperr.Wrap(apperr.CodeUnavailable, "Model discovery failed", err)
+	return apperr.Wrap(apperr.CodeUnavailable, "Model discovery failed", err).WithMsg("errors.provider.discovery_unavailable", nil)
 }
 
 func (r Resolved) allSecrets() []string {
@@ -224,7 +224,7 @@ func (s *Service) run(ctx context.Context, secretVals []string, probe func(conte
 	case errors.Is(err, context.DeadlineExceeded):
 		res.Outcome, res.Detail = OutcomeTimeout, "no response within the test timeout"
 	case errors.Is(err, context.Canceled):
-		return TestResult{}, apperr.Wrap(apperr.CodeCancelled, "Cancelled", err)
+		return TestResult{}, apperr.Wrap(apperr.CodeCancelled, "Cancelled", err).WithMsg("errors.provider.cancelled", nil)
 	default:
 		var ne net.Error
 		if errors.As(err, &ne) && ne.Timeout() {
@@ -510,11 +510,11 @@ func parseServiceAccount(raw string) (serviceAccount, error) {
 	var sa serviceAccount
 	if len(raw) > maxServiceAccountBytes || json.Unmarshal([]byte(raw), &sa) != nil {
 		return sa, apperr.New(apperr.CodeValidation, "The credentials file is not valid JSON").
-			WithDetails(map[string]any{"field": domain.FieldCredentialsFile})
+			WithDetails(map[string]any{"field": domain.FieldCredentialsFile}).WithMsg("errors.provider.credentials_not_json", nil)
 	}
 	if sa.ProjectID == "" || sa.ClientEmail == "" || sa.PrivateKey == "" {
 		return sa, apperr.New(apperr.CodeValidation, "The credentials file must be a service-account JSON with project_id").
-			WithDetails(map[string]any{"field": domain.FieldCredentialsFile})
+			WithDetails(map[string]any{"field": domain.FieldCredentialsFile}).WithMsg("errors.provider.credentials_missing_project", nil)
 	}
 	return sa, nil
 }
