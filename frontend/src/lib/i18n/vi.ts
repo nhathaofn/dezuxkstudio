@@ -109,6 +109,12 @@ export const vi: Record<MessageKey, string> = {
   "providers.backend.memory":
     "Khóa chỉ được lưu trong bộ nhớ và sẽ mất khi khởi động lại ứng dụng.",
   "providers.backend.keyring": "Khóa được lưu trong kho khóa của hệ điều hành.",
+  "providers.filterShort.all": "Tất cả",
+  "providers.filterShort.llm": "LLM",
+  "providers.filterShort.image": "Ảnh",
+  "providers.filterShort.video": "Video",
+  "providers.filterShort.tts": "TTS",
+  "providers.addCustomShort": "Thêm tùy chỉnh",
   "providers.capability.all": "Tất cả",
   "providers.capability.llm": "Ngôn ngữ",
   "providers.capability.image": "Hình ảnh",

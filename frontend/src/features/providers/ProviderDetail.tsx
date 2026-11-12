@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ArrowUpRight, Play, Plus } from "lucide-react";
 import type { CustomEndpoint, ProviderCredential } from "../../contracts/generated";
 import { Badge } from "../../components/ui/Badge";
@@ -35,6 +35,12 @@ export function ProviderDetail({
   const t = useT();
   const id = useId();
   const [tab, setTab] = useState<"key" | "model" | "limits">("key");
+  const headerRef = useRef<HTMLElement>(null);
+  const providerId = entry.provider.id;
+  useEffect(() => {
+    // Another tab or provider starts at the top, not at the previous tab's scroll offset.
+    headerRef.current?.closest(".providers-detail")?.scrollTo({ top: 0 });
+  }, [tab, providerId]);
   const activate = useProvidersStore((s) => s.activateCredential);
   const test = useProvidersStore((s) => s.testCredential);
   const remove = useProvidersStore((s) => s.deleteCredential);
@@ -62,44 +68,48 @@ export function ProviderDetail({
         : "providers.limits";
   return (
     <>
-      <header className="providers-detail-header">
+      <header ref={headerRef} className="providers-detail-header">
         <div className="providers-heading">
           <span className="providers-avatar providers-avatar--large">
             {providerName(entry).charAt(0).toLocaleUpperCase()}
           </span>
-          <h2 title={providerName(entry)} className="providers-truncate">
-            {providerName(entry)}
-          </h2>
-          <span
-            className={`providers-status providers-status--${status}`}
-            title={
-              health?.tested
-                ? [t(`providers.outcome.${health.outcome}`), health.detail]
-                    .filter(Boolean)
-                    .join(": ")
-                : undefined
-            }
-          >
-            <span className={`providers-dot providers-dot--${status}`} />
-            {t(`providers.status.${status}`)}
-          </span>
-          <div className="providers-capabilities">
-            {provider.capabilities.map((capability) => (
-              <span key={capability}>
-                <CapabilityIcon value={capability} />
-                {t(`providers.capability.${capability}`)}
+          <div className="providers-heading-main">
+            <div className="providers-title-row">
+              <h2 title={providerName(entry)} className="providers-truncate">
+                {providerName(entry)}
+              </h2>
+              <span
+                className={`providers-status providers-status--${status}`}
+                title={
+                  health?.tested
+                    ? [t(`providers.outcome.${health.outcome}`), health.detail]
+                        .filter(Boolean)
+                        .join(": ")
+                    : undefined
+                }
+              >
+                <span className={`providers-dot providers-dot--${status}`} />
+                {t(`providers.status.${status}`)}
               </span>
-            ))}
+            </div>
+            <div className="providers-capabilities">
+              {provider.capabilities.map((capability) => (
+                <span key={capability}>
+                  <CapabilityIcon value={capability} />
+                  {t(`providers.capability.${capability}`)}
+                </span>
+              ))}
+            </div>
+            {entry.kind === "builtin" && entry.provider.docs_url && (
+              <button
+                type="button"
+                className="providers-docs providers-text-button"
+                onClick={() => openExternal(entry.provider.docs_url)}
+              >
+                {t("providers.getApiKey")} <ArrowUpRight size={12} />
+              </button>
+            )}
           </div>
-          {entry.kind === "builtin" && entry.provider.docs_url && (
-            <button
-              type="button"
-              className="providers-docs providers-text-button"
-              onClick={() => openExternal(entry.provider.docs_url)}
-            >
-              {t("providers.getApiKey")} <ArrowUpRight size={12} />
-            </button>
-          )}
         </div>
         <div className="card-actions-row">
           <Button

@@ -108,6 +108,12 @@ export const en = {
   "providers.backend.memory":
     "Keys are stored only in memory and will be lost when the app restarts.",
   "providers.backend.keyring": "Keys are stored in the OS keychain.",
+  "providers.filterShort.all": "All",
+  "providers.filterShort.llm": "LLM",
+  "providers.filterShort.image": "Image",
+  "providers.filterShort.video": "Video",
+  "providers.filterShort.tts": "TTS",
+  "providers.addCustomShort": "Add custom",
   "providers.capability.all": "All",
   "providers.capability.llm": "LLM",
   "providers.capability.image": "Image",

@@ -75,16 +75,19 @@ export function ProvidersView() {
     setEditor(null);
     showSaved(true);
   };
-  const addCustom = (
+  const addCustom = (short: boolean) => (
     <Button
       type="button"
       variant="ghost"
       className="providers-add-custom"
+      title={t("providers.addCustom")}
       disabled={!connected || !data}
       onClick={() => setEditor({ kind: "custom" })}
     >
       <Plus size={14} />
-      {t("providers.addCustom")}
+      <span className="providers-truncate">
+        {t(short ? "providers.addCustomShort" : "providers.addCustom")}
+      </span>
     </Button>
   );
   const groupLabels = {
@@ -204,7 +207,7 @@ export function ProvidersView() {
                       aria-pressed={filter === value}
                       onClick={() => setFilter(value)}
                     >
-                      {t(`providers.capability.${value}`)}
+                      {t(`providers.filterShort.${value}`)}
                     </Button>
                   ))}
                 </div>
@@ -235,46 +238,48 @@ export function ProvidersView() {
                     options[next]?.focus();
                   }}
                 >
-                  {Object.entries(groups).map(([group, entries]) => (
-                    <div
-                      role="group"
-                      aria-label={t(groupLabels[group as keyof typeof groups])}
-                      key={group}
-                    >
-                      <h3>
-                        {t(groupLabels[group as keyof typeof groups])}{" "}
-                        <span>({entries.length})</span>
-                      </h3>
-                      {entries.map((entry) => (
-                        <button
-                          type="button"
-                          role="option"
-                          aria-selected={selectedId === entry.provider.id}
-                          tabIndex={
-                            selectedId === entry.provider.id ||
-                            (!visible.some((row) => row.provider.id === selectedId) &&
-                              entry === visible[0])
-                              ? 0
-                              : -1
-                          }
-                          key={entry.provider.id}
-                          className="providers-list-row"
-                          onClick={() => select(entry)}
-                          title={`${providerName(entry)} · ${t(`providers.status.${providerStatus(entry)}`)}`}
-                        >
-                          <span className="providers-avatar">
-                            {providerName(entry).charAt(0).toLocaleUpperCase()}
-                          </span>
-                          <span className="providers-truncate">{providerName(entry)}</span>
-                          <span
-                            className={`providers-dot providers-dot--${providerStatus(entry)}`}
-                            aria-label={t(`providers.status.${providerStatus(entry)}`)}
-                          />
-                        </button>
-                      ))}
-                      {group === "custom" && addCustom}
-                    </div>
-                  ))}
+                  {Object.entries(groups)
+                    .filter(([group, entries]) => entries.length > 0 || group === "custom")
+                    .map(([group, entries]) => (
+                      <div
+                        role="group"
+                        aria-label={t(groupLabels[group as keyof typeof groups])}
+                        key={group}
+                      >
+                        <h3>
+                          {t(groupLabels[group as keyof typeof groups])}
+                          {entries.length > 0 && <span> {entries.length}</span>}
+                        </h3>
+                        {entries.map((entry) => (
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={selectedId === entry.provider.id}
+                            tabIndex={
+                              selectedId === entry.provider.id ||
+                              (!visible.some((row) => row.provider.id === selectedId) &&
+                                entry === visible[0])
+                                ? 0
+                                : -1
+                            }
+                            key={entry.provider.id}
+                            className="providers-list-row"
+                            onClick={() => select(entry)}
+                            title={`${providerName(entry)} · ${t(`providers.status.${providerStatus(entry)}`)}`}
+                          >
+                            <span className="providers-avatar">
+                              {providerName(entry).charAt(0).toLocaleUpperCase()}
+                            </span>
+                            <span className="providers-truncate">{providerName(entry)}</span>
+                            <span
+                              className={`providers-dot providers-dot--${providerStatus(entry)}`}
+                              aria-label={t(`providers.status.${providerStatus(entry)}`)}
+                            />
+                          </button>
+                        ))}
+                        {group === "custom" && addCustom(true)}
+                      </div>
+                    ))}
                   {!visible.length && <p className="subtitle">{t("providers.empty")}</p>}
                 </div>
               </aside>
@@ -290,17 +295,19 @@ export function ProvidersView() {
                   }}
                 >
                   {!selected && <option value="">{t("providers.selectProvider")}</option>}
-                  {Object.entries(providerGroups(data)).map(([group, entries]) => (
-                    <optgroup key={group} label={t(groupLabels[group as keyof typeof groups])}>
-                      {entries.map((entry) => (
-                        <option key={entry.provider.id} value={entry.provider.id}>
-                          {providerName(entry)}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))}
+                  {Object.entries(providerGroups(data))
+                    .filter(([, entries]) => entries.length > 0)
+                    .map(([group, entries]) => (
+                      <optgroup key={group} label={t(groupLabels[group as keyof typeof groups])}>
+                        {entries.map((entry) => (
+                          <option key={entry.provider.id} value={entry.provider.id}>
+                            {providerName(entry)}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
                 </select>
-                {addCustom}
+                {addCustom(true)}
               </div>
               <div className="providers-detail">
                 {selected ? (
