@@ -57,6 +57,8 @@ type SessionUpdate struct {
 	Text      string
 	Tool      string
 	Status    string
+	// ToolCallID links tool_call and tool_call_update events of one tool run (titles may differ or be empty).
+	ToolCallID string
 }
 
 type rpcEnvelope struct {
@@ -545,12 +547,13 @@ func parseSessionUpdate(params json.RawMessage) (SessionUpdate, bool) {
 		return SessionUpdate{}, false
 	}
 	return SessionUpdate{
-		SessionID: raw.SessionID,
-		Kind:      kind,
-		MessageID: raw.Update.MessageID,
-		Text:      extractTextContent(raw.Update.Content),
-		Tool:      raw.Update.Title,
-		Status:    raw.Update.Status,
+		SessionID:  raw.SessionID,
+		Kind:       kind,
+		MessageID:  raw.Update.MessageID,
+		Text:       extractTextContent(raw.Update.Content),
+		Tool:       raw.Update.Title,
+		Status:     raw.Update.Status,
+		ToolCallID: raw.Update.ToolCallID,
 	}, true
 }
 

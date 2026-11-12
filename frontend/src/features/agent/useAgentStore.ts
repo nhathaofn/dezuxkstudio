@@ -130,6 +130,15 @@ interface AgentState {
   receiveApprovals: (approvals: AgentApprovalRequest[]) => void;
 }
 
+/** Marks every still-running tool of a finished reply with status (done or error). */
+export function finishRunningTools<T extends { status: "running" | "done" | "error" }>(
+  tools: T[] | undefined,
+  status: "done" | "error"
+): T[] | undefined {
+  if (!tools?.some((t) => t.status === "running")) return tools;
+  return tools.map((t) => (t.status === "running" ? { ...t, status } : t));
+}
+
 export const useAgentStore = create<AgentState>((set, get) => ({
   panelOpen: true,
   panelWidth: readSavedWidth(),
@@ -179,7 +188,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           ...(turnOver
             ? {
                 sending: false,
-                messages: s.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
+                messages: s.messages.map((m) =>
+                  m.streaming
+                    ? { ...m, streaming: false, tools: finishRunningTools(m.tools, "done") }
+                    : m
+                ),
               }
             : {}),
         };
@@ -546,9 +559,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         case "tool_result": {
           const name = evt.tool || evt.text;
           const prevTools = [...(target.tools ?? [])];
-          const matchIdx = prevTools.findIndex(
+          let matchIdx = prevTools.findIndex(
             (item) => item.status === "running" && (!name || item.name === name)
           );
+          // Agents may title the result differently from the call: end the oldest running tool instead
+          // of leaving it spinning next to a duplicate finished row.
+          if (matchIdx < 0) matchIdx = prevTools.findIndex((item) => item.status === "running");
           // The backend signals failure through `error`; the text is tool output and may mention "error".
           const nextStatus = evt.error ? "error" : "done";
           if (matchIdx >= 0) {
@@ -562,10 +578,13 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         }
         case "done":
           target.streaming = false;
+          // The turn is over, so no tool can still be running (a lost or unmatched result event).
+          target.tools = finishRunningTools(target.tools, "done");
           msgs[idx] = target;
           return { messages: msgs, sending: false };
         case "error":
           target.streaming = false;
+          target.tools = finishRunningTools(target.tools, "error");
           target.errorKey = evt.error_key;
           target.errorParams = evt.error_params;
           if (!target.text) {

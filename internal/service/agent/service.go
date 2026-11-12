@@ -73,6 +73,10 @@ type Options struct {
 
 // Service manages isolated external AI agent connections, MCP tooling, approvals, and chat turns.
 type Service struct {
+	// acpToolTitles maps ACP toolCallId -> the title shown when the tool started, so the matching
+	// tool_call_update (often untitled or titled differently) ends the same tool row. Guarded by mu.
+	acpToolTitles map[string]string
+
 	repo               domainagent.Repository
 	dataDir            string
 	workspaceDir       string
@@ -1241,6 +1245,8 @@ func (s *Service) handleSessionUpdate(connToken int64, upd SessionUpdate) {
 		s.activeTurnBuf.WriteString(upd.Text)
 	case "agent_thought_chunk", "thought_message_chunk":
 		s.activeThoughtBuf.WriteString(upd.Text)
+	case "tool_call", "tool_call_update":
+		upd.Tool = s.trackACPTool(upd)
 	}
 	s.mu.Unlock()
 
@@ -1276,6 +1282,15 @@ func (s *Service) handleSessionUpdate(connToken int64, upd SessionUpdate) {
 			Tool:       upd.Tool,
 			Text:       upd.Tool,
 		})
+		// Some agents report a tool that already finished in the tool_call itself (no update follows).
+		if upd.Status == toolStatusCompleted || upd.Status == toolStatusFailed {
+			evt := domainagent.ChatEvent{Type: domainagent.ChatEventToolResult, ProviderID: providerID,
+				MessageID: messageID, Tool: upd.Tool, Text: upd.Status}
+			if upd.Status == toolStatusFailed {
+				evt.Error = toolStatusFailed
+			}
+			s.emitChat(evt)
+		}
 	case "tool_call_update":
 		if upd.Status == toolStatusCompleted || upd.Status == toolStatusFailed {
 			evt := domainagent.ChatEvent{
@@ -1696,4 +1711,28 @@ func isMissingCLISessionError(err error) bool {
 	return strings.Contains(msg, "no rollout found") || // codex exec resume
 		strings.Contains(msg, "thread/resume failed") ||
 		strings.Contains(msg, "no conversation found with session id") // claude --resume
+}
+
+// trackACPTool returns the title to show for an ACP tool event: the title recorded when the tool started
+// (keyed by toolCallId), so start and end events name the same tool row. Finished tools are forgotten.
+// Caller holds s.mu.
+func (s *Service) trackACPTool(upd SessionUpdate) string {
+	if upd.ToolCallID == "" {
+		return upd.Tool
+	}
+	if s.acpToolTitles == nil {
+		s.acpToolTitles = map[string]string{}
+	}
+	title, known := s.acpToolTitles[upd.ToolCallID]
+	if !known && upd.Tool != "" {
+		title = upd.Tool
+		s.acpToolTitles[upd.ToolCallID] = title
+	}
+	if upd.Status == toolStatusCompleted || upd.Status == toolStatusFailed {
+		delete(s.acpToolTitles, upd.ToolCallID)
+	}
+	if title == "" {
+		return upd.Tool
+	}
+	return title
 }

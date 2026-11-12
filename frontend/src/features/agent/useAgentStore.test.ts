@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Actions, type AgentProviderInfo } from "../../contracts/generated";
 import { ActionError, rtClient } from "../../lib/rtClient";
-import { clampDrawerWidth, useAgentStore } from "./useAgentStore";
+import { clampDrawerWidth, finishRunningTools, useAgentStore } from "./useAgentStore";
 
 const mockProviders: AgentProviderInfo[] = [
   {
@@ -328,5 +328,58 @@ describe("conversations", () => {
     expect(s.conversations.map((c) => c.id)).toEqual(["c2"]);
     expect(s.conversationId).toBe("");
     expect(s.messages).toEqual([]);
+  });
+});
+
+describe("tool spinners", () => {
+  const evt = (type: "tool_call" | "tool_result" | "done" | "error", tool = "", error = "") => ({
+    type,
+    provider_id: "antigravity" as const,
+    message_id: "m-tools",
+    text: tool,
+    tool,
+    error,
+  });
+
+  beforeEach(() => {
+    useAgentStore.setState({ messages: [], sending: true });
+  });
+
+  it("ends a running tool even when the result is titled differently", () => {
+    const s = useAgentStore.getState();
+    s.receiveChatEvent(evt("tool_call", "dezuxk/workflow_run_node"));
+    s.receiveChatEvent(evt("tool_result", "Run Watermark Remover"));
+    const tools = useAgentStore.getState().messages[0].tools ?? [];
+    expect(tools).toHaveLength(1);
+    expect(tools[0].status).toBe("done");
+  });
+
+  it("stops every spinner when the reply is done", () => {
+    const s = useAgentStore.getState();
+    s.receiveChatEvent(evt("tool_call", "a"));
+    s.receiveChatEvent(evt("tool_call", "b"));
+    s.receiveChatEvent(evt("done"));
+    const msg = useAgentStore.getState().messages[0];
+    expect(msg.tools?.every((t) => t.status === "done")).toBe(true);
+    expect(msg.streaming).toBe(false);
+  });
+
+  it("marks running tools as failed when the reply errors", () => {
+    const s = useAgentStore.getState();
+    s.receiveChatEvent(evt("tool_call", "a"));
+    s.receiveChatEvent(evt("error", "", "boom"));
+    expect(useAgentStore.getState().messages[0].tools?.[0].status).toBe("error");
+  });
+
+  it("finishRunningTools leaves finished tools alone", () => {
+    const tools = [
+      { name: "x", status: "error" as const },
+      { name: "y", status: "running" as const },
+    ];
+    expect(finishRunningTools(tools, "done")).toEqual([
+      { name: "x", status: "error" },
+      { name: "y", status: "done" },
+    ]);
+    expect(finishRunningTools(undefined, "done")).toBeUndefined();
   });
 });
