@@ -154,7 +154,7 @@ func TestInstallEachSchemeVerifiesAndRuns(t *testing.T) {
 			if err != nil || !bytes.Equal(got, exeBytes("1.2.3")) {
 				t.Fatalf("program content wrong: %q %v", got, err)
 			}
-			if !strings.HasPrefix(cur.Path, m.dir) {
+			if rel, err := filepath.Rel(m.dir, cur.Path); err != nil || strings.HasPrefix(rel, "..") {
 				t.Fatalf("installed outside the app folder: %s", cur.Path)
 			}
 		})

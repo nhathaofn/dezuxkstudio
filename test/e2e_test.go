@@ -32,6 +32,8 @@ type harness struct {
 func startCore(t *testing.T, mutate func(*config.Config)) *harness {
 	t.Helper()
 	cfg := config.Default(config.ModeDesktop)
+	// Tests must never download the real agent CLIs in the background.
+	cfg.Agent.AutoInstallCLI, cfg.Agent.AutoUpdateCLI = false, false
 	if mutate != nil {
 		mutate(cfg)
 	}

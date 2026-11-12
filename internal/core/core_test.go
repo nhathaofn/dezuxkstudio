@@ -84,6 +84,8 @@ func TestCore_PreferencesAndWatermarkWiring(t *testing.T) {
 	}
 
 	cfg := config.Default(config.ModeDesktop)
+	// Tests must never download the real agent CLIs in the background.
+	cfg.Agent.AutoInstallCLI, cfg.Agent.AutoUpdateCLI = false, false
 	cfg.Server.Host = "127.0.0.1"
 	cfg.Server.Port = 0
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
