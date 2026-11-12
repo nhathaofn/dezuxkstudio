@@ -14,6 +14,7 @@ import (
 	domainagent "app/internal/domain/agent"
 	"app/internal/fsutil"
 	"app/internal/proc"
+	"app/internal/safego"
 )
 
 func prepareCodexProfile(profileRoot string) (map[string]string, error) {
@@ -190,7 +191,6 @@ func codexPolicyArgs(mcpURL, baseInstructionsFile string, toolTimeout time.Durat
 type streamJSONAccumulator interface {
 	handleLine(raw string)
 	assistantOutput() string
-	thoughtOutput() string
 	failureMessage() string
 }
 
@@ -335,16 +335,14 @@ func (s *Service) runCodexExecTurn(ctx context.Context, executable, profileRoot,
 		messageID:  messageID,
 		emit:       s.emitChat,
 	}
-	err = s.runStreamJSONCommand(
+	err = runStreamJSONCommand(
 		ctx,
-		domainagent.ProviderCodex,
 		"codex",
 		executable,
 		args,
 		workspaceDir,
 		env,
 		prompt,
-		messageID,
 		"check isolated Codex login",
 		acc,
 	)
@@ -354,16 +352,24 @@ func (s *Service) runCodexExecTurn(ctx context.Context, executable, profileRoot,
 	return err
 }
 
-func (s *Service) runStreamJSONCommand(
+// Output limits of a per-turn CLI run. A stream-json line can carry a whole tool result, so stdout lines
+// may be large; stderr is only kept as the error text, so a short tail is enough.
+const (
+	cliStdoutLineMax = 4 << 20
+	cliStderrLineMax = 256 << 10
+	cliStderrKeep    = 8 << 10
+)
+
+// runStreamJSONCommand runs one CLI turn whose stdout is a JSON-lines event stream; acc turns the lines
+// into chat events (which reach the turn through emitChat).
+func runStreamJSONCommand(
 	ctx context.Context,
-	providerID domainagent.ProviderID,
 	label string,
 	executable string,
 	args []string,
 	workDir string,
 	env []string,
 	prompt string,
-	messageID string,
 	emptyHint string,
 	acc streamJSONAccumulator,
 ) error {
@@ -386,21 +392,21 @@ func (s *Service) runStreamJSONCommand(
 
 	var stderrBuf strings.Builder
 	stderrDone := make(chan struct{})
-	go func() {
+	safego.Go(label+".stderr", func() {
 		defer close(stderrDone)
 		sc := bufio.NewScanner(stderr)
-		sc.Buffer(make([]byte, 4096), 256*1024)
+		sc.Buffer(make([]byte, 4096), cliStderrLineMax)
 		for sc.Scan() {
 			line := redactSecrets(sc.Text())
-			if stderrBuf.Len() < 8192 {
+			if stderrBuf.Len() < cliStderrKeep {
 				stderrBuf.WriteString(line)
 				stderrBuf.WriteByte('\n')
 			}
 		}
-	}()
+	})
 
 	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), cliStdoutLineMax)
 	for scanner.Scan() {
 		acc.handleLine(scanner.Text())
 	}
@@ -410,11 +416,6 @@ func (s *Service) runStreamJSONCommand(
 	waitErr := cmd.Wait()
 
 	assistantText := acc.assistantOutput()
-	thoughtText := acc.thoughtOutput()
-	if assistantText != "" || thoughtText != "" {
-		s.persistAssistantMessage(providerID, messageID, assistantText, thoughtText)
-	}
-
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}

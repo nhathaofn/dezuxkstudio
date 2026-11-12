@@ -195,7 +195,6 @@ func TestServiceGuardsProviderOutput(t *testing.T) {
 			thought, _ := json.Marshal("User wants code.\nimport os\nos.system('calc')\nprint('x')\n")
 			acc.handleLine(`{"type":"item.completed","item":{"type":"reasoning","text":` + string(thought) + `}}`)
 			acc.handleLine(`{"type":"item.completed","item":{"type":"agent_message","text":` + string(msg) + `}}`)
-			svc.persistAssistantMessage(domainagent.ProviderCodex, messageID, acc.assistantOutput(), acc.thoughtOutput())
 			return nil
 		},
 	})

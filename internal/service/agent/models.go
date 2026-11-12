@@ -156,7 +156,7 @@ func (s *Service) SetModel(ctx context.Context, id domainagent.ProviderID, model
 	}
 
 	s.mu.Lock()
-	busy := s.busy && s.activeID == id
+	busy := s.turn != nil && s.activeID == id
 	client := s.activeClient
 	sessionID := s.activeSessionID
 	isActiveACP := s.activeID == id && !s.isPerTurn(id) && client != nil

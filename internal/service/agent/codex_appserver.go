@@ -368,7 +368,6 @@ type codexTurnState struct {
 	mu          sync.Mutex
 	turnID      string
 	text        strings.Builder
-	thought     strings.Builder
 	lastMsgItem string          // agentMessage item that produced the latest text
 	streamed    map[string]bool // items that delivered deltas (their item/completed text is not re-emitted)
 	summaryOf   map[string]bool // reasoning items that stream summaries (raw reasoning text is then skipped)
@@ -404,9 +403,6 @@ func (t *codexTurnState) appendThought(delta string) {
 	if delta == "" {
 		return
 	}
-	t.mu.Lock()
-	t.thought.WriteString(delta)
-	t.mu.Unlock()
 	t.emit(domainagent.ChatEvent{Type: domainagent.ChatEventThought, Text: delta})
 }
 
@@ -624,11 +620,8 @@ func (s *Service) runCodexAppServerTurn(ctx context.Context, srv *codexAppServer
 	}
 
 	st.mu.Lock()
-	text, thought, failure, status := st.text.String(), st.thought.String(), st.failure, st.status
+	text, failure, status := st.text.String(), st.failure, st.status
 	st.mu.Unlock()
-	if text != "" || thought != "" {
-		s.persistAssistantMessage(domainagent.ProviderCodex, messageID, text, thought)
-	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -667,7 +660,7 @@ func (s *Service) codexThread(ctx context.Context, srv *codexAppServer, workspac
 			resume[k] = v
 		}
 		if err := srv.call(ctx, "thread/resume", resume, nil); err != nil {
-			// Matches isMissingCLISessionError, so the service retries with the replayed history.
+			// Matches the Codex spec's SessionGoneErrors, so the service retries with the replayed history.
 			return "", fmt.Errorf("thread/resume failed: %w", err)
 		}
 		srv.mu.Lock()

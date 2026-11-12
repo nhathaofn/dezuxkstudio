@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	"app/internal/apperr"
 )
@@ -127,8 +128,11 @@ type ProviderSpec struct {
 	// ModelAliases are model choices the CLI accepts but cannot enumerate itself.
 	ModelAliases []ModelOption
 	// Install says where the CLI is published so the app can keep a private, self-updating copy.
-	Install           InstallSpec
-	Login             LoginSpec
+	Install InstallSpec
+	Login   LoginSpec
+	// SessionGoneErrors are (lower-case) phrases the CLI uses when a saved session can no longer be
+	// resumed; such a turn is retried in a new session primed with the chat history.
+	SessionGoneErrors []string
 	Supported         bool
 	UnsupportedReason string
 }
@@ -168,6 +172,8 @@ var Registry = map[ProviderID]ProviderSpec{
 		VersionArgs:   []string{"--version"},
 		CredentialEnv: []string{"OPENAI_API_KEY"},
 		Login:         LoginSpec{Args: []string{"login", "--device-auth"}},
+		// `codex exec resume` and the app-server's thread/resume.
+		SessionGoneErrors: []string{"no rollout found", "thread/resume failed"},
 		Install: InstallSpec{
 			Scheme:        SchemeReleasePackage,
 			BaseURL:       "https://github.com/openai/codex/releases/download",
@@ -193,6 +199,8 @@ var Registry = map[ProviderID]ProviderSpec{
 		VersionArgs:   []string{"--version"},
 		CredentialEnv: []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"},
 		Login:         LoginSpec{Args: []string{"auth", "login"}, PasteCode: true, OpensBrowser: true},
+		// `claude --resume`.
+		SessionGoneErrors: []string{"no conversation found with session id"},
 		Install: InstallSpec{
 			Scheme:     SchemeVersionFile,
 			BaseURL:    "https://downloads.claude.ai/claude-code-releases",
@@ -341,4 +349,18 @@ type Repository interface {
 	// RememberedConnection is the provider the user left connected ("" = none); it is reconnected at start-up.
 	RememberedConnection(ctx context.Context) (ProviderID, error)
 	SetRememberedConnection(ctx context.Context, id ProviderID) error
+}
+
+// IsSessionGone reports whether err is the CLI saying the saved session cannot be resumed.
+func (p ProviderSpec) IsSessionGone(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, phrase := range p.SessionGoneErrors {
+		if strings.Contains(msg, phrase) {
+			return true
+		}
+	}
+	return false
 }

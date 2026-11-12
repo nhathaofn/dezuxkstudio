@@ -546,16 +546,14 @@ func (s *Service) runClaudeTurn(ctx context.Context, executable, profileRoot, wo
 		messageID:  messageID,
 		emit:       s.emitChat,
 	}
-	err = s.runStreamJSONCommand(
+	err = runStreamJSONCommand(
 		ctx,
-		domainagent.ProviderClaude,
 		"claude",
 		executable,
 		args,
 		workspaceDir,
 		env,
 		prompt,
-		messageID,
 		"check isolated Claude login",
 		acc,
 	)

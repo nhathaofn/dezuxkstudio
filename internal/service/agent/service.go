@@ -80,14 +80,6 @@ type Service struct {
 	// statusRevision numbers the status snapshots (ProviderInfo.Revision); it only ever grows.
 	statusRevision atomic.Int64
 
-	// turnTools lists, per assistant message, the tools it called (in order, once each). It is stored
-	// with the message so history shows which tools an answer was based on. Guarded by mu.
-	turnTools map[string][]string
-
-	// acpToolTitles maps ACP toolCallId -> the title shown when the tool started, so the matching
-	// tool_call_update (often untitled or titled differently) ends the same tool row. Guarded by mu.
-	acpToolTitles map[string]string
-
 	repo               domainagent.Repository
 	dataDir            string
 	workspaceDir       string
@@ -120,39 +112,32 @@ type Service struct {
 	policy    *AccessPolicy
 	approvals *approvalStore
 
-	mu               sync.Mutex
-	mcpSrv           *localMCPServer
-	activeID         domainagent.ProviderID
-	activeClient     Transport
-	activeSessionID  string
-	activeInit       *InitializeResult
-	activeVersion    string
-	activeTurnID     string
-	activeTurnCancel context.CancelFunc
-	// activeTurnTouch re-arms the turn's idle timeout (agent.turn_timeout measures silence).
-	activeTurnTouch  func()
-	activeTurnBuf    strings.Builder
-	activeThoughtBuf strings.Builder
-	activeGuard      *turnOutputGuard
-	sessionPrimed    bool                              // the active ACP session already received the conversation history
-	cliSessions      map[domainagent.ProviderID]string // resumable Codex thread / Claude session per provider
-	models           *modelState
-	uiContext        UIContext
-	states           map[domainagent.ProviderID]domainagent.ConnectionState
-	authStates       map[domainagent.ProviderID]domainagent.AuthState
-	accountInfos     map[domainagent.ProviderID]string
-	lastErrors       map[domainagent.ProviderID]error       // may carry an i18n key (localizedError)
-	cachedVersions   map[domainagent.ProviderID]cachedProbe // CLI --version results
-	authProbes       map[domainagent.ProviderID]cachedProbe // when the CLI auth status was last checked
-	tempWorkspace    string                                 // fallback workspace when none is configured
-	sentScreen       map[string]string                      // screen-context block last sent per provider session
-	conversationID   string                                 // current chat; "" until its first message (new chat on every start)
-	turnConversation map[string]string                      // running turn message ID → conversation it belongs to
+	mu              sync.Mutex
+	mcpSrv          *localMCPServer
+	activeID        domainagent.ProviderID
+	activeClient    Transport
+	activeSessionID string
+	activeInit      *InitializeResult
+	activeVersion   string
+	turn            *turn                             // the running chat turn; nil when idle
+	turns           sync.WaitGroup                    // running turn goroutines, waited for on Close
+	sessionPrimed   bool                              // the active ACP session already received the conversation history
+	cliSessions     map[domainagent.ProviderID]string // resumable Codex thread / Claude session per provider
+	models          *modelState
+	uiContext       UIContext
+	states          map[domainagent.ProviderID]domainagent.ConnectionState
+	authStates      map[domainagent.ProviderID]domainagent.AuthState
+	accountInfos    map[domainagent.ProviderID]string
+	lastErrors      map[domainagent.ProviderID]error       // may carry an i18n key (localizedError)
+	cachedVersions  map[domainagent.ProviderID]cachedProbe // CLI --version results
+	authProbes      map[domainagent.ProviderID]cachedProbe // when the CLI auth status was last checked
+	tempWorkspace   string                                 // fallback workspace when none is configured
+	sentScreen      map[string]string                      // screen-context block last sent per provider session
+	conversationID  string                                 // current chat; "" until its first message (new chat on every start)
 
 	codexServer          *codexAppServer // long-lived `codex app-server` for streaming Codex turns
 	codexAppServerBroken map[string]bool // executables whose app-server failed to start (use codex exec)
 	spawnCodexAppServer  func(key, executable string, args, env []string, workDir string) (*codexAppServer, error)
-	busy                 bool
 	closing              bool
 	msgSeq               atomic.Int64
 	connSeq              atomic.Int64
@@ -212,7 +197,6 @@ func New(o Options) (*Service, error) {
 		cachedVersions:     make(map[domainagent.ProviderID]cachedProbe),
 		authProbes:         make(map[domainagent.ProviderID]cachedProbe),
 		sentScreen:         make(map[string]string),
-		turnConversation:   make(map[string]string),
 
 		codexAppServerBroken: make(map[string]bool),
 		spawnCodexAppServer:  startCodexAppServer,
@@ -766,40 +750,29 @@ func (s *Service) RestoreConnection(ctx context.Context) {
 	}
 }
 
-// Disconnect terminates the currently active agent connection, if any.
+// Disconnect terminates the currently active agent connection, if any. A running turn is cancelled; it
+// ends (and keeps its partial reply) through its own goroutine.
 func (s *Service) Disconnect(ctx context.Context) error {
 	s.mu.Lock()
 	client := s.activeClient
 	prevID := s.activeID
-	turnCancel := s.activeTurnCancel
+	t := s.turn
 	s.connSeq.Add(1)
-	s.activeClient = nil
-	s.activeID = ""
-	s.activeSessionID = ""
-	s.activeInit = nil
-	s.activeVersion = ""
-	s.activeTurnID = ""
-	s.activeTurnCancel = nil
-	s.activeTurnTouch = nil
-	s.activeTurnBuf.Reset()
-	s.activeThoughtBuf.Reset()
-	s.busy = false
+	s.clearConnectionLocked()
 	if prevID != "" {
 		s.states[prevID] = domainagent.StateDisconnected
 		delete(s.lastErrors, prevID)
 	}
 	s.mu.Unlock()
 
-	if turnCancel != nil {
-		turnCancel()
+	if t != nil {
+		t.cancel()
 	}
 	if client != nil {
 		_ = client.Close()
 	}
 	if prevID != "" {
 		s.driver(prevID).release()
-	}
-	if prevID != "" {
 		// Pending actions belong to the session that proposed them.
 		if s.approvals.clearProvider(prevID) {
 			s.emitApprovals()
@@ -807,6 +780,16 @@ func (s *Service) Disconnect(ctx context.Context) error {
 		s.emitStatusOf(ctx, prevID)
 	}
 	return nil
+}
+
+// clearConnectionLocked forgets the active connection and its running turn. Caller holds s.mu.
+func (s *Service) clearConnectionLocked() {
+	s.activeClient = nil
+	s.activeID = ""
+	s.activeSessionID = ""
+	s.activeInit = nil
+	s.activeVersion = ""
+	s.turn = nil
 }
 
 // SendPrompt submits a chat message to the currently active provider and streams events asynchronously.
@@ -823,7 +806,7 @@ func (s *Service) SendPrompt(ctx context.Context, text string) (string, domainag
 		s.mu.Unlock()
 		return "", "", userError(apperr.CodeUnavailable, msgNotConnected, "no agent is currently connected", nil)
 	}
-	if s.busy {
+	if s.turn != nil {
 		s.mu.Unlock()
 		return "", "", userError(apperr.CodeConflict, msgBusy, "agent is already processing a prompt", nil)
 	}
@@ -842,19 +825,13 @@ func (s *Service) SendPrompt(ctx context.Context, text string) (string, domainag
 		s.conversationID = uuid.NewString()
 	}
 	conversationID := s.conversationID
-	s.turnConversation[messageID] = conversationID
 
 	// Like actions, a turn times out after agent.turn_timeout WITHOUT activity (streamed text,
 	// tool events, workflow progress from an MCP tool), not after a fixed total duration.
 	turnCtx, touchTurn, cancelTurn := progress.NewIdleContext(context.Background(), s.limits.TurnTimeout)
-	cancel := context.CancelFunc(cancelTurn)
-	s.busy = true
-	s.activeTurnTouch = touchTurn
-	s.activeTurnID = messageID
-	s.activeTurnCancel = cancel
-	s.activeTurnBuf.Reset()
-	s.activeThoughtBuf.Reset()
-	s.activeGuard = newTurnOutputGuard(messageID)
+	t := newTurn(messageID, conversationID, providerID, connToken, touchTurn, context.CancelFunc(cancelTurn))
+	s.turn = t
+	s.turns.Add(1)
 	s.mu.Unlock()
 
 	conv := domainagent.Conversation{ID: conversationID, ProviderID: providerID, CreatedAt: now, UpdatedAt: now}
@@ -883,8 +860,10 @@ func (s *Service) SendPrompt(ctx context.Context, text string) (string, domainag
 	s.emitStatusOf(ctx, providerID)
 
 	safego.Go("agent.turn", func() {
-		defer cancel()
-		s.runTurn(turnCtx, connToken, client, providerID, sessionID, messageID, trimmed, history, uiCtx)
+		defer s.turns.Done()
+		defer t.cancel()
+		err := s.runTurn(turnCtx, t, client, sessionID, trimmed, history, uiCtx)
+		s.endTurn(t, turnResult(turnCtx, err, s.limits.TurnTimeout))
 	})
 
 	return messageID, providerID, nil
@@ -895,19 +874,16 @@ func (s *Service) CancelPrompt(_ context.Context) error {
 	s.mu.Lock()
 	client := s.activeClient
 	sessionID := s.activeSessionID
-	turnCancel := s.activeTurnCancel
-	busy := s.busy
+	t := s.turn
 	s.mu.Unlock()
 
-	if !busy {
+	if t == nil {
 		return nil
 	}
 	if client != nil && sessionID != "" {
 		_ = client.Cancel(sessionID)
 	}
-	if turnCancel != nil {
-		turnCancel()
-	}
+	t.cancel()
 	return nil
 }
 
@@ -927,7 +903,7 @@ func (s *Service) NewConversation(_ context.Context) error {
 // next turn starts a fresh session primed with that chat's own history.
 func (s *Service) switchConversation(id string) error {
 	s.mu.Lock()
-	if s.busy {
+	if s.turn != nil {
 		s.mu.Unlock()
 		return userError(apperr.CodeConflict, msgClearWhileBusy, "cannot switch chats while the agent is busy", nil)
 	}
@@ -975,22 +951,18 @@ func (s *Service) OpenConversation(ctx context.Context, id string) (string, []do
 	return id, msgs, nil
 }
 
-// DeleteConversation removes a chat; deleting the current one starts a new chat.
+// DeleteConversation removes a chat; deleting the current one starts a new chat first, so no turn can
+// start in (or be running in) the chat being deleted.
 func (s *Service) DeleteConversation(ctx context.Context, id string) error {
 	s.mu.Lock()
 	current := s.conversationID == id
-	busy := s.busy
 	s.mu.Unlock()
-	if current && busy {
-		return userError(apperr.CodeConflict, msgClearWhileBusy, "cannot delete the chat while the agent is busy", nil)
-	}
-	if err := s.repo.DeleteConversation(ctx, id); err != nil {
-		return err
-	}
 	if current {
-		return s.switchConversation("")
+		if err := s.switchConversation(""); err != nil {
+			return err
+		}
 	}
-	return nil
+	return s.repo.DeleteConversation(ctx, id)
 }
 
 // conversationTitle shortens a chat's first message into its title.
@@ -1000,13 +972,6 @@ func conversationTitle(prompt string) string {
 		title = string(r[:80]) + "…"
 	}
 	return title
-}
-
-// conversationFor returns the chat a running turn belongs to.
-func (s *Service) conversationFor(messageID string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.turnConversation[messageID]
 }
 
 // ListApprovals returns pending high-impact actions waiting for user approval in the desktop UI.
@@ -1082,6 +1047,7 @@ func (s *Service) Close() error {
 	s.mu.Unlock()
 
 	err := s.Disconnect(context.Background())
+	s.waitTurns()
 	if mcpSrv != nil {
 		mcpSrv.close()
 	}
@@ -1098,72 +1064,39 @@ func (s *Service) Close() error {
 	return err
 }
 
-func (s *Service) runTurn(ctx context.Context, connToken int64, client Transport, providerID domainagent.ProviderID, sessionID, messageID, prompt string, history []domainagent.ChatMessage, ui UIContext) {
-	if s.isPerTurn(providerID) {
-		mcpSrv, err := s.ensureMCPServer()
-		if err != nil {
-			s.finishTurn(connToken, providerID, messageID, err)
-			return
-		}
-		workDir, err := s.ensureWorkspaceDir()
-		if err != nil {
-			s.finishTurn(connToken, providerID, messageID, err)
-			return
-		}
-		spec := domainagent.Registry[providerID]
-		resolved, _, _, err := s.resolveExecutable(ctx, spec)
-		if err != nil || resolved == "" {
-			if err == nil {
-				err = fmt.Errorf("%s executable not found", spec.ExecutableLabel)
-			}
-			s.finishTurn(connToken, providerID, messageID, err)
-			return
-		}
-		run := func(withHistory bool) error {
-			h := history
-			sessionKey := "" // a new session always receives the screen context
-			if !withHistory {
-				h = nil // a resumed CLI session already holds the conversation
-				sessionKey = cliSessionKey(providerID, s.cliSessionFor(providerID))
-			}
-			fullPrompt := buildHistoryContextPrompt(h, s.screenContextForTurn(sessionKey, ui), prompt, s.limits)
-			err := s.driver(providerID).runTurn(ctx, resolved, workDir, mcpSrv.url, mcpSrv.token, messageID, fullPrompt)
-			if err == nil {
-				s.rememberScreenContext(cliSessionKey(providerID, s.cliSessionFor(providerID)), ui)
-			}
-			return err
-		}
-		resumed := s.cliSessionFor(providerID) != ""
-		err = run(!resumed)
-		if err != nil && resumed && isMissingCLISessionError(err) {
-			// The saved session is gone (profile reset, CLI update): start a new one with the history.
-			s.setCLISession(providerID, "")
-			err = run(true)
-		}
-		s.finishTurn(connToken, providerID, messageID, turnResult(ctx, err, s.limits.TurnTimeout))
-		return
+// waitTurns waits (bounded by the shutdown timeout) for cancelled turns to store what they produced, so
+// nothing is written after the core closes the database.
+func (s *Service) waitTurns() {
+	done := make(chan struct{})
+	safego.Go("agent.turns.wait", func() { s.turns.Wait(); close(done) })
+	select {
+	case <-done:
+	case <-time.After(s.limits.MCPShutdownTimeout):
+		s.log.Warn("agent: turns still running at shutdown")
 	}
+}
 
+// runTurn runs one turn on its provider. Text and tool events reach the UI (and the turn's guard) through
+// emitChat as they stream; endTurn stores the result.
+func (s *Service) runTurn(ctx context.Context, t *turn, client Transport, sessionID, prompt string, history []domainagent.ChatMessage, ui UIContext) error {
+	if s.isPerTurn(t.providerID) {
+		return s.runCLITurn(ctx, t, prompt, history, ui)
+	}
 	if client == nil {
-		s.finishTurn(connToken, providerID, messageID, fmt.Errorf("agent transport is not connected"))
-		return
+		return fmt.Errorf("agent transport is not connected")
 	}
-
-	turnPrompt := prompt
 	if sessionID == "" {
 		cwd, err := s.ensureWorkspaceDir()
 		if err != nil {
-			s.finishTurn(connToken, providerID, messageID, err)
-			return
+			return err
 		}
-		newSessionID, err := client.NewSession(ctx, cwd, s.systemPrompt(ctx, providerID))
+		newSessionID, err := client.NewSession(ctx, cwd, s.systemPrompt(ctx, t.providerID))
 		if err != nil {
-			s.finishTurn(connToken, providerID, messageID, err)
-			return
+			return err
 		}
-		s.applyACPSessionModels(ctx, providerID, client, newSessionID)
+		s.applyACPSessionModels(ctx, t.providerID, client, newSessionID)
 		s.mu.Lock()
-		if s.connSeq.Load() == connToken {
+		if s.connSeq.Load() == t.connToken {
 			s.activeSessionID = newSessionID
 			s.sessionPrimed = false
 		}
@@ -1172,203 +1105,176 @@ func (s *Service) runTurn(ctx context.Context, connToken int64, client Transport
 	}
 	s.mu.Lock()
 	primed := s.sessionPrimed
-	if s.connSeq.Load() == connToken {
+	if s.connSeq.Load() == t.connToken {
 		s.sessionPrimed = true
 	}
 	s.mu.Unlock()
 	sessionKey := "acp:" + sessionID
+	var turnPrompt string
 	if primed {
 		turnPrompt = buildHistoryContextPrompt(nil, s.screenContextForTurn(sessionKey, ui), prompt, s.limits)
 	} else {
 		turnPrompt = buildHistoryContextPrompt(history, ui, prompt, s.limits)
 	}
-
 	err := client.Prompt(ctx, sessionID, turnPrompt)
 	if err == nil {
 		s.rememberScreenContext(sessionKey, ui)
 	}
-
-	s.mu.Lock()
-	assistantText := s.activeTurnBuf.String()
-	thoughtText := s.activeThoughtBuf.String()
-	isSame := s.connSeq.Load() == connToken
-	s.mu.Unlock()
-	if isSame && (assistantText != "" || thoughtText != "") {
-		s.persistAssistantMessage(providerID, messageID, assistantText, thoughtText)
-	}
-
-	s.finishTurn(connToken, providerID, messageID, turnResult(ctx, err, s.limits.TurnTimeout))
+	return err
 }
 
-func (s *Service) persistAssistantMessage(providerID domainagent.ProviderID, messageID, text, thought string) {
-	// Never persist raw model output: history is replayed into later prompts and shown in the UI,
-	// so only the guard-sanitized text may be stored.
-	if g := s.guardFor(messageID); g != nil {
-		s.flushGuard(providerID, g)
-		text = g.sanitizedText()
-		thought = g.sanitizedThought()
-		if strings.TrimSpace(text) == "" && strings.TrimSpace(thought) == "" {
-			return
+// runCLITurn runs a turn as its own CLI invocation (Codex, Claude), resuming the provider's session when
+// there is one and falling back to a fresh session primed with the history when it is gone.
+func (s *Service) runCLITurn(ctx context.Context, t *turn, prompt string, history []domainagent.ChatMessage, ui UIContext) error {
+	mcpSrv, err := s.ensureMCPServer()
+	if err != nil {
+		return err
+	}
+	workDir, err := s.ensureWorkspaceDir()
+	if err != nil {
+		return err
+	}
+	spec := domainagent.Registry[t.providerID]
+	resolved, _, _, err := s.resolveExecutable(ctx, spec)
+	if err != nil {
+		return err
+	}
+	if resolved == "" {
+		return fmt.Errorf("%s executable not found", spec.ExecutableLabel)
+	}
+	drv := s.driver(t.providerID)
+	run := func(withHistory bool) error {
+		h := history
+		sessionKey := "" // a new session always receives the screen context
+		if !withHistory {
+			h = nil // a resumed CLI session already holds the conversation
+			sessionKey = cliSessionKey(t.providerID, s.cliSessionFor(t.providerID))
 		}
+		fullPrompt := buildHistoryContextPrompt(h, s.screenContextForTurn(sessionKey, ui), prompt, s.limits)
+		err := drv.runTurn(ctx, resolved, workDir, mcpSrv.url, mcpSrv.token, t.id, fullPrompt)
+		if err == nil {
+			s.rememberScreenContext(cliSessionKey(t.providerID, s.cliSessionFor(t.providerID)), ui)
+		}
+		return err
+	}
+	resumed := s.cliSessionFor(t.providerID) != ""
+	err = run(!resumed)
+	if err != nil && resumed && spec.IsSessionGone(err) {
+		// The saved session is gone (profile reset, CLI update): start a new one with the history.
+		s.setCLISession(t.providerID, "")
+		err = run(true)
+	}
+	return err
+}
+
+// endTurn is the single place a turn ends, whatever ended it: the guard's held text is released, the
+// sanitized reply (and the error, if any) is stored in the turn's chat, the UI gets done/error, and the
+// service goes idle. It runs once per turn; later calls (e.g. the turn goroutine after a process exit
+// already ended it) do nothing.
+func (s *Service) endTurn(t *turn, err error) {
+	t.endOnce.Do(func() {
+		s.flushGuard(t)
+		// A user cancel ends the turn normally: the partial reply is kept and nothing is reported as an error.
+		if errors.Is(err, errTurnCancelled) {
+			err = nil
+		}
+		s.storeReply(t)
+
+		s.mu.Lock()
+		if s.turn == t {
+			s.turn = nil
+		}
+		if err != nil && isAuthError(err) && s.connSeq.Load() == t.connToken {
+			s.states[t.providerID] = domainagent.StateUnauthenticated
+			s.authStates[t.providerID] = domainagent.AuthUnauthenticated
+			s.lastErrors[t.providerID] = err
+			delete(s.authProbes, t.providerID) // the next probe must re-check instead of serving the cache
+		}
+		s.mu.Unlock()
+
+		if err != nil {
+			if appendErr := s.repo.AppendChatMessage(context.Background(), domainagent.ChatMessage{
+				ID:             t.id + "-err",
+				ProviderID:     t.providerID,
+				Role:           "error",
+				Text:           err.Error(),
+				CreatedAt:      time.Now().UnixMilli(),
+				ConversationID: t.conversationID,
+			}); appendErr != nil {
+				s.log.Warn("agent: failed to persist turn error", "error", appendErr)
+			}
+			key, params := messageOf(err)
+			s.emitChatRaw(domainagent.ChatEvent{
+				Type:        domainagent.ChatEventError,
+				ProviderID:  t.providerID,
+				MessageID:   t.id,
+				Error:       err.Error(),
+				ErrorKey:    key,
+				ErrorParams: params,
+			})
+		} else {
+			s.emitChatRaw(domainagent.ChatEvent{Type: domainagent.ChatEventDone, ProviderID: t.providerID, MessageID: t.id})
+		}
+		s.emitStatusOf(context.Background(), t.providerID)
+	})
+}
+
+// storeReply saves the turn's reply. Only the guard-sanitized text is ever stored: history is replayed
+// into later prompts and shown in the UI.
+func (s *Service) storeReply(t *turn) {
+	text, thought := t.guard.sanitizedText(), t.guard.sanitizedThought()
+	if strings.TrimSpace(text) == "" && strings.TrimSpace(thought) == "" {
+		return
 	}
 	now := time.Now().UnixMilli()
-	conversationID := s.conversationFor(messageID)
-	if err := s.repo.AppendChatMessage(context.Background(), domainagent.ChatMessage{
-		ID:             messageID,
-		ProviderID:     providerID,
+	ctx := context.Background()
+	if err := s.repo.AppendChatMessage(ctx, domainagent.ChatMessage{
+		ID:             t.id,
+		ProviderID:     t.providerID,
 		Role:           "assistant",
 		Text:           text,
 		Thought:        thought,
-		Tool:           s.takeTools(messageID),
+		Tool:           t.toolList(),
 		CreatedAt:      now,
-		ConversationID: conversationID,
+		ConversationID: t.conversationID,
 	}); err != nil {
 		s.log.Warn("agent: failed to persist assistant message", "error", err)
 	}
-	if conversationID != "" {
-		_ = s.repo.SaveConversation(context.Background(), domainagent.Conversation{ID: conversationID, ProviderID: providerID, CreatedAt: now, UpdatedAt: now})
-	}
-}
-
-func (s *Service) finishTurn(connToken int64, providerID domainagent.ProviderID, messageID string, err error) {
-	// Release any text the guard was still holding before the turn is reported as finished.
-	if g := s.guardFor(messageID); g != nil {
-		s.flushGuard(providerID, g)
-	}
-	defer func() {
-		s.mu.Lock()
-		delete(s.turnConversation, messageID)
-		s.mu.Unlock()
-	}()
-	s.mu.Lock()
-	if s.activeGuard != nil && s.activeGuard.messageID == messageID {
-		s.activeGuard = nil
-	}
-	// A user cancel ends the turn normally: the partial reply is kept and nothing is reported as an error.
-	if errors.Is(err, errTurnCancelled) {
-		err = nil
-	}
-	isCurrentConn := s.connSeq.Load() == connToken
-	if isCurrentConn {
-		s.busy = false
-		s.activeTurnID = ""
-		s.activeTurnCancel = nil
-		s.activeTurnTouch = nil
-		s.activeTurnBuf.Reset()
-		s.activeThoughtBuf.Reset()
-		if err != nil && isAuthError(err) {
-			s.states[providerID] = domainagent.StateUnauthenticated
-			s.authStates[providerID] = domainagent.AuthUnauthenticated
-			s.lastErrors[providerID] = err
-			delete(s.authProbes, providerID) // the next probe must re-check instead of serving the cache
+	if t.conversationID != "" {
+		if err := s.repo.SaveConversation(ctx, domainagent.Conversation{ID: t.conversationID, ProviderID: t.providerID, CreatedAt: now, UpdatedAt: now}); err != nil {
+			s.log.Warn("agent: failed to save conversation", "error", err)
 		}
 	}
-	s.mu.Unlock()
-
-	if !isCurrentConn {
-		return
-	}
-
-	if err != nil {
-		_ = s.repo.AppendChatMessage(context.Background(), domainagent.ChatMessage{
-			ID:             messageID + "-err",
-			ProviderID:     providerID,
-			Role:           "error",
-			Text:           err.Error(),
-			CreatedAt:      time.Now().UnixMilli(),
-			ConversationID: s.conversationFor(messageID),
-		})
-		key, params := messageOf(err)
-		s.emitChat(domainagent.ChatEvent{
-			Type:        domainagent.ChatEventError,
-			ProviderID:  providerID,
-			MessageID:   messageID,
-			Error:       err.Error(),
-			ErrorKey:    key,
-			ErrorParams: params,
-		})
-	} else {
-		s.emitChat(domainagent.ChatEvent{
-			Type:       domainagent.ChatEventDone,
-			ProviderID: providerID,
-			MessageID:  messageID,
-		})
-	}
-
-	s.emitStatusOf(context.Background(), providerID)
 }
 
 func (s *Service) handleSessionUpdate(connToken int64, upd SessionUpdate) {
 	s.mu.Lock()
-	if s.connSeq.Load() != connToken {
-		s.mu.Unlock()
-		return
-	}
-	providerID := s.activeID
-	messageID := s.activeTurnID
-	if upd.MessageID != "" && messageID == "" {
-		messageID = upd.MessageID
-	}
-	switch upd.Kind {
-	case "agent_message_chunk":
-		s.activeTurnBuf.WriteString(upd.Text)
-	case "agent_thought_chunk", "thought_message_chunk":
-		s.activeThoughtBuf.WriteString(upd.Text)
-	case "tool_call", "tool_call_update":
-		upd.Tool = s.trackACPTool(upd)
-	}
+	t := s.turn
+	current := s.connSeq.Load() == connToken
 	s.mu.Unlock()
-
+	if !current || t == nil {
+		return // updates outside a turn (or of a replaced connection) are not shown
+	}
+	evt := domainagent.ChatEvent{ProviderID: t.providerID, MessageID: t.id}
 	switch upd.Kind {
 	case "agent_message_chunk":
-		if upd.Text == "" {
-			return
-		}
-		s.emitChat(domainagent.ChatEvent{
-			Type:       domainagent.ChatEventDelta,
-			ProviderID: providerID,
-			MessageID:  messageID,
-			Text:       upd.Text,
-		})
+		evt.Type, evt.Text = domainagent.ChatEventDelta, upd.Text
+		s.emitChat(evt)
 	case "agent_thought_chunk", "thought_message_chunk":
-		if upd.Text == "" {
+		evt.Type, evt.Text = domainagent.ChatEventThought, upd.Text
+		s.emitChat(evt)
+	case "tool_call", "tool_call_update":
+		evt.Tool = t.trackACPTool(upd)
+		if evt.Tool == "" {
 			return
 		}
-		s.emitChat(domainagent.ChatEvent{
-			Type:       domainagent.ChatEventThought,
-			ProviderID: providerID,
-			MessageID:  messageID,
-			Text:       upd.Text,
-		})
-	case "tool_call":
-		if upd.Tool == "" {
-			return
-		}
-		s.emitChat(domainagent.ChatEvent{
-			Type:       domainagent.ChatEventToolCall,
-			ProviderID: providerID,
-			MessageID:  messageID,
-			Tool:       upd.Tool,
-			Text:       upd.Tool,
-		})
-		// Some agents report a tool that already finished in the tool_call itself (no update follows).
-		if upd.Status == toolStatusCompleted || upd.Status == toolStatusFailed {
-			evt := domainagent.ChatEvent{Type: domainagent.ChatEventToolResult, ProviderID: providerID,
-				MessageID: messageID, Tool: upd.Tool, Text: upd.Status}
-			if upd.Status == toolStatusFailed {
-				evt.Error = toolStatusFailed
-			}
+		if upd.Kind == "tool_call" {
+			evt.Type, evt.Text = domainagent.ChatEventToolCall, evt.Tool
 			s.emitChat(evt)
 		}
-	case "tool_call_update":
+		// Some agents report a tool that already finished in the tool_call itself (no update follows).
 		if upd.Status == toolStatusCompleted || upd.Status == toolStatusFailed {
-			evt := domainagent.ChatEvent{
-				Type:       domainagent.ChatEventToolResult,
-				ProviderID: providerID,
-				MessageID:  messageID,
-				Tool:       upd.Tool,
-				Text:       upd.Status,
-			}
+			evt.Type, evt.Text = domainagent.ChatEventToolResult, upd.Status
 			if upd.Status == toolStatusFailed {
 				evt.Error = toolStatusFailed // the UI reads failure from Error, never from the result text
 			}
@@ -1377,46 +1283,31 @@ func (s *Service) handleSessionUpdate(connToken int64, upd SessionUpdate) {
 	}
 }
 
+// handleProcessExit handles an ACP agent process that exited on its own: the connection is dropped and a
+// running turn ends right away with the exit as its (stored, translatable) error.
 func (s *Service) handleProcessExit(connToken int64, id domainagent.ProviderID, exitErr error) {
 	s.mu.Lock()
 	if s.connSeq.Load() != connToken || s.closing {
 		s.mu.Unlock()
 		return
 	}
-	turnID := s.activeTurnID
-	wasBusy := s.busy
-	s.activeClient = nil
-	s.activeID = ""
-	s.activeSessionID = ""
-	s.activeInit = nil
-	s.activeVersion = ""
-	s.activeTurnID = ""
-	s.activeTurnCancel = nil
-	s.activeTurnTouch = nil
-	s.activeTurnBuf.Reset()
-	s.activeThoughtBuf.Reset()
-	s.activeGuard = nil
-	s.busy = false
+	t := s.turn
+	s.clearConnectionLocked()
+	var turnErr error
 	if exitErr != nil {
+		turnErr = localize(fmt.Errorf("agent process exited: %w", exitErr), msgProcessExited, map[string]string{"detail": exitErr.Error()})
 		s.states[id] = domainagent.StateError
-		s.lastErrors[id] = localize(fmt.Errorf("agent process exited: %w", exitErr), msgProcessExited, map[string]string{"detail": exitErr.Error()})
+		s.lastErrors[id] = turnErr
 	} else {
+		turnErr = localize(errors.New("agent connection closed unexpectedly"), msgConnectionClosed, nil)
 		s.states[id] = domainagent.StateDisconnected
 		delete(s.lastErrors, id)
 	}
 	s.mu.Unlock()
 
-	if wasBusy {
-		msg := "agent connection closed unexpectedly"
-		if exitErr != nil {
-			msg = fmt.Sprintf("agent exited: %v", exitErr)
-		}
-		s.emitChat(domainagent.ChatEvent{
-			Type:       domainagent.ChatEventError,
-			ProviderID: id,
-			MessageID:  turnID,
-			Error:      msg,
-		})
+	if t != nil {
+		s.endTurn(t, turnErr)
+		t.cancel()
 	}
 	if s.approvals.clearProvider(id) {
 		s.emitApprovals()
@@ -1428,10 +1319,7 @@ func (s *Service) failConnect(id domainagent.ProviderID, spec domainagent.Provid
 	s.mu.Lock()
 	s.connSeq.Add(1)
 	if s.activeID == id {
-		s.activeID = ""
-		s.activeClient = nil
-		s.activeInit = nil
-		s.activeSessionID = ""
+		s.clearConnectionLocked()
 	}
 	if isAuthError(err) || state == domainagent.StateUnauthenticated {
 		s.states[id] = domainagent.StateUnauthenticated
@@ -1485,7 +1373,7 @@ func (s *Service) buildInfoLocked(spec domainagent.ProviderSpec, resolved string
 		IsolatedProfileDir: s.profileDirFor(spec.ID),
 		LastError:          errText(s.lastErrors[spec.ID]),
 		Active:             isActive,
-		Busy:               isActive && s.busy,
+		Busy:               isActive && s.turn != nil,
 	}
 	if p, ok := s.provisioning[spec.ID]; ok && p.active {
 		info.Installing, info.InstallPercent = true, p.percent
@@ -1681,54 +1569,37 @@ func (s *Service) emitStatus(info domainagent.ProviderInfo) {
 	}
 }
 
-// emitChat is the single exit point for chat events. Answer and reasoning text of the active turn is
-// filtered by the output guard so source code never reaches the UI, whichever provider produced it.
-// noteTool records that the reply messageID called tool.
-func (s *Service) noteTool(messageID, tool string) {
-	if messageID == "" || tool == "" {
-		return
-	}
+// turnFor returns the running turn when messageID is its ID ("" = whatever turn is running).
+func (s *Service) turnFor(messageID string) *turn {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.turnTools == nil {
-		s.turnTools = map[string][]string{}
+	if s.turn == nil || (messageID != "" && s.turn.id != messageID) {
+		return nil
 	}
-	for _, t := range s.turnTools[messageID] {
-		if t == tool {
+	return s.turn
+}
+
+// emitChat is the single exit point for streamed chat events. Answer and reasoning text passes through
+// the running turn's output guard so source code never reaches the UI, whichever provider produced it;
+// text that belongs to no running turn (a cancelled turn's process still writing) is dropped.
+func (s *Service) emitChat(evt domainagent.ChatEvent) {
+	t := s.turnFor(evt.MessageID)
+	switch evt.Type {
+	case domainagent.ChatEventDelta, domainagent.ChatEventThought:
+		if t == nil {
 			return
 		}
-	}
-	if len(s.turnTools[messageID]) < maxRecordedTools {
-		s.turnTools[messageID] = append(s.turnTools[messageID], tool)
-	}
-}
-
-// takeTools returns and forgets the tools recorded for messageID, joined for storage.
-func (s *Service) takeTools(messageID string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	names := s.turnTools[messageID]
-	delete(s.turnTools, messageID)
-	return strings.Join(names, ", ")
-}
-
-// maxRecordedTools bounds the audit list of one reply.
-const maxRecordedTools = 24
-
-func (s *Service) emitChat(evt domainagent.ChatEvent) {
-	if evt.Type == domainagent.ChatEventToolCall {
-		s.noteTool(evt.MessageID, evt.Tool)
-	}
-	if evt.Type == domainagent.ChatEventDelta || evt.Type == domainagent.ChatEventThought {
-		if g := s.guardFor(evt.MessageID); g != nil {
-			if evt.Type == domainagent.ChatEventDelta {
-				evt.Text = g.filterText(evt.Text)
-			} else {
-				evt.Text = g.filterThought(evt.Text)
-			}
-			if evt.Text == "" {
-				return
-			}
+		if evt.Type == domainagent.ChatEventDelta {
+			evt.Text = t.guard.filterText(evt.Text)
+		} else {
+			evt.Text = t.guard.filterThought(evt.Text)
+		}
+		if evt.Text == "" {
+			return
+		}
+	case domainagent.ChatEventToolCall:
+		if t != nil {
+			t.noteTool(evt.Tool)
 		}
 	}
 	s.emitChatRaw(evt)
@@ -1741,38 +1612,25 @@ func (s *Service) emitChatRaw(evt domainagent.ChatEvent) {
 	}
 }
 
-// touchTurn re-arms the active turn's idle timeout; messageID "" means "whatever turn is active"
+// touchTurn re-arms the running turn's idle timeout; messageID "" means "whatever turn is running"
 // (MCP tool calls do not know the message they belong to).
 func (s *Service) touchTurn(messageID string) {
-	s.mu.Lock()
-	touch := s.activeTurnTouch
-	active := s.activeTurnID
-	s.mu.Unlock()
-	if touch != nil && (messageID == "" || messageID == active) {
-		touch()
+	if t := s.turnFor(messageID); t != nil && t.touch != nil {
+		t.touch()
 	}
 }
 
-func (s *Service) guardFor(messageID string) *turnOutputGuard {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.activeGuard == nil || messageID == "" || s.activeGuard.messageID != messageID {
-		return nil
-	}
-	return s.activeGuard
-}
-
-// flushGuard finalizes the guard once and emits whatever safe text it was still holding.
-func (s *Service) flushGuard(providerID domainagent.ProviderID, g *turnOutputGuard) {
-	textTail, thoughtTail := g.finalize()
+// flushGuard finalizes the turn's guard and emits whatever safe text it was still holding.
+func (s *Service) flushGuard(t *turn) {
+	textTail, thoughtTail := t.guard.finalize()
 	if thoughtTail != "" {
-		s.emitChatRaw(domainagent.ChatEvent{Type: domainagent.ChatEventThought, ProviderID: providerID, MessageID: g.messageID, Text: thoughtTail})
+		s.emitChatRaw(domainagent.ChatEvent{Type: domainagent.ChatEventThought, ProviderID: t.providerID, MessageID: t.id, Text: thoughtTail})
 	}
 	if textTail != "" {
-		s.emitChatRaw(domainagent.ChatEvent{Type: domainagent.ChatEventDelta, ProviderID: providerID, MessageID: g.messageID, Text: textTail})
+		s.emitChatRaw(domainagent.ChatEvent{Type: domainagent.ChatEventDelta, ProviderID: t.providerID, MessageID: t.id, Text: textTail})
 	}
-	if g.blocked() {
-		s.log.Warn("agent: output guard blocked source code in assistant reply", "provider", providerID, "message_id", g.messageID)
+	if t.guard.blocked() {
+		s.log.Warn("agent: output guard blocked source code in assistant reply", "provider", t.providerID, "message_id", t.id)
 	}
 }
 
@@ -1810,36 +1668,4 @@ func (s *Service) setCLISession(id domainagent.ProviderID, sessionID string) {
 		return
 	}
 	s.cliSessions[id] = sessionID
-}
-
-// isMissingCLISessionError matches the CLIs' "cannot resume" errors.
-func isMissingCLISessionError(err error) bool {
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "no rollout found") || // codex exec resume
-		strings.Contains(msg, "thread/resume failed") ||
-		strings.Contains(msg, "no conversation found with session id") // claude --resume
-}
-
-// trackACPTool returns the title to show for an ACP tool event: the title recorded when the tool started
-// (keyed by toolCallId), so start and end events name the same tool row. Finished tools are forgotten.
-// Caller holds s.mu.
-func (s *Service) trackACPTool(upd SessionUpdate) string {
-	if upd.ToolCallID == "" {
-		return upd.Tool
-	}
-	if s.acpToolTitles == nil {
-		s.acpToolTitles = map[string]string{}
-	}
-	title, known := s.acpToolTitles[upd.ToolCallID]
-	if !known && upd.Tool != "" {
-		title = upd.Tool
-		s.acpToolTitles[upd.ToolCallID] = title
-	}
-	if upd.Status == toolStatusCompleted || upd.Status == toolStatusFailed {
-		delete(s.acpToolTitles, upd.ToolCallID)
-	}
-	if title == "" {
-		return upd.Tool
-	}
-	return title
 }
