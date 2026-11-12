@@ -62,6 +62,7 @@ func (c *Config) Validate() error {
 			"realtime.keepalive_interval":  c.Realtime.KeepAliveInterval,
 			"storage.busy_timeout":         c.Storage.BusyTimeout,
 			"binaries.probe_timeout":       c.Binaries.ProbeTimeout,
+			"providers.test_timeout":       c.Providers.TestTimeout,
 			"network.idle_conn_timeout":    c.Network.IdleConnTimeout,
 			"agent.turn_timeout":           c.Agent.TurnTimeout,
 			"agent.initialize_timeout":     c.Agent.InitializeTimeout,

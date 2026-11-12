@@ -29,6 +29,9 @@ const (
 	BackendMemory Backend = "memory"
 )
 
+// Backends lists every backend.
+func Backends() []Backend { return []Backend{BackendKeyring, BackendEncryptedFile, BackendMemory} }
+
 // MasterKeyEnv optionally supplies the key that encrypts the fallback secrets file. When unset, a random
 // key is generated once and kept in a 0600 file next to the secrets file.
 const MasterKeyEnv = "DEZUXK_MASTER_KEY"

@@ -9,6 +9,8 @@ import (
 	"app/internal/domain/agent"
 	"app/internal/domain/binaries"
 	"app/internal/domain/preferences"
+	"app/internal/domain/provider"
+	"app/internal/secrets"
 )
 
 // Action names.
@@ -168,6 +170,17 @@ func Actions() []ActionSpec {
 		{ActionAgentAddAllowedDir, "Authorizes a directory for non-code agent file operations.", t[AgentAllowedDirPayload](), t[AgentAllowedDirsResult]()},
 		{ActionAgentRemoveAllowedDir, "Revokes agent access to an authorized directory.", t[AgentAllowedDirPayload](), t[AgentAllowedDirsResult]()},
 		{ActionAgentSetModel, "Selects the model and reasoning effort used by an agent provider.", t[AgentSetModelPayload](), t[AgentProviderInfo]()},
+		{ActionProvidersList, "Lists built-in API providers with their credentials (secrets masked), custom providers and the secret storage backend.", t[Empty](), t[ProvidersListResult]()},
+		{ActionProvidersCreateCredential, "Saves a credential for a built-in provider; the first one becomes active.", t[CreateCredentialPayload](), t[ProviderCredential]()},
+		{ActionProvidersUpdateCredential, "Updates a credential; empty secrets keep the stored value.", t[UpdateCredentialPayload](), t[ProviderCredential]()},
+		{ActionProvidersDeleteCredential, "Deletes a credential and its secrets; the oldest other one becomes active.", t[ProviderIDPayload](), t[Empty]()},
+		{ActionProvidersActivate, "Makes a credential the active one of its provider.", t[ProviderIDPayload](), t[Empty]()},
+		{ActionProvidersTestCredential, "Checks a saved credential against the provider API.", t[ProviderIDPayload](), t[ProviderTestResult]()},
+		{ActionProvidersCreateCustom, "Saves a custom (OpenAI/Gemini/Anthropic-compatible) provider.", t[CustomProviderInput](), t[CustomProvider]()},
+		{ActionProvidersUpdateCustom, "Updates a custom provider; an empty api_key keeps the stored key.", t[UpdateCustomPayload](), t[CustomProvider]()},
+		{ActionProvidersDeleteCustom, "Deletes a custom provider and its key.", t[ProviderIDPayload](), t[Empty]()},
+		{ActionProvidersTestCustom, "Checks a saved custom provider by listing its models.", t[ProviderIDPayload](), t[ProviderTestResult]()},
+		{ActionProvidersDiscoverModels, "Lists the models of a (possibly unsaved) custom provider.", t[DiscoverModelsPayload](), t[DiscoverModelsResult]()},
 	}
 }
 
@@ -179,6 +192,7 @@ func Events() []EventSpec {
 		{EventAgentStatusChanged, "Agent provider discovery or connection state changed.", t[AgentProviderInfo]()},
 		{EventAgentChatEvent, "Streamed text, thought, tool call, or completion update from the active agent turn.", t[AgentChatEvent]()},
 		{EventAgentApprovals, "Pending agent approval queue changed.", t[AgentApprovalListResult]()},
+		{EventProvidersChanged, "Provider credentials or custom providers changed.", t[ProvidersListResult]()},
 	}
 }
 
@@ -220,6 +234,12 @@ func Enums() []EnumSpec {
 		{"AgentAuthState", t[agent.AuthState](), stringsOf(agent.AllAuthStates())},
 		{"AgentSource", t[agent.Source](), stringsOf(agent.AllSources())},
 		{"AgentChatEventType", t[agent.ChatEventType](), stringsOf(agent.AllChatEventTypes())},
+		{"ProviderCapability", t[provider.Capability](), stringsOf(provider.Capabilities())},
+		{"ProviderFieldKind", t[provider.FieldKind](), stringsOf(provider.FieldKinds())},
+		{"ProviderDiscoveryFormat", t[provider.DiscoveryFormat](), stringsOf(provider.DiscoveryFormats())},
+		{"ProviderEndpoint", t[provider.Endpoint](), endpointKeys()},
+		{"ProviderTestOutcome", t[provider.Outcome](), stringsOf(provider.Outcomes())},
+		{"SecretBackend", t[secrets.Backend](), stringsOf(secrets.Backends())},
 	}
 }
 
@@ -247,6 +267,14 @@ func stringsOf[T ~string](in []T) []string {
 	out := make([]string, len(in))
 	for i, v := range in {
 		out[i] = string(v)
+	}
+	return out
+}
+
+func endpointKeys() []string {
+	var out []string
+	for _, e := range provider.Endpoints() {
+		out = append(out, string(e.Key))
 	}
 	return out
 }

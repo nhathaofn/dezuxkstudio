@@ -1,0 +1,485 @@
+// Package provider manages API provider credentials (built-in registry providers and user-defined
+// custom providers): CRUD, the single active credential per provider, connectivity tests, model
+// discovery and Resolve, which generation features use to obtain ready-to-use credentials.
+//
+// Secret values are written to the secret store only; the repository keeps metadata and masked hints.
+package provider
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+
+	"app/internal/apperr"
+	domain "app/internal/domain/provider"
+	"app/internal/secrets"
+)
+
+// Options configures the service.
+type Options struct {
+	Repo        domain.Repository
+	Secrets     secrets.Store
+	Client      *http.Client
+	TestTimeout time.Duration
+	// OnChanged is called after every successful mutation (the core publishes providers:changed).
+	OnChanged func()
+}
+
+// Service implements the provider use cases.
+type Service struct {
+	repo        domain.Repository
+	secrets     secrets.Store
+	client      *http.Client
+	testTimeout time.Duration
+	onChanged   func()
+}
+
+// New validates the registry and builds the service.
+func New(o Options) (*Service, error) {
+	if err := domain.ValidateRegistry(); err != nil {
+		return nil, err
+	}
+	if o.Repo == nil || o.Secrets == nil || o.Client == nil || o.TestTimeout <= 0 {
+		return nil, errors.New("provider: incomplete options")
+	}
+	return &Service{repo: o.Repo, secrets: o.Secrets, client: o.Client, testTimeout: o.TestTimeout, onChanged: o.OnChanged}, nil
+}
+
+func (s *Service) changed() {
+	if s.onChanged != nil {
+		s.onChanged()
+	}
+}
+
+// Snapshot is everything the settings screen shows.
+type Snapshot struct {
+	SecretBackend secrets.Backend
+	Builtins      []BuiltinView
+	Custom        []domain.CustomProvider
+}
+
+// BuiltinView is a registry entry with its saved credentials.
+type BuiltinView struct {
+	Meta        domain.Meta
+	Credentials []domain.Credential
+}
+
+// Configured reports whether the provider has an active credential.
+func (v BuiltinView) Configured() bool {
+	return slices.ContainsFunc(v.Credentials, func(c domain.Credential) bool { return c.Active })
+}
+
+// List returns the registry, saved credentials and custom providers.
+func (s *Service) List(ctx context.Context) (Snapshot, error) {
+	creds, err := s.repo.ListCredentials(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	custom, err := s.repo.ListCustom(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	out := Snapshot{SecretBackend: secrets.BackendOf(s.secrets), Custom: custom}
+	for _, m := range domain.Registry() {
+		v := BuiltinView{Meta: m}
+		for _, c := range creds {
+			if c.ProviderID == m.ID {
+				v.Credentials = append(v.Credentials, c)
+			}
+		}
+		out.Builtins = append(out.Builtins, v)
+	}
+	return out, nil
+}
+
+func credSecretKey(credID, field string) secrets.Key {
+	return secrets.Key("provider_cred_" + credID + "_" + field)
+}
+
+func customSecretKey(id string) secrets.Key { return secrets.Key("provider_custom_" + id + "_api_key") }
+
+func lookup(id string) (domain.Meta, error) {
+	m, ok := domain.Lookup(id)
+	if !ok {
+		return domain.Meta{}, apperr.New(apperr.CodeNotFound, "Unknown provider").WithDetails(map[string]any{"provider_id": id})
+	}
+	return m, nil
+}
+
+func checkSecretFields(m domain.Meta, in domain.Input) error {
+	for k := range in.Secrets {
+		if f, ok := m.Field(k); !ok || !f.Secret {
+			return apperr.New(apperr.CodeValidation, "Unknown secret field "+k).WithDetails(map[string]any{"field": k})
+		}
+	}
+	for k, v := range in.Values {
+		if f, _ := m.Field(k); f.Kind == domain.FieldURL {
+			if err := domain.ValidateBaseURL(v); err != nil {
+				return apperr.New(apperr.CodeValidation, "Invalid URL").WithDetails(map[string]any{"field": k})
+			}
+		}
+	}
+	if f, ok := m.Field(domain.FieldCredentialsFile); ok {
+		if v, set := in.Secrets[f.Key]; set {
+			if err := validateServiceAccount(v); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// writeSecrets stores the given secrets; on failure it removes what it wrote.
+func (s *Service) writeSecrets(credID string, vals map[string]string) error {
+	var written []secrets.Key
+	for k, v := range vals {
+		key := credSecretKey(credID, k)
+		if err := s.secrets.Set(key, v); err != nil {
+			for _, w := range written {
+				_ = s.secrets.Delete(w)
+			}
+			return apperr.Wrap(apperr.CodeUnavailable, "Could not save the secret in the credential store", err)
+		}
+		written = append(written, key)
+	}
+	return nil
+}
+
+func hints(vals map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range vals {
+		out[k] = domain.MaskSecret(v)
+	}
+	return out
+}
+
+// CreateCredential saves a new credential; the first one of a provider becomes active.
+func (s *Service) CreateCredential(ctx context.Context, providerID string, in domain.Input) (domain.Credential, error) {
+	m, err := lookup(providerID)
+	if err != nil {
+		return domain.Credential{}, err
+	}
+	in = in.Normalize()
+	if in.Name == "" {
+		in.Name = m.DisplayName
+	}
+	if err := checkSecretFields(m, in); err != nil {
+		return domain.Credential{}, err
+	}
+	if err := m.CheckComplete(in.Values, func(k string) bool { return in.Secrets[k] != "" }); err != nil {
+		return domain.Credential{}, err
+	}
+	id := uuid.NewString()
+	if err := s.writeSecrets(id, in.Secrets); err != nil {
+		return domain.Credential{}, err
+	}
+	c, err := s.repo.CreateCredential(ctx, domain.Credential{
+		ID: id, ProviderID: providerID, Name: in.Name, Values: in.Values, SecretHints: hints(in.Secrets),
+	})
+	if err != nil {
+		s.deleteSecrets(id, m)
+		return domain.Credential{}, err
+	}
+	s.changed()
+	return c, nil
+}
+
+// UpdateCredential changes name/values; empty secrets keep the stored ones, ClearSecrets removes some.
+func (s *Service) UpdateCredential(ctx context.Context, id string, in domain.Input) (domain.Credential, error) {
+	c, err := s.repo.GetCredential(ctx, id)
+	if err != nil {
+		return domain.Credential{}, err
+	}
+	m, err := lookup(c.ProviderID)
+	if err != nil {
+		return domain.Credential{}, err
+	}
+	clear := in.ClearSecrets
+	in = in.Normalize()
+	if in.Name == "" {
+		in.Name = c.Name
+	}
+	if err := checkSecretFields(m, in); err != nil {
+		return domain.Credential{}, err
+	}
+	for _, k := range clear {
+		if f, ok := m.Field(k); !ok || !f.Secret {
+			return domain.Credential{}, apperr.New(apperr.CodeValidation, "Unknown secret field "+k).WithDetails(map[string]any{"field": k})
+		}
+	}
+	present := func(k string) bool {
+		if in.Secrets[k] != "" {
+			return true
+		}
+		return c.SecretHints[k] != "" && !slices.Contains(clear, k)
+	}
+	if err := m.CheckComplete(in.Values, present); err != nil {
+		return domain.Credential{}, err
+	}
+	if err := s.writeSecrets(id, in.Secrets); err != nil {
+		return domain.Credential{}, err
+	}
+	newHints := map[string]string{}
+	for k, v := range c.SecretHints {
+		if !slices.Contains(clear, k) {
+			newHints[k] = v
+		}
+	}
+	for k, v := range hints(in.Secrets) {
+		newHints[k] = v
+	}
+	for _, k := range clear {
+		if in.Secrets[k] == "" {
+			_ = s.secrets.Delete(credSecretKey(id, k))
+		}
+	}
+	c.Name, c.Values, c.SecretHints = in.Name, in.Values, newHints
+	if err := s.repo.UpdateCredential(ctx, c); err != nil {
+		return domain.Credential{}, err
+	}
+	s.changed()
+	return s.repo.GetCredential(ctx, id)
+}
+
+func (s *Service) deleteSecrets(credID string, m domain.Meta) {
+	for _, k := range m.SecretKeys() {
+		_ = s.secrets.Delete(credSecretKey(credID, k))
+	}
+}
+
+// DeleteCredential removes a credential and its secrets.
+func (s *Service) DeleteCredential(ctx context.Context, id string) error {
+	c, err := s.repo.GetCredential(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.DeleteCredential(ctx, id); err != nil {
+		return err
+	}
+	if m, ok := domain.Lookup(c.ProviderID); ok {
+		s.deleteSecrets(id, m)
+	}
+	s.changed()
+	return nil
+}
+
+// ActivateCredential makes id the active credential of its provider.
+func (s *Service) ActivateCredential(ctx context.Context, id string) error {
+	if err := s.repo.ActivateCredential(ctx, id); err != nil {
+		return err
+	}
+	s.changed()
+	return nil
+}
+
+// ---- custom providers ----
+
+func customModelsOrEmpty(m []domain.CustomModel) []domain.CustomModel {
+	if m == nil {
+		return []domain.CustomModel{}
+	}
+	return m
+}
+
+// CreateCustom saves a custom provider.
+func (s *Service) CreateCustom(ctx context.Context, in domain.CustomInput) (domain.CustomProvider, error) {
+	if err := in.Validate(); err != nil {
+		return domain.CustomProvider{}, err
+	}
+	id := uuid.NewString()
+	hint := ""
+	if in.APIKey != "" {
+		if err := s.secrets.Set(customSecretKey(id), in.APIKey); err != nil {
+			return domain.CustomProvider{}, apperr.Wrap(apperr.CodeUnavailable, "Could not save the secret in the credential store", err)
+		}
+		hint = domain.MaskSecret(in.APIKey)
+	}
+	p, err := s.repo.CreateCustom(ctx, domain.CustomProvider{
+		ID: id, Name: in.Name, DiscoveryFormat: in.DiscoveryFormat, BaseURL: in.BaseURL,
+		Models: customModelsOrEmpty(in.Models), KeyHint: hint,
+	})
+	if err != nil {
+		_ = s.secrets.Delete(customSecretKey(id))
+		return domain.CustomProvider{}, err
+	}
+	s.changed()
+	return p, nil
+}
+
+// UpdateCustom replaces a custom provider's settings and model list.
+func (s *Service) UpdateCustom(ctx context.Context, id string, in domain.CustomInput) (domain.CustomProvider, error) {
+	p, err := s.repo.GetCustom(ctx, id)
+	if err != nil {
+		return domain.CustomProvider{}, err
+	}
+	if err := in.Validate(); err != nil {
+		return domain.CustomProvider{}, err
+	}
+	switch {
+	case in.APIKey != "":
+		if err := s.secrets.Set(customSecretKey(id), in.APIKey); err != nil {
+			return domain.CustomProvider{}, apperr.Wrap(apperr.CodeUnavailable, "Could not save the secret in the credential store", err)
+		}
+		p.KeyHint = domain.MaskSecret(in.APIKey)
+	case in.ClearAPIKey:
+		_ = s.secrets.Delete(customSecretKey(id))
+		p.KeyHint = ""
+	}
+	p.Name, p.DiscoveryFormat, p.BaseURL, p.Models = in.Name, in.DiscoveryFormat, in.BaseURL, customModelsOrEmpty(in.Models)
+	if err := s.repo.UpdateCustom(ctx, p); err != nil {
+		return domain.CustomProvider{}, err
+	}
+	s.changed()
+	return s.repo.GetCustom(ctx, id)
+}
+
+// DeleteCustom removes a custom provider and its key.
+func (s *Service) DeleteCustom(ctx context.Context, id string) error {
+	if err := s.repo.DeleteCustom(ctx, id); err != nil {
+		return err
+	}
+	_ = s.secrets.Delete(customSecretKey(id))
+	s.changed()
+	return nil
+}
+
+// ---- resolve (for generation features; never exposed to the UI or the agent) ----
+
+// Resolved is a ready-to-use credential. Secrets holds plain secret values: keep it in memory only.
+type Resolved struct {
+	ProviderID   string
+	CredentialID string
+	BaseURL      string
+	Values       map[string]string
+	Secrets      map[string]string
+}
+
+// Resolve returns the active credential of a built-in provider.
+func (s *Service) Resolve(ctx context.Context, providerID string) (Resolved, error) {
+	m, err := lookup(providerID)
+	if err != nil {
+		return Resolved{}, err
+	}
+	creds, err := s.repo.ListCredentials(ctx)
+	if err != nil {
+		return Resolved{}, err
+	}
+	for _, c := range creds {
+		if c.ProviderID == providerID && c.Active {
+			return s.resolveCredential(m, c)
+		}
+	}
+	return Resolved{}, apperr.New(apperr.CodeValidation, m.DisplayName+" has no active credential").
+		WithDetails(map[string]any{"provider_id": providerID, "not_configured": true})
+}
+
+// ResolveFor is Resolve that also checks the provider offers capability c.
+func (s *Service) ResolveFor(ctx context.Context, c domain.Capability, providerID string) (Resolved, error) {
+	m, err := lookup(providerID)
+	if err != nil {
+		return Resolved{}, err
+	}
+	if !m.Has(c) {
+		return Resolved{}, apperr.New(apperr.CodeValidation, fmt.Sprintf("%s does not support %s", m.DisplayName, c))
+	}
+	return s.Resolve(ctx, providerID)
+}
+
+func (s *Service) resolveCredential(m domain.Meta, c domain.Credential) (Resolved, error) {
+	r := Resolved{ProviderID: m.ID, CredentialID: c.ID, Values: map[string]string{}, Secrets: map[string]string{}}
+	for k, v := range c.Values {
+		r.Values[k] = v
+	}
+	for k := range c.SecretHints {
+		v, err := s.secrets.Get(credSecretKey(c.ID, k))
+		if errors.Is(err, secrets.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return Resolved{}, apperr.Wrap(apperr.CodeUnavailable, "Could not read the credential store", err)
+		}
+		r.Secrets[k] = v
+	}
+	present := func(k string) bool { return r.Secrets[k] != "" }
+	if err := m.CheckComplete(r.Values, present); err != nil {
+		// Typically: secrets were held in memory (no keyring) and the app restarted.
+		return Resolved{}, apperr.New(apperr.CodeIntegrity, "Stored secret is missing; enter the key again").
+			WithDetails(map[string]any{"provider_id": m.ID, "credential_id": c.ID, "secret_missing": true})
+	}
+	r.BaseURL = strings.TrimRight(firstNonEmpty(r.Values[domain.FieldBaseURL], m.DefaultBaseURL), "/")
+	return r, nil
+}
+
+// ResolvedCustom is a ready-to-use custom provider.
+type ResolvedCustom struct {
+	Provider domain.CustomProvider
+	APIKey   string
+}
+
+// ResolveCustom returns a custom provider with its key.
+func (s *Service) ResolveCustom(ctx context.Context, id string) (ResolvedCustom, error) {
+	p, err := s.repo.GetCustom(ctx, id)
+	if err != nil {
+		return ResolvedCustom{}, err
+	}
+	key, err := s.customKey(p)
+	if err != nil {
+		return ResolvedCustom{}, err
+	}
+	return ResolvedCustom{Provider: p, APIKey: key}, nil
+}
+
+func (s *Service) customKey(p domain.CustomProvider) (string, error) {
+	if p.KeyHint == "" {
+		return "", nil
+	}
+	v, err := s.secrets.Get(customSecretKey(p.ID))
+	if errors.Is(err, secrets.ErrNotFound) {
+		return "", apperr.New(apperr.CodeIntegrity, "Stored secret is missing; enter the key again").
+			WithDetails(map[string]any{"custom_id": p.ID, "secret_missing": true})
+	}
+	if err != nil {
+		return "", apperr.Wrap(apperr.CodeUnavailable, "Could not read the credential store", err)
+	}
+	return v, nil
+}
+
+// Status is the non-secret view of provider readiness, safe for the agent.
+type Status struct {
+	ID           string
+	Name         string
+	Custom       bool
+	Capabilities []domain.Capability
+	Configured   bool
+}
+
+// Statuses lists every provider with whether it is ready to use.
+func (s *Service) Statuses(ctx context.Context) ([]Status, error) {
+	snap, err := s.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []Status
+	for _, b := range snap.Builtins {
+		out = append(out, Status{ID: b.Meta.ID, Name: b.Meta.DisplayName, Capabilities: b.Meta.Capabilities, Configured: b.Configured()})
+	}
+	for _, c := range snap.Custom {
+		out = append(out, Status{ID: c.ID, Name: c.Name, Custom: true, Capabilities: c.Capabilities(), Configured: len(c.Capabilities()) > 0})
+	}
+	return out, nil
+}
+
+func firstNonEmpty(v ...string) string {
+	for _, s := range v {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
+}

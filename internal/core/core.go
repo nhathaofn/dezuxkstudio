@@ -29,6 +29,7 @@ import (
 	binariessvc "app/internal/service/binaries"
 	"app/internal/service/diagnostics"
 	"app/internal/service/preferences"
+	providersvc "app/internal/service/provider"
 	"app/internal/service/system"
 	"app/internal/service/update"
 	"app/internal/service/workflow"
@@ -191,6 +192,23 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 	binSvc := binariessvc.New(sqlite.NewBinariesRepository(c.db), o.Paths.Tools(), o.Logger,
 		binariessvc.WithProbeTimeout(cfg.Binaries.ProbeTimeout), binariessvc.WithHTTPClient(o.HTTPClient))
 
+	var provSvc *providersvc.Service
+	provSvc, err = providersvc.New(providersvc.Options{
+		Repo:        sqlite.NewProviderRepository(c.db),
+		Secrets:     secretStore,
+		Client:      o.HTTPClient,
+		TestTimeout: cfg.Providers.TestTimeout,
+		OnChanged: func() {
+			// Runs after the mutation committed; a fresh snapshot keeps every client in sync.
+			if snap, err := provSvc.List(context.Background()); err == nil {
+				c.hub.Publish(contracts.EventProvidersChanged, modules.ListResult(snap))
+			}
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	wfSvc, err := workflow.New(workflow.Options{
 		Paths:  o.Paths,
 		Logger: o.Logger,
@@ -236,6 +254,7 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		modules.Binaries{Service: binSvc},
 		modules.Workflow{Service: wfSvc},
 		modules.Agent{Service: agentSvc},
+		modules.Providers{Service: provSvc},
 	}, nil
 }
 

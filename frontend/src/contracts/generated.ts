@@ -46,6 +46,24 @@ export type AgentSource = (typeof AgentSourceValues)[number];
 export const AgentChatEventTypeValues = ["delta", "thought", "tool_call", "tool_result", "done", "error", "system"] as const;
 export type AgentChatEventType = (typeof AgentChatEventTypeValues)[number];
 
+export const ProviderCapabilityValues = ["llm", "image", "video", "tts"] as const;
+export type ProviderCapability = (typeof ProviderCapabilityValues)[number];
+
+export const ProviderFieldKindValues = ["text", "url", "file"] as const;
+export type ProviderFieldKind = (typeof ProviderFieldKindValues)[number];
+
+export const ProviderDiscoveryFormatValues = ["openai", "gemini", "anthropic"] as const;
+export type ProviderDiscoveryFormat = (typeof ProviderDiscoveryFormatValues)[number];
+
+export const ProviderEndpointValues = ["openai-chat", "openai-responses", "gemini-generate", "anthropic-messages", "openai-images", "openai-images-generations", "openai-images-edits", "openai-chat-image", "openrouter-images", "gemini-image", "openai-video", "openai-tts"] as const;
+export type ProviderEndpoint = (typeof ProviderEndpointValues)[number];
+
+export const ProviderTestOutcomeValues = ["ok", "auth_failed", "rate_limited", "not_found", "http_error", "timeout", "network", "invalid_credentials"] as const;
+export type ProviderTestOutcome = (typeof ProviderTestOutcomeValues)[number];
+
+export const SecretBackendValues = ["keyring", "encrypted_file", "memory"] as const;
+export type SecretBackend = (typeof SecretBackendValues)[number];
+
 export interface ActionProgress {
   percent: number;
   message: string;
@@ -236,6 +254,18 @@ export interface BuildInfo {
   dev: boolean;
 }
 
+export interface BuiltinProvider {
+  id: string;
+  display_name: string;
+  capabilities: ProviderCapability[];
+  fields: ProviderField[];
+  default_base_url: string;
+  credential_groups: string[][];
+  docs_url: string;
+  configured: boolean;
+  credentials: ProviderCredential[];
+}
+
 export interface ClientMessage {
   type: MessageType;
   id: string;
@@ -253,10 +283,83 @@ export interface ConnectionInfo {
   check_updates_on_startup: boolean;
 }
 
+export interface CreateCredentialPayload {
+  provider_id: string;
+  credential: CredentialInput;
+}
+
+export interface CredentialInput {
+  name: string;
+  values: Record<string, string>;
+  secrets: Record<string, string>;
+  clear_secrets: string[];
+}
+
+export interface CustomEndpoint {
+  key: ProviderEndpoint;
+  capability: ProviderCapability;
+  method: string;
+  path: string;
+  formats: ProviderDiscoveryFormat[];
+}
+
+export interface CustomModelInput {
+  model_id: string;
+  endpoint: ProviderEndpoint;
+  enabled: boolean;
+  is_default: boolean;
+}
+
+export interface CustomProvider {
+  id: string;
+  name: string;
+  discovery_format: ProviderDiscoveryFormat;
+  base_url: string;
+  key_hint: string;
+  capabilities: ProviderCapability[];
+  models: CustomProviderModel[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CustomProviderInput {
+  name: string;
+  discovery_format: ProviderDiscoveryFormat;
+  base_url: string;
+  api_key: string;
+  clear_api_key: boolean;
+  models: CustomModelInput[];
+}
+
+export interface CustomProviderModel {
+  model_id: string;
+  endpoint: ProviderEndpoint;
+  enabled: boolean;
+  is_default: boolean;
+  capability: ProviderCapability;
+}
+
 export interface DiagnosticsBundle {
   path: string;
   size_bytes: number;
   created_at: number;
+}
+
+export interface DiscoverModelsPayload {
+  custom_id: string;
+  discovery_format: ProviderDiscoveryFormat;
+  base_url: string;
+  api_key: string;
+}
+
+export interface DiscoverModelsResult {
+  models: DiscoveredModel[];
+}
+
+export interface DiscoveredModel {
+  model_id: string;
+  endpoint: ProviderEndpoint;
+  capability: ProviderCapability;
 }
 
 export interface Edge {
@@ -364,6 +467,45 @@ export interface PreferencesPatch {
   language?: Language;
 }
 
+export interface ProviderCredential {
+  id: string;
+  provider_id: string;
+  name: string;
+  values: Record<string, string>;
+  secret_hints: Record<string, string>;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProviderField {
+  key: string;
+  kind: ProviderFieldKind;
+  secret: boolean;
+  required: boolean;
+  placeholder: string;
+}
+
+export interface ProviderIDPayload {
+  id: string;
+}
+
+export interface ProviderTestResult {
+  ok: boolean;
+  outcome: ProviderTestOutcome;
+  status: number;
+  latency_ms: number;
+  detail: string;
+  models: string[];
+}
+
+export interface ProvidersListResult {
+  secret_backend: SecretBackend;
+  builtins: BuiltinProvider[];
+  custom: CustomProvider[];
+  endpoints: CustomEndpoint[];
+}
+
 export interface ResponseMessage {
   type: MessageType;
   id: string;
@@ -396,6 +538,16 @@ export interface SystemInfo {
   build: BuildInfo;
   runtime: RuntimeInfo;
   paths: PathsInfo;
+}
+
+export interface UpdateCredentialPayload {
+  id: string;
+  credential: CredentialInput;
+}
+
+export interface UpdateCustomPayload {
+  id: string;
+  provider: CustomProviderInput;
 }
 
 export interface UpdateInfo {
@@ -501,6 +653,28 @@ export const Actions = {
   AGENT_REMOVE_ALLOWED_DIR: "agent:remove_allowed_dir",
   /** Selects the model and reasoning effort used by an agent provider. */
   AGENT_SET_MODEL: "agent:set_model",
+  /** Lists built-in API providers with their credentials (secrets masked), custom providers and the secret storage backend. */
+  PROVIDERS_LIST: "providers:list",
+  /** Saves a credential for a built-in provider; the first one becomes active. */
+  PROVIDERS_CREATE_CREDENTIAL: "providers:create_credential",
+  /** Updates a credential; empty secrets keep the stored value. */
+  PROVIDERS_UPDATE_CREDENTIAL: "providers:update_credential",
+  /** Deletes a credential and its secrets; the oldest other one becomes active. */
+  PROVIDERS_DELETE_CREDENTIAL: "providers:delete_credential",
+  /** Makes a credential the active one of its provider. */
+  PROVIDERS_ACTIVATE_CREDENTIAL: "providers:activate_credential",
+  /** Checks a saved credential against the provider API. */
+  PROVIDERS_TEST_CREDENTIAL: "providers:test_credential",
+  /** Saves a custom (OpenAI/Gemini/Anthropic-compatible) provider. */
+  PROVIDERS_CREATE_CUSTOM: "providers:create_custom",
+  /** Updates a custom provider; an empty api_key keeps the stored key. */
+  PROVIDERS_UPDATE_CUSTOM: "providers:update_custom",
+  /** Deletes a custom provider and its key. */
+  PROVIDERS_DELETE_CUSTOM: "providers:delete_custom",
+  /** Checks a saved custom provider by listing its models. */
+  PROVIDERS_TEST_CUSTOM: "providers:test_custom",
+  /** Lists the models of a (possibly unsaved) custom provider. */
+  PROVIDERS_DISCOVER_MODELS: "providers:discover_models",
 } as const;
 export type ActionName = (typeof Actions)[keyof typeof Actions];
 
@@ -550,6 +724,17 @@ export interface ActionMap {
   "agent:add_allowed_dir": { payload: AgentAllowedDirPayload; result: AgentAllowedDirsResult };
   "agent:remove_allowed_dir": { payload: AgentAllowedDirPayload; result: AgentAllowedDirsResult };
   "agent:set_model": { payload: AgentSetModelPayload; result: AgentProviderInfo };
+  "providers:list": { payload: Empty; result: ProvidersListResult };
+  "providers:create_credential": { payload: CreateCredentialPayload; result: ProviderCredential };
+  "providers:update_credential": { payload: UpdateCredentialPayload; result: ProviderCredential };
+  "providers:delete_credential": { payload: ProviderIDPayload; result: Empty };
+  "providers:activate_credential": { payload: ProviderIDPayload; result: Empty };
+  "providers:test_credential": { payload: ProviderIDPayload; result: ProviderTestResult };
+  "providers:create_custom": { payload: CustomProviderInput; result: CustomProvider };
+  "providers:update_custom": { payload: UpdateCustomPayload; result: CustomProvider };
+  "providers:delete_custom": { payload: ProviderIDPayload; result: Empty };
+  "providers:test_custom": { payload: ProviderIDPayload; result: ProviderTestResult };
+  "providers:discover_models": { payload: DiscoverModelsPayload; result: DiscoverModelsResult };
 }
 
 export const Events = {
@@ -563,6 +748,8 @@ export const Events = {
   AGENT_CHAT_EVENT: "agent:chat_event",
   /** Pending agent approval queue changed. */
   AGENT_APPROVALS: "agent:approvals",
+  /** Provider credentials or custom providers changed. */
+  PROVIDERS_CHANGED: "providers:changed",
 } as const;
 export type EventName = (typeof Events)[keyof typeof Events];
 
@@ -572,6 +759,7 @@ export interface EventMap {
   "agent:status_changed": AgentProviderInfo;
   "agent:chat_event": AgentChatEvent;
   "agent:approvals": AgentApprovalListResult;
+  "providers:changed": ProvidersListResult;
 }
 
 export const NativeEvents = {

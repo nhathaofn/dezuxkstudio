@@ -52,6 +52,7 @@ type Config struct {
 	Diagnostics DiagnosticsConfig
 	Update      UpdateConfig
 	Binaries    BinariesConfig
+	Providers   ProvidersConfig
 	Network     NetworkConfig
 	Desktop     DesktopConfig
 	Agent       AgentConfig
@@ -120,6 +121,11 @@ type NetworkConfig struct {
 	IdleConnTimeout     time.Duration
 	MaxIdleConns        int
 	MaxIdleConnsPerHost int
+}
+
+// ProvidersConfig configures API provider credential checks.
+type ProvidersConfig struct {
+	TestTimeout time.Duration // max duration of a provider connectivity test or model discovery
 }
 
 // BinariesConfig configures external tool (ffmpeg, yt-dlp...) inspection.
@@ -220,6 +226,7 @@ func Default(mode Mode) *Config {
 		},
 		Diagnostics: DiagnosticsConfig{Keep: 5},
 		Binaries:    BinariesConfig{ProbeTimeout: 15 * time.Second},
+		Providers:   ProvidersConfig{TestTimeout: 15 * time.Second}, // ArcReel _CONNECTIVITY_CHECK_TIMEOUT
 		Network:     NetworkConfig{IdleConnTimeout: 90 * time.Second, MaxIdleConns: 100, MaxIdleConnsPerHost: 10},
 		Update: UpdateConfig{
 			FeedURL:        buildinfo.UpdateFeedURL,
