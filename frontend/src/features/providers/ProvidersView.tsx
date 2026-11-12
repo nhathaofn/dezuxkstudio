@@ -32,6 +32,8 @@ import { useConnectionStore } from "../connection/useConnectionStore";
 import { CredentialForm } from "./CredentialForm";
 import { CustomProviderForm } from "./CustomProviderForm";
 import { fieldLabel } from "./fieldLabel";
+import { HealthBadge } from "./HealthBadge";
+import { deadKeyNames, healthStatus } from "./health";
 import { useProvidersStore } from "./useProvidersStore";
 
 function Capabilities({ values }: { values: ProviderCapability[] }) {
@@ -184,10 +186,15 @@ function BuiltinCard({
       icon={KeyRound}
       title={provider.display_name}
       actions={
-        <Button type="button" disabled={disabled} onClick={onAdd}>
-          <Plus size={13} />
-          {t("providers.addCredential")}
-        </Button>
+        <>
+          {provider.credentials.some(
+            (credential) => credential.active && healthStatus(credential.health) === "dead"
+          ) && <Badge className="providers-health--dead">{t("providers.health.activeDead")}</Badge>}
+          <Button type="button" disabled={disabled} onClick={onAdd}>
+            <Plus size={13} />
+            {t("providers.addCredential")}
+          </Button>
+        </>
       }
     >
       <div className="providers-meta">
@@ -208,9 +215,13 @@ function BuiltinCard({
           <p className="subtitle">{t("providers.noCredentials")}</p>
         )}
         {provider.credentials.map((credential) => (
-          <div key={credential.id} className="providers-credential">
+          <div
+            key={credential.id}
+            className={`providers-credential${healthStatus(credential.health) === "dead" ? " providers-key--dead" : ""}`}
+          >
             <div className="providers-meta">
               <strong>{credential.name}</strong>
+              <HealthBadge health={credential.health} />
               {credential.active && (
                 <Badge className="providers-success">{t("providers.active")}</Badge>
               )}
@@ -256,7 +267,12 @@ function CustomCard({
   const test = useProvidersStore((s) => s.testCustom);
   const remove = useProvidersStore((s) => s.deleteCustom);
   return (
-    <Card icon={Server} title={provider.name}>
+    <Card
+      icon={Server}
+      title={provider.name}
+      className={healthStatus(provider.health) === "dead" ? "providers-key--dead" : undefined}
+      actions={<HealthBadge health={provider.health} />}
+    >
       <div className="providers-meta">
         <Badge>{t(`providers.protocol.${provider.discovery_format}`)}</Badge>
         <Capabilities values={provider.capabilities} />
@@ -298,6 +314,7 @@ export function ProvidersView() {
   const loading = useProvidersStore((s) => s.loading);
   const error = useProvidersStore((s) => s.error);
   const list = useProvidersStore((s) => s.list);
+  const deadNames = deadKeyNames(data);
   const [filter, setFilter] = useState<"all" | "custom" | ProviderCapability>("all");
   const [editor, setEditor] = useState<Editor | null>(null);
   const editorRef = useRef<HTMLDivElement>(null);
@@ -341,6 +358,16 @@ export function ProvidersView() {
             </p>
           )}
           <ErrorText error={error} />
+          {deadNames.length > 0 && (
+            <div className="providers-notice providers-notice--danger" role="alert">
+              <strong>{t("providers.health.stopped", { count: deadNames.length })}</strong>
+              <ul>
+                {deadNames.map((name, index) => (
+                  <li key={index}>{name}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           {saved && (
             <p className="providers-success" role="status">
               {t("providers.saved")}

@@ -83,3 +83,17 @@ Người dùng chỉ cần dán API key, có thể kèm base URL, vào khung cha
   - `providers_activate`
   - `providers_delete`: cần người dùng **Approve**.
 - Kết quả trả về agent không bao giờ chứa secret. Policy của agent cấm nhắc lại key.
+
+## Kiểm tra sức khỏe key
+- Khi app mở (`providers.check_on_startup`, mặc định bật), mọi credential và custom provider được test ở chế độ nền,
+  tối đa `providers.check_concurrency` (mặc định 4) test chạy cùng lúc. Việc test không làm chậm lúc mở app, và dừng lại khi tắt app.
+- Kết quả mới nhất được lưu vào DB (`last_outcome`, `last_detail`, `last_tested_at`, migration `010`). Bấm Test thủ công cũng cập nhật kết quả này.
+  Khi đổi key, base URL hoặc giao thức, kết quả cũ bị xoá.
+- Nhóm **dead** (hiện đỏ): `auth_failed`, `invalid_credentials`, `secret_missing`.
+  Lỗi mạng, timeout, rate limit hoặc HTTP khác hiện **vàng** ("không xác minh được") vì key có thể vẫn tốt.
+- App **không** tự chuyển sang key khác khi key chết. Người dùng chọn thủ công, giống ArcReel.
+
+## Khác biệt còn lại so với ArcReel
+- Vertex: test bằng cách đổi service account lấy OAuth token. ArcReel gọi `models.list`, nên bắt được thêm trường hợp Vertex API bị tắt.
+- Agnes: ArcReel không có test, ở đây gọi `GET {base}/models`. Nếu trả 404 thì hiện vàng, không bị coi là key chết.
+- Đoán endpoint cho custom provider chỉ dựa trên ID model, đơn giản hơn `infer_endpoint` của ArcReel. Người dùng sửa được trong bảng model.

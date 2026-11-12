@@ -356,6 +356,49 @@ select.input-control::-ms-expand {
   color: var(--alert-error-text);
 }
 
+.ds-badge.providers-health--ok {
+  color: var(--status-connected);
+  background: var(--status-connected-bg);
+}
+
+.providers-health--dead,
+.ds-badge.providers-health--dead {
+  color: var(--alert-error-text);
+  background: var(--alert-error-bg);
+}
+
+.providers-health--unknown,
+.ds-badge.providers-health--unknown {
+  color: var(--status-connecting);
+  background: var(--status-connecting-bg);
+}
+
+.providers-health {
+  border-radius: var(--radius-sm);
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.providers-health summary {
+  cursor: pointer;
+}
+
+.providers-health .ds-badge {
+  color: inherit;
+  background: inherit;
+  white-space: normal;
+}
+
+.providers-health p {
+  margin: var(--space-2);
+}
+
+.providers-key--dead {
+  border-left: 3px solid var(--alert-error-text);
+  background: var(--alert-error-bg);
+  padding-left: var(--space-3);
+}
+
 .providers-form [aria-invalid="true"] {
   border-color: var(--status-disconnected);
   outline: 1px solid var(--status-disconnected);
