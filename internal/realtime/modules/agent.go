@@ -78,7 +78,7 @@ func (m Agent) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionAgentDisconnect,
 		func(ctx context.Context, _ *realtime.Request, _ contracts.Empty) (contracts.AgentListResult, error) {
-			if err := m.Service.Disconnect(ctx); err != nil {
+			if err := m.Service.DisconnectByUser(ctx); err != nil {
 				return contracts.AgentListResult{}, err
 			}
 			return m.listResult(ctx)

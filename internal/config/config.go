@@ -147,6 +147,7 @@ type UpdateConfig struct {
 
 // AgentConfig tunes the external AI agent integration (timeouts, caches, chat context size).
 type AgentConfig struct {
+	RestoreConnection   bool          // reconnect the agent left connected when the app last ran
 	TurnTimeout         time.Duration // max silence (no streamed output or tool activity) in one chat turn
 	InitializeTimeout   time.Duration // max wait for an ACP agent handshake
 	VersionProbeTimeout time.Duration // max duration of `<cli> --version`
@@ -240,6 +241,7 @@ func Default(mode Mode) *Config {
 			CheckOnStartup: true,
 		},
 		Agent: AgentConfig{
+			RestoreConnection:   true,
 			TurnTimeout:         10 * time.Minute,
 			InitializeTimeout:   15 * time.Second,
 			VersionProbeTimeout: 5 * time.Second, // Node-based CLI shims cold-start slowly on Windows

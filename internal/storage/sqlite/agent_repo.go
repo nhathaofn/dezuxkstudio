@@ -300,3 +300,36 @@ func (r *AgentRepository) SetModelSelection(ctx context.Context, id agent.Provid
 	}
 	return nil
 }
+
+// rememberedConnectionKey is the user_settings row holding the provider left connected.
+const rememberedConnectionKey = "agent.connected_provider"
+
+// RememberedConnection implements agent.Repository.
+func (r *AgentRepository) RememberedConnection(ctx context.Context) (agent.ProviderID, error) {
+	var v string
+	err := r.db.sql.QueryRowContext(ctx, "SELECT value FROM user_settings WHERE key = ?", rememberedConnectionKey).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("sqlite: get remembered agent connection: %w", err)
+	}
+	return agent.ProviderID(v), nil
+}
+
+// SetRememberedConnection implements agent.Repository ("" forgets it).
+func (r *AgentRepository) SetRememberedConnection(ctx context.Context, id agent.ProviderID) error {
+	var err error
+	if id == "" {
+		_, err = r.db.sql.ExecContext(ctx, "DELETE FROM user_settings WHERE key = ?", rememberedConnectionKey)
+	} else {
+		_, err = r.db.sql.ExecContext(ctx, `
+			INSERT INTO user_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+			ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP;`,
+			rememberedConnectionKey, string(id))
+	}
+	if err != nil {
+		return fmt.Errorf("sqlite: set remembered agent connection: %w", err)
+	}
+	return nil
+}

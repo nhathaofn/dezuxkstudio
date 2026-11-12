@@ -83,6 +83,7 @@ func fields(c *Config) []field {
 		{key: "agent.turn_timeout", usage: "an agent chat turn is stopped after this long without activity (text, tool calls, tool progress)", val: durationValue{&c.Agent.TurnTimeout}},
 		{key: "agent.initialize_timeout", usage: "max wait for an ACP agent handshake", val: durationValue{&c.Agent.InitializeTimeout}},
 		{key: "agent.version_probe_timeout", usage: "max duration of an agent CLI --version probe", val: durationValue{&c.Agent.VersionProbeTimeout}},
+		{key: "agent.restore_connection", usage: "reconnect the agent left connected when the app last ran", val: boolValue{&c.Agent.RestoreConnection}},
 		{key: "agent.auth_probe_timeout", usage: "max duration of an agent CLI auth status check", val: durationValue{&c.Agent.AuthProbeTimeout}},
 		{key: "agent.login_timeout", usage: "max duration of an agent sign-in (browser OAuth)", val: durationValue{&c.Agent.LoginTimeout}},
 		{key: "agent.model_catalog_timeout", usage: "max duration of reading an agent CLI model catalog", val: durationValue{&c.Agent.ModelCatalogTimeout}},

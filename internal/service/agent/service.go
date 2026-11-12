@@ -695,7 +695,41 @@ func (s *Service) connectPerTurnCLI(
 	info := s.buildInfoLocked(spec, resolved, source, customPath, version)
 	s.mu.Unlock()
 	s.emitStatus(info)
+	// Remember it so the next app start reconnects without asking (see RestoreConnection).
+	if err := s.repo.SetRememberedConnection(context.WithoutCancel(ctx), id); err != nil {
+		s.log.Warn("agent: remember connection", "error", err)
+	}
 	return info, nil
+}
+
+// DisconnectByUser ends the connection the user chose to close: unlike app shutdown or a reconnect, the
+// provider is no longer reconnected at the next start.
+func (s *Service) DisconnectByUser(ctx context.Context) error {
+	if err := s.Disconnect(ctx); err != nil {
+		return err
+	}
+	return s.repo.SetRememberedConnection(ctx, "")
+}
+
+// RestoreConnection reconnects the provider the user left connected when the app last ran. If it can no
+// longer connect (CLI removed, sign-in expired...), the provider is forgotten and its error state shown,
+// so the user reconnects by hand once instead of on every start.
+func (s *Service) RestoreConnection(ctx context.Context) {
+	id, err := s.repo.RememberedConnection(ctx)
+	if err != nil || id == "" {
+		return
+	}
+	if domainagent.ValidateProviderID(id) != nil {
+		_ = s.repo.SetRememberedConnection(ctx, "")
+		return
+	}
+	if _, err := s.Connect(ctx, id); err != nil {
+		if ctx.Err() != nil {
+			return // app is closing: keep it for the next start
+		}
+		s.log.Warn("agent: restore connection failed", "provider", id, "error", err)
+		_ = s.repo.SetRememberedConnection(context.WithoutCancel(ctx), "")
+	}
 }
 
 // Disconnect terminates the currently active agent connection, if any.

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"app/internal/buildinfo"
@@ -67,8 +68,9 @@ type Core struct {
 	srv      *server.Server
 	agentSvc *agentsvc.Service
 	// background work tied to the core lifetime (e.g. the start-up provider key check)
+	bgCtx     context.Context
 	bgCancel  context.CancelFunc
-	bgDone    chan struct{}
+	bgWG      sync.WaitGroup
 	shutdown  time.Duration
 	startedAt time.Time
 }
@@ -223,11 +225,8 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 	}
 
 	if cfg.Providers.CheckOnStartup {
-		bgCtx, cancel := context.WithCancel(context.Background())
-		c.bgCancel, c.bgDone = cancel, make(chan struct{})
-		safego.Go("provider-startup-check", func() {
-			defer close(c.bgDone)
-			provSvc.CheckAll(bgCtx, cfg.Providers.CheckConcurrency)
+		c.background("provider-startup-check", func(ctx context.Context) {
+			provSvc.CheckAll(ctx, cfg.Providers.CheckConcurrency)
 		})
 	}
 
@@ -269,6 +268,9 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		return nil, err
 	}
 	c.agentSvc = agentSvc
+	if cfg.Agent.RestoreConnection {
+		c.background("agent-restore-connection", agentSvc.RestoreConnection)
+	}
 
 	return []realtime.Module{
 		modules.System{Info: sysSvc, Update: updSvc},
@@ -279,6 +281,18 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		modules.Agent{Service: agentSvc},
 		modules.Providers{Service: provSvc},
 	}, nil
+}
+
+// background runs start-up work tied to the core lifetime: Close cancels it and waits (bounded).
+func (c *Core) background(name string, fn func(ctx context.Context)) {
+	if c.bgCancel == nil {
+		c.bgCtx, c.bgCancel = context.WithCancel(context.Background())
+	}
+	c.bgWG.Add(1)
+	safego.Go(name, func() {
+		defer c.bgWG.Done()
+		fn(c.bgCtx)
+	})
 }
 
 // Start begins accepting connections.
@@ -298,8 +312,10 @@ func (c *Core) Close() error {
 	defer cancel()
 	if c.bgCancel != nil {
 		c.bgCancel()
+		done := make(chan struct{})
+		safego.Go("core-background-wait", func() { c.bgWG.Wait(); close(done) })
 		select {
-		case <-c.bgDone:
+		case <-done:
 		case <-ctx.Done():
 		}
 	}

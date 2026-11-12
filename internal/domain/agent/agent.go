@@ -310,4 +310,7 @@ type Repository interface {
 	RemoveAllowedDir(ctx context.Context, dir string) error
 	GetModelSelection(ctx context.Context, id ProviderID) (ModelSelection, error)
 	SetModelSelection(ctx context.Context, id ProviderID, sel ModelSelection) error
+	// RememberedConnection is the provider the user left connected ("" = none); it is reconnected at start-up.
+	RememberedConnection(ctx context.Context) (ProviderID, error)
+	SetRememberedConnection(ctx context.Context, id ProviderID) error
 }

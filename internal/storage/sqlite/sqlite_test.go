@@ -260,3 +260,25 @@ func TestAgentConversations(t *testing.T) {
 		t.Fatalf("delete must remove its messages: %+v", gone)
 	}
 }
+
+func TestAgentRememberedConnection(t *testing.T) {
+	ctx := context.Background()
+	db := open(t, t.TempDir())
+	defer db.Close()
+	r := NewAgentRepository(db)
+	if id, err := r.RememberedConnection(ctx); err != nil || id != "" {
+		t.Fatalf("empty: %q %v", id, err)
+	}
+	if err := r.SetRememberedConnection(ctx, "claude"); err != nil {
+		t.Fatal(err)
+	}
+	if id, _ := r.RememberedConnection(ctx); id != "claude" {
+		t.Fatalf("got %q", id)
+	}
+	if err := r.SetRememberedConnection(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if id, _ := r.RememberedConnection(ctx); id != "" {
+		t.Fatalf("forget failed: %q", id)
+	}
+}
