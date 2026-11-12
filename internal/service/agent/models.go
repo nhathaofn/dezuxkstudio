@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"app/internal/progress"
 	"app/internal/safego"
 	"context"
 	"encoding/json"
@@ -129,7 +130,9 @@ func (s *Service) SetModel(ctx context.Context, id domainagent.ProviderID, model
 	model, effort = strings.TrimSpace(model), strings.TrimSpace(effort)
 	spec := domainagent.Registry[id]
 	if resolved, _, _, err := s.resolveExecutable(ctx, spec); err == nil && resolved != "" {
+		stop := progress.KeepAlive(ctx) // bounded by agent.model_catalog_timeout
 		s.ensureModelCatalog(ctx, id, resolved)
+		stop()
 	}
 
 	s.models.mu.Lock()

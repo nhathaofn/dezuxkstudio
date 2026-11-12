@@ -51,6 +51,7 @@ export interface ActionProgress {
   message: string;
   msg_key?: string;
   msg_params?: Record<string, string>;
+  heartbeat?: boolean;
 }
 
 export interface AgentAllowedDirPayload {
@@ -509,10 +510,6 @@ export const LongActions: readonly ActionName[] = [
   "workflow:run_node",
   "workflow:run_graph",
   "diagnostics:export",
-  "agent:list",
-  "agent:probe",
-  "agent:connect",
-  "agent:login",
   "agent:resolve_approval",
 ];
 

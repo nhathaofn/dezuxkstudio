@@ -131,6 +131,7 @@ export const en = {
   "tools.probing": "Checking…",
   "tools.download": "Download",
   "tools.downloading": "Downloading…",
+  "workflow.progress.items": "Processed {done} / {total} images",
   "tools.progress.connecting": "Connecting to download {name}…",
   "tools.progress.downloaded": "Downloaded {done} / {total} MB",
   "tools.progress.downloadedN": "Downloaded {done} MB",

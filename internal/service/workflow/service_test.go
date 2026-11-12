@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -12,10 +13,13 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"app/internal/engine"
 	"app/internal/paths"
+	"app/internal/progress"
 	"app/internal/service/workflow"
 	"app/internal/tools/watermark"
 )
@@ -91,5 +95,53 @@ func TestWorkflowService_SpecsAndExecution(t *testing.T) {
 	}
 	if !res.Done() {
 		t.Fatalf("expected graph run done: %+v", res)
+	}
+}
+
+// Callers without their own callback (agent approvals, MCP tools) must still report progress
+// through the context, or the action's idle timeout fires mid-run. A watermark batch reports
+// once per image, so a long batch keeps the action alive.
+func TestWorkflowReportsProgressThroughContext(t *testing.T) {
+	tempDir := t.TempDir()
+	svc, err := workflow.New(workflow.Options{
+		Paths:  paths.Paths{Data: tempDir},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var updates []progress.Update
+	ctx := progress.With(context.Background(), progress.Sink{Report: func(u progress.Update) {
+		mu.Lock()
+		updates = append(updates, u)
+		mu.Unlock()
+	}})
+
+	imgs := []string{}
+	for i := 0; i < 3; i++ {
+		imgs = append(imgs, `"`+filepath.ToSlash(createTestPNG(t, tempDir, fmt.Sprintf("p%d.png", i)))+`"`)
+	}
+	raw := json.RawMessage(`{"images": [` + strings.Join(imgs, ",") + `]}`)
+	if _, err := svc.RunNode(ctx, watermark.NodeType, raw); err != nil {
+		t.Fatalf("RunNode: %v", err)
+	}
+	itemReports := 0
+	for _, u := range updates {
+		if u.Key == "workflow.progress.items" {
+			itemReports++
+		}
+	}
+	if itemReports != 3 {
+		t.Fatalf("want one report per image (3), got %d: %+v", itemReports, updates)
+	}
+
+	updates = nil
+	g := engine.Graph{Nodes: []engine.GraphNode{{ID: "n1", Type: watermark.NodeType, Params: json.RawMessage(`{"image": ` + imgs[0] + `}`)}}}
+	if _, err := svc.RunGraph(ctx, g); err != nil {
+		t.Fatalf("RunGraph: %v", err)
+	}
+	if len(updates) == 0 {
+		t.Fatal("RunGraph without a callback reported nothing through the context")
 	}
 }

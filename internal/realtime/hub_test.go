@@ -16,6 +16,7 @@ import (
 
 	"app/internal/apperr"
 	"app/internal/contracts"
+	"app/internal/progress"
 )
 
 const testToken = "secret-token"
@@ -80,6 +81,7 @@ func newTestHub(t *testing.T, mutate func(*Options)) (*Hub, *httptest.Server, *t
 		MaxConcurrentActions: 4,
 		ActionTimeout:        2 * time.Second,
 		LongActionTimeout:    4 * time.Second,
+		KeepAliveInterval:    10 * time.Millisecond,
 		QueueTimeout:         200 * time.Millisecond,
 		ClientBufferSize:     16,
 		MaxMessageBytes:      4096,
@@ -382,7 +384,7 @@ func TestCloseDisconnectsAndCancels(t *testing.T) {
 
 func TestRegistryRules(t *testing.T) {
 	h, err := New(Options{
-		AllowAnonymous: true, MaxConcurrentActions: 1, ActionTimeout: time.Second, LongActionTimeout: time.Second, QueueTimeout: time.Second,
+		AllowAnonymous: true, MaxConcurrentActions: 1, ActionTimeout: time.Second, LongActionTimeout: time.Second, KeepAliveInterval: 10 * time.Millisecond, QueueTimeout: time.Second,
 		ClientBufferSize: 1, MaxMessageBytes: 1024, PingInterval: time.Second, WriteTimeout: time.Second,
 		DeclaredActions: []string{"a:one", "a:two"}, Logger: slog.New(slog.DiscardHandler),
 	})
@@ -464,8 +466,8 @@ func TestTieredActionTimeout(t *testing.T) {
 	}
 }
 
-// Every contracts.LongActions entry (agent sign-in, approvals, connect...) must get the long
-// timeout; a short timeout there made the UI report ERR_TIMEOUT while the backend kept working.
+// Every contracts.LongActions entry gets the long idle timeout; waits on bounded external work
+// (agent sign-in/connect/probe) stay on the short one and keep themselves alive instead.
 func TestEveryLongActionUsesLongTimeout(t *testing.T) {
 	h, _, _ := newTestHub(t, func(o *Options) {
 		o.ActionTimeout = 50 * time.Millisecond
@@ -476,46 +478,63 @@ func TestEveryLongActionUsesLongTimeout(t *testing.T) {
 			t.Errorf("%s: timeout %v, want long timeout", a, d)
 		}
 	}
-	for _, a := range []string{contracts.ActionAgentLogin, contracts.ActionAgentResolveApproval, contracts.ActionAgentConnect, contracts.ActionAgentList} {
-		if !contracts.IsLongAction(a) {
-			t.Errorf("%s must be a long action", a)
-		}
+	if !contracts.IsLongAction(contracts.ActionAgentResolveApproval) {
+		t.Error("agent:resolve_approval runs a workflow and must be a long action")
 	}
-	if contracts.IsLongAction(contracts.ActionSystemPing) {
-		t.Error("system:ping must not be a long action")
+	for _, a := range []string{contracts.ActionAgentLogin, contracts.ActionAgentConnect, contracts.ActionSystemPing} {
+		if contracts.IsLongAction(a) {
+			t.Errorf("%s must rely on keep-alive, not the long timeout", a)
+		}
 	}
 }
 
-// End to end: agent:login sends no progress while the user signs in in the browser; it must
-// finish under the long timeout even though it outlives the short one many times over.
-func TestSilentLongActionOutlivesShortTimeout(t *testing.T) {
+// End to end, like the binaries download: an action that waits silently (agent sign-in in the
+// browser) keeps itself alive with progress.KeepAlive and outlives a much shorter idle timeout;
+// the client sees heartbeat frames; the same wait without keep-alive still times out.
+func TestKeepAliveOutlivesIdleTimeout(t *testing.T) {
 	h, srv, _ := newTestHub(t, func(o *Options) {
-		o.ActionTimeout = 50 * time.Millisecond
-		o.LongActionTimeout = 2 * time.Second
-		o.DeclaredActions = append(append([]string{}, testActions...), contracts.ActionAgentLogin, "t:short_silent")
+		o.ActionTimeout = 60 * time.Millisecond
+		o.KeepAliveInterval = 15 * time.Millisecond
+		o.DeclaredActions = append(append([]string{}, testActions...), contracts.ActionAgentLogin, "t:silent")
 	})
-	slow := func(ctx context.Context, _ *Request, _ contracts.Empty) (contracts.Empty, error) {
+	wait := func(ctx context.Context) error {
 		select {
-		case <-time.After(250 * time.Millisecond):
-			return contracts.Empty{}, nil
+		case <-time.After(300 * time.Millisecond):
+			return nil
 		case <-ctx.Done():
-			return contracts.Empty{}, ctx.Err()
+			return ctx.Err()
 		}
 	}
 	if err := h.Mount(moduleFunc(func(r *Registry) {
-		Handle(r, contracts.ActionAgentLogin, slow)
-		Handle(r, "t:short_silent", slow)
+		Handle(r, contracts.ActionAgentLogin, func(ctx context.Context, _ *Request, _ contracts.Empty) (contracts.Empty, error) {
+			defer progress.KeepAlive(ctx)()
+			return contracts.Empty{}, wait(ctx)
+		})
+		Handle(r, "t:silent", func(ctx context.Context, _ *Request, _ contracts.Empty) (contracts.Empty, error) {
+			return contracts.Empty{}, wait(ctx)
+		})
 	})); err != nil {
 		t.Fatal(err)
 	}
 	c := mustDial(t, srv)
-	c.action("long", contracts.ActionAgentLogin, nil)
-	if f, _ := c.response("long"); f.Error != nil {
-		t.Fatalf("agent:login failed under long timeout: %+v", f.Error)
+	c.action("login", contracts.ActionAgentLogin, nil)
+	f, events := c.response("login")
+	if f.Error != nil {
+		t.Fatalf("kept-alive action timed out: %+v", f.Error)
 	}
-	c.action("short", "t:short_silent", nil)
-	f, _ := c.response("short")
+	beats := 0
+	for _, e := range events {
+		if e.Event == contracts.EventActionProgress && e.RefID == "login" && strings.Contains(string(e.Data), `"heartbeat":true`) {
+			beats++
+		}
+	}
+	if beats == 0 {
+		t.Fatal("client received no heartbeat frames; its own timer would expire")
+	}
+
+	c.action("silent", "t:silent", nil)
+	f, _ = c.response("silent")
 	if f.Error == nil || f.Error.Code != apperr.CodeTimeout {
-		t.Fatalf("short action should time out, got %+v", f.Error)
+		t.Fatalf("silent action without keep-alive should time out, got %+v", f.Error)
 	}
 }

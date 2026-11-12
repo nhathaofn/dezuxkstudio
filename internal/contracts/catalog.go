@@ -56,21 +56,19 @@ const (
 	ActionAgentSetModel           = "agent:set_model"
 )
 
-// LongActions lists actions bounded by realtime.long_action_timeout instead of
-// realtime.action_timeout: they wait on the network, the user (browser sign-in,
-// approvals) or a whole workflow. Server and client both derive their timeouts
-// from this single list (the TS copy is generated).
+// LongActions lists actions whose idle timeout is realtime.long_action_timeout instead of
+// realtime.action_timeout, because a single step (one large file, one slow node) may stay
+// silent for a while. Like every action they also re-arm the timeout on each progress report
+// (see internal/progress). Actions that merely wait on bounded external work (agent sign-in,
+// connect, probe) are NOT listed: they keep themselves alive with progress.KeepAlive.
+// Server and client derive their timeouts from this single list (the TS copy is generated).
 func LongActions() []string {
 	return []string{
 		ActionBinariesDownload,
 		ActionWorkflowRunNode,
 		ActionWorkflowRunGraph,
 		ActionDiagnosticsExport,
-		ActionAgentList,            // probes every CLI (version + auth + model catalog)
-		ActionAgentProbe,           // same chain for one CLI
-		ActionAgentConnect,         // spawns the CLI and runs the ACP handshake
-		ActionAgentLogin,           // browser OAuth sign-in waits for the user
-		ActionAgentResolveApproval, // an approved action can run a whole workflow
+		ActionAgentResolveApproval, // an approved action runs a workflow node or graph
 	}
 }
 

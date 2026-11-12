@@ -86,6 +86,9 @@ type RealtimeConfig struct {
 	MaxMessageBytes      int64
 	PingInterval         time.Duration
 	WriteTimeout         time.Duration
+	// KeepAliveInterval is how often an action waiting on bounded external work (CLI sign-in,
+	// handshake) re-arms its idle timeout; it must stay below action_timeout.
+	KeepAliveInterval time.Duration
 }
 
 // LogConfig configures structured logging.
@@ -192,6 +195,7 @@ func Default(mode Mode) *Config {
 			MaxMessageBytes:      1 << 20,
 			PingInterval:         30 * time.Second,
 			WriteTimeout:         5 * time.Second,
+			KeepAliveInterval:    5 * time.Second,
 		},
 		Log: LogConfig{
 			Level:      "info",

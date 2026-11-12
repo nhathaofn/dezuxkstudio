@@ -11,6 +11,7 @@ import (
 
 	"app/internal/apperr"
 	"app/internal/contracts"
+	"app/internal/progress"
 	"app/internal/safego"
 )
 
@@ -182,6 +183,15 @@ func (s *session) handleAction(msg contracts.ClientMessage) {
 			s.emit(contracts.EventActionProgress, msg.ID, p)
 		},
 	}
+	// Same model as the binaries download: any report re-arms the idle timeout on both ends.
+	actionCtx := progress.With(ctx, progress.Sink{
+		Report: func(u progress.Update) { req.ProgressKeyed(u.Percent, u.Message, u.Key, u.Params) },
+		Beat: func() {
+			resetTimeout()
+			s.emit(contracts.EventActionProgress, msg.ID, contracts.ActionProgress{Heartbeat: true})
+		},
+		Interval: s.hub.opts.KeepAliveInterval,
+	})
 
 	// The session still holds a WaitGroup slot here, so Add cannot race with Hub.Close's Wait.
 	s.hub.wg.Add(1)
@@ -191,7 +201,7 @@ func (s *session) handleAction(msg contracts.ClientMessage) {
 		defer s.untrackInflight(msg.ID)
 		defer cancel()
 
-		result, err := s.hub.execute(ctx, req, handler, msg.Payload)
+		result, err := s.hub.execute(actionCtx, req, handler, msg.Payload)
 		if err != nil {
 			s.respondError(msg.ID, err)
 			return

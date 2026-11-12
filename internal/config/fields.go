@@ -49,6 +49,7 @@ func fields(c *Config) []field {
 		{key: "realtime.max_message_bytes", usage: "max inbound WebSocket message size", val: int64Value{&c.Realtime.MaxMessageBytes}},
 		{key: "realtime.ping_interval", usage: "WebSocket keep-alive ping interval", val: durationValue{&c.Realtime.PingInterval}},
 		{key: "realtime.write_timeout", usage: "WebSocket write/ping timeout", val: durationValue{&c.Realtime.WriteTimeout}},
+		{key: "realtime.keepalive_interval", usage: "heartbeat interval of actions waiting on bounded external work (< action_timeout)", val: durationValue{&c.Realtime.KeepAliveInterval}},
 
 		{key: "log.level", usage: "debug | info | warn | error", val: stringValue{&c.Log.Level}},
 		{key: "log.format", usage: "text | json", val: stringValue{&c.Log.Format}},

@@ -14,6 +14,7 @@ import (
 
 	"app/internal/engine"
 	"app/internal/fsutil"
+	"app/internal/progress"
 	"app/pkg/watermark"
 )
 
@@ -206,7 +207,14 @@ func NewNode(opts Options) engine.Node {
 			itemIdxMap[itemID] = i
 		}
 
-		batchResults := eng.ProcessBatch(ctx, items, in.Workers)
+		batchResults := eng.ProcessBatchProgress(ctx, items, in.Workers, func(done, total int) {
+			progress.Report(ctx, progress.Update{
+				Percent: float64(done) * 100 / float64(total),
+				Message: fmt.Sprintf("Processed %d / %d images", done, total),
+				Key:     "workflow.progress.items",
+				Params:  map[string]string{"done": strconv.Itoa(done), "total": strconv.Itoa(total)},
+			})
+		})
 		if ctx.Err() != nil {
 			return NodeOutput{}, ctx.Err()
 		}

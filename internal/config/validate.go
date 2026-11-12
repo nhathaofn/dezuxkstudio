@@ -59,6 +59,7 @@ func (c *Config) Validate() error {
 			"realtime.queue_timeout":       c.Realtime.QueueTimeout,
 			"realtime.ping_interval":       c.Realtime.PingInterval,
 			"realtime.write_timeout":       c.Realtime.WriteTimeout,
+			"realtime.keepalive_interval":  c.Realtime.KeepAliveInterval,
 			"storage.busy_timeout":         c.Storage.BusyTimeout,
 			"binaries.probe_timeout":       c.Binaries.ProbeTimeout,
 			"agent.turn_timeout":           c.Agent.TurnTimeout,
@@ -79,6 +80,9 @@ func (c *Config) Validate() error {
 			"agent.context_messages":          c.Agent.ContextMessages,
 			"agent.context_message_chars":     c.Agent.ContextMessageChars,
 		})
+		if c.Realtime.KeepAliveInterval >= c.Realtime.ActionTimeout {
+			add("realtime.keepalive_interval must be < realtime.action_timeout")
+		}
 		if c.Server.MaxBroadcastBodyBytes <= 0 {
 			add("server.max_broadcast_body_bytes must be > 0")
 		}

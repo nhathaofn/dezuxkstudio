@@ -86,6 +86,22 @@ describe("PendingRequests", () => {
     expect(onTimeout).toHaveBeenCalledOnce();
     expect(reject.mock.calls[0][0].code).toBe("ERR_TIMEOUT");
   });
+
+  it("a heartbeat re-arms the timer but is not shown as progress", () => {
+    vi.useFakeTimers();
+    const p = new PendingRequests();
+    const reject = vi.fn();
+    const onProgress = vi.fn();
+    p.add("a", 50, { resolve: vi.fn(), reject, onProgress }, vi.fn());
+    for (let i = 0; i < 5; i++) {
+      vi.advanceTimersByTime(40);
+      p.progress("a", { percent: 0, message: "", heartbeat: true });
+    }
+    expect(reject).not.toHaveBeenCalled(); // 200ms elapsed, kept alive
+    expect(onProgress).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(60);
+    expect(reject.mock.calls[0][0].code).toBe("ERR_TIMEOUT");
+  });
 });
 
 describe("parseServerFrame", () => {
@@ -210,20 +226,19 @@ describe("isValidWsUrl", () => {
 });
 
 describe("isLongAction", () => {
-  it("matches the server's long actions, including sign-in and approvals", async () => {
+  it("matches the server's long actions; bounded waits rely on heartbeats instead", async () => {
     const { isLongAction } = await import("./client");
     const { Actions } = await import("../../contracts/generated");
     for (const a of [
-      Actions.AGENT_LOGIN,
       Actions.AGENT_RESOLVE_APPROVAL,
-      Actions.AGENT_CONNECT,
-      Actions.AGENT_LIST,
-      Actions.AGENT_PROBE,
       Actions.BINARIES_DOWNLOAD,
+      Actions.WORKFLOW_RUN_NODE,
       Actions.WORKFLOW_RUN_GRAPH,
     ]) {
       expect(isLongAction(a)).toBe(true);
     }
-    expect(isLongAction(Actions.SYSTEM_PING)).toBe(false);
+    for (const a of [Actions.AGENT_LOGIN, Actions.AGENT_CONNECT, Actions.SYSTEM_PING]) {
+      expect(isLongAction(a)).toBe(false);
+    }
   });
 });

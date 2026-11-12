@@ -100,6 +100,7 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 		MaxMessageBytes:      cfg.Realtime.MaxMessageBytes,
 		PingInterval:         cfg.Realtime.PingInterval,
 		WriteTimeout:         cfg.Realtime.WriteTimeout,
+		KeepAliveInterval:    cfg.Realtime.KeepAliveInterval,
 		DeclaredActions:      contracts.ActionNames(),
 		DeclaredEvents:       contracts.EventNames(),
 		Logger:               o.Logger,

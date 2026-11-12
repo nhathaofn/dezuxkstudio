@@ -15,8 +15,10 @@ import (
 
 	"app/internal/apperr"
 	domainagent "app/internal/domain/agent"
+	"app/internal/progress"
 	"app/internal/safego"
 	"app/internal/secrets"
+
 	"github.com/google/uuid"
 )
 
@@ -245,6 +247,8 @@ func (s *Service) Probe(ctx context.Context, id domainagent.ProviderID) (domaina
 	if err := domainagent.ValidateProviderID(id); err != nil {
 		return domainagent.ProviderInfo{}, err
 	}
+	// Every CLI spawn below has its own bound (version/auth probe timeouts).
+	defer progress.KeepAlive(ctx)()
 	spec := domainagent.Registry[id]
 	resolved, source, customPath, err := s.resolveExecutable(ctx, spec)
 	if err != nil {
@@ -382,6 +386,9 @@ func (s *Service) Login(ctx context.Context, id domainagent.ProviderID, apiKey s
 
 	loginCtx, cancel := context.WithTimeout(ctx, s.limits.LoginTimeout)
 	defer cancel()
+	// The user is signing in in the browser: bounded by agent.login_timeout, so keep the action alive.
+	stopKeepAlive := progress.KeepAlive(loginCtx)
+	defer stopKeepAlive()
 	drv := s.driver(id)
 	loginErr := drv.login(loginCtx, resolved, apiKey)
 	s.invalidateStatus(id)
@@ -508,6 +515,8 @@ func (s *Service) Connect(ctx context.Context, id domainagent.ProviderID) (domai
 	if err := domainagent.ValidateProviderID(id); err != nil {
 		return domainagent.ProviderInfo{}, err
 	}
+	// Spawn + handshake are bounded by agent.initialize_timeout / auth and version probe timeouts.
+	defer progress.KeepAlive(ctx)()
 	spec := domainagent.Registry[id]
 	if !spec.Supported {
 		return domainagent.ProviderInfo{}, apperr.Validation(spec.UnsupportedReason)

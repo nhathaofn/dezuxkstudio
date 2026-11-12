@@ -38,6 +38,7 @@ type Options struct {
 	MaxMessageBytes      int64
 	PingInterval         time.Duration
 	WriteTimeout         time.Duration
+	KeepAliveInterval    time.Duration // progress.KeepAlive beat interval; must be < ActionTimeout
 	DeclaredActions      []string
 	DeclaredEvents       []string
 	Logger               *slog.Logger
@@ -53,6 +54,9 @@ func (o Options) validate() error {
 	}
 	if o.ActionTimeout <= 0 || o.QueueTimeout <= 0 || o.PingInterval <= 0 || o.WriteTimeout <= 0 || o.LongActionTimeout <= 0 {
 		errs = append(errs, errors.New("timeouts must be > 0"))
+	}
+	if o.KeepAliveInterval <= 0 || o.KeepAliveInterval >= o.ActionTimeout {
+		errs = append(errs, errors.New("keep-alive interval must be > 0 and < action timeout"))
 	}
 	if o.Logger == nil {
 		errs = append(errs, errors.New("logger is required"))
