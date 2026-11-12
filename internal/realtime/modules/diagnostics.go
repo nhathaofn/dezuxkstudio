@@ -19,6 +19,6 @@ func (Diagnostics) Name() string { return "diagnostics" }
 func (m Diagnostics) Register(r *realtime.Registry) {
 	realtime.Handle(r, contracts.ActionDiagnosticsExport,
 		func(ctx context.Context, req *realtime.Request, _ contracts.Empty) (contracts.DiagnosticsBundle, error) {
-			return m.Service.Export(ctx, req.Progress)
+			return m.Service.Export(ctx)
 		})
 }

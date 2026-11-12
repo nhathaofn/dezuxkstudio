@@ -160,3 +160,13 @@ type Repository interface {
 	GetAllCustomPaths(ctx context.Context) (map[BinaryID]string, error)
 	SetCustomPath(ctx context.Context, id BinaryID, customPath string) error
 }
+
+// Download progress message keys (translated by the frontend under the same names).
+const (
+	ProgressConnecting  = "tools.progress.connecting"  // {name}
+	ProgressDownloaded  = "tools.progress.downloaded"  // {done} {total} (MB)
+	ProgressDownloadedN = "tools.progress.downloadedN" // {done} (MB, size unknown)
+	ProgressExtracting  = "tools.progress.extracting"
+	ProgressWriting     = "tools.progress.writing"
+	ProgressInstalled   = "tools.progress.installed" // {name}
+)

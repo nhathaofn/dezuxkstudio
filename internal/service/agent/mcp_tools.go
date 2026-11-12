@@ -17,6 +17,7 @@ import (
 	domainprefs "app/internal/domain/preferences"
 	"app/internal/engine"
 	"app/internal/fsutil"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -241,7 +242,7 @@ func (s *Service) buildMCPServer() *mcp.Server {
 			return s.needsApproval("binaries_download",
 				fmt.Sprintf("Download binary %s", id),
 				fmt.Sprintf("Download and install official binary %q into DezuxkStudio tools directory.", id),
-				func(execCtx context.Context) (any, error) { return s.binaries.Download(execCtx, id, nil) })
+				func(execCtx context.Context) (any, error) { return s.binaries.Download(execCtx, id) })
 		})
 
 	addMCPTool(server, "preferences_update",
@@ -272,7 +273,7 @@ func (s *Service) buildMCPServer() *mcp.Server {
 			if s.diagnostics == nil {
 				return mcpError("diagnostics service is unavailable")
 			}
-			bundle, err := s.diagnostics.Export(ctx, nil)
+			bundle, err := s.diagnostics.Export(ctx)
 			if err != nil {
 				return mcpError(err.Error())
 			}

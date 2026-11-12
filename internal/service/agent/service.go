@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,8 +14,12 @@ import (
 
 	"app/internal/apperr"
 	domainagent "app/internal/domain/agent"
+	"app/internal/lookup"
+	"app/internal/proc"
+	"app/internal/progress"
 	"app/internal/safego"
 	"app/internal/secrets"
+
 	"github.com/google/uuid"
 )
 
@@ -104,6 +107,8 @@ type Service struct {
 	activeVersion    string
 	activeTurnID     string
 	activeTurnCancel context.CancelFunc
+	// activeTurnTouch re-arms the turn's idle timeout (agent.turn_timeout measures silence).
+	activeTurnTouch  func()
 	activeTurnBuf    strings.Builder
 	activeThoughtBuf strings.Builder
 	activeGuard      *turnOutputGuard
@@ -144,7 +149,7 @@ func New(o Options) (*Service, error) {
 	setProfileSecretStore(o.Secrets)
 	allowedDirs, err := o.Repo.ListAllowedDirs(context.Background())
 	if err != nil {
-		o.Logger.Warn("agent: failed to load allowed dirs", "err", err)
+		o.Logger.Warn("agent: failed to load allowed dirs", "error", err)
 	}
 	s := &Service{
 		repo:               o.Repo,
@@ -216,7 +221,7 @@ func (s *Service) List(ctx context.Context) ([]domainagent.ProviderInfo, error) 
 			defer wg.Done()
 			info, err := s.Probe(ctx, id)
 			if err != nil {
-				s.log.WarnContext(ctx, "agent: probe failed", "provider", id, "err", err)
+				s.log.WarnContext(ctx, "agent: probe failed", "provider", id, "error", err)
 				spec := domainagent.Registry[id]
 				out[i] = domainagent.ProviderInfo{
 					ID:                id,
@@ -245,6 +250,8 @@ func (s *Service) Probe(ctx context.Context, id domainagent.ProviderID) (domaina
 	if err := domainagent.ValidateProviderID(id); err != nil {
 		return domainagent.ProviderInfo{}, err
 	}
+	// Every CLI spawn below has its own bound (version/auth probe timeouts).
+	defer progress.KeepAlive(ctx)()
 	spec := domainagent.Registry[id]
 	resolved, source, customPath, err := s.resolveExecutable(ctx, spec)
 	if err != nil {
@@ -257,7 +264,7 @@ func (s *Service) Probe(ctx context.Context, id domainagent.ProviderID) (domaina
 	}
 
 	authState, accountInfo := s.probeProviderAuth(ctx, id, spec, resolved)
-	s.ensureModelCatalog(ctx, id, resolved)
+	s.refreshModelCatalogAsync(id, resolved)
 
 	s.mu.Lock()
 	if authState != domainagent.AuthUnknown {
@@ -382,6 +389,9 @@ func (s *Service) Login(ctx context.Context, id domainagent.ProviderID, apiKey s
 
 	loginCtx, cancel := context.WithTimeout(ctx, s.limits.LoginTimeout)
 	defer cancel()
+	// The user is signing in in the browser: bounded by agent.login_timeout, so keep the action alive.
+	stopKeepAlive := progress.KeepAlive(loginCtx)
+	defer stopKeepAlive()
 	drv := s.driver(id)
 	loginErr := drv.login(loginCtx, resolved, apiKey)
 	s.invalidateStatus(id)
@@ -508,6 +518,8 @@ func (s *Service) Connect(ctx context.Context, id domainagent.ProviderID) (domai
 	if err := domainagent.ValidateProviderID(id); err != nil {
 		return domainagent.ProviderInfo{}, err
 	}
+	// Spawn + handshake are bounded by agent.initialize_timeout / auth and version probe timeouts.
+	defer progress.KeepAlive(ctx)()
 	spec := domainagent.Registry[id]
 	if !spec.Supported {
 		return domainagent.ProviderInfo{}, apperr.Validation(spec.UnsupportedReason)
@@ -606,7 +618,7 @@ func (s *Service) Connect(ctx context.Context, id domainagent.ProviderID) (domai
 	// before the first message; a failure here is not fatal, the first turn retries lazily.
 	eagerSessionID, sessErr := transport.NewSession(initCtx, workDir, s.systemPrompt(initCtx, id))
 	if sessErr != nil {
-		s.log.Warn("agent: eager session/new failed", "provider", id, "err", sessErr)
+		s.log.Warn("agent: eager session/new failed", "provider", id, "error", sessErr)
 		eagerSessionID = ""
 	} else {
 		s.applyACPSessionModels(initCtx, id, transport, eagerSessionID)
@@ -696,6 +708,7 @@ func (s *Service) Disconnect(ctx context.Context) error {
 	s.activeVersion = ""
 	s.activeTurnID = ""
 	s.activeTurnCancel = nil
+	s.activeTurnTouch = nil
 	s.activeTurnBuf.Reset()
 	s.activeThoughtBuf.Reset()
 	s.busy = false
@@ -759,8 +772,12 @@ func (s *Service) SendPrompt(ctx context.Context, text string) (string, domainag
 	conversationID := s.conversationID
 	s.turnConversation[messageID] = conversationID
 
-	turnCtx, cancel := context.WithTimeout(context.Background(), s.limits.TurnTimeout)
+	// Like actions, a turn times out after agent.turn_timeout WITHOUT activity (streamed text,
+	// tool events, workflow progress from an MCP tool), not after a fixed total duration.
+	turnCtx, touchTurn, cancelTurn := progress.NewIdleContext(context.Background(), s.limits.TurnTimeout)
+	cancel := context.CancelFunc(cancelTurn)
 	s.busy = true
+	s.activeTurnTouch = touchTurn
 	s.activeTurnID = messageID
 	s.activeTurnCancel = cancel
 	s.activeTurnBuf.Reset()
@@ -773,12 +790,12 @@ func (s *Service) SendPrompt(ctx context.Context, text string) (string, domainag
 		conv.Title = conversationTitle(trimmed)
 	}
 	if err := s.repo.SaveConversation(ctx, conv); err != nil {
-		s.log.Warn("agent: failed to save conversation", "err", err)
+		s.log.Warn("agent: failed to save conversation", "error", err)
 	}
 	// Read twice the replay size: error/empty rows are filtered out before the newest N are kept.
 	history, err := s.repo.ListConversationMessages(ctx, conversationID, s.limits.ContextMessages*2)
 	if err != nil {
-		s.log.Warn("agent: failed to read history before turn", "err", err)
+		s.log.Warn("agent: failed to read history before turn", "error", err)
 	}
 	if err := s.repo.AppendChatMessage(ctx, domainagent.ChatMessage{
 		ID:             userMsgID,
@@ -788,7 +805,7 @@ func (s *Service) SendPrompt(ctx context.Context, text string) (string, domainag
 		CreatedAt:      now,
 		ConversationID: conversationID,
 	}); err != nil {
-		s.log.Warn("agent: failed to persist user message", "err", err)
+		s.log.Warn("agent: failed to persist user message", "error", err)
 	}
 
 	s.emitStatusOf(ctx, providerID)
@@ -1133,7 +1150,7 @@ func (s *Service) persistAssistantMessage(providerID domainagent.ProviderID, mes
 		CreatedAt:      now,
 		ConversationID: conversationID,
 	}); err != nil {
-		s.log.Warn("agent: failed to persist assistant message", "err", err)
+		s.log.Warn("agent: failed to persist assistant message", "error", err)
 	}
 	if conversationID != "" {
 		_ = s.repo.SaveConversation(context.Background(), domainagent.Conversation{ID: conversationID, ProviderID: providerID, CreatedAt: now, UpdatedAt: now})
@@ -1163,6 +1180,7 @@ func (s *Service) finishTurn(connToken int64, providerID domainagent.ProviderID,
 		s.busy = false
 		s.activeTurnID = ""
 		s.activeTurnCancel = nil
+		s.activeTurnTouch = nil
 		s.activeTurnBuf.Reset()
 		s.activeThoughtBuf.Reset()
 		if err != nil && isAuthError(err) {
@@ -1290,6 +1308,7 @@ func (s *Service) handleProcessExit(connToken int64, id domainagent.ProviderID, 
 	s.activeVersion = ""
 	s.activeTurnID = ""
 	s.activeTurnCancel = nil
+	s.activeTurnTouch = nil
 	s.activeTurnBuf.Reset()
 	s.activeThoughtBuf.Reset()
 	s.activeGuard = nil
@@ -1446,21 +1465,15 @@ func (s *Service) resolveExecutable(ctx context.Context, spec domainagent.Provid
 	if err != nil {
 		return "", domainagent.SourceNone, "", err
 	}
-	if customPath != "" && fileExists(customPath) {
-		return customPath, domainagent.SourceCustom, customPath, nil
+	path, src, ok := lookup.First(
+		lookup.Candidate[domainagent.Source]{Source: domainagent.SourceCustom, Find: lookup.File(customPath)},
+		lookup.Candidate[domainagent.Source]{Source: domainagent.SourceSystem, Find: lookup.OnPath(spec.CandidateExecutables...)},
+		lookup.Candidate[domainagent.Source]{Source: domainagent.SourceSystem, Find: lookup.Files(expandKnownPath, spec.KnownPaths...)},
+	)
+	if !ok {
+		return "", domainagent.SourceNone, customPath, nil
 	}
-	for _, candidate := range spec.CandidateExecutables {
-		if sysPath, lookErr := exec.LookPath(candidate); lookErr == nil && sysPath != "" {
-			return sysPath, domainagent.SourceSystem, customPath, nil
-		}
-	}
-	for _, known := range spec.KnownPaths {
-		p := expandKnownPath(known)
-		if p != "" && fileExists(p) {
-			return p, domainagent.SourceSystem, customPath, nil
-		}
-	}
-	return "", domainagent.SourceNone, customPath, nil
+	return path, src, customPath, nil
 }
 
 // probeVersionCached returns the CLI version, re-running `--version` when the executable changed or the
@@ -1536,7 +1549,7 @@ func (s *Service) probeVersion(ctx context.Context, executable string, versionAr
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, s.limits.VersionProbeTimeout)
 	defer cancel()
-	cmd := buildCommand(probeCtx, executable, versionArgs...)
+	cmd := proc.Command(probeCtx, executable, versionArgs...)
 	out, err := cmd.CombinedOutput()
 	if err != nil && len(out) == 0 {
 		return ""
@@ -1600,8 +1613,21 @@ func (s *Service) emitChat(evt domainagent.ChatEvent) {
 }
 
 func (s *Service) emitChatRaw(evt domainagent.ChatEvent) {
+	s.touchTurn(evt.MessageID)
 	if s.onChatEvent != nil {
 		s.onChatEvent(evt)
+	}
+}
+
+// touchTurn re-arms the active turn's idle timeout; messageID "" means "whatever turn is active"
+// (MCP tool calls do not know the message they belong to).
+func (s *Service) touchTurn(messageID string) {
+	s.mu.Lock()
+	touch := s.activeTurnTouch
+	active := s.activeTurnID
+	s.mu.Unlock()
+	if touch != nil && (messageID == "" || messageID == active) {
+		touch()
 	}
 }
 
@@ -1646,11 +1672,6 @@ func errText(err error) string {
 		return ""
 	}
 	return err.Error()
-}
-
-func fileExists(path string) bool {
-	st, err := os.Stat(path)
-	return err == nil && !st.IsDir()
 }
 
 func (s *Service) cliSessionFor(id domainagent.ProviderID) string {

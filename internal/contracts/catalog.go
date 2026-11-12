@@ -56,6 +56,32 @@ const (
 	ActionAgentSetModel           = "agent:set_model"
 )
 
+// LongActions lists actions whose idle timeout is realtime.long_action_timeout instead of
+// realtime.action_timeout, because a single step (one large file, one slow node) may stay
+// silent for a while. Like every action they also re-arm the timeout on each progress report
+// (see internal/progress). Actions that merely wait on bounded external work (agent sign-in,
+// connect, probe) are NOT listed: they keep themselves alive with progress.KeepAlive.
+// Server and client derive their timeouts from this single list (the TS copy is generated).
+func LongActions() []string {
+	return []string{
+		ActionBinariesDownload,
+		ActionWorkflowRunNode,
+		ActionWorkflowRunGraph,
+		ActionDiagnosticsExport,
+		ActionAgentResolveApproval, // an approved action runs a workflow node or graph
+	}
+}
+
+// IsLongAction reports whether action is listed in LongActions.
+func IsLongAction(action string) bool {
+	for _, a := range LongActions() {
+		if a == action {
+			return true
+		}
+	}
+	return false
+}
+
 // Server-pushed event names (WebSocket).
 const (
 	EventActionProgress     = "action:progress"

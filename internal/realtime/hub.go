@@ -38,6 +38,7 @@ type Options struct {
 	MaxMessageBytes      int64
 	PingInterval         time.Duration
 	WriteTimeout         time.Duration
+	KeepAliveInterval    time.Duration // progress.KeepAlive beat interval; must be < ActionTimeout
 	DeclaredActions      []string
 	DeclaredEvents       []string
 	Logger               *slog.Logger
@@ -53,6 +54,9 @@ func (o Options) validate() error {
 	}
 	if o.ActionTimeout <= 0 || o.QueueTimeout <= 0 || o.PingInterval <= 0 || o.WriteTimeout <= 0 || o.LongActionTimeout <= 0 {
 		errs = append(errs, errors.New("timeouts must be > 0"))
+	}
+	if o.KeepAliveInterval <= 0 || o.KeepAliveInterval >= o.ActionTimeout {
+		errs = append(errs, errors.New("keep-alive interval must be > 0 and < action timeout"))
 	}
 	if o.Logger == nil {
 		errs = append(errs, errors.New("logger is required"))
@@ -79,9 +83,6 @@ type Hub struct {
 
 // New validates options and creates a hub.
 func New(o Options) (*Hub, error) {
-	if o.LongActionTimeout <= 0 {
-		o.LongActionTimeout = 15 * time.Minute
-	}
 	if err := o.validate(); err != nil {
 		return nil, fmt.Errorf("realtime: %w", err)
 	}
@@ -248,27 +249,17 @@ func (h *Hub) execute(ctx context.Context, req *Request, handler HandlerFunc, pa
 }
 
 func (h *Hub) actionTimeout(action string) time.Duration {
-	switch action {
-	case contracts.ActionBinariesDownload,
-		contracts.ActionWorkflowRunGraph,
-		contracts.ActionWorkflowRunNode,
-		contracts.ActionDiagnosticsExport,
-		contracts.ActionAgentLogin,           // browser OAuth sign-in waits for the user (agent.login_timeout)
-		contracts.ActionAgentResolveApproval: // an approved action can run a whole workflow
-		if h.opts.LongActionTimeout > 0 {
-			return h.opts.LongActionTimeout
-		}
-		return 15 * time.Minute
-	default:
-		return h.opts.ActionTimeout
+	if contracts.IsLongAction(action) {
+		return h.opts.LongActionTimeout
 	}
+	return h.opts.ActionTimeout
 }
 
 func (h *Hub) classify(ctx context.Context, req *Request, err error) error {
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		timeout := h.actionTimeout(req.Action)
-		return apperr.Wrap(apperr.CodeTimeout, fmt.Sprintf("action timed out after %s", timeout), err)
+		return apperr.Wrap(apperr.CodeTimeout, fmt.Sprintf("action had no activity for %s", timeout), err)
 	case errors.Is(ctx.Err(), context.Canceled):
 		return apperr.Wrap(apperr.CodeCancelled, "action cancelled", err)
 	}

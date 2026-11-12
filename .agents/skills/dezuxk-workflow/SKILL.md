@@ -24,6 +24,14 @@ On Windows without Task: `powershell -ExecutionPolicy Bypass -File scripts/manag
 | Headless server | `task build:server` |
 | Format | `task format` |
 
+## Step 0: pick the feature shape (agent-usable with no agent code)
+
+- Input → output processing (files, media, text): an **engine node** in `internal/tools/<name>/`,
+  listed in `workflow.New`. UI, workflows and the agent all use it via its `engine.Spec`;
+  `engine.ValidateSpec` refuses to start the app on an incomplete spec. Guide: `docs/agent-feature-integration.md`.
+- Anything else: the realtime action below **plus** one MCP tool in `internal/service/agent/mcp_tools.go`
+  calling the same service (`needsApproval` for anything that modifies user data).
+
 ## Adding a realtime action (end to end)
 
 1. Domain model / rules / repository interface in `internal/domain/<feature>`.
@@ -37,6 +45,10 @@ On Windows without Task: `powershell -ExecutionPolicy Bypass -File scripts/manag
            return m.Service.List(ctx, p.Filter)
        })
    ```
+   Long work reports progress from the service with `progress.Report(ctx, progress.Update{...})`
+   (re-arms the idle timeout); bounded waits use `defer progress.KeepAlive(ctx)()`; actions with a
+   possibly long silent step go into `contracts.LongActions()`. Processes: `internal/proc`;
+   executable lookup: `internal/lookup`; outbound HTTP: the shared client from `internal/httpclient`.
 6. One line in `modules()` in `internal/core/core.go`.
 7. `task generate`, then in the frontend:
    ```ts

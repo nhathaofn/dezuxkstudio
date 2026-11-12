@@ -11,9 +11,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	domainagent "app/internal/domain/agent"
+	"app/internal/proc"
 	"app/internal/safego"
 )
 
@@ -26,8 +26,7 @@ import (
 // app-server (older versions, protocol changes). The app-server protocol is marked experimental by Codex.
 
 const (
-	codexAppServerInterruptWait = 5 * time.Second // how long a cancelled turn waits for turn/completed
-	codexAppServerMaxLine       = 16 << 20        // largest JSON-RPC line accepted from the app-server
+	codexAppServerMaxLine = 16 << 20 // largest JSON-RPC line accepted from the app-server
 )
 
 // errCodexAppServerUnavailable means the app-server could not be started or initialized; the caller
@@ -85,7 +84,7 @@ func newCodexAppServerConn(key string, stdin io.WriteCloser, stdout, stderr io.R
 
 // startCodexAppServer launches `codex app-server` with DezuxkStudio's isolated profile and policy.
 func startCodexAppServer(key, executable string, args, env []string, workDir string) (*codexAppServer, error) {
-	cmd := buildCommand(context.Background(), executable, args...)
+	cmd := proc.Command(context.Background(), executable, args...)
 	cmd.Dir = workDir
 	cmd.Env = env
 	stdin, err := cmd.StdinPipe()
@@ -103,7 +102,7 @@ func startCodexAppServer(key, executable string, args, env []string, workDir str
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	c := newCodexAppServerConn(key, stdin, stdout, stderr, func() { killCommandTree(cmd) })
+	c := newCodexAppServerConn(key, stdin, stdout, stderr, func() { proc.KillTree(cmd) })
 	safego.Go("agent.codex.appserver.wait", func() { c.markExited(waitErr(cmd)) })
 	return c, nil
 }
@@ -302,7 +301,7 @@ func (s *Service) ensureCodexAppServer(ctx context.Context, executable, profileR
 	if err != nil {
 		return nil, err
 	}
-	args := append([]string{"app-server"}, codexPolicyArgs(mcpURL, baseFile)...)
+	args := append([]string{"app-server"}, codexPolicyArgs(mcpURL, baseFile, s.limits.MCPToolTimeout)...)
 	srv, err = s.spawnCodexAppServer(key, executable, args, providerEnv(domainagent.ProviderCodex, envMap), workspaceDir)
 	if err != nil {
 		return nil, fmt.Errorf("%w: start: %v", errCodexAppServerUnavailable, err)
@@ -352,7 +351,7 @@ func (s *Service) runCodexTurn(ctx context.Context, executable, profileRoot, wor
 			return err
 		}
 		// Remember per executable, so an old CLI does not pay the failed start on every turn.
-		s.log.Warn("agent: codex app-server unavailable, falling back to codex exec", "err", err)
+		s.log.Warn("agent: codex app-server unavailable, falling back to codex exec", "error", err)
 		s.mu.Lock()
 		s.codexAppServerBroken[executable] = true
 		s.mu.Unlock()
@@ -615,7 +614,7 @@ func (s *Service) runCodexAppServerTurn(ctx context.Context, srv *codexAppServer
 		st.finish("failed", exitErr.Error())
 	case <-ctx.Done():
 		// Ask Codex to stop the turn and give it a moment to report what it already produced.
-		stopCtx, cancel := context.WithTimeout(context.Background(), codexAppServerInterruptWait)
+		stopCtx, cancel := context.WithTimeout(context.Background(), s.limits.InterruptWait)
 		_ = srv.call(stopCtx, "turn/interrupt", map[string]any{"threadId": threadID, "turnId": started.Turn.ID}, nil)
 		select {
 		case <-st.completed:

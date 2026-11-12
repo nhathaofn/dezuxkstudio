@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"app/internal/proc"
+	"app/internal/progress"
+	"app/internal/safego"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -24,12 +27,16 @@ import (
 var reClaudeEffortHelp = regexp.MustCompile(`(?s)--effort\s+<level>.*?\(([a-z, ]+)\)`)
 
 type modelState struct {
-	mu        sync.Mutex
-	catalogs  map[domainagent.ProviderID][]domainagent.ModelOption
-	catalogOf map[domainagent.ProviderID]string // executable the catalog was read from
-	loadedAt  map[domainagent.ProviderID]time.Time
-	current   map[domainagent.ProviderID]string // model the provider reports as active (Antigravity)
-	selection map[domainagent.ProviderID]domainagent.ModelSelection
+	mu       sync.Mutex
+	catalogs map[domainagent.ProviderID][]domainagent.ModelOption
+	// catalogFrom records which executable a per-turn CLI's catalog was read from, and when;
+	// the same freshness rule as the version/auth probe caches (cachedProbe).
+	catalogFrom map[domainagent.ProviderID]cachedProbe
+	// agyDefault is the model Antigravity reported as default for new sessions.
+	agyDefault string
+	loading    map[domainagent.ProviderID]bool   // a background catalog load is in flight
+	current    map[domainagent.ProviderID]string // model the provider reports as active (Antigravity)
+	selection  map[domainagent.ProviderID]domainagent.ModelSelection
 	// codeMode records, per provider, which models only reach tools through a code runner (Codex
 	// "tool_mode": "code_mode_only"); such models are not shown tool definitions natively.
 	codeMode map[domainagent.ProviderID]map[string]bool
@@ -37,12 +44,12 @@ type modelState struct {
 
 func newModelState() *modelState {
 	return &modelState{
-		catalogs:  make(map[domainagent.ProviderID][]domainagent.ModelOption),
-		catalogOf: make(map[domainagent.ProviderID]string),
-		loadedAt:  make(map[domainagent.ProviderID]time.Time),
-		current:   make(map[domainagent.ProviderID]string),
-		selection: make(map[domainagent.ProviderID]domainagent.ModelSelection),
-		codeMode:  make(map[domainagent.ProviderID]map[string]bool),
+		catalogs:    make(map[domainagent.ProviderID][]domainagent.ModelOption),
+		catalogFrom: make(map[domainagent.ProviderID]cachedProbe),
+		loading:     make(map[domainagent.ProviderID]bool),
+		current:     make(map[domainagent.ProviderID]string),
+		selection:   make(map[domainagent.ProviderID]domainagent.ModelSelection),
+		codeMode:    make(map[domainagent.ProviderID]map[string]bool),
 	}
 }
 
@@ -50,7 +57,7 @@ func (s *Service) loadModelSelections(ctx context.Context) {
 	for _, id := range domainagent.AllProviderIDs() {
 		sel, err := s.repo.GetModelSelection(ctx, id)
 		if err != nil {
-			s.log.Warn("agent: load model selection", "provider", id, "err", err)
+			s.log.Warn("agent: load model selection", "provider", id, "error", err)
 			continue
 		}
 		s.models.mu.Lock()
@@ -91,8 +98,7 @@ func (s *Service) invalidateModelCatalog(id domainagent.ProviderID) {
 		return // Antigravity's list comes from each ACP session and is replaced on connect
 	}
 	delete(s.models.catalogs, id)
-	delete(s.models.catalogOf, id)
-	delete(s.models.loadedAt, id)
+	delete(s.models.catalogFrom, id)
 	delete(s.models.codeMode, id)
 }
 
@@ -126,7 +132,9 @@ func (s *Service) SetModel(ctx context.Context, id domainagent.ProviderID, model
 	model, effort = strings.TrimSpace(model), strings.TrimSpace(effort)
 	spec := domainagent.Registry[id]
 	if resolved, _, _, err := s.resolveExecutable(ctx, spec); err == nil && resolved != "" {
+		stop := progress.KeepAlive(ctx) // bounded by agent.model_catalog_timeout
 		s.ensureModelCatalog(ctx, id, resolved)
+		stop()
 	}
 
 	s.models.mu.Lock()
@@ -190,7 +198,7 @@ func (s *Service) SetModel(ctx context.Context, id domainagent.ProviderID, model
 func (s *Service) agyDefaultModel() string {
 	s.models.mu.Lock()
 	defer s.models.mu.Unlock()
-	return s.models.catalogOf[domainagent.ProviderAntigravity]
+	return s.models.agyDefault
 }
 
 // applyACPSessionModels records the models an ACP session offers and applies the user's selection.
@@ -201,8 +209,8 @@ func (s *Service) applyACPSessionModels(ctx context.Context, id domainagent.Prov
 	}
 	s.models.mu.Lock()
 	s.models.catalogs[id] = models
-	if s.models.catalogOf[id] == "" {
-		s.models.catalogOf[id] = current // provider default (first session's currentModelId)
+	if id == domainagent.ProviderAntigravity && s.models.agyDefault == "" {
+		s.models.agyDefault = current // provider default (first session's currentModelId)
 	}
 	s.models.current[id] = current
 	s.models.mu.Unlock()
@@ -212,7 +220,7 @@ func (s *Service) applyACPSessionModels(ctx context.Context, id domainagent.Prov
 		return
 	}
 	if err := client.SetModel(ctx, sessionID, sel.Model); err != nil {
-		s.log.Warn("agent: apply selected model", "provider", id, "model", sel.Model, "err", err)
+		s.log.Warn("agent: apply selected model", "provider", id, "model", sel.Model, "error", err)
 		return
 	}
 	s.models.mu.Lock()
@@ -220,17 +228,45 @@ func (s *Service) applyACPSessionModels(ctx context.Context, id domainagent.Prov
 	s.models.mu.Unlock()
 }
 
-// ensureModelCatalog loads the per-turn CLI model catalog once per executable.
-func (s *Service) ensureModelCatalog(ctx context.Context, id domainagent.ProviderID, executable string) {
-	if id == domainagent.ProviderAntigravity || executable == "" {
+// modelCatalogFresh reports whether id's catalog was read from executable within StatusCacheTTL.
+func (s *Service) modelCatalogFresh(id domainagent.ProviderID, executable string) bool {
+	s.models.mu.Lock()
+	defer s.models.mu.Unlock()
+	return len(s.models.catalogs[id]) > 0 && s.models.catalogFrom[id].fresh(executable, s.limits.StatusCacheTTL)
+}
+
+// refreshModelCatalogAsync loads a stale catalog in the background and pushes the provider's
+// status when it arrives. Probe/List use it so reading the catalog (a CLI spawn bounded by
+// agent.model_catalog_timeout) never holds up the action response.
+func (s *Service) refreshModelCatalogAsync(id domainagent.ProviderID, executable string) {
+	if id == domainagent.ProviderAntigravity || executable == "" || s.modelCatalogFresh(id, executable) {
 		return
 	}
 	s.models.mu.Lock()
-	loaded := s.models.catalogOf[id] == executable && len(s.models.catalogs[id]) > 0 &&
-		time.Since(s.models.loadedAt[id]) < s.limits.StatusCacheTTL
-	s.models.mu.Unlock()
-	if loaded {
+	if s.models.loading[id] {
+		s.models.mu.Unlock()
 		return
+	}
+	s.models.loading[id] = true
+	s.models.mu.Unlock()
+	safego.Go("agent.model_catalog", func() {
+		defer func() {
+			s.models.mu.Lock()
+			delete(s.models.loading, id)
+			s.models.mu.Unlock()
+		}()
+		ctx := context.Background()
+		if s.ensureModelCatalog(ctx, id, executable) {
+			s.emitStatusOf(ctx, id)
+		}
+	})
+}
+
+// ensureModelCatalog loads the per-turn CLI model catalog once per executable and reports
+// whether a new catalog was loaded.
+func (s *Service) ensureModelCatalog(ctx context.Context, id domainagent.ProviderID, executable string) bool {
+	if id == domainagent.ProviderAntigravity || executable == "" || s.modelCatalogFresh(id, executable) {
+		return false
 	}
 	var (
 		models []domainagent.ModelOption
@@ -245,14 +281,14 @@ func (s *Service) ensureModelCatalog(ctx context.Context, id domainagent.Provide
 		models, err = loadClaudeModels(ctx, executable)
 	}
 	if err != nil || len(models) == 0 {
-		s.log.Warn("agent: load model catalog", "provider", id, "err", err)
-		return
+		s.log.Warn("agent: load model catalog", "provider", id, "error", err)
+		return false
 	}
 	s.models.mu.Lock()
 	s.models.catalogs[id] = models
-	s.models.catalogOf[id] = executable
-	s.models.loadedAt[id] = time.Now()
+	s.models.catalogFrom[id] = cachedProbe{executable: executable, at: time.Now()}
 	s.models.mu.Unlock()
+	return true
 }
 
 type codexCatalogJSON struct {
@@ -275,7 +311,7 @@ func (s *Service) loadCodexModels(ctx context.Context, executable string) ([]dom
 	if err != nil {
 		return nil, err
 	}
-	cmd := buildCommand(ctx, executable, "debug", "models") // ensureModelCatalog bounds ctx
+	cmd := proc.Command(ctx, executable, "debug", "models") // ensureModelCatalog bounds ctx
 	cmd.Env = providerEnv(domainagent.ProviderCodex, envMap)
 	out, err := cmd.Output()
 	if err != nil {
@@ -367,7 +403,7 @@ func parseCodexCatalog(raw []byte) ([]domainagent.ModelOption, error) {
 }
 
 func loadClaudeModels(ctx context.Context, executable string) ([]domainagent.ModelOption, error) {
-	cmd := buildCommand(ctx, executable, "--help") // ensureModelCatalog bounds ctx
+	cmd := proc.Command(ctx, executable, "--help") // ensureModelCatalog bounds ctx
 	cmd.Env = providerEnv(domainagent.ProviderClaude, nil)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

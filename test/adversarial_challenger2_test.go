@@ -573,7 +573,7 @@ func TestAdversarial_Download_CrashSafetyAndTempFileCleanup(t *testing.T) {
 		binaries.Registry[binaries.IDFFmpeg] = testSpec
 		defer func() { binaries.Registry[binaries.IDFFmpeg] = origSpec }()
 
-		_, err := svc.Download(ctx, binaries.IDFFmpeg, nil)
+		_, err := svc.Download(ctx, binaries.IDFFmpeg)
 		if err == nil {
 			t.Fatal("expected download failure on aborted connection, got nil")
 		}
@@ -630,7 +630,7 @@ func TestAdversarial_Download_CrashSafetyAndTempFileCleanup(t *testing.T) {
 		binaries.Registry[binaries.IDYtDlp] = testSpec
 		defer func() { binaries.Registry[binaries.IDYtDlp] = origSpec }()
 
-		_, err := svc.Download(ctx, binaries.IDYtDlp, nil)
+		_, err := svc.Download(ctx, binaries.IDYtDlp)
 		if err == nil {
 			t.Fatal("expected download failure on HTTP 500")
 		}

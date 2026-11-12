@@ -11,6 +11,7 @@ import (
 
 	"app/internal/apperr"
 	"app/internal/contracts"
+	"app/internal/progress"
 	"app/internal/safego"
 )
 
@@ -165,7 +166,7 @@ func (s *session) handleAction(msg contracts.ClientMessage) {
 	}
 
 	timeout := s.hub.actionTimeout(msg.Action)
-	ctx, resetTimeout, cancel := newHeartbeatContext(s.ctx, timeout)
+	ctx, resetTimeout, cancel := progress.NewIdleContext(s.ctx, timeout)
 	if !s.trackInflight(msg.ID, cancel) {
 		cancel()
 		s.hub.release()
@@ -173,15 +174,20 @@ func (s *session) handleAction(msg contracts.ClientMessage) {
 		return
 	}
 
-	req := &Request{
-		ID:       msg.ID,
-		Action:   msg.Action,
-		ClientID: s.id,
-		progress: func(p contracts.ActionProgress) {
-			resetTimeout()
-			s.emit(contracts.EventActionProgress, msg.ID, p)
-		},
+	req := &Request{ID: msg.ID, Action: msg.Action, ClientID: s.id}
+	// The single progress path: any report or beat re-arms the idle timeout here and, through the
+	// action:progress frame, on the client too.
+	send := func(p contracts.ActionProgress) {
+		resetTimeout()
+		s.emit(contracts.EventActionProgress, msg.ID, p)
 	}
+	actionCtx := progress.With(ctx, progress.Sink{
+		Report: func(u progress.Update) {
+			send(contracts.ActionProgress{Percent: clampPercent(u.Percent), Message: u.Message, MsgKey: u.Key, MsgParams: u.Params})
+		},
+		Beat:     func() { send(contracts.ActionProgress{Heartbeat: true}) },
+		Interval: s.hub.opts.KeepAliveInterval,
+	})
 
 	// The session still holds a WaitGroup slot here, so Add cannot race with Hub.Close's Wait.
 	s.hub.wg.Add(1)
@@ -191,7 +197,7 @@ func (s *session) handleAction(msg contracts.ClientMessage) {
 		defer s.untrackInflight(msg.ID)
 		defer cancel()
 
-		result, err := s.hub.execute(ctx, req, handler, msg.Payload)
+		result, err := s.hub.execute(actionCtx, req, handler, msg.Payload)
 		if err != nil {
 			s.respondError(msg.ID, err)
 			return
@@ -241,110 +247,12 @@ func (s *session) close(code websocket.StatusCode, reason string) {
 	}
 }
 
-type heartbeatContext struct {
-	parent     context.Context
-	timeout    time.Duration
-	mu         sync.Mutex
-	timer      *time.Timer
-	deadline   time.Time
-	done       chan struct{}
-	err        error
-	generation uint64
-	stopParent func() bool
-}
-
-func newHeartbeatContext(parent context.Context, timeout time.Duration) (*heartbeatContext, func(), func()) {
-	c := &heartbeatContext{
-		parent:   parent,
-		timeout:  timeout,
-		done:     make(chan struct{}),
-		deadline: time.Now().Add(timeout),
+func clampPercent(p float64) float64 {
+	switch {
+	case p < 0:
+		return 0
+	case p > 100:
+		return 100
 	}
-	if parentErr := parent.Err(); parentErr != nil {
-		c.err = parentErr
-		close(c.done)
-		return c, func() {}, func() {}
-	}
-
-	c.timer = time.AfterFunc(timeout, func() {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		if c.generation == 0 && c.err == nil {
-			c.err = context.DeadlineExceeded
-			close(c.done)
-		}
-	})
-
-	c.stopParent = context.AfterFunc(parent, func() {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		if c.err == nil {
-			if c.timer != nil {
-				c.timer.Stop()
-			}
-			c.err = parent.Err()
-			close(c.done)
-		}
-	})
-
-	reset := func() {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		if c.err == nil {
-			c.generation++
-			gen := c.generation
-			c.deadline = time.Now().Add(c.timeout)
-			if c.timer != nil {
-				c.timer.Stop()
-			}
-			c.timer = time.AfterFunc(c.timeout, func() {
-				c.mu.Lock()
-				defer c.mu.Unlock()
-				if c.generation == gen && c.err == nil {
-					c.err = context.DeadlineExceeded
-					close(c.done)
-				}
-			})
-		}
-	}
-
-	cancel := func() {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		if c.stopParent != nil {
-			c.stopParent()
-		}
-		if c.timer != nil {
-			c.timer.Stop()
-		}
-		if c.err == nil {
-			c.err = context.Canceled
-			close(c.done)
-		}
-	}
-
-	return c, reset, cancel
-}
-
-func (c *heartbeatContext) Deadline() (time.Time, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if pd, ok := c.parent.Deadline(); ok && pd.Before(c.deadline) {
-		return pd, true
-	}
-	return c.deadline, true
-}
-
-func (c *heartbeatContext) Done() <-chan struct{} {
-	return c.done
-}
-
-func (c *heartbeatContext) Err() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.err
-}
-
-func (c *heartbeatContext) Value(key any) any {
-	return c.parent.Value(key)
+	return p
 }

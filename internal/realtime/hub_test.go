@@ -16,6 +16,7 @@ import (
 
 	"app/internal/apperr"
 	"app/internal/contracts"
+	"app/internal/progress"
 )
 
 const testToken = "secret-token"
@@ -39,7 +40,7 @@ func (m *testModule) Register(r *Registry) {
 	Handle(r, "t:echo", func(_ context.Context, _ *Request, p echoPayload) (echoPayload, error) { return p, nil })
 	Handle(r, "t:slow", func(ctx context.Context, req *Request, _ contracts.Empty) (contracts.Empty, error) {
 		m.started.Add(1)
-		req.Progress(50, "half")
+		progress.Report(ctx, progress.Update{Percent: 50, Message: "half"})
 		<-ctx.Done()
 		return contracts.Empty{}, ctx.Err()
 	})
@@ -59,7 +60,7 @@ func (m *testModule) Register(r *Registry) {
 			if ctx.Err() != nil {
 				return contracts.Empty{}, ctx.Err()
 			}
-			req.Progress(float64(i*30), "progressing")
+			progress.Report(ctx, progress.Update{Percent: float64(i * 30), Message: "progressing"})
 		}
 		return contracts.Empty{}, nil
 	})
@@ -79,6 +80,8 @@ func newTestHub(t *testing.T, mutate func(*Options)) (*Hub, *httptest.Server, *t
 		AuthToken:            testToken,
 		MaxConcurrentActions: 4,
 		ActionTimeout:        2 * time.Second,
+		LongActionTimeout:    4 * time.Second,
+		KeepAliveInterval:    10 * time.Millisecond,
 		QueueTimeout:         200 * time.Millisecond,
 		ClientBufferSize:     16,
 		MaxMessageBytes:      4096,
@@ -381,7 +384,7 @@ func TestCloseDisconnectsAndCancels(t *testing.T) {
 
 func TestRegistryRules(t *testing.T) {
 	h, err := New(Options{
-		AllowAnonymous: true, MaxConcurrentActions: 1, ActionTimeout: time.Second, QueueTimeout: time.Second,
+		AllowAnonymous: true, MaxConcurrentActions: 1, ActionTimeout: time.Second, LongActionTimeout: time.Second, KeepAliveInterval: 10 * time.Millisecond, QueueTimeout: time.Second,
 		ClientBufferSize: 1, MaxMessageBytes: 1024, PingInterval: time.Second, WriteTimeout: time.Second,
 		DeclaredActions: []string{"a:one", "a:two"}, Logger: slog.New(slog.DiscardHandler),
 	})
@@ -460,5 +463,78 @@ func TestTieredActionTimeout(t *testing.T) {
 	}
 	if d := h.actionTimeout(contracts.ActionDiagnosticsExport); d != 300*time.Millisecond {
 		t.Fatalf("expected 300ms for diagnostics export, got %v", d)
+	}
+}
+
+// Every contracts.LongActions entry gets the long idle timeout; waits on bounded external work
+// (agent sign-in/connect/probe) stay on the short one and keep themselves alive instead.
+func TestEveryLongActionUsesLongTimeout(t *testing.T) {
+	h, _, _ := newTestHub(t, func(o *Options) {
+		o.ActionTimeout = 50 * time.Millisecond
+		o.LongActionTimeout = 300 * time.Millisecond
+	})
+	for _, a := range contracts.LongActions() {
+		if d := h.actionTimeout(a); d != 300*time.Millisecond {
+			t.Errorf("%s: timeout %v, want long timeout", a, d)
+		}
+	}
+	if !contracts.IsLongAction(contracts.ActionAgentResolveApproval) {
+		t.Error("agent:resolve_approval runs a workflow and must be a long action")
+	}
+	for _, a := range []string{contracts.ActionAgentLogin, contracts.ActionAgentConnect, contracts.ActionSystemPing} {
+		if contracts.IsLongAction(a) {
+			t.Errorf("%s must rely on keep-alive, not the long timeout", a)
+		}
+	}
+}
+
+// End to end, like the binaries download: an action that waits silently (agent sign-in in the
+// browser) keeps itself alive with progress.KeepAlive and outlives a much shorter idle timeout;
+// the client sees heartbeat frames; the same wait without keep-alive still times out.
+func TestKeepAliveOutlivesIdleTimeout(t *testing.T) {
+	h, srv, _ := newTestHub(t, func(o *Options) {
+		o.ActionTimeout = 60 * time.Millisecond
+		o.KeepAliveInterval = 15 * time.Millisecond
+		o.DeclaredActions = append(append([]string{}, testActions...), contracts.ActionAgentLogin, "t:silent")
+	})
+	wait := func(ctx context.Context) error {
+		select {
+		case <-time.After(300 * time.Millisecond):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if err := h.Mount(moduleFunc(func(r *Registry) {
+		Handle(r, contracts.ActionAgentLogin, func(ctx context.Context, _ *Request, _ contracts.Empty) (contracts.Empty, error) {
+			defer progress.KeepAlive(ctx)()
+			return contracts.Empty{}, wait(ctx)
+		})
+		Handle(r, "t:silent", func(ctx context.Context, _ *Request, _ contracts.Empty) (contracts.Empty, error) {
+			return contracts.Empty{}, wait(ctx)
+		})
+	})); err != nil {
+		t.Fatal(err)
+	}
+	c := mustDial(t, srv)
+	c.action("login", contracts.ActionAgentLogin, nil)
+	f, events := c.response("login")
+	if f.Error != nil {
+		t.Fatalf("kept-alive action timed out: %+v", f.Error)
+	}
+	beats := 0
+	for _, e := range events {
+		if e.Event == contracts.EventActionProgress && e.RefID == "login" && strings.Contains(string(e.Data), `"heartbeat":true`) {
+			beats++
+		}
+	}
+	if beats == 0 {
+		t.Fatal("client received no heartbeat frames; its own timer would expire")
+	}
+
+	c.action("silent", "t:silent", nil)
+	f, _ = c.response("silent")
+	if f.Error == nil || f.Error.Code != apperr.CodeTimeout {
+		t.Fatalf("silent action without keep-alive should time out, got %+v", f.Error)
 	}
 }

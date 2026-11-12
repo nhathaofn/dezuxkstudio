@@ -49,6 +49,7 @@ func fields(c *Config) []field {
 		{key: "realtime.max_message_bytes", usage: "max inbound WebSocket message size", val: int64Value{&c.Realtime.MaxMessageBytes}},
 		{key: "realtime.ping_interval", usage: "WebSocket keep-alive ping interval", val: durationValue{&c.Realtime.PingInterval}},
 		{key: "realtime.write_timeout", usage: "WebSocket write/ping timeout", val: durationValue{&c.Realtime.WriteTimeout}},
+		{key: "realtime.keepalive_interval", usage: "heartbeat interval of actions waiting on bounded external work (< action_timeout)", val: durationValue{&c.Realtime.KeepAliveInterval}},
 
 		{key: "log.level", usage: "debug | info | warn | error", val: stringValue{&c.Log.Level}},
 		{key: "log.format", usage: "text | json", val: stringValue{&c.Log.Format}},
@@ -68,12 +69,18 @@ func fields(c *Config) []field {
 		{key: "update.timeout", usage: "update check HTTP timeout", val: durationValue{&c.Update.Timeout}},
 		{key: "update.check_on_startup", usage: "check for updates when the UI starts", val: boolValue{&c.Update.CheckOnStartup}},
 
-		{key: "agent.turn_timeout", usage: "max duration of one agent chat turn", val: durationValue{&c.Agent.TurnTimeout}},
+		{key: "network.idle_conn_timeout", usage: "how long idle outbound HTTP connections are kept", val: durationValue{&c.Network.IdleConnTimeout}},
+		{key: "network.max_idle_conns", usage: "max idle outbound HTTP connections", val: intValue{&c.Network.MaxIdleConns}},
+		{key: "network.max_idle_conns_per_host", usage: "max idle outbound HTTP connections per host", val: intValue{&c.Network.MaxIdleConnsPerHost}},
+		{key: "binaries.probe_timeout", usage: "max duration of an external tool version probe", val: durationValue{&c.Binaries.ProbeTimeout}},
+
+		{key: "agent.turn_timeout", usage: "an agent chat turn is stopped after this long without activity (text, tool calls, tool progress)", val: durationValue{&c.Agent.TurnTimeout}},
 		{key: "agent.initialize_timeout", usage: "max wait for an ACP agent handshake", val: durationValue{&c.Agent.InitializeTimeout}},
 		{key: "agent.version_probe_timeout", usage: "max duration of an agent CLI --version probe", val: durationValue{&c.Agent.VersionProbeTimeout}},
 		{key: "agent.auth_probe_timeout", usage: "max duration of an agent CLI auth status check", val: durationValue{&c.Agent.AuthProbeTimeout}},
 		{key: "agent.login_timeout", usage: "max duration of an agent sign-in (browser OAuth)", val: durationValue{&c.Agent.LoginTimeout}},
 		{key: "agent.model_catalog_timeout", usage: "max duration of reading an agent CLI model catalog", val: durationValue{&c.Agent.ModelCatalogTimeout}},
+		{key: "agent.interrupt_wait", usage: "how long a cancelled agent turn waits for the CLI to stop", val: durationValue{&c.Agent.InterruptWait}},
 		{key: "agent.status_cache_ttl", usage: "reuse agent CLI auth/version probe results for this long", val: durationValue{&c.Agent.StatusCacheTTL}},
 		{key: "agent.approval_ttl", usage: "pending agent approvals expire after this long", val: durationValue{&c.Agent.ApprovalTTL}},
 		{key: "agent.history_limit", usage: "agent chat messages shown in the UI", val: intValue{&c.Agent.HistoryLimit}},
@@ -88,6 +95,6 @@ func fields(c *Config) []field {
 		{key: "desktop.frameless", usage: "frameless window", val: boolValue{&c.Desktop.Frameless}},
 		{key: "desktop.start_hidden", usage: "start with the window hidden", val: boolValue{&c.Desktop.StartHidden}},
 		{key: "desktop.background", usage: "window background colour #RRGGBB or #RRGGBBAA", val: stringValue{&c.Desktop.Background}},
-		{key: "desktop.ready_timeout", usage: "max wait for the core to become ready", val: durationValue{&c.Desktop.ReadyTimeout}},
+		{key: "desktop.ready_timeout", usage: "how long one bridge call waits for the core; a slower start is retried, not fatal", val: durationValue{&c.Desktop.ReadyTimeout}},
 	}
 }

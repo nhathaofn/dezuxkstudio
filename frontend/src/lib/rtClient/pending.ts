@@ -51,9 +51,10 @@ export class PendingRequests {
   progress(id: string, p: ActionProgress): void {
     const entry = this.entries.get(id);
     if (!entry) return;
-    entry.onProgress?.(p);
+    // A heartbeat only says "still working" (server-side progress.KeepAlive); it is not shown.
+    if (!p.heartbeat) entry.onProgress?.(p);
 
-    // Heartbeat keep-alive: reset timeout timer when forward progress is observed
+    // Same model as the binaries download: any report re-arms the request timeout
     clearTimeout(entry.timer);
     entry.timer = setTimeout(() => {
       if (this.settle(id)) {

@@ -66,7 +66,7 @@ func TestClassifyProviderErrorAndTurnResult(t *testing.T) {
 	}
 	expired, cancel2 := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel2()
-	if err := turnResult(expired, context.DeadlineExceeded, 3*time.Minute); err == nil || !strings.Contains(err.Error(), "timed out after 3m0s") {
+	if err := turnResult(expired, context.DeadlineExceeded, 3*time.Minute); err == nil || !strings.Contains(err.Error(), "no activity for 3m0s") {
 		t.Fatalf("expired turn must report a readable timeout, got %v", err)
 	}
 }
@@ -282,7 +282,7 @@ func expiredContext(t *testing.T) context.Context {
 }
 
 func TestCodexPreApprovesDezuxkMCPTools(t *testing.T) {
-	args := strings.Join(codexPolicyArgs("http://127.0.0.1:1/mcp", ""), " ")
+	args := strings.Join(codexPolicyArgs("http://127.0.0.1:1/mcp", "", 0), " ")
 	if !strings.Contains(args, `mcp_servers.dezuxk.default_tools_approval_mode="approve"`) {
 		t.Fatalf("Codex would ask for approvals this session cannot grant: %s", args)
 	}
@@ -304,8 +304,7 @@ func TestModelCatalogFollowsTheSignedInAccount(t *testing.T) {
 	plus := []domainagent.ModelOption{{ID: "gpt-6-sol", Efforts: []string{"high"}}, {ID: "gpt-6-luna"}}
 	svc.models.mu.Lock()
 	svc.models.catalogs[id] = plus
-	svc.models.catalogOf[id] = "codex.exe"
-	svc.models.loadedAt[id] = time.Now()
+	svc.models.catalogFrom[id] = cachedProbe{executable: "codex.exe", at: time.Now()}
 	svc.models.selection[id] = domainagent.ModelSelection{Model: "gpt-6-sol", Effort: "high"}
 	svc.models.mu.Unlock()
 

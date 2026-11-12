@@ -1,3 +1,4 @@
+import { appConfig } from "../../config/appConfig";
 import { create } from "zustand";
 import {
   Actions,
@@ -40,7 +41,7 @@ const MIN_WIDTH = 340;
 const MAX_WIDTH = 680;
 
 /** How long "Copied" feedback stays visible after a clipboard copy in the agent panel. */
-export const COPY_FEEDBACK_MS = 1500;
+export const COPY_FEEDBACK_MS = appConfig.ui.copyFeedbackMs;
 
 /** Maps a server history result to store state. */
 function historyState(res: AgentHistoryResult): Pick<AgentState, "messages" | "conversationId"> {
@@ -167,7 +168,22 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     set({ loadingProviders: true, error: null });
     try {
       const res = await rtClient.request(Actions.AGENT_LIST, {});
-      set({ providers: res.providers, loadingProviders: false });
+      set((s) => {
+        // After a reconnect the turn's final chat event may have been missed while offline. If no
+        // provider is still busy, the reply is over: unlock the input and stop the spinners
+        // (fetchHistory, run on the same connect, brings the stored final text).
+        const turnOver = s.sending && !res.providers.some((p) => p.busy);
+        return {
+          providers: res.providers,
+          loadingProviders: false,
+          ...(turnOver
+            ? {
+                sending: false,
+                messages: s.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
+              }
+            : {}),
+        };
+      });
     } catch (err) {
       set({ error: toActionError(err), loadingProviders: false });
     }

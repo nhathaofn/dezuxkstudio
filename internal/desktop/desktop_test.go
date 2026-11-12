@@ -112,3 +112,37 @@ func TestContentSecurityPolicy(t *testing.T) {
 		t.Errorf("client CSP: %s", client)
 	}
 }
+
+// A slow start answers "still starting" (retryable) through the real Wails error formatter
+// shape; a real startup failure is never marked retryable.
+func TestBridgeSlowStartIsRetryable(t *testing.T) {
+	cfg := config.Default(config.ModeDesktop)
+	cfg.Desktop.ReadyTimeout = 30 * time.Millisecond
+	b := newBridge(cfg, secrets.NewMemory())
+
+	_, err := b.GetConnectionInfo()
+	body := contracts.NewErrorBody(err)
+	if body.Code != apperr.CodeUnavailable || body.Details[DetailStarting] != true {
+		t.Fatalf("slow start must be retryable, got %+v", body)
+	}
+	go func() {
+		time.Sleep(40 * time.Millisecond) // core comes up after the first polling window
+		b.succeed(connectionInfo(cfg, "ws://127.0.0.1:1/ws", "tok"))
+	}()
+	var info contracts.ConnectionInfo
+	for i := 0; i < 10; i++ { // what the frontend does
+		if info, err = b.GetConnectionInfo(); err == nil {
+			break
+		}
+	}
+	if err != nil || info.Token != "tok" {
+		t.Fatalf("core never became reachable: %v", err)
+	}
+
+	failed := newBridge(cfg, secrets.NewMemory())
+	failed.fail(apperr.Unavailable("db locked"))
+	_, err = failed.GetConnectionInfo()
+	if fb := contracts.NewErrorBody(err); fb.Details[DetailStarting] == true {
+		t.Fatalf("a real startup failure must not be retried: %+v", fb)
+	}
+}

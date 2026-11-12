@@ -36,14 +36,21 @@ func newBridge(cfg *config.Config, store secrets.Store) *Bridge {
 	return &Bridge{cfg: cfg, secrets: store, ready: make(chan struct{})}
 }
 
-// GetConnectionInfo waits until the core is ready and returns how to reach it.
+// DetailStarting marks the "core is still starting" error: the UI calls again instead of
+// showing a fatal screen. A real startup failure arrives through fail() and is never retried.
+const DetailStarting = "starting"
+
+// GetConnectionInfo waits up to desktop.ready_timeout for the core and returns how to reach it.
+// The timeout is a polling window, not a verdict: a slow start (migration backup, antivirus scan)
+// returns a retryable "starting" error and the UI keeps waiting, like a heartbeat.
 func (b *Bridge) GetConnectionInfo() (contracts.ConnectionInfo, error) {
 	timer := time.NewTimer(b.cfg.Desktop.ReadyTimeout)
 	defer timer.Stop()
 	select {
 	case <-b.ready:
 	case <-timer.C:
-		return contracts.ConnectionInfo{}, apperr.Unavailable("the application core did not start in time")
+		return contracts.ConnectionInfo{}, apperr.Unavailable("the application core is still starting").
+			WithDetails(map[string]any{DetailStarting: true})
 	}
 
 	b.mu.RLock()

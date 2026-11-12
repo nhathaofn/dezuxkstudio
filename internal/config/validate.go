@@ -59,13 +59,17 @@ func (c *Config) Validate() error {
 			"realtime.queue_timeout":       c.Realtime.QueueTimeout,
 			"realtime.ping_interval":       c.Realtime.PingInterval,
 			"realtime.write_timeout":       c.Realtime.WriteTimeout,
+			"realtime.keepalive_interval":  c.Realtime.KeepAliveInterval,
 			"storage.busy_timeout":         c.Storage.BusyTimeout,
+			"binaries.probe_timeout":       c.Binaries.ProbeTimeout,
+			"network.idle_conn_timeout":    c.Network.IdleConnTimeout,
 			"agent.turn_timeout":           c.Agent.TurnTimeout,
 			"agent.initialize_timeout":     c.Agent.InitializeTimeout,
 			"agent.version_probe_timeout":  c.Agent.VersionProbeTimeout,
 			"agent.auth_probe_timeout":     c.Agent.AuthProbeTimeout,
 			"agent.login_timeout":          c.Agent.LoginTimeout,
 			"agent.model_catalog_timeout":  c.Agent.ModelCatalogTimeout,
+			"agent.interrupt_wait":         c.Agent.InterruptWait,
 			"agent.status_cache_ttl":       c.Agent.StatusCacheTTL,
 			"agent.approval_ttl":           c.Agent.ApprovalTTL,
 		})
@@ -74,10 +78,15 @@ func (c *Config) Validate() error {
 			"realtime.client_buffer_size":     c.Realtime.ClientBufferSize,
 			"storage.backups_to_keep":         c.Storage.BackupsToKeep,
 			"diagnostics.keep":                c.Diagnostics.Keep,
+			"network.max_idle_conns":          c.Network.MaxIdleConns,
+			"network.max_idle_conns_per_host": c.Network.MaxIdleConnsPerHost,
 			"agent.history_limit":             c.Agent.HistoryLimit,
 			"agent.context_messages":          c.Agent.ContextMessages,
 			"agent.context_message_chars":     c.Agent.ContextMessageChars,
 		})
+		if c.Realtime.KeepAliveInterval >= c.Realtime.ActionTimeout {
+			add("realtime.keepalive_interval must be < realtime.action_timeout")
+		}
 		if c.Server.MaxBroadcastBodyBytes <= 0 {
 			add("server.max_broadcast_body_bytes must be > 0")
 		}

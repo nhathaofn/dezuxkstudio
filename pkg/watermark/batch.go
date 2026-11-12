@@ -14,6 +14,12 @@ import (
 // ProcessBatch processes a slice of BatchItems concurrently using a thread-safe worker pool.
 // Output ordering is guaranteed to match the input slice index.
 func (e *Engine) ProcessBatch(ctx context.Context, items []BatchItem, workers int) []BatchResult {
+	return e.ProcessBatchProgress(ctx, items, workers, nil)
+}
+
+// ProcessBatchProgress is ProcessBatch that calls onDone(done, total) after each item (from any
+// worker goroutine; calls are serialised). Callers use it to report progress on long batches.
+func (e *Engine) ProcessBatchProgress(ctx context.Context, items []BatchItem, workers int, onDone func(done, total int)) []BatchResult {
 	if len(items) == 0 {
 		return nil
 	}
@@ -31,7 +37,20 @@ func (e *Engine) ProcessBatch(ctx context.Context, items []BatchItem, workers in
 	}
 	close(jobsCh)
 
-	var wg sync.WaitGroup
+	var (
+		wg     sync.WaitGroup
+		doneMu sync.Mutex
+		done   int
+	)
+	finished := func() {
+		if onDone == nil {
+			return
+		}
+		doneMu.Lock()
+		done++
+		onDone(done, len(items))
+		doneMu.Unlock()
+	}
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		safego.Go("watermark.batch.worker", func() {
@@ -45,6 +64,7 @@ func (e *Engine) ProcessBatch(ctx context.Context, items []BatchItem, workers in
 					continue
 				}
 				func() {
+					defer finished()
 					defer func() {
 						if r := recover(); r != nil {
 							results[idx] = BatchResult{

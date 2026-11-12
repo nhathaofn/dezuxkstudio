@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"app/internal/buildinfo"
+	"app/internal/config"
 	domainagent "app/internal/domain/agent"
 )
 
@@ -27,6 +28,9 @@ type Limits struct {
 	AuthProbeTimeout    time.Duration
 	LoginTimeout        time.Duration
 	ModelCatalogTimeout time.Duration
+	MCPToolTimeout      time.Duration // max duration of one MCP tool call the CLI waits for (workflow runs)
+	MCPShutdownTimeout  time.Duration // graceful stop of the local MCP server
+	InterruptWait       time.Duration // how long a cancelled Codex turn waits for turn/completed
 	StatusCacheTTL      time.Duration
 	ApprovalTTL         time.Duration
 	HistoryLimit        int
@@ -34,22 +38,31 @@ type Limits struct {
 	ContextMessageChars int
 }
 
-// DefaultLimits mirrors config.Default().Agent so the service works standalone (tests, tools).
-func DefaultLimits() Limits {
+// LimitsFrom builds the service limits from the application config — the only place their
+// values (and defaults, in config.Default) are declared.
+func LimitsFrom(c *config.Config) Limits {
+	a := c.Agent
 	return Limits{
-		TurnTimeout:         10 * time.Minute,
-		InitializeTimeout:   15 * time.Second,
-		VersionProbeTimeout: 1500 * time.Millisecond,
-		AuthProbeTimeout:    10 * time.Second,
-		LoginTimeout:        3 * time.Minute,
-		ModelCatalogTimeout: 30 * time.Second,
-		StatusCacheTTL:      5 * time.Minute,
-		ApprovalTTL:         30 * time.Minute,
-		HistoryLimit:        200,
-		ContextMessages:     10,
-		ContextMessageChars: 1200,
+		TurnTimeout:         a.TurnTimeout,
+		InitializeTimeout:   a.InitializeTimeout,
+		VersionProbeTimeout: a.VersionProbeTimeout,
+		AuthProbeTimeout:    a.AuthProbeTimeout,
+		LoginTimeout:        a.LoginTimeout,
+		ModelCatalogTimeout: a.ModelCatalogTimeout,
+		// An MCP tool call may run a whole workflow, which the hub bounds by the long action timeout.
+		MCPToolTimeout:      c.Realtime.LongActionTimeout,
+		MCPShutdownTimeout:  c.Server.ShutdownTimeout,
+		InterruptWait:       a.InterruptWait,
+		StatusCacheTTL:      a.StatusCacheTTL,
+		ApprovalTTL:         a.ApprovalTTL,
+		HistoryLimit:        a.HistoryLimit,
+		ContextMessages:     a.ContextMessages,
+		ContextMessageChars: a.ContextMessageChars,
 	}
 }
+
+// DefaultLimits are the config defaults, for standalone use (tests, tools).
+func DefaultLimits() Limits { return LimitsFrom(config.Default(config.ModeDesktop)) }
 
 func (l Limits) withDefaults() Limits {
 	d := DefaultLimits()
@@ -60,6 +73,9 @@ func (l Limits) withDefaults() Limits {
 		{&l.AuthProbeTimeout, &d.AuthProbeTimeout},
 		{&l.LoginTimeout, &d.LoginTimeout},
 		{&l.ModelCatalogTimeout, &d.ModelCatalogTimeout},
+		{&l.MCPToolTimeout, &d.MCPToolTimeout},
+		{&l.MCPShutdownTimeout, &d.MCPShutdownTimeout},
+		{&l.InterruptWait, &d.InterruptWait},
 		{&l.StatusCacheTTL, &d.StatusCacheTTL},
 		{&l.ApprovalTTL, &d.ApprovalTTL},
 	}

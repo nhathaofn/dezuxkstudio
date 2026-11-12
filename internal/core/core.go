@@ -18,11 +18,13 @@ import (
 	"app/internal/contracts"
 	domainagent "app/internal/domain/agent"
 	domainprefs "app/internal/domain/preferences"
+	"app/internal/httpclient"
 	"app/internal/paths"
 	"app/internal/realtime"
 	"app/internal/realtime/modules"
 	"app/internal/secrets"
 	"app/internal/server"
+	"app/internal/server/handlers"
 	agentsvc "app/internal/service/agent"
 	binariessvc "app/internal/service/binaries"
 	"app/internal/service/diagnostics"
@@ -99,6 +101,7 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 		MaxMessageBytes:      cfg.Realtime.MaxMessageBytes,
 		PingInterval:         cfg.Realtime.PingInterval,
 		WriteTimeout:         cfg.Realtime.WriteTimeout,
+		KeepAliveInterval:    cfg.Realtime.KeepAliveInterval,
 		DeclaredActions:      contracts.ActionNames(),
 		DeclaredEvents:       contracts.EventNames(),
 		Logger:               o.Logger,
@@ -135,6 +138,11 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 			MaxBroadcastBodyBytes: cfg.Server.MaxBroadcastBodyBytes,
 			DeclaredEvents:        contracts.EventNames(),
 			WSURL:                 func() string { return c.srv.WSURL() },
+			Timeouts: handlers.Timeouts{
+				Action:       cfg.Realtime.ActionTimeout,
+				LongAction:   cfg.Realtime.LongActionTimeout,
+				PingInterval: cfg.Realtime.PingInterval,
+			},
 		}),
 	})
 	if err != nil {
@@ -149,7 +157,7 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 
 	sysSvc := system.New(cfg.Mode, o.Paths, o.OpenDirectory)
 
-	updateClient := &http.Client{Timeout: cfg.Update.Timeout}
+	updateClient := httpclient.WithTimeout(o.HTTPClient, cfg.Update.Timeout)
 	updSvc, err := update.New(update.Options{
 		FeedURL:        cfg.Update.FeedURL,
 		CurrentVersion: buildinfo.Version,
@@ -178,7 +186,8 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		return nil, err
 	}
 
-	binSvc := binariessvc.New(sqlite.NewBinariesRepository(c.db), o.Paths.Tools(), o.Logger)
+	binSvc := binariessvc.New(sqlite.NewBinariesRepository(c.db), o.Paths.Tools(), o.Logger,
+		binariessvc.WithProbeTimeout(cfg.Binaries.ProbeTimeout), binariessvc.WithHTTPClient(o.HTTPClient))
 
 	wfSvc, err := workflow.New(workflow.Options{
 		Paths:  o.Paths,
@@ -196,20 +205,8 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		ProfilesDir:  o.Paths.AgentProfiles(),
 		AppVersion:   buildinfo.Version,
 		// Provider API keys go to the OS credential store (in-memory fallback where none exists).
-		Secrets: secrets.NewDesktopStore(buildinfo.AppID),
-		Limits: agentsvc.Limits{
-			TurnTimeout:         cfg.Agent.TurnTimeout,
-			InitializeTimeout:   cfg.Agent.InitializeTimeout,
-			VersionProbeTimeout: cfg.Agent.VersionProbeTimeout,
-			AuthProbeTimeout:    cfg.Agent.AuthProbeTimeout,
-			LoginTimeout:        cfg.Agent.LoginTimeout,
-			ModelCatalogTimeout: cfg.Agent.ModelCatalogTimeout,
-			StatusCacheTTL:      cfg.Agent.StatusCacheTTL,
-			ApprovalTTL:         cfg.Agent.ApprovalTTL,
-			HistoryLimit:        cfg.Agent.HistoryLimit,
-			ContextMessages:     cfg.Agent.ContextMessages,
-			ContextMessageChars: cfg.Agent.ContextMessageChars,
-		},
+		Secrets:     secrets.NewDesktopStore(buildinfo.AppID),
+		Limits:      agentsvc.LimitsFrom(cfg),
 		Logger:      o.Logger,
 		Workflow:    wfSvc,
 		Binaries:    binSvc,

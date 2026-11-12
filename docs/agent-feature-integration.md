@@ -6,13 +6,17 @@ DezuxkStudio Assistant (agent) **không có danh sách tính năng viết cứng
 
 Vì vậy: **một tính năng mới được viết dưới dạng node và khai báo `engine.Spec` đầy đủ thì agent dùng được ngay.**
 
+Muốn nhờ AI code thêm tính năng: dùng mẫu prompt trong [feature-prompt-template.md](feature-prompt-template.md).
+
 ---
 
 ## 1. Checklist khi thêm một node mới
 
 1. Viết node trong `internal/tools/<ten_tinh_nang>/node.go` bằng `engine.Typed(spec, func(ctx, In) (Out, error))`.
-2. Đăng ký node trong `internal/service/workflow/service.go` (`reg.Register(...)`).
+2. Thêm node vào danh sách `nodes` trong `workflow.New` (`internal/service/workflow/service.go`).
 3. Khai báo `engine.Spec` đầy đủ (mục 2 bên dưới). Đây là "hợp đồng" duy nhất mà agent đọc.
+   `engine.ValidateSpec` kiểm tra spec lúc khởi động: thiếu `Description`, `select` không có `Options`,
+   `Default` sai, `Destructive` không phải toggle hoặc mặc định `true`… thì app **không khởi động**.
 4. Chạy `go run ./cmd/contractgen` nếu đổi struct trong `internal/engine` / `internal/contracts`.
 5. UI của tính năng nên dùng đúng `Default` / `Options` trong spec. Tốt nhất là đọc từ spec, để UI và agent không bị lệch nhau.
 6. Thêm test như `internal/service/agent/access_test.go` (`TestWorkflowRunNode…`), dùng `fakeWorkflow{specs: ...}` với spec thật của node.
@@ -77,7 +81,7 @@ Agent **chỉ được báo cáo dựa trên kết quả tool trả về**. Vì 
 - danh sách theo từng file: đường dẫn vào, đường dẫn ra, trạng thái, lỗi (nếu có);
 - thông báo lỗi có thể hành động được (nói rõ sai gì và sửa thế nào), không chỉ "failed".
 
-Node nên tôn trọng `ctx` (huỷ/timeout), ghi file bằng `fsutil.WriteFileAtomic`, và không tự ghi đè file gốc trừ khi
+Node nên tôn trọng `ctx` (huỷ/timeout), báo tiến độ bằng `progress.Report(ctx, ...)` để không bị idle timeout khi chạy lâu (qua UI, duyệt agent hay MCP tool đều nhận được), ghi file bằng `fsutil.WriteFileAtomic`, và không tự ghi đè file gốc trừ khi
 có tham số `Destructive` được bật.
 
 ## 6. Tính năng không phải dạng node (project, điều hướng UI, …)

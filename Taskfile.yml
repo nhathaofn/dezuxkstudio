@@ -113,7 +113,7 @@ tasks:
     desc: Run Go tests with the race detector (requires cgo / a C compiler)
     deps: [gotmp]
     env: { CGO_ENABLED: '1', GOTMPDIR: '{{.GOTMPDIR}}' }
-    cmds: [go test -race ./...]
+    cmds: [go test -race -count=1 ./internal/... ./pkg/... ./test/... ./cmd/...]
 
   test:frontend:
     dir: frontend

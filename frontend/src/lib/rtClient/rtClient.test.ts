@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ErrorCodeValues } from "../../contracts/generated";
+import { ErrorCodeValues, type BridgeApi } from "../../contracts/generated";
 import { backoffDelay } from "./backoff";
 import { resolveEndpoint, isValidWsUrl, type EndpointEnv } from "./endpoint";
 import { ActionError, toActionError } from "./errors";
@@ -86,6 +86,22 @@ describe("PendingRequests", () => {
     expect(onTimeout).toHaveBeenCalledOnce();
     expect(reject.mock.calls[0][0].code).toBe("ERR_TIMEOUT");
   });
+
+  it("a heartbeat re-arms the timer but is not shown as progress", () => {
+    vi.useFakeTimers();
+    const p = new PendingRequests();
+    const reject = vi.fn();
+    const onProgress = vi.fn();
+    p.add("a", 50, { resolve: vi.fn(), reject, onProgress }, vi.fn());
+    for (let i = 0; i < 5; i++) {
+      vi.advanceTimersByTime(40);
+      p.progress("a", { percent: 0, message: "", heartbeat: true });
+    }
+    expect(reject).not.toHaveBeenCalled(); // 200ms elapsed, kept alive
+    expect(onProgress).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(60);
+    expect(reject.mock.calls[0][0].code).toBe("ERR_TIMEOUT");
+  });
 });
 
 describe("parseServerFrame", () => {
@@ -124,9 +140,23 @@ const env = (over: Partial<EndpointEnv> = {}): EndpointEnv => ({
   ...over,
 });
 
+/** A desktop bridge whose unused methods are inert; override what the test exercises. */
+function fakeBridge(over: Partial<BridgeApi>): BridgeApi {
+  return {
+    GetConnectionInfo: () => Promise.reject(new Error("unused")),
+    GetBuildInfo: () => Promise.reject(new Error("unused")),
+    SetRemoteToken: () => Promise.resolve(),
+    BrowseExecutable: () => Promise.resolve(""),
+    BrowseImage: () => Promise.resolve(""),
+    BrowseImages: () => Promise.resolve([]),
+    BrowseDirectory: () => Promise.resolve(""),
+    ...over,
+  };
+}
+
 describe("resolveEndpoint", () => {
   it("prefers the desktop bridge and carries the token", async () => {
-    const bridge = {
+    const bridge = fakeBridge({
       GetConnectionInfo: () =>
         Promise.resolve({
           mode: "desktop" as const,
@@ -137,13 +167,7 @@ describe("resolveEndpoint", () => {
           ping_interval_ms: 20,
           check_updates_on_startup: true,
         }),
-      GetBuildInfo: () => Promise.reject(new Error("unused")),
-      SetRemoteToken: () => Promise.resolve(),
-      BrowseExecutable: () => Promise.resolve(""),
-      BrowseImage: () => Promise.resolve(""),
-      BrowseImages: () => Promise.resolve([]),
-      BrowseDirectory: () => Promise.resolve(""),
-    };
+    });
     const ep = await resolveEndpoint(env({ bridge }));
     expect(ep).toMatchObject({
       url: "ws://127.0.0.1:1/ws",
@@ -154,16 +178,37 @@ describe("resolveEndpoint", () => {
     });
   });
 
+  it("keeps waiting while the core is still starting instead of showing a fatal screen", async () => {
+    let calls = 0;
+    const starting = JSON.stringify({
+      code: "ERR_UNAVAILABLE",
+      message: "the application core is still starting",
+      details: { starting: true },
+    });
+    const bridge = fakeBridge({
+      GetConnectionInfo: () => {
+        calls++;
+        if (calls < 3) return Promise.reject(new Error(starting)); // Wails ErrorFormatter shape
+        return Promise.resolve({
+          mode: "desktop" as const,
+          ws_url: "ws://127.0.0.1:1/ws",
+          token: "t",
+          action_timeout_ms: 10,
+          long_action_timeout_ms: 50,
+          ping_interval_ms: 20,
+          check_updates_on_startup: false,
+        });
+      },
+    });
+    const ep = await resolveEndpoint(env({ bridge }));
+    expect(calls).toBe(3);
+    expect(ep?.source).toBe("bridge");
+  });
+
   it("re-throws bridge failures as ActionError (fatal screen)", async () => {
-    const bridge = {
+    const bridge = fakeBridge({
       GetConnectionInfo: () => Promise.reject({ code: "ERR_UNAVAILABLE", message: "db locked" }),
-      GetBuildInfo: () => Promise.reject(new Error("unused")),
-      SetRemoteToken: () => Promise.resolve(),
-      BrowseExecutable: () => Promise.resolve(""),
-      BrowseImage: () => Promise.resolve(""),
-      BrowseImages: () => Promise.resolve([]),
-      BrowseDirectory: () => Promise.resolve(""),
-    };
+    });
     await expect(resolveEndpoint(env({ bridge }))).rejects.toMatchObject({
       code: "ERR_UNAVAILABLE",
     });
@@ -184,6 +229,20 @@ describe("resolveEndpoint", () => {
     const https = { search: "", protocol: "https:", host: "h.test" };
     expect((await resolveEndpoint(env({ location: https })))?.url).toBe("wss://h.test/ws");
   });
+
+  it("takes the server's timeouts from runtime config instead of the hard-coded fallback", async () => {
+    const fetchJson = () =>
+      Promise.resolve({
+        ws_url: "ws://rc/ws",
+        action_timeout_ms: 45_000,
+        long_action_timeout_ms: 1_200_000,
+        ping_interval_ms: 12_000,
+      });
+    const ep = await resolveEndpoint(env({ fetchJson }));
+    expect(ep?.actionTimeoutMs).toBe(45_000);
+    expect(ep?.longActionTimeoutMs).toBe(1_200_000);
+    expect(ep?.pingIntervalMs).toBe(12_000);
+  });
 });
 
 describe("isValidWsUrl", () => {
@@ -192,5 +251,23 @@ describe("isValidWsUrl", () => {
     expect(isValidWsUrl("http://host/ws")).toBe(false);
     expect(isValidWsUrl("ws://user:pw@host/ws")).toBe(false);
     expect(isValidWsUrl("nonsense")).toBe(false);
+  });
+});
+
+describe("isLongAction", () => {
+  it("matches the server's long actions; bounded waits rely on heartbeats instead", async () => {
+    const { isLongAction } = await import("./client");
+    const { Actions } = await import("../../contracts/generated");
+    for (const a of [
+      Actions.AGENT_RESOLVE_APPROVAL,
+      Actions.BINARIES_DOWNLOAD,
+      Actions.WORKFLOW_RUN_NODE,
+      Actions.WORKFLOW_RUN_GRAPH,
+    ]) {
+      expect(isLongAction(a)).toBe(true);
+    }
+    for (const a of [Actions.AGENT_LOGIN, Actions.AGENT_CONNECT, Actions.SYSTEM_PING]) {
+      expect(isLongAction(a)).toBe(false);
+    }
   });
 });

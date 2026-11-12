@@ -23,6 +23,7 @@ import { AgentHistoryList } from "./AgentHistoryList";
 import { Markdown } from "./markdown";
 import { useScreenContextStore } from "./screenContext";
 import { toolLabel } from "./toolLabels";
+import { useFlash } from "../../lib/hooks/useFlash";
 import { COPY_FEEDBACK_MS, useAgentStore, type AgentChatMessage } from "./useAgentStore";
 
 export interface AgentChatTabProps {
@@ -99,7 +100,7 @@ const ChatBubble: React.FC<ChatBubbleProps> = React.memo(
     // Tools and reasoning share one compact row of chips; at most one detail panel is open.
     const [detail, setDetail] = useState<"tools" | "thought" | null>(null);
     const toggle = (d: "tools" | "thought") => setDetail((cur) => (cur === d ? null : d));
-    const [copied, setCopied] = useState(false);
+    const [copied, flashCopied] = useFlash(COPY_FEEDBACK_MS);
 
     const isUser = msg.role === "user";
     const isError = msg.role === "error";
@@ -109,8 +110,7 @@ const ChatBubble: React.FC<ChatBubbleProps> = React.memo(
     const handleCopy = async () => {
       try {
         await navigator.clipboard.writeText(msg.text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), COPY_FEEDBACK_MS);
+        flashCopied(true);
       } catch {
         // Clipboard is unavailable outside a secure context; nothing to do.
       }

@@ -24,16 +24,42 @@ export interface EndpointEnv {
   dev: boolean;
 }
 
-const browserEndpoint = (url: string, source: Endpoint["source"]): Endpoint => ({
+/** Server-reported limits; any missing value falls back to appConfig.fallback. */
+interface ServerTimeouts {
+  action_timeout_ms?: number;
+  long_action_timeout_ms?: number;
+  ping_interval_ms?: number;
+}
+
+const browserEndpoint = (
+  url: string,
+  source: Endpoint["source"],
+  timeouts: ServerTimeouts = {}
+): Endpoint => ({
   url,
   token: "",
   mode: "browser",
-  actionTimeoutMs: appConfig.fallback.actionTimeoutMs,
-  longActionTimeoutMs: appConfig.fallback.longActionTimeoutMs,
-  pingIntervalMs: appConfig.fallback.pingIntervalMs,
+  actionTimeoutMs: timeouts.action_timeout_ms ?? appConfig.fallback.actionTimeoutMs,
+  longActionTimeoutMs: timeouts.long_action_timeout_ms ?? appConfig.fallback.longActionTimeoutMs,
+  pingIntervalMs: timeouts.ping_interval_ms ?? appConfig.fallback.pingIntervalMs,
   checkUpdatesOnStartup: false,
   source,
 });
+
+/**
+ * Asks the bridge until the core is ready. Each call waits up to desktop.ready_timeout; a
+ * "still starting" answer is retried (slow first start), any other error is final.
+ */
+async function connectionInfoWhenReady(bridge: BridgeApi) {
+  for (;;) {
+    try {
+      return await bridge.GetConnectionInfo();
+    } catch (err) {
+      const e = toActionError(err);
+      if (e.details?.starting !== true) throw e;
+    }
+  }
+}
 
 /**
  * Resolves the endpoint. Inside the desktop shell the bridge is the only source of
@@ -43,7 +69,7 @@ const browserEndpoint = (url: string, source: Endpoint["source"]): Endpoint => (
 export async function resolveEndpoint(env: EndpointEnv): Promise<Endpoint | null> {
   if (env.bridge) {
     try {
-      const info = await env.bridge.GetConnectionInfo();
+      const info = await connectionInfoWhenReady(env.bridge);
       return {
         url: info.ws_url,
         token: info.token,
@@ -69,7 +95,7 @@ export async function resolveEndpoint(env: EndpointEnv): Promise<Endpoint | null
 
   try {
     const parsed = RuntimeConfigSchema.safeParse(await env.fetchJson(appConfig.runtimeConfigPath));
-    if (parsed.success) return browserEndpoint(parsed.data.ws_url, "runtime-config");
+    if (parsed.success) return browserEndpoint(parsed.data.ws_url, "runtime-config", parsed.data);
   } catch {
     // endpoint not served here; fall through
   }

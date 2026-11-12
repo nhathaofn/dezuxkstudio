@@ -36,11 +36,20 @@ Toàn bộ lệnh: `task --list`.
 main.go / cmd/server            entry points: nạp config → paths → logger → crash handler
   └─ internal/desktop           Wails shell: cửa sổ, Bridge (binding), CSP động, vòng đời
   └─ internal/core              composition root: storage → services → modules → HTTP server
-       ├─ internal/realtime     hub WebSocket: auth, registry typed, dispatcher, cancel, progress
+       ├─ internal/realtime     hub WebSocket: auth, registry typed, dispatcher, cancel, idle timeout
        │    └─ modules/         adapter mỏng: payload → service → DTO (không có logic nghiệp vụ)
-       ├─ internal/service/*    use case (preferences, system, update, diagnostics)
+       ├─ internal/service/*    use case (preferences, system, update, diagnostics, binaries,
+       │                        workflow, agent)
        ├─ internal/domain/*     model + quy tắc nghiệp vụ + interface repository
+       ├─ internal/engine       runtime node/graph (DAG) cho workflow; internal/tools/* là các node
        └─ internal/storage/*    triển khai repository (SQLite, migration có version)
+Gói dùng chung (tầng dưới, mọi service dùng được):
+  internal/progress             báo tiến độ + heartbeat qua ctx, idle context (mô hình timeout)
+  internal/proc                 tạo/kill tiến trình con (ẩn console, .cmd/.bat, kill cả cây)
+  internal/runner               chạy CLI, stream output, parse progress
+  internal/lookup               tìm file thực thi theo thứ tự ưu tiên
+  internal/httpclient           HTTP client outbound dùng chung (proxy, connection pool)
+  internal/fsutil, safego, paths, apperr, secrets, logger
 internal/contracts              NGUỒN DUY NHẤT của hợp đồng Go ↔ TS (action, event, DTO, bridge)
 cmd/contractgen                 sinh frontend/src/contracts/generated.ts từ internal/contracts
 frontend/src
@@ -68,8 +77,9 @@ Hướng phụ thuộc một chiều: `modules → service → domain ← storag
 | client → server | `{type:"action", id, action, payload}` · `{type:"cancel", id}` |
 | server → client | `{type:"response", id, success, data?, error?:{code,message,details?}}` · `{type:"event", event, ref_id?, data, timestamp}` |
 
-- Mỗi action có timeout (`realtime.action_timeout`). Số action chạy đồng thời bị giới hạn (`realtime.max_concurrent_actions`). Có panic recovery, và lỗi nội bộ không bao giờ lộ chi tiết ra frontend.
-- Tác vụ dài gọi `req.Progress(%, msg)` để phát `action:progress` (với `ref_id` = id của action). Client hủy bằng `AbortSignal`; server hủy `ctx` tương ứng. Xem `diagnostics:export` làm mẫu.
+- **Timeout tính theo thời gian im lặng, không theo tổng thời gian chạy.** Mỗi lần báo tiến độ, timer được reset ở cả server lẫn client. Action thường dùng `realtime.action_timeout`; các action trong `contracts.LongActions()` (tải binary, workflow, diagnostics, duyệt agent) dùng `realtime.long_action_timeout`. Danh sách này sinh sang TS, không hardcode ở hai nơi.
+- Service báo tiến độ bằng `progress.Report(ctx, progress.Update{...})` → frame `action:progress` (`ref_id` = id của action), có thể kèm `msg_key`/`msg_params` để UI dịch. Chỗ chờ đã có giới hạn riêng (đăng nhập CLI, handshake) dùng `defer progress.KeepAlive(ctx)()`: gửi heartbeat (`heartbeat: true`), UI không hiển thị. Xem phần tải binary làm mẫu.
+- Số action chạy đồng thời bị giới hạn (`realtime.max_concurrent_actions`). Có panic recovery, và lỗi nội bộ không bao giờ lộ chi tiết ra frontend. Client hủy bằng `AbortSignal`; server hủy `ctx` tương ứng.
 - Mã lỗi (`ERR_*`) sinh từ `internal/apperr`. Frontend dịch theo mã (`lib/i18n`).
 
 ---
@@ -84,6 +94,7 @@ Mỗi tùy chọn được khai báo **một lần** trong [internal/config/fiel
 
 Thứ tự ưu tiên: mặc định → `config.json` → môi trường → cờ CLI. Chạy `--help` để xem toàn bộ tùy chọn, giá trị mặc định và tên biến.
 
+- Giá trị mặc định **chỉ** nằm trong `config.Default()`; service lấy giới hạn từ config (`agent.LimitsFrom(cfg)`), không chép lại số.
 - File config được tìm theo thứ tự: `--config` / `DEZUXKSTUDIO_CONFIG` (bắt buộc phải tồn tại), rồi thư mục config của người dùng, rồi thư mục chứa exe (bản portable).
 - Khóa lạ, JSON sai hoặc giá trị sai kiểu đều làm app **dừng kèm lỗi rõ ràng**, không bị bỏ qua lặng lẽ.
 - `Validate()` kiểm tra toàn bộ ràng buộc theo từng chế độ, ví dụ: desktop chỉ được bind loopback; server bind ra ngoài phải có token; client phải dùng `ws(s)://`.
@@ -109,6 +120,7 @@ Thứ tự ưu tiên: mặc định → `config.json` → môi trường → c�
 - Migration nằm ở `internal/storage/sqlite/migrations/NNN_name.sql`: được nhúng vào binary, áp dụng theo version, mỗi migration trong một transaction. **Không sửa file đã phát hành**; thay đổi schema thì thêm file mới.
 - Trước khi migrate một DB đã có dữ liệu, app tự backup bằng `VACUUM INTO` vào `data/backups` (giữ `storage.backups_to_keep` bản). App **từ chối mở** DB có schema mới hơn chính nó (trường hợp người dùng hạ cấp app).
 - Ghi file luôn dùng atomic write (`internal/fsutil`).
+- Khi khởi động chậm (backup + migrate lâu), `desktop.ready_timeout` chỉ là một lượt chờ: UI tự hỏi lại, không báo lỗi fatal.
 
 ---
 
@@ -123,7 +135,7 @@ Thứ tự ưu tiên: mặc định → `config.json` → môi trường → c�
 
 - Version lấy từ git tag `vX.Y.Z`. `task version:sync` chép version sang `wails.json` và `frontend/package.json`. Metadata (version, commit, ngày build, URL kiểm tra cập nhật) được nhúng qua `-ldflags` vào `internal/buildinfo`.
 - Build dev và prod tách nhau bằng build tag `dev` (`wails dev`). Tag `dev` nới CSP cho Vite HMR và cho phép origin localhost.
-- CI ([ci.yml](.github/workflows/ci.yml)) chạy trên 3 OS: lint, test, race detector, build desktop và server, cộng một job audit dependency.
+- CI ([ci.yml](.github/workflows/ci.yml)): job Windows chạy lint, test, build desktop + bộ cài NSIS; job Windows thứ hai chạy race detector (tạm thời không chặn merge cho tới lần chạy xanh đầu tiên); job Ubuntu chạy audit dependency.
 - Release ([release.yml](.github/workflows/release.yml)) chạy khi có tag `v*`: build, ký mã Windows/macOS (bước ký tự bỏ qua nếu chưa có secret), notarize macOS, tính SHA-256, rồi đăng GitHub Release. Bản build tự trỏ tới feed `releases/latest` của repo; app chỉ **thông báo** có bản mới, không tự cài đè.
 
 Secret tùy chọn để ký mã: `WINDOWS_CERT_PFX_BASE64`, `WINDOWS_CERT_PASSWORD`, `MACOS_CERT_P12_BASE64`, `MACOS_CERT_PASSWORD`, `MACOS_SIGN_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`.
@@ -132,17 +144,23 @@ Secret tùy chọn để ký mã: `WINDOWS_CERT_PFX_BASE64`, `WINDOWS_CERT_PASSW
 
 ## 8. Thêm một tính năng mới
 
+**Bước 0: chọn dạng tính năng để agent tự dùng được, không cần viết code cho agent** (quy tắc §11 trong `.agents/rules/architecture.md`):
+
+- Tính năng **xử lý input → output** (ảnh, video, file, text): viết thành **node** trong `internal/tools/<tên>/` và thêm vào danh sách node trong `workflow.New`. UI, workflow và agent đều tự nhận qua `engine.Spec`. App từ chối khởi động nếu spec khai báo thiếu (`engine.ValidateSpec`). Xem [docs/agent-feature-integration.md](docs/agent-feature-integration.md).
+- Tính năng **khác** (cài đặt, project, điều hướng…): làm theo các bước bên dưới, rồi thêm **một MCP tool** gọi đúng service đó.
+
 Ví dụ thêm tính năng `projects` có action `projects:list`:
 
 1. **Domain**: `internal/domain/projects/` chứa model, `Validate()`, lỗi kiểu `apperr` và `Repository` interface.
 2. **Storage**: thêm migration `internal/storage/sqlite/migrations/002_projects.sql` và `projects_repo.go` (cài đặt interface).
 3. **Service**: `internal/service/projects/` chứa use case. Service chỉ phụ thuộc interface, nên test được bằng repo giả lập trong bộ nhớ.
 4. **Contracts**: trong `internal/contracts`, thêm hằng `ActionProjectsList`, DTO payload/result, và dòng tương ứng trong `Actions()`. Nếu có event mới thì thêm vào `Events()`.
-5. **Module**: `internal/realtime/modules/projects.go` dùng `realtime.Handle(r, contracts.ActionProjectsList, ...)`.
+5. **Module**: `internal/realtime/modules/projects.go` dùng `realtime.Handle(r, contracts.ActionProjectsList, ...)`. Nếu tác vụ lâu: service gọi `progress.Report(ctx, ...)`; nếu một bước có thể im lặng lâu thì thêm action vào `contracts.LongActions()`.
 6. **Wiring**: thêm **một dòng** vào `modules()` trong [internal/core/core.go](internal/core/core.go).
 7. **Sinh hợp đồng TS**: `task generate`.
 8. **Frontend**: tạo `features/projects/` (store gọi `rtClient.request(Actions.PROJECTS_LIST, {...})`, kiểu dữ liệu lấy hoàn toàn từ file sinh tự động), thêm chuỗi i18n vào `en.ts` và `vi.ts`, và nếu cần màn hình riêng thì thêm 1 dòng vào `app/navigation.ts`.
-9. **Test**: unit test cạnh package; nếu cần thì thêm case end-to-end vào `test/e2e_test.go`.
+9. **Agent**: thêm MCP tool trong `internal/service/agent/mcp_tools.go` gọi service ở bước 3. Thao tác sửa/xoá dữ liệu người dùng phải qua `needsApproval`.
+10. **Test**: unit test cạnh package; nếu cần thì thêm case end-to-end vào `test/e2e_test.go`.
 
 Các rào chắn tự động:
 
@@ -155,4 +173,4 @@ Các rào chắn tự động:
 ## 9. Ghi chú
 
 - Windows Smart App Control có thể chặn file test `.exe` vừa build trong `%TEMP%`. Taskfile đặt `GOTMPDIR=build/.gotmp` để giảm tình trạng này; nếu vẫn bị chặn, chạy lại lệnh.
-- Race detector cần CGO và trình biên dịch C (`task test:race`). CI chạy race trên Linux và macOS.
+- Race detector cần CGO và trình biên dịch C (`task test:race`, ví dụ MSYS2 `mingw-w64-ucrt-x86_64-gcc` trên Windows). CI chạy race trên Windows.

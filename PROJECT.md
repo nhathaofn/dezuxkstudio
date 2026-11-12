@@ -75,3 +75,39 @@ DezuxkStudio includes a high-performance Watermark Removal subsystem consisting 
 - `frontend/src/features/watermark/WatermarkResultsCard.tsx` — Right results card, queue list, metrics (F9)
 - `frontend/src/features/watermark/WatermarkView.tsx` — Page wrapper and action bar (F10)
 - `frontend/src/features/watermark/useWatermarkStore.ts` — Existing Zustand store (untouched)
+
+---
+
+# Milestone M5: Timeout Model & Shared Building Blocks (branch `fix/timeouts-hardcode`)
+
+## Goal
+Stop the UI from reporting timeouts while the backend is still working, remove hard-coded timings,
+and merge duplicated mechanisms into shared packages. Rules are in `.agents/rules/architecture.md` (§4–§6).
+
+## Feature Inventory
+| # | Feature | Where | Status |
+|---|---------|-------|--------|
+| F13 | Idle-timeout model for every action (download heartbeat generalised) | `internal/progress`, `internal/realtime/session.go`, `frontend/src/lib/rtClient/pending.ts` | DONE |
+| F14 | Single long-action list, generated to TS | `contracts.LongActions()`, `cmd/contractgen` | DONE |
+| F15 | Keep-alive for bounded waits (agent login/connect/probe/set_model) | `internal/service/agent` | DONE |
+| F16 | Idle-based agent chat turns (output, MCP calls, tool progress re-arm) | `progress.NewIdleContext`, `agent/mcp_server.go` | DONE |
+| F17 | CLI MCP tool timeout = long action timeout (Codex/Claude) | `agent/codex_runner.go`, `agent/claude_runner.go` | DONE |
+| F18 | Retryable slow desktop start | `desktop/bridge.go`, `rtClient/endpoint.ts` | DONE |
+| F19 | Browser clients use server timeouts from `/runtime-config.json` | `server/handlers`, `rtClient/endpoint.ts` | DONE |
+| F20 | Hard-coded timings to config (`binaries.probe_timeout`, `realtime.keepalive_interval`, `agent.interrupt_wait`, `network.*`) | `internal/config` | DONE |
+| F21 | Download errors as ERR_UNAVAILABLE/ERR_INTEGRITY; cancellable queue; translated progress | `service/binaries` | DONE |
+| F22 | Shared packages replacing duplicates: `proc`, `lookup`, `httpclient`, `fsutil.IsFile`, single progress path, `verifyChecksum`, `LimitsFrom` | `internal/*` | DONE |
+| F23 | Frontend: chat unlock after reconnect, no heartbeat logs, `useFlash`, `fakeBridge` | `frontend/src` | DONE |
+| F24 | Agent-usable features enforced: `engine.ValidateSpec` at startup, node list in `workflow.New` | `internal/engine`, `service/workflow` | DONE |
+| F25 | Rules for logging, protocol versioning, performance limits, git workflow; log key `error` standardised | `.agents/rules/architecture.md` §11–15 | DONE |
+| F26 | Race detector job in CI (Windows, non-blocking at first) | `.github/workflows/ci.yml` | DONE |
+
+## Known gaps
+- `go test -race` not run (no C compiler locally, not in CI).
+- `fetchHistory` / `fetchApprovals` / `fetchAllowedDirs` swallow errors.
+- No client-side detection of a half-open WebSocket.
+- Portable `tools/` next to the executable is still searched (violates the paths rule; kept for portable builds).
+- Startup update check reports an error when the feed has no release.
+- Watermark node reads every input image into memory before processing (violates rules §14); switch it to `ProcessStream`.
+- Race CI job is non-blocking until its first green run; then drop `continue-on-error`.
+- Protocol rule §13 (accept the previous subprotocol during a rollout) is not implemented yet: the hub accepts only `dezuxk.v1`.

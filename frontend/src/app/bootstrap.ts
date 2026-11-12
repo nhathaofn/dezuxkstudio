@@ -28,9 +28,10 @@ export function bootstrap(): void {
   rtClient.on(Events.AGENT_APPROVALS, (p) =>
     useAgentStore.getState().receiveApprovals(p.approvals)
   );
-  rtClient.on(Events.ACTION_PROGRESS, (p) =>
-    uiLog.info(`progress ${Math.round(p.percent)}% ${p.message}`)
-  );
+  rtClient.on(Events.ACTION_PROGRESS, (p) => {
+    // Heartbeats only keep a request alive; logging them would flood the live log buffer.
+    if (!p.heartbeat) uiLog.info(`progress ${Math.round(p.percent)}% ${p.message}`);
+  });
 
   let firstConnect = true;
   rtClient.onStatus((status) => {

@@ -1,6 +1,7 @@
 import {
   Actions,
   Events,
+  LongActions,
   type ActionMap,
   type ActionName,
   type ActionProgress,
@@ -23,6 +24,10 @@ export interface RequestOptions {
 }
 
 type Listener<T> = (data: T) => void;
+
+/** True when the server bounds this action by its long action timeout (generated from Go). */
+export const isLongAction = (action: string): boolean =>
+  (LongActions as readonly string[]).includes(action);
 
 let sequence = 0;
 const nextId = (): string => `${Date.now().toString(36)}-${(++sequence).toString(36)}`;
@@ -93,18 +98,6 @@ export class RealtimeClient {
     return Math.round(performance.now() - start);
   }
 
-  private isLongAction(action: string): boolean {
-    switch (action) {
-      case Actions.BINARIES_DOWNLOAD:
-      case Actions.WORKFLOW_RUN_NODE:
-      case Actions.WORKFLOW_RUN_GRAPH:
-      case Actions.DIAGNOSTICS_EXPORT:
-        return true;
-      default:
-        return false;
-    }
-  }
-
   private send(action: string, payload: unknown, opts: RequestOptions): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (opts.signal?.aborted) {
@@ -118,9 +111,7 @@ export class RealtimeClient {
         this.pending.reject(id, new ActionError("ERR_CANCELLED", "request cancelled"));
       };
 
-      const baseTimeout = this.isLongAction(action)
-        ? this.longActionTimeoutMs
-        : this.actionTimeoutMs;
+      const baseTimeout = isLongAction(action) ? this.longActionTimeoutMs : this.actionTimeoutMs;
       const timeoutMs = (opts.timeoutMs ?? baseTimeout) + appConfig.clientTimeoutGraceMs;
 
       this.pending.add(

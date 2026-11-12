@@ -19,6 +19,7 @@ import (
 	"app/internal/apperr"
 	"app/internal/contracts"
 	"app/internal/fsutil"
+	"app/internal/progress"
 )
 
 const (
@@ -51,14 +52,10 @@ func New(o Options) (*Service, error) {
 	return &Service{o: o}, nil
 }
 
-// Progress receives export progress (0-100).
-type Progress func(percent float64, message string)
-
-// Export writes a new bundle atomically and prunes old ones. It honours ctx cancellation.
-func (s *Service) Export(ctx context.Context, progress Progress) (contracts.DiagnosticsBundle, error) {
-	if progress == nil {
-		progress = func(float64, string) {}
-	}
+// Export writes a new bundle atomically and prunes old ones. It honours ctx cancellation and
+// reports progress (0-100) through the context's progress sink.
+func (s *Service) Export(ctx context.Context) (contracts.DiagnosticsBundle, error) {
+	report := progress.Func(ctx)
 	logs, err := s.collectLogs()
 	if err != nil {
 		return contracts.DiagnosticsBundle{}, apperr.Wrap(apperr.CodeUnavailable, "could not read log directory", err)
@@ -74,11 +71,11 @@ func (s *Service) Export(ctx context.Context, progress Progress) (contracts.Diag
 	total := float64(len(logs) + 2)
 	err = fsutil.WriteAtomic(path, bundlePerm, func(w io.Writer) error {
 		zw := zip.NewWriter(w)
-		progress(0, "manifest")
+		report(0, "manifest")
 		if err := writeJSON(zw, "manifest.json", s.o.Info()); err != nil {
 			return err
 		}
-		progress(100/total, "configuration")
+		report(100/total, "configuration")
 		if err := writeJSON(zw, "config.json", s.o.Config()); err != nil {
 			return err
 		}
@@ -86,7 +83,7 @@ func (s *Service) Export(ctx context.Context, progress Progress) (contracts.Diag
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			progress(100*float64(i+2)/total, rel)
+			report(100*float64(i+2)/total, rel)
 			if err := copyFile(zw, filepath.Join(s.o.LogDir, rel), "logs/"+filepath.ToSlash(rel)); err != nil {
 				return err
 			}
@@ -99,7 +96,7 @@ func (s *Service) Export(ctx context.Context, progress Progress) (contracts.Diag
 		}
 		return contracts.DiagnosticsBundle{}, apperr.Wrap(apperr.CodeInternal, "could not write diagnostics bundle", err)
 	}
-	progress(100, "done")
+	report(100, "done")
 
 	info, err := os.Stat(path)
 	if err != nil {

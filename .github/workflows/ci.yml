@@ -61,6 +61,27 @@ jobs:
           task build:installer
           ls -l build/bin/*-setup-*.exe
 
+  race:
+    name: Race detector (Windows)
+    runs-on: windows-latest
+    # Non-blocking until its first green run on main; then remove this line so races fail CI.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Go tests with -race (MinGW gcc ships with the runner)
+        shell: bash
+        env:
+          CGO_ENABLED: '1'
+          GOTMPDIR: ${{ runner.temp }}
+        run: |
+          gcc --version | head -1
+          # The root package embeds frontend/dist; everything else is covered here.
+          go test -race -count=1 ./internal/... ./pkg/... ./test/... ./cmd/...
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-24.04
