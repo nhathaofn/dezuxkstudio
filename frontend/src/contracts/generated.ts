@@ -40,7 +40,7 @@ export type AgentConnectionState = (typeof AgentConnectionStateValues)[number];
 export const AgentAuthStateValues = ["unknown", "authenticated", "unauthenticated", "unsupported"] as const;
 export type AgentAuthState = (typeof AgentAuthStateValues)[number];
 
-export const AgentSourceValues = ["custom", "system", "none"] as const;
+export const AgentSourceValues = ["custom", "managed", "system", "none"] as const;
 export type AgentSource = (typeof AgentSourceValues)[number];
 
 export const AgentChatEventTypeValues = ["delta", "thought", "tool_call", "tool_result", "done", "error", "system"] as const;
@@ -188,6 +188,8 @@ export interface AgentProviderInfo {
   selected_model: string;
   selected_effort: string;
   revision: number;
+  installing: boolean;
+  install_percent: number;
 }
 
 export interface AgentResolveApprovalPayload {

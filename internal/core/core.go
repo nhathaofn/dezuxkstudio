@@ -29,6 +29,7 @@ import (
 	"app/internal/server"
 	"app/internal/server/handlers"
 	agentsvc "app/internal/service/agent"
+	agentclisvc "app/internal/service/agentcli"
 	binariessvc "app/internal/service/binaries"
 	"app/internal/service/diagnostics"
 	"app/internal/service/preferences"
@@ -242,6 +243,11 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		return nil, err
 	}
 
+	// The app's own copies of the agent CLIs live in one folder of its data; nothing installed elsewhere is touched.
+	agentCLIs := agentclisvc.New(agentclisvc.Options{
+		Dir: o.Paths.AgentCLIs(), Client: o.HTTPClient, Logger: o.Logger, UserAgent: buildinfo.ProductName + "/" + buildinfo.Version,
+	})
+
 	agentSvc, err := agentsvc.New(agentsvc.Options{
 		Repo:         sqlite.NewAgentRepository(c.db),
 		DataDir:      o.Paths.Data,
@@ -254,6 +260,9 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		Logger:       o.Logger,
 		Workflow:     wfSvc,
 		Binaries:     binSvc,
+		Managed:      agentCLIs,
+		AutoInstall:  cfg.Agent.AutoInstallCLI,
+		AutoUpdate:   cfg.Agent.AutoUpdateCLI,
 		Preferences:  prefSvc,
 		System:       sysSvc,
 		Diagnostics:  diagSvc,
@@ -271,6 +280,7 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		return nil, err
 	}
 	c.agentSvc = agentSvc
+	c.background("agent-provision-clis", agentSvc.ProvisionCLIs)
 	if cfg.Agent.RestoreConnection {
 		c.background("agent-restore-connection", agentSvc.RestoreConnection)
 	}

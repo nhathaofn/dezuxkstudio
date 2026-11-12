@@ -31,6 +31,8 @@ const mockProviders: AgentProviderInfo[] = [
     selected_model: "",
     selected_effort: "",
     revision: 1,
+    installing: false,
+    install_percent: 0,
   },
   {
     id: "codex",
@@ -59,6 +61,8 @@ const mockProviders: AgentProviderInfo[] = [
     selected_model: "",
     selected_effort: "",
     revision: 1,
+    installing: false,
+    install_percent: 0,
   },
 ];
 

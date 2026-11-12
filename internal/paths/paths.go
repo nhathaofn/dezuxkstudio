@@ -133,3 +133,7 @@ func xdg(env, home string, fallback ...string) string {
 	}
 	return filepath.Join(append([]string{home}, fallback...)...)
 }
+
+// AgentCLIs holds the app's own copies of the agent CLIs (claude, codex, agy). Nothing here is shared with
+// a CLI the user installed themselves.
+func (p Paths) AgentCLIs() string { return filepath.Join(p.Data, "agent-cli") }

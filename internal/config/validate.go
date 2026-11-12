@@ -73,6 +73,7 @@ func (c *Config) Validate() error {
 			"agent.interrupt_wait":         c.Agent.InterruptWait,
 			"agent.status_cache_ttl":       c.Agent.StatusCacheTTL,
 			"agent.approval_ttl":           c.Agent.ApprovalTTL,
+			"agent.cli_update_interval":    c.Agent.CLIUpdateInterval,
 		})
 		positiveInts(add, map[string]int{
 			"providers.check_concurrency":     c.Providers.CheckConcurrency,

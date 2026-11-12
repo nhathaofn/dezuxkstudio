@@ -201,7 +201,19 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
 
   const customInput = customDraft ?? (provider.custom_path || "");
   const isDirty = customDraft !== null && customDraft !== (provider.custom_path || "");
-  const badge = statusMeta(provider.state, t);
+  const badge = provider.installing
+    ? {
+        color: undefined,
+        icon: (
+          <RefreshCw
+            size={13}
+            className="animate-spin"
+            style={{ color: "var(--status-connecting)" }}
+          />
+        ),
+        label: t("agent.status.installing", { percent: Math.round(provider.install_percent) }),
+      }
+    : statusMeta(provider.state, t);
   const canConnect =
     provider.supported && provider.state !== "missing" && Boolean(provider.resolved_path);
 
@@ -303,6 +315,13 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
         >
           {provider.resolved_path || t("agent.source.none")}
         </span>
+
+        {provider.source !== "none" && (
+          <>
+            <span className="agent-provider-meta__label">{t("agent.connections.source")}:</span>
+            <span className="agent-provider-meta__val">{t(`agent.source.${provider.source}`)}</span>
+          </>
+        )}
 
         {provider.isolated_profile_dir && (
           <>

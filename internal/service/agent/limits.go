@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"maps"
 	"os"
 	"time"
 
@@ -33,6 +34,7 @@ type Limits struct {
 	InterruptWait       time.Duration // how long a cancelled Codex turn waits for turn/completed
 	StatusCacheTTL      time.Duration
 	ApprovalTTL         time.Duration
+	CLIUpdateInterval   time.Duration // how often the app looks for newer agent CLIs
 	HistoryLimit        int
 	ContextMessages     int
 	ContextMessageChars int
@@ -55,6 +57,7 @@ func LimitsFrom(c *config.Config) Limits {
 		InterruptWait:       a.InterruptWait,
 		StatusCacheTTL:      a.StatusCacheTTL,
 		ApprovalTTL:         a.ApprovalTTL,
+		CLIUpdateInterval:   a.CLIUpdateInterval,
 		HistoryLimit:        a.HistoryLimit,
 		ContextMessages:     a.ContextMessages,
 		ContextMessageChars: a.ContextMessageChars,
@@ -78,6 +81,7 @@ func (l Limits) withDefaults() Limits {
 		{&l.InterruptWait, &d.InterruptWait},
 		{&l.StatusCacheTTL, &d.StatusCacheTTL},
 		{&l.ApprovalTTL, &d.ApprovalTTL},
+		{&l.CLIUpdateInterval, &d.CLIUpdateInterval},
 	}
 	for _, f := range durations {
 		if *f.v <= 0 {
@@ -101,7 +105,12 @@ func (l Limits) withDefaults() Limits {
 // MCP token and the provider's credential variables, plus overrides (isolated profile dirs, token).
 func providerEnv(id domainagent.ProviderID, overrides map[string]string) []string {
 	strip := append([]string{mcpTokenEnvVar}, domainagent.Registry[id].CredentialEnv...)
-	return isolatedEnv(os.Environ(), overrides, strip...)
+	merged := maps.Clone(domainagent.Registry[id].Install.Env)
+	if merged == nil {
+		merged = map[string]string{}
+	}
+	maps.Copy(merged, overrides)
+	return isolatedEnv(os.Environ(), merged, strip...)
 }
 
 // Tool result statuses sent in ChatEvent.Text/Error; the UI maps them to its own localized labels.

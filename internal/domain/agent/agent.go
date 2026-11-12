@@ -73,12 +73,14 @@ type Source string
 const (
 	SourceCustom Source = "custom"
 	SourceSystem Source = "system"
-	SourceNone   Source = "none"
+	// SourceManaged is the private copy the app downloaded and keeps up to date itself.
+	SourceManaged Source = "managed"
+	SourceNone    Source = "none"
 )
 
 // AllSources returns every valid Source.
 func AllSources() []Source {
-	return []Source{SourceCustom, SourceSystem, SourceNone}
+	return []Source{SourceCustom, SourceManaged, SourceSystem, SourceNone}
 }
 
 // ChatEventType classifies streamed events sent from an active agent turn to the UI.
@@ -125,7 +127,9 @@ type ProviderSpec struct {
 	// first one the agent advertises in initialize wins.
 	AuthMethodPreference []string
 	// ModelAliases are model choices the CLI accepts but cannot enumerate itself.
-	ModelAliases      []ModelOption
+	ModelAliases []ModelOption
+	// Install says where the CLI is published so the app can keep a private, self-updating copy.
+	Install           InstallSpec
 	Supported         bool
 	UnsupportedReason string
 }
@@ -144,7 +148,13 @@ var Registry = map[ProviderID]ProviderSpec{
 		InstallHint:          "Use Sign in or API key below",
 		CredentialEnv:        []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"},
 		AuthMethodPreference: []string{"oauth-personal"},
-		Supported:            true,
+		Install: InstallSpec{
+			Scheme:     SchemeManifest,
+			BaseURL:    "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app",
+			Platforms:  map[string]string{"windows_amd64": "windows_amd64", "windows_arm64": "windows_arm64"},
+			Executable: "agy.exe",
+		},
+		Supported: true,
 	},
 	ProviderCodex: {
 		ID:                   ProviderCodex,
@@ -161,7 +171,17 @@ var Registry = map[ProviderID]ProviderSpec{
 		VersionArgs:   []string{"--version"},
 		InstallHint:   "Use Sign in below (isolated CODEX_HOME)",
 		CredentialEnv: []string{"OPENAI_API_KEY"},
-		Supported:     true,
+		Install: InstallSpec{
+			Scheme:        SchemeReleasePackage,
+			BaseURL:       "https://github.com/openai/codex/releases/download",
+			LatestAPI:     "https://api.github.com/repos/openai/codex/releases/latest",
+			TagPrefix:     "rust-v",
+			Platforms:     map[string]string{"windows_amd64": "x86_64-pc-windows-msvc", "windows_arm64": "aarch64-pc-windows-msvc"},
+			Executable:    "bin/codex.exe",
+			PackageAsset:  "codex-package-{platform}.tar.gz",
+			ChecksumAsset: "codex-package_SHA256SUMS",
+		},
+		Supported: true,
 	},
 	ProviderClaude: {
 		ID:                   ProviderClaude,
@@ -177,6 +197,14 @@ var Registry = map[ProviderID]ProviderSpec{
 		VersionArgs:   []string{"--version"},
 		InstallHint:   "Use Sign in below (isolated CLAUDE_CONFIG_DIR)",
 		CredentialEnv: []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"},
+		Install: InstallSpec{
+			Scheme:     SchemeVersionFile,
+			BaseURL:    "https://downloads.claude.ai/claude-code-releases",
+			LatestPath: "latest",
+			Platforms:  map[string]string{"windows_amd64": "win32-x64", "windows_arm64": "win32-arm64"},
+			Executable: "claude.exe",
+			Env:        map[string]string{"DISABLE_AUTOUPDATER": "1"},
+		},
 		// Claude Code's built-in aliases; the CLI maps each one to the latest model of that family.
 		ModelAliases: []ModelOption{
 			{ID: "fable", Name: "Claude Fable (latest)", Description: "Most capable model family"},
@@ -236,6 +264,9 @@ type ProviderInfo struct {
 	// Revision grows with every status snapshot the service builds. A snapshot that reaches the UI
 	// late (a slow agent:list) must never replace a newer one (e.g. "connected, with models").
 	Revision int64 `json:"revision"`
+	// Installing is true while the app downloads or updates its own copy of the CLI; InstallPercent is 0-100.
+	Installing     bool    `json:"installing"`
+	InstallPercent float64 `json:"install_percent"`
 }
 
 // ChatEvent is broadcast when an active agent streams text, thoughts, tool calls, or completion updates.

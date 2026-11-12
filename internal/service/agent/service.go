@@ -58,6 +58,9 @@ type Options struct {
 	Logger             *slog.Logger
 	Workflow           WorkflowRunner
 	Binaries           BinariesManager
+	Managed            ManagedCLIs // the app's own agent CLI copies; nil keeps using what is on the machine
+	AutoInstall        bool        // install a missing managed copy in the background
+	AutoUpdate         bool        // move managed copies to newer official releases
 	Preferences        PreferencesManager
 	System             SystemInspector
 	Diagnostics        DiagnosticsExporter
@@ -94,6 +97,10 @@ type Service struct {
 	log                *slog.Logger
 	workflow           WorkflowRunner
 	binaries           BinariesManager
+	managed            ManagedCLIs
+	autoInstall        bool
+	autoUpdate         bool
+	provisioning       map[domainagent.ProviderID]provisionState
 	preferences        PreferencesManager
 	system             SystemInspector
 	diagnostics        DiagnosticsExporter
@@ -173,6 +180,10 @@ func New(o Options) (*Service, error) {
 		log:                o.Logger,
 		workflow:           o.Workflow,
 		binaries:           o.Binaries,
+		managed:            o.Managed,
+		autoInstall:        o.AutoInstall,
+		autoUpdate:         o.AutoUpdate,
+		provisioning:       make(map[domainagent.ProviderID]provisionState),
 		preferences:        o.Preferences,
 		system:             o.System,
 		diagnostics:        o.Diagnostics,
@@ -1468,6 +1479,9 @@ func (s *Service) buildInfoLocked(spec domainagent.ProviderSpec, resolved string
 		Active:             isActive,
 		Busy:               isActive && s.busy,
 	}
+	if p, ok := s.provisioning[spec.ID]; ok && p.active {
+		info.Installing, info.InstallPercent = true, p.percent
+	}
 	if isActive && s.activeInit != nil {
 		info.ProtocolVersion = s.activeInit.ProtocolVersion
 		info.AgentName = s.activeInit.AgentInfo.Name
@@ -1531,6 +1545,7 @@ func (s *Service) resolveExecutable(ctx context.Context, spec domainagent.Provid
 	}
 	path, src, ok := lookup.First(
 		lookup.Candidate[domainagent.Source]{Source: domainagent.SourceCustom, Find: lookup.File(customPath)},
+		lookup.Candidate[domainagent.Source]{Source: domainagent.SourceManaged, Find: s.managedFinder(spec.ID)},
 		lookup.Candidate[domainagent.Source]{Source: domainagent.SourceSystem, Find: lookup.OnPath(spec.CandidateExecutables...)},
 		lookup.Candidate[domainagent.Source]{Source: domainagent.SourceSystem, Find: lookup.Files(expandKnownPath, spec.KnownPaths...)},
 	)

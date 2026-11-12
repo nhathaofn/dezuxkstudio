@@ -157,6 +157,9 @@ type AgentConfig struct {
 	ModelCatalogTimeout time.Duration // max duration of reading a CLI's model catalog
 	InterruptWait       time.Duration // how long a cancelled turn waits for the CLI to report what it produced
 	StatusCacheTTL      time.Duration // how long CLI auth/version probe results are reused
+	AutoInstallCLI      bool          // download the agent CLIs into the app's own folder when they are missing
+	AutoUpdateCLI       bool          // keep the app's own agent CLIs on the newest official release
+	CLIUpdateInterval   time.Duration // how often to look for a newer agent CLI release
 	ApprovalTTL         time.Duration // pending approvals expire after this long
 	HistoryLimit        int           // messages returned to the chat UI
 	ContextMessages     int           // past user/assistant messages replayed into a new session
@@ -251,6 +254,9 @@ func Default(mode Mode) *Config {
 			ModelCatalogTimeout: 30 * time.Second,
 			InterruptWait:       5 * time.Second,
 			StatusCacheTTL:      5 * time.Minute,
+			AutoInstallCLI:      true,
+			AutoUpdateCLI:       true,
+			CLIUpdateInterval:   6 * time.Hour,
 			ApprovalTTL:         30 * time.Minute,
 			HistoryLimit:        200,
 			ContextMessages:     10,
