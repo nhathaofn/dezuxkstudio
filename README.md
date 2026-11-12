@@ -135,7 +135,7 @@ Thứ tự ưu tiên: mặc định → `config.json` → môi trường → c�
 
 - Version lấy từ git tag `vX.Y.Z`. `task version:sync` chép version sang `wails.json` và `frontend/package.json`. Metadata (version, commit, ngày build, URL kiểm tra cập nhật) được nhúng qua `-ldflags` vào `internal/buildinfo`.
 - Build dev và prod tách nhau bằng build tag `dev` (`wails dev`). Tag `dev` nới CSP cho Vite HMR và cho phép origin localhost.
-- CI ([ci.yml](.github/workflows/ci.yml)): job Windows chạy lint, test, build desktop + bộ cài NSIS; job Windows thứ hai chạy race detector (tạm thời không chặn merge cho tới lần chạy xanh đầu tiên); job Ubuntu chạy audit dependency.
+- CI ([ci.yml](.github/workflows/ci.yml)): job Windows chạy lint, test, build desktop + bộ cài NSIS; job Windows thứ hai chạy race detector (lỗi race làm CI đỏ); job Ubuntu chạy audit dependency.
 - Release ([release.yml](.github/workflows/release.yml)) chạy khi có tag `v*`: build, ký mã Windows/macOS (bước ký tự bỏ qua nếu chưa có secret), notarize macOS, tính SHA-256, rồi đăng GitHub Release. Bản build tự trỏ tới feed `releases/latest` của repo; app chỉ **thông báo** có bản mới, không tự cài đè.
 
 Secret tùy chọn để ký mã: `WINDOWS_CERT_PFX_BASE64`, `WINDOWS_CERT_PASSWORD`, `MACOS_CERT_P12_BASE64`, `MACOS_CERT_PASSWORD`, `MACOS_SIGN_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`.
@@ -173,4 +173,4 @@ Các rào chắn tự động:
 ## 9. Ghi chú
 
 - Windows Smart App Control có thể chặn file test `.exe` vừa build trong `%TEMP%`. Taskfile đặt `GOTMPDIR=build/.gotmp` để giảm tình trạng này; nếu vẫn bị chặn, chạy lại lệnh.
-- Race detector cần CGO và trình biên dịch C (`task test:race`, ví dụ MSYS2 `mingw-w64-ucrt-x86_64-gcc` trên Windows). CI chạy race trên Windows.
+- Race detector cần CGO và trình biên dịch C (`task test:race`). Trên Windows: `winget install BrechtSanders.WinLibs.POSIX.UCRT` (mở terminal mới để nhận PATH). Chỉ dùng cho test; build và chạy app không cần gcc. CI chạy race trên Windows (runner có sẵn gcc).
