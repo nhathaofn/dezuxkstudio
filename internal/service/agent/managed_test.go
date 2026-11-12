@@ -191,13 +191,19 @@ func TestFailedDownloadKeepsWorkingCopyAndShowsNoStuckProgress(t *testing.T) {
 }
 
 func TestProviderEnvSilencesTheCLIsOwnUpdater(t *testing.T) {
-	var found bool
-	for _, e := range providerEnv(domainagent.ProviderClaude, nil) {
-		if e == "DISABLE_AUTOUPDATER=1" {
-			found = true
+	// The app keeps its own copy current; a CLI must not rewrite itself or change the machine's setup.
+	for id, want := range map[domainagent.ProviderID]string{
+		domainagent.ProviderClaude:      "DISABLE_AUTOUPDATER=1",
+		domainagent.ProviderAntigravity: "AGY_CLI_DISABLE_AUTO_UPDATE=1",
+	} {
+		var found bool
+		for _, e := range providerEnv(id, nil) {
+			if e == want {
+				found = true
+			}
 		}
-	}
-	if !found {
-		t.Fatal("the app updates its own copy; the CLI must not rewrite itself")
+		if !found {
+			t.Fatalf("%s: %s missing from the CLI's environment", id, want)
+		}
 	}
 }

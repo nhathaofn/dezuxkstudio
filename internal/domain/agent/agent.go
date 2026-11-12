@@ -150,6 +150,7 @@ var Registry = map[ProviderID]ProviderSpec{
 			BaseURL:    "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app",
 			Platforms:  map[string]string{"windows_amd64": "windows_amd64", "windows_arm64": "windows_arm64"},
 			Executable: "agy.exe",
+			Env:        map[string]string{"AGY_CLI_DISABLE_AUTO_UPDATE": "1"},
 		},
 		Supported: true,
 	},
