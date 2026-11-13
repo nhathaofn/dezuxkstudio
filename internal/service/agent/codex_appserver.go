@@ -578,7 +578,7 @@ func (s *Service) runCodexAppServerTurn(ctx context.Context, srv *codexAppServer
 		"threadId": threadID,
 		"input":    []map[string]any{{"type": "text", "text": prompt}},
 	}
-	if sel := s.effectiveSelection(domainagent.ProviderCodex); sel.Model != "" || sel.Effort != "" {
+	if sel := s.codexTurnSelection(s.effectiveSelection(domainagent.ProviderCodex)); sel.Model != "" || sel.Effort != "" {
 		if sel.Model != "" {
 			params["model"] = sel.Model
 		}

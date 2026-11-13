@@ -21,11 +21,12 @@ const fakeCodexExe = "dezuxk-test-no-such-codex"
 
 // fakeCodexAppServer emulates `codex app-server` over in-memory pipes.
 type fakeCodexAppServer struct {
-	t       *testing.T
-	in      *bufio.Scanner // client → server
-	out     io.Writer      // server → client
-	mu      sync.Mutex
-	methods []string
+	t          *testing.T
+	in         *bufio.Scanner // client → server
+	out        io.Writer      // server → client
+	mu         sync.Mutex
+	methods    []string
+	turnStarts []map[string]any
 	// onTurn streams the notifications of one turn; it may block (e.g. until interrupted).
 	onTurn    func(f *fakeCodexAppServer, threadID, turnID string)
 	interrupt chan struct{}
@@ -71,6 +72,9 @@ func (f *fakeCodexAppServer) serve() {
 		case "turn/start":
 			turnSeq++
 			turnID := "turn-" + string(rune('0'+turnSeq))
+			f.mu.Lock()
+			f.turnStarts = append(f.turnStarts, req.Params)
+			f.mu.Unlock()
 			reply(map[string]any{"turn": map[string]any{"id": turnID, "status": "inProgress"}})
 			threadID, _ := req.Params["threadId"].(string)
 			go f.onTurn(f, threadID, turnID)
@@ -252,6 +256,45 @@ func TestCodexAppServerUnavailableFallsBackToExec(t *testing.T) {
 	}
 	if spawns != 1 {
 		t.Fatalf("a broken app-server must be tried once per executable, spawned %d times", spawns)
+	}
+}
+
+func TestCodexAppServerTurnStartAppliesDefaultXHighEffort(t *testing.T) {
+	svc, fake, _, _, _ := newFakeCodexService(t, func(f *fakeCodexAppServer, threadID, turnID string) {
+		f.notify("item/completed", map[string]any{"threadId": threadID, "turnId": turnID, "item": map[string]any{"type": "agentMessage", "id": "m1", "text": "ok"}})
+		f.notify("turn/completed", map[string]any{"threadId": threadID, "turn": map[string]any{"id": turnID, "status": "completed"}})
+	})
+	svc.models.mu.Lock()
+	svc.models.catalogs[domainagent.ProviderCodex] = []domainagent.ModelOption{
+		{ID: "gpt-6-luna", Efforts: []string{"low", "medium", "high", "xhigh"}, DefaultEffort: "xhigh"},
+	}
+	svc.models.mu.Unlock()
+
+	profile, ws := t.TempDir(), t.TempDir()
+	runOne := func(sel domainagent.ModelSelection) map[string]any {
+		svc.models.mu.Lock()
+		svc.models.selection[domainagent.ProviderCodex] = sel
+		svc.models.mu.Unlock()
+		startTestTurn(svc, "msg")
+		if err := svc.runCodexTurn(context.Background(), fakeCodexExe, profile, ws, "http://127.0.0.1:1/mcp", "tok", "msg", "hi"); err != nil {
+			t.Fatal(err)
+		}
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		return fake.turnStarts[len(fake.turnStarts)-1]
+	}
+
+	// Provider default (empty model + empty effort) -> sends effort="xhigh".
+	if p := runOne(domainagent.ModelSelection{}); p["effort"] != "xhigh" || p["model"] != nil {
+		t.Fatalf("expected effort=xhigh without model override, got %+v", p)
+	}
+	// Specific model with default effort -> sends model + effort="xhigh".
+	if p := runOne(domainagent.ModelSelection{Model: "gpt-6-luna"}); p["model"] != "gpt-6-luna" || p["effort"] != "xhigh" {
+		t.Fatalf("expected model=gpt-6-luna and effort=xhigh, got %+v", p)
+	}
+	// Explicit user override -> sends chosen effort.
+	if p := runOne(domainagent.ModelSelection{Model: "gpt-6-luna", Effort: "low"}); p["effort"] != "low" {
+		t.Fatalf("expected explicit effort=low preserved, got %+v", p)
 	}
 }
 

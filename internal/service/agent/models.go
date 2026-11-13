@@ -370,6 +370,10 @@ func (s *Service) toolsVisibility(id domainagent.ProviderID) string {
 	return "unknown"
 }
 
+// codexDefaultReasoningEffort is the default reasoning level applied to Codex models that
+// support it when the user leaves the effort selector on Default ("") or Provider default.
+const codexDefaultReasoningEffort = "xhigh"
+
 func parseCodexCatalog(raw []byte) ([]domainagent.ModelOption, error) {
 	var cat codexCatalogJSON
 	if err := json.Unmarshal(raw, &cat); err != nil {
@@ -389,6 +393,9 @@ func parseCodexCatalog(raw []byte) ([]domainagent.ModelOption, error) {
 			if lvl.Effort != "" {
 				opt.Efforts = append(opt.Efforts, lvl.Effort)
 			}
+		}
+		if containsString(opt.Efforts, codexDefaultReasoningEffort) {
+			opt.DefaultEffort = codexDefaultReasoningEffort
 		}
 		out = append(out, opt)
 	}
@@ -453,6 +460,42 @@ func parseACPSessionModels(raw json.RawMessage) ([]domainagent.ModelOption, stri
 		out = append(out, domainagent.ModelOption{ID: m.ModelID, Name: name, Description: m.Description})
 	}
 	return out, res.Models.CurrentModelID
+}
+
+// codexTurnSelection resolves an empty Effort ("Default effort" or "Provider default") to the
+// model's DefaultEffort ("xhigh" when supported) so Codex turns use xhigh instead of the CLI's
+// lighter built-in default ("medium").
+func (s *Service) codexTurnSelection(sel domainagent.ModelSelection) domainagent.ModelSelection {
+	if sel.Effort != "" {
+		return sel
+	}
+	s.models.mu.Lock()
+	catalog := s.models.catalogs[domainagent.ProviderCodex]
+	s.models.mu.Unlock()
+	if len(catalog) == 0 {
+		sel.Effort = codexDefaultReasoningEffort
+		return sel
+	}
+	if sel.Model != "" {
+		if opt, ok := findModel(catalog, sel.Model); ok {
+			sel.Effort = defaultEffortForCodexOption(opt)
+		} else {
+			sel.Effort = codexDefaultReasoningEffort
+		}
+		return sel
+	}
+	sel.Effort = defaultEffortForCodexOption(catalog[0])
+	return sel
+}
+
+func defaultEffortForCodexOption(opt domainagent.ModelOption) string {
+	if opt.DefaultEffort != "" {
+		return opt.DefaultEffort
+	}
+	if containsString(opt.Efforts, codexDefaultReasoningEffort) {
+		return codexDefaultReasoningEffort
+	}
+	return ""
 }
 
 func codexModelArgs(sel domainagent.ModelSelection) []string {
