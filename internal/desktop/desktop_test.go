@@ -101,7 +101,7 @@ func TestContentSecurityPolicy(t *testing.T) {
 	if !strings.Contains(desktop, "ws://127.0.0.1:*") || !strings.Contains(desktop, "http://127.0.0.1:*") || strings.Contains(desktop, "example.com") {
 		t.Errorf("desktop CSP: %s", desktop)
 	}
-	if !strings.Contains(desktop, "object-src 'none'") || !strings.Contains(desktop, "img-src 'self' data: blob:") {
+	if !strings.Contains(desktop, "object-src 'none'") || !strings.Contains(desktop, "img-src 'self' data: blob:") || !strings.Contains(desktop, "media-src 'self' data: blob:") {
 		t.Errorf("hardening directives missing: %s", desktop)
 	}
 

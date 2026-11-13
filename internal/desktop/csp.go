@@ -43,6 +43,7 @@ func contentSecurityPolicy(cfg *config.Config) string {
 		"script-src " + strings.Join(script, " "),
 		"style-src 'self' 'unsafe-inline'",
 		"img-src 'self' data: blob:",
+		"media-src 'self' data: blob:",
 		"font-src 'self' data:",
 		"connect-src " + strings.Join(connect, " "),
 		"object-src 'none'",

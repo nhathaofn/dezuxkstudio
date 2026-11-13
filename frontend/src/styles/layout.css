@@ -946,3 +946,192 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ─── Unified Media Generation Tabs (Image / Video / TTS) ───────────────────── */
+.mediagen-textarea {
+  resize: vertical;
+  min-height: 88px;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.mediagen-two-col {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.mediagen-three-col {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.mediagen-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.mediagen-hidden-input {
+  display: none;
+}
+
+.mediagen-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.mediagen-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-surface-elevated);
+  border: var(--border-width) solid var(--border-subtle);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+
+.mediagen-chip__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
+.mediagen-chip__remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0;
+}
+
+.mediagen-chip__remove:hover {
+  color: var(--text-primary);
+}
+
+.mediagen-drop-hint {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: var(--border-width) dashed var(--border-default);
+  background-color: var(--bg-surface-elevated);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  text-align: center;
+  cursor: pointer;
+}
+
+.mediagen-drop-hint--active {
+  border-color: var(--accent);
+  background-color: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.mediagen-provider-warning {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background-color: var(--status-connecting-bg);
+  color: var(--status-connecting);
+  font-size: var(--text-xs);
+}
+
+.mediagen-provider-warning__icon {
+  flex-shrink: 0;
+}
+
+.mediagen-provider-warning__text {
+  flex: 1;
+}
+
+.mediagen-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-surface-elevated);
+  border: var(--border-width) solid var(--border-subtle);
+}
+
+.mediagen-spinner-icon {
+  color: var(--accent);
+}
+
+.mediagen-preview-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  background-color: var(--bg-surface-elevated);
+  border: var(--border-width) solid var(--border-subtle);
+}
+
+.mediagen-preview-loading {
+  color: var(--text-secondary);
+  padding: var(--space-4);
+}
+
+.mediagen-preview-img,
+.mediagen-preview-video {
+  max-width: 100%;
+  max-height: 400px;
+  border-radius: var(--radius-sm);
+  object-fit: contain;
+}
+
+.mediagen-preview-audio {
+  width: 100%;
+}
+
+.mediagen-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--space-2);
+}
+
+.mediagen-meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-surface-elevated);
+  border: var(--border-width) solid var(--border-subtle);
+}
+
+.mediagen-meta-label {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.mediagen-meta-value {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .mediagen-two-col,
+  .mediagen-three-col {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

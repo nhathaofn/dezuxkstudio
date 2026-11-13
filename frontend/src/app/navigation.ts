@@ -1,5 +1,12 @@
 import type React from "react";
-import { LayoutDashboard, Sparkles, type LucideIcon } from "lucide-react";
+import {
+  Film,
+  Image as ImageIcon,
+  LayoutDashboard,
+  Sparkles,
+  Volume2,
+  type LucideIcon,
+} from "lucide-react";
 import type { MessageKey } from "../lib/i18n";
 
 export interface NavRoute {
@@ -23,6 +30,24 @@ export const navRoutes: NavRoute[] = [
     label: "nav.watermark",
     icon: Sparkles,
     load: () => import("../features/watermark/WatermarkView"),
+  },
+  {
+    path: "/image",
+    label: "nav.image",
+    icon: ImageIcon,
+    load: () => import("../features/mediagen/ImageGenView"),
+  },
+  {
+    path: "/video",
+    label: "nav.video",
+    icon: Film,
+    load: () => import("../features/mediagen/VideoGenView"),
+  },
+  {
+    path: "/tts",
+    label: "nav.tts",
+    icon: Volume2,
+    load: () => import("../features/mediagen/TTSGenView"),
   },
 ];
 

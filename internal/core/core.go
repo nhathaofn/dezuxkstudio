@@ -34,6 +34,7 @@ import (
 	agentclisvc "app/internal/service/agentcli"
 	binariessvc "app/internal/service/binaries"
 	"app/internal/service/diagnostics"
+	mediagensvc "app/internal/service/mediagen"
 	"app/internal/service/preferences"
 	providersvc "app/internal/service/provider"
 	"app/internal/service/system"
@@ -243,10 +244,19 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		})
 	}
 
+	mediaGenSvc := mediagensvc.New(mediagensvc.Options{
+		Providers:  provSvc,
+		HTTPClient: o.HTTPClient,
+		MediaDir:   o.Paths.Media(),
+		Config:     cfg.MediaGen,
+		Logger:     o.Logger,
+	})
+
 	wfSvc, err := workflow.New(workflow.Options{
 		Paths:     o.Paths,
 		Logger:    o.Logger,
 		Providers: provSvc,
+		MediaGen:  mediaGenSvc,
 	})
 	if err != nil {
 		return nil, err

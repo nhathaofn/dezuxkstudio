@@ -3,6 +3,7 @@ package contracts
 import (
 	"reflect"
 
+	mediagennodes "app/internal/tools/mediagen"
 	"app/internal/tools/watermark"
 )
 
@@ -20,5 +21,8 @@ type NodeSpec struct {
 func Nodes() []NodeSpec {
 	return []NodeSpec{
 		{"WATERMARK_REMOVER", watermark.NodeType, t[watermark.RemoverInput](), t[watermark.RemoverOutput]()},
+		{"IMAGE_GENERATE", mediagennodes.NodeTypeImage, t[mediagennodes.ImageGenerateInput](), t[mediagennodes.ImageGenerateOutput]()},
+		{"VIDEO_GENERATE", mediagennodes.NodeTypeVideo, t[mediagennodes.VideoGenerateInput](), t[mediagennodes.VideoGenerateOutput]()},
+		{"TTS_GENERATE", mediagennodes.NodeTypeTTS, t[mediagennodes.TTSGenerateInput](), t[mediagennodes.TTSGenerateOutput]()},
 	}
 }

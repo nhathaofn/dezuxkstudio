@@ -357,7 +357,7 @@ func (s *Service) runCodexExecTurn(ctx context.Context, executable, profileRoot,
 	}
 	resumeID := s.cliSessionFor(domainagent.ProviderCodex)
 	args := buildCodexExecArgsForMode(mcpURL, instructions, baseFile, resumeID, s.limits.MCPToolTimeout, s.developerMode)
-	if modelArgs := codexModelArgs(s.effectiveSelection(domainagent.ProviderCodex)); len(modelArgs) > 0 {
+	if modelArgs := codexModelArgs(s.codexTurnSelection(s.effectiveSelection(domainagent.ProviderCodex))); len(modelArgs) > 0 {
 		args = append(args[:len(args)-1:len(args)-1], append(modelArgs, "-")...) // keep "-" (stdin prompt) last
 	}
 	env := providerEnv(domainagent.ProviderCodex, envMap)

@@ -63,6 +63,9 @@ func (c *Config) Validate() error {
 			"storage.busy_timeout":         c.Storage.BusyTimeout,
 			"binaries.probe_timeout":       c.Binaries.ProbeTimeout,
 			"providers.test_timeout":       c.Providers.TestTimeout,
+			"mediagen.request_timeout":     c.MediaGen.RequestTimeout,
+			"mediagen.video_timeout":       c.MediaGen.VideoTimeout,
+			"mediagen.video_poll_interval": c.MediaGen.VideoPollInterval,
 			"network.idle_conn_timeout":    c.Network.IdleConnTimeout,
 			"agent.turn_timeout":           c.Agent.TurnTimeout,
 			"agent.initialize_timeout":     c.Agent.InitializeTimeout,
@@ -168,6 +171,9 @@ func (c *Config) Validate() error {
 
 	if c.Providers.DefaultRPM < 0 || c.Providers.DefaultRequestGapMs < 0 {
 		add("providers.default_rpm and providers.default_request_gap_ms must be >= 0")
+	}
+	if c.Mode != ModeClient && (c.MediaGen.MaxOutputBytes <= 0 || c.MediaGen.MaxReferenceBytes <= 0) {
+		add("mediagen.max_output_bytes and mediagen.max_reference_bytes must be > 0")
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("invalid configuration:\n%w", errors.Join(errs...))

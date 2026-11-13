@@ -405,7 +405,7 @@ func (s *Service) runCodexSubagent(
 	defer cleanup()
 
 	args := buildCodexExecArgsForSubagent(mcpURL, sysPrompt, instrFile, s.limits.MCPToolTimeout)
-	if modelArgs := codexModelArgs(sel); len(modelArgs) > 0 {
+	if modelArgs := codexModelArgs(s.codexTurnSelection(sel)); len(modelArgs) > 0 {
 		args = append(args[:len(args)-1:len(args)-1], append(modelArgs, "-")...)
 	}
 	env := providerEnv(domainagent.ProviderCodex, envMap)

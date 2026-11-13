@@ -35,7 +35,7 @@ func TestValidateSpecRejectsWhatTheAgentCannotUse(t *testing.T) {
 		"must default to false": func(s *Spec) { s.Params[0].Default = "true" },
 		"output_dir role":       func(s *Spec) { s.Params[3].Kind = ParamInteger },
 		"duplicates":            func(s *Spec) { s.Params[3].Name = "image" },
-		"unknown type":          func(s *Spec) { s.Inputs[0].Type = "audio" },
+		"unknown type":          func(s *Spec) { s.Inputs[0].Type = "binary" },
 	}
 	for want, mutate := range cases {
 		s := validSpec()

@@ -143,3 +143,51 @@ func TestCodexSelectionValidatedAgainstCatalog(t *testing.T) {
 		t.Fatalf("model missing from catalog must fall back to default, got %+v", got)
 	}
 }
+
+func TestParseCodexCatalogDefaultsToXHighWhenSupported(t *testing.T) {
+	raw := []byte(`{"models":[
+		{"slug":"gpt-6-luna","display_name":"GPT-6-Luna","visibility":"list","priority":1,"default_reasoning_level":"medium",
+		 "supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"}]},
+		{"slug":"gpt-5.6-terra","display_name":"GPT-5.6-Terra","visibility":"list","priority":2,"default_reasoning_level":"medium",
+		 "supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}]},
+		{"slug":"gpt-legacy","display_name":"Legacy","visibility":"list","priority":3,"default_reasoning_level":"medium",
+		 "supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"}]}
+	]}`)
+	got, err := parseCodexCatalog(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 models, got %d", len(got))
+	}
+	if got[0].DefaultEffort != "xhigh" || got[1].DefaultEffort != "xhigh" {
+		t.Fatalf("expected xhigh default for models supporting xhigh, got %q and %q", got[0].DefaultEffort, got[1].DefaultEffort)
+	}
+	if got[2].DefaultEffort != "medium" {
+		t.Fatalf("model without xhigh must keep catalog default medium, got %q", got[2].DefaultEffort)
+	}
+}
+
+func TestCodexTurnSelectionDefaultsToXHigh(t *testing.T) {
+	svc := &Service{models: newModelState(), repo: newFakeRepo(), log: slog.New(slog.DiscardHandler)}
+	if got := svc.codexTurnSelection(domainagent.ModelSelection{}); got.Model != "" || got.Effort != "xhigh" {
+		t.Fatalf("empty catalog default selection must use xhigh, got %+v", got)
+	}
+
+	svc.models.catalogs[domainagent.ProviderCodex] = []domainagent.ModelOption{
+		{ID: "gpt-6-luna", Efforts: []string{"low", "medium", "high", "xhigh"}, DefaultEffort: "xhigh"},
+		{ID: "gpt-legacy", Efforts: []string{"low", "medium"}, DefaultEffort: "medium"},
+	}
+	if got := svc.codexTurnSelection(domainagent.ModelSelection{}); got.Effort != "xhigh" {
+		t.Fatalf("provider default must resolve to xhigh, got %+v", got)
+	}
+	if got := svc.codexTurnSelection(domainagent.ModelSelection{Model: "gpt-6-luna"}); got.Effort != "xhigh" {
+		t.Fatalf("model default must resolve to xhigh, got %+v", got)
+	}
+	if got := svc.codexTurnSelection(domainagent.ModelSelection{Model: "gpt-6-luna", Effort: "low"}); got.Effort != "low" {
+		t.Fatalf("explicit effort must be preserved, got %+v", got)
+	}
+	if got := svc.codexTurnSelection(domainagent.ModelSelection{Model: "gpt-legacy"}); got.Effort != "medium" {
+		t.Fatalf("model without xhigh must fall back to its DefaultEffort, got %+v", got)
+	}
+}

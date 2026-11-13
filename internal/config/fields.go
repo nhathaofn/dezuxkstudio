@@ -79,6 +79,11 @@ func fields(c *Config) []field {
 		{key: "providers.default_max_workers", usage: "generation requests per provider and capability at once (unless set per provider)", val: intValue{&c.Providers.DefaultMaxWorkers}},
 		{key: "providers.default_rpm", usage: "requests per minute per provider and capability, 0 = unlimited (unless set per provider)", val: intValue{&c.Providers.DefaultRPM}},
 		{key: "providers.default_request_gap_ms", usage: "minimum pause between requests to a provider in ms (unless set per provider)", val: intValue{&c.Providers.DefaultRequestGapMs}},
+		{key: "mediagen.request_timeout", usage: "HTTP timeout for image/TTS requests and async submit/poll calls", val: durationValue{&c.MediaGen.RequestTimeout}},
+		{key: "mediagen.video_timeout", usage: "total timeout for polling and downloading an async video or image task", val: durationValue{&c.MediaGen.VideoTimeout}},
+		{key: "mediagen.video_poll_interval", usage: "interval between status polls for async image/video generation", val: durationValue{&c.MediaGen.VideoPollInterval}},
+		{key: "mediagen.max_output_bytes", usage: "max size of a downloaded generated media artifact in bytes", val: int64Value{&c.MediaGen.MaxOutputBytes}},
+		{key: "mediagen.max_reference_bytes", usage: "max size of each local reference image file in bytes", val: int64Value{&c.MediaGen.MaxReferenceBytes}},
 		{key: "binaries.probe_timeout", usage: "max duration of an external tool version probe", val: durationValue{&c.Binaries.ProbeTimeout}},
 
 		{key: "agent.turn_timeout", usage: "an agent chat turn is stopped after this long without activity (text, tool calls, tool progress)", val: durationValue{&c.Agent.TurnTimeout}},

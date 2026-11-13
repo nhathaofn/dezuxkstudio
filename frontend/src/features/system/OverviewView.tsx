@@ -1,6 +1,17 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowRight, Cpu, Radio, Settings, Sparkles, Terminal, Wrench } from "lucide-react";
+import {
+  ArrowRight,
+  Cpu,
+  Film,
+  Image as ImageIcon,
+  Radio,
+  Settings,
+  Sparkles,
+  Terminal,
+  Volume2,
+  Wrench,
+} from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
 import { useConnectionStore } from "../connection/useConnectionStore";
 import { SystemCard } from "./SystemCard";
@@ -76,6 +87,66 @@ export const OverviewView: React.FC = () => {
               <div>
                 <h3 className="dashboard-action-title">{t("overview.action.watermark")}</h3>
                 <p className="dashboard-action-desc">{t("overview.action.watermarkDesc")}</p>
+              </div>
+            </div>
+
+            {/* Image Generation Shortcut */}
+            <div
+              className="dashboard-action-card"
+              role="button"
+              tabIndex={0}
+              onClick={() => navigate("/image")}
+              onKeyDown={(e) => handleShortcutKeyDown(e, "/image")}
+            >
+              <div className="dashboard-action-header">
+                <span className="dashboard-action-icon">
+                  <ImageIcon size={18} />
+                </span>
+                <ArrowRight size={16} className="dashboard-action-arrow" />
+              </div>
+              <div>
+                <h3 className="dashboard-action-title">{t("overview.action.image")}</h3>
+                <p className="dashboard-action-desc">{t("overview.action.imageDesc")}</p>
+              </div>
+            </div>
+
+            {/* Video Generation Shortcut */}
+            <div
+              className="dashboard-action-card"
+              role="button"
+              tabIndex={0}
+              onClick={() => navigate("/video")}
+              onKeyDown={(e) => handleShortcutKeyDown(e, "/video")}
+            >
+              <div className="dashboard-action-header">
+                <span className="dashboard-action-icon">
+                  <Film size={18} />
+                </span>
+                <ArrowRight size={16} className="dashboard-action-arrow" />
+              </div>
+              <div>
+                <h3 className="dashboard-action-title">{t("overview.action.video")}</h3>
+                <p className="dashboard-action-desc">{t("overview.action.videoDesc")}</p>
+              </div>
+            </div>
+
+            {/* TTS Generation Shortcut */}
+            <div
+              className="dashboard-action-card"
+              role="button"
+              tabIndex={0}
+              onClick={() => navigate("/tts")}
+              onKeyDown={(e) => handleShortcutKeyDown(e, "/tts")}
+            >
+              <div className="dashboard-action-header">
+                <span className="dashboard-action-icon">
+                  <Volume2 size={18} />
+                </span>
+                <ArrowRight size={16} className="dashboard-action-arrow" />
+              </div>
+              <div>
+                <h3 className="dashboard-action-title">{t("overview.action.tts")}</h3>
+                <p className="dashboard-action-desc">{t("overview.action.ttsDesc")}</p>
               </div>
             </div>
 
