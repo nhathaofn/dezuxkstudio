@@ -24,7 +24,7 @@ func NewPreferencesRepository(db *DB) *PreferencesRepository { return &Preferenc
 // Load implements preferences.Repository.
 func (r *PreferencesRepository) Load(ctx context.Context) (preferences.Preferences, bool, error) {
 	var raw string
-	err := r.db.sql.QueryRowContext(ctx, "SELECT value FROM user_settings WHERE key = ?", preferencesKey).Scan(&raw)
+	err := r.db.read().QueryRowContext(ctx, "SELECT value FROM user_settings WHERE key = ?", preferencesKey).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return preferences.Preferences{}, false, nil
 	}

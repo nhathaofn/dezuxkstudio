@@ -148,6 +148,7 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 			Version:               buildinfo.Version,
 			StartedAt:             c.startedAt,
 			AuthToken:             o.AuthToken,
+			AllowAnonymous:        o.AllowAnonymous,
 			AllowedOrigins:        cfg.Server.AllowedOrigins,
 			EnableBroadcast:       cfg.Server.EnableBroadcast,
 			MaxBroadcastBodyBytes: cfg.Server.MaxBroadcastBodyBytes,
@@ -158,10 +159,16 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 				LongAction:   cfg.Realtime.LongActionTimeout,
 				PingInterval: cfg.Realtime.PingInterval,
 			},
+			MediaDir: o.Paths.Media(),
 		}),
 	})
 	if err != nil {
 		return nil, err
+	}
+	if mediaDir := o.Paths.Media(); mediaDir != "" {
+		c.background("media-staging-cleanup", func(ctx context.Context) {
+			handlers.RunStagingCleanup(ctx, mediaDir, o.Logger)
+		})
 	}
 	return c, nil
 }
@@ -350,16 +357,21 @@ func (c *Core) Errors() <-chan error { return c.srv.Errors() }
 // stops the HTTP listener, then closes storage — in that order, so no action ever
 // runs against a closed database.
 func (c *Core) Close() error {
-	ctx, cancel := context.WithTimeout(context.Background(), c.shutdown)
-	defer cancel()
 	if c.bgCancel != nil {
 		c.bgCancel()
+		// Bound background wait separately so a stalled startup task cannot exhaust the session drain timeout.
+		bgBudget := c.shutdown / 2
+		if bgBudget <= 0 {
+			bgBudget = c.shutdown
+		}
+		bgCtx, bgCancel := context.WithTimeout(context.Background(), bgBudget)
 		done := make(chan struct{})
 		safego.Go("core-background-wait", func() { c.bgWG.Wait(); close(done) })
 		select {
 		case <-done:
-		case <-ctx.Done():
+		case <-bgCtx.Done():
 		}
+		bgCancel()
 	}
 	if c.provSvc != nil {
 		c.provSvc.Close() // running key checks write to the database: finish them first
@@ -368,9 +380,11 @@ func (c *Core) Close() error {
 	if c.agentSvc != nil {
 		agentErr = c.agentSvc.Close()
 	}
+	hubCtx, hubCancel := context.WithTimeout(context.Background(), c.shutdown)
+	defer hubCancel()
 	return errors.Join(
 		agentErr,
-		c.hub.Close(ctx),
+		c.hub.Close(hubCtx),
 		c.srv.Stop(),
 		c.db.Close(),
 	)

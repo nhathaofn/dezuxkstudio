@@ -29,10 +29,6 @@ function initialPrefs(): Preferences {
   };
 }
 
-function initialDevMode(): boolean {
-  return safeStorage.get(appConfig.storageKeys.devMode) === "true";
-}
-
 function commit(p: Preferences): void {
   if (typeof document !== "undefined") {
     applyTheme(p.theme);
@@ -47,10 +43,6 @@ interface PreferencesState {
   /** True while a local change has not been saved to the core yet. */
   dirty: boolean;
   error: ActionError | null;
-  /** Client-side persistent developer mode toggle. */
-  devMode: boolean;
-  toggleDevMode: () => void;
-  setDevMode: (enabled: boolean) => void;
   /** Syncs with the core after (re)connecting: pushes unsaved local changes, else pulls. */
   load: () => Promise<void>;
   /** Applies the change immediately in the UI, then persists it when connected. */
@@ -62,7 +54,6 @@ interface PreferencesState {
 export const usePreferencesStore = create<PreferencesState>((set, get) => {
   const prefs = initialPrefs();
   commit(prefs);
-  const devMode = initialDevMode();
 
   const persist = async (patch: PreferencesPatch) => {
     try {
@@ -83,18 +74,6 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => {
     prefs,
     dirty: false,
     error: null,
-    devMode,
-
-    toggleDevMode: () => {
-      const next = !get().devMode;
-      safeStorage.set(appConfig.storageKeys.devMode, String(next));
-      set({ devMode: next });
-    },
-
-    setDevMode: (enabled: boolean) => {
-      safeStorage.set(appConfig.storageKeys.devMode, String(enabled));
-      set({ devMode: enabled });
-    },
 
     load: async () => {
       if (get().dirty) {

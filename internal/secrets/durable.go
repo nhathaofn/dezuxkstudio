@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"app/internal/fsutil"
+	"app/internal/security"
 )
 
 // Backend names where secrets are actually persisted. The UI shows a warning for anything but keyring.
@@ -167,6 +168,8 @@ func NewEncryptedFile(dir string) (*EncryptedFile, error) {
 	return f, nil
 }
 
+const masterKeyDPAPIPrefix = "dpapi:"
+
 func masterKey(dir string) ([]byte, error) {
 	if v := strings.TrimSpace(os.Getenv(MasterKeyEnv)); v != "" {
 		sum := sha256.Sum256([]byte(v))
@@ -174,9 +177,25 @@ func masterKey(dir string) ([]byte, error) {
 	}
 	path := filepath.Join(dir, masterKeyFileName)
 	if raw, err := os.ReadFile(path); err == nil {
-		k, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(raw)))
+		text := strings.TrimSpace(string(raw))
+		if strings.HasPrefix(text, masterKeyDPAPIPrefix) {
+			blob, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(text, masterKeyDPAPIPrefix))
+			if err != nil {
+				return nil, errors.New("secrets: master key file is damaged")
+			}
+			k, err := security.DecryptDPAPI(blob)
+			if err != nil || len(k) != 32 {
+				return nil, fmt.Errorf("secrets: decrypt master key: %w", err)
+			}
+			return k, nil
+		}
+		k, err := base64.StdEncoding.DecodeString(text)
 		if err != nil || len(k) != 32 {
 			return nil, errors.New("secrets: master key file is damaged")
+		}
+		// Migrate legacy plaintext base64 master.key to DPAPI protection on Windows.
+		if encoded, dpErr := encodeMasterKey(k); dpErr == nil && strings.HasPrefix(encoded, masterKeyDPAPIPrefix) {
+			_ = fsutil.WriteFileAtomic(path, []byte(encoded), 0o600)
 		}
 		return k, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -186,10 +205,25 @@ func masterKey(dir string) ([]byte, error) {
 	if _, err := rand.Read(k); err != nil {
 		return nil, fmt.Errorf("secrets: generate master key: %w", err)
 	}
-	if err := fsutil.WriteFileAtomic(path, []byte(base64.StdEncoding.EncodeToString(k)), 0o600); err != nil {
+	encoded, err := encodeMasterKey(k)
+	if err != nil {
+		return nil, err
+	}
+	if err := fsutil.WriteFileAtomic(path, []byte(encoded), 0o600); err != nil {
 		return nil, fmt.Errorf("secrets: write master key: %w", err)
 	}
 	return k, nil
+}
+
+func encodeMasterKey(k []byte) (string, error) {
+	blob, err := security.EncryptDPAPI(k)
+	if err == nil {
+		return masterKeyDPAPIPrefix + base64.StdEncoding.EncodeToString(blob), nil
+	}
+	if errors.Is(err, security.ErrDPAPIUnsupported) {
+		return base64.StdEncoding.EncodeToString(k), nil
+	}
+	return "", fmt.Errorf("secrets: protect master key: %w", err)
 }
 
 func (f *EncryptedFile) load() error {

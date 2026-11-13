@@ -557,3 +557,37 @@ func TestKeepAliveOutlivesIdleTimeout(t *testing.T) {
 		t.Fatalf("silent action without keep-alive should time out, got %+v", f.Error)
 	}
 }
+
+func TestCancelUnblockedWhileQueueFull(t *testing.T) {
+	_, srv, mod := newTestHub(t, func(o *Options) {
+		o.MaxConcurrentActions = 1
+		o.QueueTimeout = 2 * time.Second
+		o.ActionTimeout = 5 * time.Second
+	})
+	c := mustDial(t, srv)
+
+	c.action("a", "t:slow", nil)
+	for mod.started.Load() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// "b" will wait in acquire because MaxConcurrentActions is 1; readLoop must still
+	// immediately process MessageCancel frames without stalling for QueueTimeout (2s).
+	start := time.Now()
+	c.action("b", "t:slow", nil)
+	c.send(contracts.ClientMessage{Type: contracts.MessageCancel, ID: "b"})
+
+	fB, _ := c.response("b")
+	if fB.Error == nil || fB.Error.Code != apperr.CodeCancelled {
+		t.Fatalf("expected queued action b to cancel immediately, got %+v", fB.Error)
+	}
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("cancel while queue full blocked readLoop (%v)", elapsed)
+	}
+
+	c.send(contracts.ClientMessage{Type: contracts.MessageCancel, ID: "a"})
+	fA, _ := c.response("a")
+	if fA.Error == nil || fA.Error.Code != apperr.CodeCancelled {
+		t.Fatalf("expected running action a to cancel, got %+v", fA.Error)
+	}
+}

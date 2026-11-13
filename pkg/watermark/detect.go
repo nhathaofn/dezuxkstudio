@@ -5,7 +5,6 @@ import (
 	"cmp"
 	"fmt"
 	"image"
-	"image/color"
 	_ "image/jpeg"
 	"math"
 	"slices"
@@ -64,6 +63,7 @@ func (e *Engine) findWatermark(img image.Image) matchResult {
 	w, h := bounds.Dx(), bounds.Dy()
 
 	best := matchResult{}
+	var lumaBuf []float64
 	for _, tmpl := range e.cfg.Templates {
 		sz := tmpl.Size
 		regions := getScanRegions(w, h, tmpl, e.cfg.Corner)
@@ -72,18 +72,18 @@ func (e *Engine) findWatermark(img image.Image) matchResult {
 		}
 
 		for _, reg := range regions {
-			patchW, patchH := w-reg.minX, h-reg.minY
+			// Only extract the search rectangle touched by (reg.min..reg.max) + sz, avoiding whole-image conversion.
+			patchW, patchH := reg.maxX+sz-reg.minX, reg.maxY+sz-reg.minY
 			if patchW <= 0 || patchH <= 0 {
 				continue
 			}
 
-			luma := make([]float64, patchW*patchH)
-			for y := 0; y < patchH; y++ {
-				for x := 0; x < patchW; x++ {
-					c := color.RGBAModel.Convert(img.At(bounds.Min.X+reg.minX+x, bounds.Min.Y+reg.minY+y)).(color.RGBA)
-					luma[y*patchW+x] = 0.299*float64(c.R) + 0.587*float64(c.G) + 0.114*float64(c.B)
-				}
+			need := patchW * patchH
+			if cap(lumaBuf) < need {
+				lumaBuf = make([]float64, need)
 			}
+			luma := lumaBuf[:need]
+			extractLumaRegion(img, bounds.Min.X+reg.minX, bounds.Min.Y+reg.minY, patchW, patchH, luma, true)
 
 			n := float64(sz * sz)
 			var candidates []matchResult
@@ -133,24 +133,79 @@ func (e *Engine) findWatermark(img image.Image) matchResult {
 	return best
 }
 
+// extractLumaRegion fills dst (len >= w*h) with pixel luminance values for the rectangle [x0..x0+w, y0..y0+h)
+// using direct Pix / concrete image accessors to avoid per-pixel interface boxing.
+func extractLumaRegion(img image.Image, x0, y0, w, h int, dst []float64, weighted bool) {
+	lumaVal := func(r, g, b uint8) float64 {
+		if weighted {
+			return 0.299*float64(r) + 0.587*float64(g) + 0.114*float64(b)
+		}
+		return (float64(r) + float64(g) + float64(b)) / 3.0
+	}
+
+	switch src := img.(type) {
+	case *image.RGBA:
+		for y := 0; y < h; y++ {
+			off := src.PixOffset(x0, y0+y)
+			row := src.Pix[off : off+w*4 : off+w*4]
+			out := dst[y*w : (y+1)*w]
+			for x := 0; x < w; x++ {
+				p := row[x*4 : x*4+4 : x*4+4]
+				out[x] = lumaVal(p[0], p[1], p[2])
+			}
+		}
+	case *image.NRGBA:
+		for y := 0; y < h; y++ {
+			off := src.PixOffset(x0, y0+y)
+			row := src.Pix[off : off+w*4 : off+w*4]
+			out := dst[y*w : (y+1)*w]
+			for x := 0; x < w; x++ {
+				p := row[x*4 : x*4+4 : x*4+4]
+				if p[3] == 255 {
+					out[x] = lumaVal(p[0], p[1], p[2])
+					continue
+				}
+				rr, gg, bb, _ := src.NRGBAAt(x0+x, y0+y).RGBA()
+				out[x] = lumaVal(uint8(rr>>8), uint8(gg>>8), uint8(bb>>8))
+			}
+		}
+	case *image.YCbCr:
+		for y := 0; y < h; y++ {
+			out := dst[y*w : (y+1)*w]
+			for x := 0; x < w; x++ {
+				rr, gg, bb, _ := src.YCbCrAt(x0+x, y0+y).RGBA()
+				out[x] = lumaVal(uint8(rr>>8), uint8(gg>>8), uint8(bb>>8))
+			}
+		}
+	default:
+		for y := 0; y < h; y++ {
+			out := dst[y*w : (y+1)*w]
+			for x := 0; x < w; x++ {
+				rr, gg, bb, _ := img.At(x0+x, y0+y).RGBA()
+				out[x] = lumaVal(uint8(rr>>8), uint8(gg>>8), uint8(bb>>8))
+			}
+		}
+	}
+}
+
 // blendGain finds how strongly the template was blended into this image.
 func (e *Engine) blendGain(img image.Image, match matchResult) (gain float64, ok bool) {
 	sz := match.size
 	alpha := match.template.Alpha
+	baseV := make([]float64, sz*sz)
+	extractLumaRegion(img, match.x, match.y, sz, sz, baseV, false)
+	luma := make([]float64, sz*sz)
+
 	residual := func(gain float64) float64 {
-		luma := make([]float64, sz*sz)
-		for y := 0; y < sz; y++ {
-			for x := 0; x < sz; x++ {
-				a := math.Min(float64(alpha[y*sz+x])*gain, 0.95)
-				c := color.RGBAModel.Convert(img.At(match.x+x, match.y+y)).(color.RGBA)
-				v := (float64(c.R) + float64(c.G) + float64(c.B)) / 3.0
-				luma[y*sz+x] = (v - a*255.0) / (1.0 - a)
-			}
+		for i, v := range baseV {
+			a := math.Min(float64(alpha[i])*gain, 0.95)
+			luma[i] = (v - a*255.0) / (1.0 - a)
 		}
 		var sum float64
 		for y := 0; y < sz-1; y++ {
+			row := y * sz
 			for x := 0; x < sz-1; x++ {
-				i := y*sz + x
+				i := row + x
 				sum += (luma[i+1]-luma[i])*float64(alpha[i+1]-alpha[i]) + (luma[i+sz]-luma[i])*float64(alpha[i+sz]-alpha[i])
 			}
 		}
@@ -177,28 +232,29 @@ func (e *Engine) fitsSurroundings(img image.Image, match matchResult, gain float
 	return ok && math.Abs(gap) <= e.cfg.MaxCoreGap
 }
 
-func (e *Engine) coreGap(img image.Image, match matchResult, gain float64) (gap, spread float64, ok bool) {
+func extractCoreGapData(img image.Image, match matchResult) (luma []float64, peak float32) {
 	sz := match.size
-	var peak float32
+	luma = make([]float64, sz*sz)
+	extractLumaRegion(img, match.x, match.y, sz, sz, luma, true)
 	for _, a := range match.template.Alpha {
 		peak = max(peak, a)
 	}
+	return luma, peak
+}
+
+func coreGapFromLuma(luma []float64, alpha []float32, peak float32, gain float64) (gap, spread float64, ok bool) {
 	var core, around, aroundSq, nCore, nAround float64
-	for y := 0; y < sz; y++ {
-		for x := 0; x < sz; x++ {
-			ta := match.template.Alpha[y*sz+x]
-			c := color.RGBAModel.Convert(img.At(match.x+x, match.y+y)).(color.RGBA)
-			v := 0.299*float64(c.R) + 0.587*float64(c.G) + 0.114*float64(c.B)
-			switch {
-			case ta >= 0.8*peak:
-				a := math.Min(float64(ta)*gain, 0.95)
-				core += (v - a*255.0) / (1.0 - a)
-				nCore++
-			case ta < 0.01:
-				around += v
-				aroundSq += v * v
-				nAround++
-			}
+	for i, ta := range alpha {
+		v := luma[i]
+		switch {
+		case ta >= 0.8*peak:
+			a := math.Min(float64(ta)*gain, 0.95)
+			core += (v - a*255.0) / (1.0 - a)
+			nCore++
+		case ta < 0.01:
+			around += v
+			aroundSq += v * v
+			nAround++
 		}
 	}
 	if nCore == 0 || nAround == 0 {
@@ -208,13 +264,20 @@ func (e *Engine) coreGap(img image.Image, match matchResult, gain float64) (gap,
 	return core/nCore - mean, math.Sqrt(math.Max(0, aroundSq/nAround-mean*mean)), true
 }
 
+func (e *Engine) coreGap(img image.Image, match matchResult, gain float64) (gap, spread float64, ok bool) {
+	luma, peak := extractCoreGapData(img, match)
+	return coreGapFromLuma(luma, match.template.Alpha, peak, gain)
+}
+
 func (e *Engine) refineGainOnFlat(img image.Image, match matchResult, gain float64) float64 {
-	gap := func(g float64) float64 {
-		v, _, _ := e.coreGap(img, match, g)
-		return v
-	}
-	if _, spread, ok := e.coreGap(img, match, gain); !ok || spread > e.cfg.FlatSpread {
+	luma, peak := extractCoreGapData(img, match)
+	alpha := match.template.Alpha
+	if _, spread, ok := coreGapFromLuma(luma, alpha, peak, gain); !ok || spread > e.cfg.FlatSpread {
 		return gain
+	}
+	gap := func(g float64) float64 {
+		v, _, _ := coreGapFromLuma(luma, alpha, peak, g)
+		return v
 	}
 	lo, hi := e.cfg.MinGain, e.cfg.MaxGain
 	if gap(lo) <= 0 || gap(hi) >= 0 {

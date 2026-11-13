@@ -390,16 +390,6 @@
 }
 
 /* ==========================================================================
-   DEVTOOLS GRID
-   ========================================================================== */
-.devtools-top-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-4);
-  align-items: stretch;
-}
-
-/* ==========================================================================
    DASHBOARD / OVERVIEW LAYOUT
    ========================================================================== */
 .dashboard-layout {
@@ -882,8 +872,7 @@
 @media (max-width: 860px) {
   .overview-bento,
   .settings-general-grid,
-  .tools-binary-list,
-  .devtools-top-grid {
+  .tools-binary-list {
     grid-template-columns: minmax(0, 1fr);
   }
 

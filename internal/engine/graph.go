@@ -1,13 +1,17 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
+	"sync"
 
 	"app/internal/apperr"
 	"app/internal/progress"
+	"app/internal/safego"
 )
 
 // Graph is a set of node instances wired output port -> input port.
@@ -79,7 +83,19 @@ type plannedNode struct {
 	inputs map[string][]Edge
 }
 
-// RunGraph checks a graph and runs it one node at a time in dependency order.
+type scheduledJob struct {
+	id    string
+	p     plannedNode
+	input json.RawMessage
+}
+
+type finishedJob struct {
+	id  string
+	run NodeRun
+	out map[string]json.RawMessage
+}
+
+// RunGraph checks a graph and runs independent branches concurrently in dependency order.
 // Progress goes to the context's progress sink (see internal/progress), so every caller — the
 // workflow screen, an agent approval, an MCP tool — gets it without passing a callback.
 func (r *Registry) RunGraph(ctx context.Context, g Graph) (GraphResult, error) {
@@ -87,51 +103,141 @@ func (r *Registry) RunGraph(ctx context.Context, g Graph) (GraphResult, error) {
 	if err != nil {
 		return GraphResult{}, err
 	}
-	res := GraphResult{Order: order, Nodes: make(map[string]NodeRun, len(order))}
-	outputs := make(map[string]map[string]json.RawMessage, len(order))
 	total := len(order)
-	for idx, id := range order {
+	res := GraphResult{
+		Order: make([]string, 0, total),
+		Nodes: make(map[string]NodeRun, total),
+	}
+	outputs := make(map[string]map[string]json.RawMessage, total)
+
+	remainingEdges := make(map[string]int, total)
+	dependents := make(map[string][]string, total)
+	for _, id := range order {
 		p := plan[id]
-		if total > 0 {
+		for _, edges := range p.inputs {
+			for _, e := range edges {
+				remainingEdges[id]++
+				dependents[e.From.Node] = append(dependents[e.From.Node], id)
+			}
+		}
+	}
+
+	workers := min(total, max(4, runtime.NumCPU()))
+	jobs := make(chan scheduledJob, total)
+	results := make(chan finishedJob, total)
+
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		safego.Go("engine.graph.worker", func() {
+			defer wg.Done()
+			for job := range jobs {
+				results <- r.executeScheduledJob(ctx, g.RequestID, job)
+			}
+		})
+	}
+
+	completed := 0
+	ready := make([]string, 0, total)
+	for _, id := range order {
+		if remainingEdges[id] == 0 {
+			ready = append(ready, id)
+		}
+	}
+
+	// Single coordinator owns outputs, res, and ready queue, eliminating cross-goroutine map races.
+	drainReady := func() {
+		for len(ready) > 0 {
+			id := ready[0]
+			ready = ready[1:]
+			p := plan[id]
+
+			finishEarly := func(run NodeRun) {
+				res.Nodes[id] = run
+				res.Order = append(res.Order, id)
+				completed++
+				reportGraphProgress(ctx, completed, total, id, "Completed node "+id, "workflow.progress.completed")
+				for _, dep := range dependents[id] {
+					remainingEdges[dep]--
+					if remainingEdges[dep] == 0 {
+						ready = append(ready, dep)
+					}
+				}
+			}
+
+			if ctx.Err() != nil {
+				finishEarly(NodeRun{Status: RunCancelled, Error: "Cancelled before execution."})
+				continue
+			}
+			if blocked := r.blockedBy(p, res.Nodes); blocked != "" {
+				finishEarly(NodeRun{Status: RunSkipped, Error: fmt.Sprintf("Skipped because upstream node %s has no result.", blocked)})
+				continue
+			}
+			input, err := assemble(p, outputs)
+			if err != nil {
+				finishEarly(NodeRun{Status: RunFailed, Error: err.Error(), Code: apperr.CodeValidation})
+				continue
+			}
 			progress.Report(ctx, progress.Update{
-				Percent: float64(idx) / float64(total) * 100.0,
+				Percent: float64(completed) / float64(total) * 100.0,
 				Message: fmt.Sprintf("Running node %s (%s)", id, p.GraphNode.Type),
 				Key:     "workflow.progress.running",
 				Params:  map[string]string{"node": id, "type": p.GraphNode.Type},
 			})
-		}
-		if ctx.Err() != nil {
-			res.Nodes[id] = NodeRun{Status: RunCancelled, Error: "Cancelled before execution."}
-			continue
-		}
-		if blocked := r.blockedBy(p, res.Nodes); blocked != "" {
-			res.Nodes[id] = NodeRun{Status: RunSkipped, Error: fmt.Sprintf("Skipped because upstream node %s has no result.", blocked)}
-			continue
-		}
-		input, err := assemble(p, outputs)
-		if err != nil {
-			res.Nodes[id] = NodeRun{Status: RunFailed, Error: err.Error(), Code: apperr.CodeValidation}
-			continue
-		}
-		nodeCtx := ctx
-		if g.RequestID != "" {
-			nodeCtx = WithRunKey(ctx, g.RequestID+"/"+id)
-		}
-		run, out := runNode(nodeCtx, p, input)
-		res.Nodes[id] = run
-		if out != nil {
-			outputs[id] = out
-		}
-		if total > 0 {
-			progress.Report(ctx, progress.Update{
-				Percent: float64(idx+1) / float64(total) * 100.0,
-				Message: fmt.Sprintf("Completed node %s", id),
-				Key:     "workflow.progress.completed",
-				Params:  map[string]string{"node": id},
-			})
+			jobs <- scheduledJob{id: id, p: p, input: input}
 		}
 	}
+
+	drainReady()
+	for completed < total {
+		fin := <-results
+		res.Nodes[fin.id] = fin.run
+		res.Order = append(res.Order, fin.id)
+		if fin.out != nil {
+			outputs[fin.id] = fin.out
+		}
+		completed++
+		reportGraphProgress(ctx, completed, total, fin.id, "Completed node "+fin.id, "workflow.progress.completed")
+		for _, dep := range dependents[fin.id] {
+			remainingEdges[dep]--
+			if remainingEdges[dep] == 0 {
+				ready = append(ready, dep)
+			}
+		}
+		drainReady()
+	}
+
+	close(jobs)
+	wg.Wait()
 	return res, nil
+}
+
+func (r *Registry) executeScheduledJob(ctx context.Context, requestID string, job scheduledJob) (fin finishedJob) {
+	fin.id = job.id
+	defer func() {
+		if rec := recover(); rec != nil {
+			fin.run = NodeRun{Status: RunFailed, Error: fmt.Sprintf("node %s panicked: %v", job.id, rec), Code: apperr.CodeInternal}
+			fin.out = nil
+		}
+	}()
+	nodeCtx := ctx
+	if requestID != "" {
+		nodeCtx = WithRunKey(ctx, requestID+"/"+job.id)
+	}
+	fin.run, fin.out = runNode(nodeCtx, job.p, job.input)
+	return fin
+}
+
+func reportGraphProgress(ctx context.Context, completed, total int, id, msg, key string) {
+	if total <= 0 {
+		return
+	}
+	progress.Report(ctx, progress.Update{
+		Percent: float64(completed) / float64(total) * 100.0,
+		Message: msg,
+		Key:     key,
+		Params:  map[string]string{"node": id},
+	})
 }
 
 func (r *Registry) blockedBy(p plannedNode, done map[string]NodeRun) string {
@@ -182,20 +288,26 @@ func assemble(p plannedNode, outputs map[string]map[string]json.RawMessage) (jso
 			if !ok || string(raw) == "null" {
 				continue
 			}
-			var list []json.RawMessage
-			if json.Unmarshal(raw, &list) == nil {
-				values = append(values, list...)
-			} else {
-				values = append(values, raw)
+			// Only flatten a 1-level JSON array for multi-value ports or media lists (where multi-output
+			// nodes always emit arrays); preserve JSON arrays verbatim for single PortText inputs.
+			if in.Multiple || in.Type != PortText {
+				trimmed := bytes.TrimSpace(raw)
+				if len(trimmed) > 0 && trimmed[0] == '[' {
+					var list []json.RawMessage
+					if json.Unmarshal(trimmed, &list) == nil {
+						values = append(values, list...)
+						continue
+					}
+				}
 			}
+			values = append(values, raw)
 		}
 		if err := checkMedia(in, values); err != nil {
 			return nil, err
 		}
 		switch {
 		case in.Multiple:
-			list, _ := json.Marshal(values)
-			input[port] = list
+			input[port] = rawArray(values)
 		case len(values) == 1:
 			input[port] = values[0]
 		case len(values) == 0 && in.Optional:
@@ -206,6 +318,26 @@ func assemble(p plannedNode, outputs map[string]map[string]json.RawMessage) (jso
 		}
 	}
 	return json.Marshal(input)
+}
+
+func rawArray(values []json.RawMessage) json.RawMessage {
+	if len(values) == 0 {
+		return json.RawMessage("[]")
+	}
+	total := 2 + len(values) - 1
+	for _, v := range values {
+		total += len(v)
+	}
+	buf := make([]byte, 0, total)
+	buf = append(buf, '[')
+	for i, v := range values {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		buf = append(buf, v...)
+	}
+	buf = append(buf, ']')
+	return json.RawMessage(buf)
 }
 
 func checkMedia(in Port, values []json.RawMessage) error {

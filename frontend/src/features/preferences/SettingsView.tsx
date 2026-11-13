@@ -1,19 +1,7 @@
 import React from "react";
 import { useSearchParams } from "react-router-dom";
-import {
-  Code2,
-  Globe,
-  KeyRound,
-  Monitor,
-  Moon,
-  Sliders,
-  Sun,
-  Terminal,
-  Wrench,
-  Zap,
-} from "lucide-react";
+import { Globe, KeyRound, Monitor, Moon, Sliders, Sun, Terminal, Wrench } from "lucide-react";
 import { ThemeValues, LanguageValues, type Language, type Theme } from "../../contracts/generated";
-import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { BinariesView } from "../binaries/BinariesView";
@@ -21,12 +9,11 @@ import { ProvidersView } from "../providers/ProvidersView";
 import { ConnectionCard } from "../connection/ConnectionCard";
 import { DiagnosticsCard } from "../diagnostics/DiagnosticsCard";
 import { LiveLogView } from "../logs/LiveLogView";
-import { ActionTester } from "../system/ActionTester";
 import { SystemCard } from "../system/SystemCard";
 import { useT } from "../../lib/i18n";
 import { usePreferencesStore } from "./usePreferencesStore";
 
-const TABS = ["general", "tools", "providers", "logs", "devtools"] as const;
+const TABS = ["general", "tools", "providers", "logs"] as const;
 type TabKey = (typeof TABS)[number];
 
 export const SettingsView: React.FC = () => {
@@ -35,13 +22,10 @@ export const SettingsView: React.FC = () => {
 
   const prefs = usePreferencesStore((s) => s.prefs);
   const update = usePreferencesStore((s) => s.update);
-  const devMode = usePreferencesStore((s) => s.devMode);
-  const toggleDevMode = usePreferencesStore((s) => s.toggleDevMode);
 
   const rawTab = searchParams.get("tab");
-  const activeTab: TabKey =
+  const effectiveTab: TabKey =
     rawTab && TABS.includes(rawTab as TabKey) ? (rawTab as TabKey) : "general";
-  const effectiveTab: TabKey = activeTab === "devtools" && !devMode ? "general" : activeTab;
 
   const setTab = (tab: TabKey) => {
     setSearchParams((previous) => {
@@ -93,17 +77,6 @@ export const SettingsView: React.FC = () => {
             <KeyRound size={14} />
             {t("settings.tabs.providers")}
           </button>
-
-          {devMode && (
-            <button
-              type="button"
-              className={`settings-nav-btn ${effectiveTab === "devtools" ? "active" : ""}`}
-              onClick={() => setTab("devtools")}
-            >
-              <Code2 size={14} />
-              {t("settings.tabs.devtools")}
-            </button>
-          )}
         </nav>
       </div>
 
@@ -164,32 +137,15 @@ export const SettingsView: React.FC = () => {
                       })}
                     </div>
                   </div>
-
-                  {/* Developer Mode row */}
-                  <div className="settings-row">
-                    <div className="settings-row-info">
-                      <div className="settings-row-title-row">
-                        <span className="settings-row-title">{t("settings.devMode")}</span>
-                        <Badge>
-                          {devMode ? t("settings.devMode.on") : t("settings.devMode.off")}
-                        </Badge>
-                      </div>
-                      <span className="settings-row-desc">{t("settings.devMode.desc")}</span>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant={devMode ? "primary" : "secondary"}
-                      onClick={() => toggleDevMode()}
-                    >
-                      <Zap size={13} />
-                      {devMode ? t("settings.devMode.disable") : t("settings.devMode.enable")}
-                    </Button>
-                  </div>
                 </div>
               </Card>
 
               {/* System Runtime Card */}
               <SystemCard />
+
+              {/* Core Connection & Diagnostics */}
+              <ConnectionCard />
+              <DiagnosticsCard />
             </div>
           </div>
         )}
@@ -198,18 +154,6 @@ export const SettingsView: React.FC = () => {
         {effectiveTab === "providers" && <ProvidersView />}
 
         {effectiveTab === "logs" && <LiveLogView />}
-
-        {effectiveTab === "devtools" && devMode && (
-          <div className="scrollable-pane">
-            <div className="cards-stack">
-              <div className="devtools-top-grid">
-                <ConnectionCard />
-                <DiagnosticsCard />
-              </div>
-              <ActionTester />
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"time"
 
 	domainagent "app/internal/domain/agent"
 )
@@ -111,5 +112,35 @@ func TestSupersededTurnStoresButDoesNotReport(t *testing.T) {
 	defer repo.mu.Unlock()
 	if len(repo.messages) != 1 || repo.messages[0].Text != "Câu trả lời dở dang\n" {
 		t.Fatalf("partial reply not kept: %+v", repo.messages)
+	}
+}
+
+func TestDisconnectWaitsForTurnCleanup(t *testing.T) {
+	svc, _, _ := newTurnTestService(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	tr := newTurn("msg-wait", "conv-wait", domainagent.ProviderCodex, svc.connSeq.Load(), nil, cancel)
+	svc.mu.Lock()
+	svc.activeID, svc.turn = domainagent.ProviderCodex, tr
+	svc.runningTurns[tr] = struct{}{}
+	svc.mu.Unlock()
+
+	turnCleanupFinished := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		time.Sleep(40 * time.Millisecond)
+		svc.mu.Lock()
+		delete(svc.runningTurns, tr)
+		svc.mu.Unlock()
+		close(turnCleanupFinished)
+		close(tr.done)
+	}()
+
+	if err := svc.Disconnect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-turnCleanupFinished:
+	default:
+		t.Fatal("Disconnect returned before running turn completed cleanup")
 	}
 }

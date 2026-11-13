@@ -30,6 +30,7 @@ type turn struct {
 	subagents     map[string]*domainagent.SubagentInvocation
 	subagentOrder []string
 	endOnce       sync.Once
+	done          chan struct{} // closed when the turn goroutine has finished endTurn and storeReply
 }
 
 func newTurn(id, conversationID string, providerID domainagent.ProviderID, connToken int64, touch func(), cancel context.CancelFunc) *turn {
@@ -43,6 +44,7 @@ func newTurn(id, conversationID string, providerID domainagent.ProviderID, connT
 		guard:          newTurnOutputGuard(id),
 		acpTitles:      map[string]string{},
 		subagents:      map[string]*domainagent.SubagentInvocation{},
+		done:           make(chan struct{}),
 	}
 }
 

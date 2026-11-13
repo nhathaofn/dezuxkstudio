@@ -24,7 +24,7 @@ func NewAgentRepository(db *DB) *AgentRepository {
 // GetCustomPath returns the custom executable path configured for id, or an empty string if unset.
 func (r *AgentRepository) GetCustomPath(ctx context.Context, id agent.ProviderID) (string, error) {
 	var p string
-	err := r.db.sql.QueryRowContext(ctx, "SELECT custom_path FROM agent_providers WHERE id = ?", string(id)).Scan(&p)
+	err := r.db.read().QueryRowContext(ctx, "SELECT custom_path FROM agent_providers WHERE id = ?", string(id)).Scan(&p)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -36,7 +36,7 @@ func (r *AgentRepository) GetCustomPath(ctx context.Context, id agent.ProviderID
 
 // GetAllCustomPaths returns custom paths for all configured agent providers.
 func (r *AgentRepository) GetAllCustomPaths(ctx context.Context) (map[agent.ProviderID]string, error) {
-	rows, err := r.db.sql.QueryContext(ctx, "SELECT id, custom_path FROM agent_providers")
+	rows, err := r.db.read().QueryContext(ctx, "SELECT id, custom_path FROM agent_providers")
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: get all agent custom paths: %w", err)
 	}
@@ -132,7 +132,7 @@ func (r *AgentRepository) ListChatMessages(ctx context.Context, limit int) ([]ag
 	if limit <= 0 {
 		limit = 200
 	}
-	rows, err := r.db.sql.QueryContext(ctx, `
+	rows, err := r.db.read().QueryContext(ctx, `
 		SELECT id, provider_id, role, text, thought, tool, created_at, metadata
 		FROM (
 			SELECT id, provider_id, role, text, thought, tool, created_at, metadata
@@ -184,7 +184,7 @@ func (r *AgentRepository) ListConversations(ctx context.Context, limit int) ([]a
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := r.db.sql.QueryContext(ctx, `
+	rows, err := r.db.read().QueryContext(ctx, `
 		SELECT c.id, c.title, c.provider_id, c.created_at, c.updated_at,
 		       (SELECT COUNT(*) FROM agent_chat_messages m WHERE m.conversation_id = c.id)
 		FROM agent_conversations c
@@ -218,7 +218,7 @@ func (r *AgentRepository) ListConversationMessages(ctx context.Context, conversa
 		err  error
 	)
 	if limit > 0 {
-		rows, err = r.db.sql.QueryContext(ctx, `
+		rows, err = r.db.read().QueryContext(ctx, `
 			SELECT id, provider_id, role, text, thought, tool, created_at, conversation_id, metadata
 			FROM (
 				SELECT id, provider_id, role, text, thought, tool, created_at, conversation_id, metadata
@@ -229,7 +229,7 @@ func (r *AgentRepository) ListConversationMessages(ctx context.Context, conversa
 			) sub
 			ORDER BY created_at ASC, id ASC;`, conversationID, limit)
 	} else {
-		rows, err = r.db.sql.QueryContext(ctx, `
+		rows, err = r.db.read().QueryContext(ctx, `
 			SELECT id, provider_id, role, text, thought, tool, created_at, conversation_id, metadata
 			FROM agent_chat_messages
 			WHERE conversation_id = ?
@@ -258,7 +258,7 @@ func (r *AgentRepository) ListConversationMessages(ctx context.Context, conversa
 
 // GetConversationSessions returns the saved provider CLI session/thread IDs for conversationID.
 func (r *AgentRepository) GetConversationSessions(ctx context.Context, conversationID string) (map[agent.ProviderID]string, error) {
-	rows, err := r.db.sql.QueryContext(ctx, `
+	rows, err := r.db.read().QueryContext(ctx, `
 		SELECT provider_id, session_id
 		FROM agent_conversation_sessions
 		WHERE conversation_id = ?
@@ -337,7 +337,7 @@ func (r *AgentRepository) ClearChatMessages(ctx context.Context) error {
 
 // ListAllowedDirs returns every user-authorized workspace directory sorted alphabetically.
 func (r *AgentRepository) ListAllowedDirs(ctx context.Context) ([]string, error) {
-	rows, err := r.db.sql.QueryContext(ctx, `SELECT path FROM agent_allowed_dirs ORDER BY path ASC`)
+	rows, err := r.db.read().QueryContext(ctx, `SELECT path FROM agent_allowed_dirs ORDER BY path ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list agent allowed dirs: %w", err)
 	}
@@ -378,7 +378,7 @@ func (r *AgentRepository) RemoveAllowedDir(ctx context.Context, dir string) erro
 // GetModelSelection returns the persisted model choice for a provider (empty when unset).
 func (r *AgentRepository) GetModelSelection(ctx context.Context, id agent.ProviderID) (agent.ModelSelection, error) {
 	var sel agent.ModelSelection
-	err := r.db.sql.QueryRowContext(ctx, "SELECT model, effort FROM agent_providers WHERE id = ?", string(id)).Scan(&sel.Model, &sel.Effort)
+	err := r.db.read().QueryRowContext(ctx, "SELECT model, effort FROM agent_providers WHERE id = ?", string(id)).Scan(&sel.Model, &sel.Effort)
 	if errors.Is(err, sql.ErrNoRows) {
 		return agent.ModelSelection{}, nil
 	}
@@ -406,7 +406,7 @@ const rememberedConnectionKey = "agent.connected_provider"
 // RememberedConnection implements agent.Repository.
 func (r *AgentRepository) RememberedConnection(ctx context.Context) (agent.ProviderID, error) {
 	var v string
-	err := r.db.sql.QueryRowContext(ctx, "SELECT value FROM user_settings WHERE key = ?", rememberedConnectionKey).Scan(&v)
+	err := r.db.read().QueryRowContext(ctx, "SELECT value FROM user_settings WHERE key = ?", rememberedConnectionKey).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}

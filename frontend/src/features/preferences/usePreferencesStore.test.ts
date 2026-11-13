@@ -23,43 +23,11 @@ const localStorageMock = {
   localStorage: localStorageMock,
 };
 
-describe("usePreferencesStore devMode", () => {
+describe("usePreferencesStore theme and language", () => {
   beforeEach(() => {
     storage.clear();
-    safeStorage.remove(appConfig.storageKeys.devMode);
-    usePreferencesStore.setState({ devMode: false });
   });
 
-  it("defaults devMode to false when storage is unset", () => {
-    expect(usePreferencesStore.getState().devMode).toBe(false);
-  });
-
-  it("toggles devMode and persists to safeStorage", () => {
-    const { toggleDevMode } = usePreferencesStore.getState();
-    toggleDevMode();
-
-    expect(usePreferencesStore.getState().devMode).toBe(true);
-    expect(safeStorage.get(appConfig.storageKeys.devMode)).toBe("true");
-
-    toggleDevMode();
-    expect(usePreferencesStore.getState().devMode).toBe(false);
-    expect(safeStorage.get(appConfig.storageKeys.devMode)).toBe("false");
-  });
-
-  it("sets devMode explicitly with setDevMode", () => {
-    const { setDevMode } = usePreferencesStore.getState();
-    setDevMode(true);
-
-    expect(usePreferencesStore.getState().devMode).toBe(true);
-    expect(safeStorage.get(appConfig.storageKeys.devMode)).toBe("true");
-
-    setDevMode(false);
-    expect(usePreferencesStore.getState().devMode).toBe(false);
-    expect(safeStorage.get(appConfig.storageKeys.devMode)).toBe("false");
-  });
-});
-
-describe("usePreferencesStore theme and language", () => {
   it("initializes with default theme and language", () => {
     const state = usePreferencesStore.getState();
     expect(state.prefs.theme).toBe("light");

@@ -131,6 +131,7 @@ type Service struct {
 	activeInit              *InitializeResult
 	activeVersion           string
 	turn                    *turn                             // the running chat turn; nil when idle
+	runningTurns            map[*turn]struct{}                // turns whose goroutine has not finished cleanup/storage
 	turns                   sync.WaitGroup                    // running turn goroutines, waited for on Close
 	sessionPrimed           bool                              // the active ACP session already received the conversation history
 	cliSessions             map[domainagent.ProviderID]string // resumable Codex thread / Claude session per provider
@@ -222,6 +223,7 @@ func New(o Options) (*Service, error) {
 		customizations:          custMgr,
 		subagentSem:             make(chan struct{}, limits.MaxConcurrentSubagents),
 		models:                  newModelState(),
+		runningTurns:            make(map[*turn]struct{}),
 		cliSessions:             make(map[domainagent.ProviderID]string),
 		states:                  make(map[domainagent.ProviderID]domainagent.ConnectionState),
 		authStates:              make(map[domainagent.ProviderID]domainagent.AuthState),

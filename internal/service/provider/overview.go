@@ -138,12 +138,12 @@ func (s *Service) Setup(ctx context.Context, req domain.SetupRequest) (any, erro
 		if plan.BaseURL != "" {
 			in.Values[domain.FieldBaseURL] = plan.BaseURL
 		}
-		c, err := s.CreateCredential(ctx, plan.ProviderID, in)
+		c, err := s.createCredential(ctx, plan.ProviderID, in, false)
 		if err != nil {
 			return nil, err
 		}
 		if !c.Active {
-			if err := s.ActivateCredential(ctx, c.ID); err != nil {
+			if err := s.activateCredential(ctx, c.ID, false); err != nil {
 				return nil, err
 			}
 		}
@@ -152,6 +152,11 @@ func (s *Service) Setup(ctx context.Context, req domain.SetupRequest) (any, erro
 			return nil, err
 		}
 		m, _ := domain.Lookup(plan.ProviderID)
+		if s.autoOn && res.OK() && m.Discoverable() {
+			if _, derr := s.DiscoverBuiltinModels(ctx, plan.ProviderID); derr != nil && ctx.Err() == nil {
+				_ = s.repo.SetCredentialHealth(ctx, c.ID, modelsFailed(derr))
+			}
+		}
 		return map[string]any{
 			"saved": true, "kind": plan.Kind, "provider_id": plan.ProviderID, "credential_id": c.ID,
 			"name": c.Name, "active": true, "capabilities": m.Capabilities, "secret_hints": c.SecretHints,
@@ -169,10 +174,13 @@ func (s *Service) Setup(ctx context.Context, req domain.SetupRequest) (any, erro
 		found = append(found, d.AsModel())
 	}
 	in.Models = domain.MergeDiscovered(nil, found)
-	p, err := s.CreateCustom(ctx, in)
+	p, err := s.createCustom(ctx, in, false)
 	if err != nil {
 		return nil, err
 	}
+	// DiscoverModels already proved the endpoint works and listed its models; record health directly
+	// instead of launching a redundant background auto-check.
+	s.recordHealth(ctx, func(h domain.Health) error { return s.repo.SetCustomHealth(ctx, p.ID, h) }, TestResult{Outcome: OutcomeOK})
 	defaults := map[string]string{}
 	for _, m := range p.Models {
 		if m.IsDefault {

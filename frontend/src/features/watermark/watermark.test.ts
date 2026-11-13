@@ -9,7 +9,9 @@ import WatermarkConfigCardDefault from "./WatermarkConfigCard";
 import { WatermarkResultsCard } from "./WatermarkResultsCard";
 import WatermarkResultsCardDefault from "./WatermarkResultsCard";
 import { rtClient } from "../../lib/rtClient";
+import * as rtMedia from "../../lib/rtClient/media";
 import { ActionError } from "../../lib/rtClient/errors";
+import { useConnectionStore } from "../connection/useConnectionStore";
 import { Actions, type Spec } from "../../contracts/generated";
 import { useNodeSpecsStore } from "../workflow/useNodeSpecs";
 
@@ -499,4 +501,123 @@ describe("useWatermarkStore Actions & Edge Case Robustness", () => {
     expect(state.inputPaths).toEqual(windowsAbsPaths);
     expect(state.inputPath).toBe("D:\\Photos\\Vacation 2026\\IMG_001.png");
   });
+
+  it("uploads queued browser Files to media staging before running workflow node", async () => {
+    const epSpy = vi.spyOn(rtClient, "getEndpoint").mockReturnValue({
+      url: "ws://127.0.0.1:8080/ws",
+      token: "tok",
+      mode: "browser",
+      actionTimeoutMs: 30_000,
+      longActionTimeoutMs: 600_000,
+      pingIntervalMs: 30_000,
+      checkUpdatesOnStartup: false,
+      source: "runtime-config",
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ path: "/srv/media/staging/job1/photo.png", name: "photo.png", size: 4 }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const requestSpy = vi.spyOn(rtClient, "request").mockResolvedValueOnce({
+      output: {
+        image: { localUrl: "/srv/media/staging/job1/photo_nowm.png", kind: "image/png" },
+        images: [],
+        detected: true,
+        total_count: 1,
+        detected_count: 1,
+      },
+    } as never);
+
+    const file = new File([new Uint8Array([1, 2, 3, 4])], "photo.png", { type: "image/png" });
+    useWatermarkStore.getState().setOutputDir("C:/ignored/client/dir");
+    useWatermarkStore.getState().setQueuedFiles([file]);
+    expect(useWatermarkStore.getState().inputPaths).toEqual(["photo.png"]);
+
+    await useWatermarkStore.getState().removeWatermark();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8080/api/media/upload",
+      expect.objectContaining({ method: "POST", headers: { Authorization: "Bearer tok" } })
+    );
+    expect(requestSpy).toHaveBeenCalledWith(
+      Actions.WORKFLOW_RUN_NODE,
+      {
+        type: "tool.watermark_remover",
+        input: {
+          images: [{ localUrl: "/srv/media/staging/job1/photo.png", kind: "image" }],
+          inplace: false,
+          output_dir: "",
+        },
+      },
+      expect.any(Object)
+    );
+    expect(useWatermarkStore.getState().remoteNameMap).toEqual({
+      "/srv/media/staging/job1/photo.png": "photo.png",
+    });
+
+    requestSpy.mockRestore();
+    epSpy.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
+  it("hides outputDir and renders Download actions in browser and client modes", () => {
+    const prevEndpoint = useConnectionStore.getState().endpoint;
+    useConnectionStore.setState({
+      endpoint: {
+        url: "wss://core.example.com/ws",
+        token: "tok",
+        mode: "browser",
+        actionTimeoutMs: 30_000,
+        longActionTimeoutMs: 600_000,
+        pingIntervalMs: 30_000,
+        checkUpdatesOnStartup: false,
+        source: "runtime-config",
+      },
+    });
+    useWatermarkStore.setState({
+      remoteNameMap: { "/srv/media/staging/id/input.png": "input.png" },
+      result: {
+        images: [],
+        image: { localUrl: "/srv/media/staging/id/input_nowm.png", kind: "image/png" },
+        detected: true,
+        total_count: 2,
+        detected_count: 1,
+        results: [
+          {
+            path: "/srv/media/staging/id/input.png",
+            out_path: "/srv/media/staging/id/input_nowm.png",
+            detected: true,
+            score: 0.9,
+          },
+          {
+            path: "/srv/media/staging/id/clean.png",
+            out_path: "/srv/media/staging/id/clean.png",
+            detected: false,
+            score: 0.1,
+          },
+        ],
+      },
+    });
+
+    try {
+      const cfgHtml = renderToStaticMarkup(React.createElement(WatermarkConfigCard));
+      expect(cfgHtml).not.toContain("Same directory as source files");
+
+      const resHtml = renderToStaticMarkup(React.createElement(WatermarkResultsCard));
+      expect(resHtml).toContain('aria-label="Download"');
+      expect(resHtml).not.toContain('aria-label="Copy path"');
+      expect(resHtml).toContain("→ input_nowm.png<");
+      expect(resHtml).toContain(">input.png<");
+      expect(resHtml).not.toContain(">/srv/media/staging/id/input.png<");
+    } finally {
+      useConnectionStore.setState({ endpoint: prevEndpoint });
+    }
+  });
 });
+
+// Keep reference used in typecheck when media module is inspected by tests.
+void rtMedia;

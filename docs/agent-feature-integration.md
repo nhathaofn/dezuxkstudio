@@ -107,10 +107,9 @@ không cho agent truyền tự do.
 
 | Vùng | Quyền |
 |---|---|
-| Mọi nơi trên máy | Liệt kê, đọc (text / ảnh / metadata video-audio), tạo file text mới, di chuyển (giữ nguyên loại file), chạy tính năng |
-| Ghi đè / xoá ngoài thư mục tin cậy | Cần **Approve** |
-| Thư mục tin cậy (workspace, media, thư mục người dùng thêm, sau này là project) | Tự do |
-| Luôn chặn | Mã nguồn/script/file thực thi, thông tin đăng nhập (`.ssh`, `.env`, khoá, kho mật khẩu), `AppData`/profile trình duyệt, thư mục hệ điều hành, dữ liệu nội bộ của DezuxkStudio |
+| Ngoài thư mục tin cậy | **Từ chối hoàn toàn** (kể cả đọc/liệt kê/ghi/xoá) |
+| Thư mục tin cậy (workspace, media, thư mục người dùng thêm, sau này là project) | Liệt kê, đọc, ghi, sửa, di chuyển, xoá trực tiếp (không hỏi Approve cho file tool; chỉ hỏi **Approve** với tham số `Destructive` của node như `inplace` hoặc xoá credential) |
+| Luôn chặn bên trong thư mục tin cậy | Mã nguồn/script/file thực thi (trừ khi bật `DeveloperMode`), thông tin đăng nhập (`.ssh`, `.env`, khoá, kho mật khẩu), `AppData`/profile trình duyệt, thư mục hệ điều hành, dữ liệu nội bộ của DezuxkStudio |
 
 Danh sách nằm trong `internal/service/agent/access_policy.go` (`forbiddenExtensions`, `forbiddenFileNames`,
 `forbiddenSegmentNames`, `buildProtectedDirs`).

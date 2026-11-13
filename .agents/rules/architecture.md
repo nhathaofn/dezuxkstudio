@@ -97,7 +97,7 @@ The agent has no hard-coded feature list. Choose the feature's shape so the agen
 - Trust model of `--mode server`: an authenticated WebSocket client is NOT trusted with the server's disk. It may only touch media, workspace and the trusted folders, and cannot change that list (`agent:add_allowed_dir` / `agent:remove_allowed_dir` answer `ERR_UNAVAILABLE`); the owner edits trusted folders from the desktop app.
 - A screen that runs one node uses its generated types (`NodeTypes` / `NodeMap`, listed in `contracts.Nodes()`) and reads options, limits and defaults from `workflow:specs` (`useNodeSpec`); it never re-declares them.
 - MCP tools:
-  - Anything that modifies or deletes the user's data outside trusted dirs, or turns on a `Destructive` param → `s.needsApproval(tool, title, summary, exec)`. Read-only and trusted-dir work runs directly.
+  - Turning on a `Destructive` param or calling a state-mutating action with irreversible impact → `s.needsApproval(tool, title, summary, exec)`. Workspace file tools are confined to trusted dirs and run directly without file approval prompts.
   - Every path goes through `s.policy` (`Resolve`, `ValidateRead`, `ValidateWrite`).
   - Return `mcpJSON(...)` / `mcpError(...)`; usage guidance goes in the tool description, never in `profile/policy.md`.
   - Add the feature to `buildCapabilitiesSnapshot` if it should appear in `studio_list_capabilities`.

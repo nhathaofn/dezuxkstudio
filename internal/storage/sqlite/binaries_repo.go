@@ -22,7 +22,7 @@ func NewBinariesRepository(db *DB) *BinariesRepository {
 // GetCustomPath returns the custom path configured for binary id, or empty string if unset.
 func (r *BinariesRepository) GetCustomPath(ctx context.Context, id binaries.BinaryID) (string, error) {
 	var p string
-	err := r.db.sql.QueryRowContext(ctx, "SELECT custom_path FROM binary_configs WHERE id = ?", string(id)).Scan(&p)
+	err := r.db.read().QueryRowContext(ctx, "SELECT custom_path FROM binary_configs WHERE id = ?", string(id)).Scan(&p)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -34,7 +34,7 @@ func (r *BinariesRepository) GetCustomPath(ctx context.Context, id binaries.Bina
 
 // GetAllCustomPaths returns custom paths for all configured binaries.
 func (r *BinariesRepository) GetAllCustomPaths(ctx context.Context) (map[binaries.BinaryID]string, error) {
-	rows, err := r.db.sql.QueryContext(ctx, "SELECT id, custom_path FROM binary_configs")
+	rows, err := r.db.read().QueryContext(ctx, "SELECT id, custom_path FROM binary_configs")
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: get all custom paths: %w", err)
 	}

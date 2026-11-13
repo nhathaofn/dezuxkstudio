@@ -328,6 +328,9 @@ func TestAutoCheckCustomProvider(t *testing.T) {
 	if got.Health.Outcome != domain.OutcomeOK {
 		t.Fatalf("health = %+v", got.Health)
 	}
+	if n := hits.Load(); n != 1 {
+		t.Fatalf("custom auto-check server hits = %d, want 1 (unified test + discovery)", n)
+	}
 	if len(got.Models) != 3 {
 		t.Fatalf("models = %+v", got.Models)
 	}
