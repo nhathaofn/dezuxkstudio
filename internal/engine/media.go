@@ -7,15 +7,16 @@ import (
 	"strings"
 )
 
-// MediaKind tells an image from a video.
+// MediaKind tells an image, video, or audio file apart.
 type MediaKind string
 
 const (
 	MediaImage MediaKind = "image"
 	MediaVideo MediaKind = "video"
+	MediaAudio MediaKind = "audio"
 )
 
-// MediaRef is the value an image, video or media port carries: a file path or local URL.
+// MediaRef is the value an image, video, audio or media port carries: a file path or local URL.
 type MediaRef struct {
 	LocalURL string    `json:"localUrl"`
 	Kind     MediaKind `json:"kind"`
@@ -23,13 +24,21 @@ type MediaRef struct {
 }
 
 var videoTypes = map[string]string{
-	".mp4": "video/mp4", ".m4v": "video/x-m4v", ".mov": "video/quicktime", ".webm": "video/webm",
+	".mp4": "video/mp4", ".m4v": "video/x-m4v", ".mov": "video/quicktime", ".webm": "video/webm", ".mkv": "video/x-matroska",
+}
+
+var audioTypes = map[string]string{
+	".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".flac": "audio/flac",
+	".aac": "audio/aac", ".m4a": "audio/mp4", ".opus": "audio/opus",
 }
 
 // RefFor describes a stored file from its path/name.
 func RefFor(localURL string, kind MediaKind) MediaRef {
 	ext := strings.ToLower(path.Ext(localURL))
 	mimeType := videoTypes[ext]
+	if mimeType == "" {
+		mimeType = audioTypes[ext]
+	}
 	if mimeType == "" {
 		mimeType = strings.TrimSpace(strings.Split(mime.TypeByExtension(ext), ";")[0])
 	}
@@ -38,6 +47,8 @@ func RefFor(localURL string, kind MediaKind) MediaRef {
 		kind = MediaImage
 	case strings.HasPrefix(mimeType, "video/"):
 		kind = MediaVideo
+	case strings.HasPrefix(mimeType, "audio/"):
+		kind = MediaAudio
 	}
 	return MediaRef{LocalURL: localURL, Kind: kind, MimeType: mimeType}
 }
@@ -51,6 +62,8 @@ func (m MediaRef) Accepts(t PortType) bool {
 		return m.Kind == MediaImage
 	case PortVideo:
 		return m.Kind == MediaVideo
+	case PortAudio:
+		return m.Kind == MediaAudio
 	}
 	return false
 }

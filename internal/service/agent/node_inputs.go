@@ -298,6 +298,8 @@ func portAccepts(t engine.PortType, c FileClass) bool {
 		return c == FileClassImage
 	case engine.PortVideo:
 		return c == FileClassVideo
+	case engine.PortAudio:
+		return c == FileClassAudio
 	case engine.PortMedia:
 		return c == FileClassImage || c == FileClassVideo
 	}
@@ -310,6 +312,8 @@ func portTypeHint(t engine.PortType) string {
 		return "images (.png, .jpg, .jpeg, .webp, …)"
 	case engine.PortVideo:
 		return "videos (.mp4, .mov, .webm, …)"
+	case engine.PortAudio:
+		return "audio files (.mp3, .wav, .ogg, .flac, …)"
 	case engine.PortMedia:
 		return "images or videos"
 	}

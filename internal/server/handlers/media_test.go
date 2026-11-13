@@ -100,6 +100,30 @@ func TestMediaUploadAndDownloadRoundTrip(t *testing.T) {
 			t.Fatal("downloaded bytes mismatch")
 		}
 	}
+
+	// Video and audio outputs saved in mediaDir must be served with media MIME types.
+	for name, wantMIME := range map[string]string{
+		"generated/videos/clip.mp4": "video/mp4",
+		"generated/tts/speech.wav":  "audio/wav",
+		"generated/tts/speech.mp3":  "audio/mpeg",
+	} {
+		full := filepath.Join(mediaDir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("test-media-bytes"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		dlReq := httptest.NewRequest(http.MethodGet, "/api/media/download?path="+url.QueryEscape(name), nil)
+		dlRec := httptest.NewRecorder()
+		downloadHandler.ServeHTTP(dlRec, dlReq)
+		if dlRec.Code != http.StatusOK {
+			t.Fatalf("%s: status=%d body=%s", name, dlRec.Code, dlRec.Body.String())
+		}
+		if got := dlRec.Header().Get("Content-Type"); got != wantMIME {
+			t.Errorf("%s: Content-Type=%q, want %q", name, got, wantMIME)
+		}
+	}
 }
 
 func TestMediaUploadRejectsInvalidInputs(t *testing.T) {

@@ -456,6 +456,31 @@ export interface GraphResult {
   nodes: Record<string, NodeRun>;
 }
 
+export interface ImageGenerateInput {
+  prompt: string;
+  reference_images?: MediaRef[];
+  model?: string;
+  aspect_ratio?: string;
+  resolution?: string;
+  seed?: number;
+  output_dir?: string;
+}
+
+export interface ImageGenerateOutput {
+  image: MediaRef;
+  path: string;
+  mimeType: string;
+  provider: string;
+  model: string;
+  sizeBytes: number;
+}
+
+export interface ImageRef {
+  localUrl: string;
+  kind: string;
+  mimeType?: string;
+}
+
 export interface MediaRef {
   localUrl: string;
   kind: string;
@@ -748,6 +773,25 @@ export interface SystemInfo {
   paths: PathsInfo;
 }
 
+export interface TTSGenerateInput {
+  text: string;
+  model?: string;
+  voice?: string;
+  format?: string;
+  speed?: number;
+  language?: string;
+  output_dir?: string;
+}
+
+export interface TTSGenerateOutput {
+  audio: MediaRef;
+  path: string;
+  mimeType: string;
+  provider: string;
+  model: string;
+  sizeBytes: number;
+}
+
 export interface UpdateCredentialPayload {
   id: string;
   credential: CredentialInput;
@@ -770,6 +814,30 @@ export interface UpdateInfo {
 export interface UpdateSettingsPayload {
   owner_id: string;
   settings: Record<string, string>;
+}
+
+export interface VideoGenerateInput {
+  prompt?: string;
+  start_image?: ImageRef;
+  end_image?: ImageRef;
+  reference_images?: MediaRef[];
+  model?: string;
+  aspect_ratio?: string;
+  resolution?: string;
+  duration?: number;
+  generate_audio?: boolean;
+  seed?: number;
+  output_dir?: string;
+}
+
+export interface VideoGenerateOutput {
+  video: MediaRef;
+  path: string;
+  mimeType: string;
+  provider: string;
+  model: string;
+  duration: number;
+  sizeBytes: number;
 }
 
 export interface WorkflowRunGraphPayload {
@@ -998,11 +1066,17 @@ export interface ActionMap {
 /** Built-in workflow node types (contracts.Nodes). Settings come from workflow:specs. */
 export const NodeTypes = {
   WATERMARK_REMOVER: "tool.watermark_remover",
+  IMAGE_GENERATE: "tool.generate_image",
+  VIDEO_GENERATE: "tool.generate_video",
+  TTS_GENERATE: "tool.generate_tts",
 } as const;
 export type NodeType = (typeof NodeTypes)[keyof typeof NodeTypes];
 
 export interface NodeMap {
   "tool.watermark_remover": { input: RemoverInput; output: RemoverOutput };
+  "tool.generate_image": { input: ImageGenerateInput; output: ImageGenerateOutput };
+  "tool.generate_video": { input: VideoGenerateInput; output: VideoGenerateOutput };
+  "tool.generate_tts": { input: TTSGenerateInput; output: TTSGenerateOutput };
 }
 
 export const Events = {

@@ -53,6 +53,7 @@ type Config struct {
 	Update      UpdateConfig
 	Binaries    BinariesConfig
 	Providers   ProvidersConfig
+	MediaGen    MediaGenConfig
 	Network     NetworkConfig
 	Desktop     DesktopConfig
 	Agent       AgentConfig
@@ -137,6 +138,15 @@ type ProvidersConfig struct {
 // BinariesConfig configures external tool (ffmpeg, yt-dlp...) inspection.
 type BinariesConfig struct {
 	ProbeTimeout time.Duration // max duration of `<tool> -version`; a cold start under antivirus can take seconds
+}
+
+// MediaGenConfig tunes image, video, and TTS media generation requests.
+type MediaGenConfig struct {
+	RequestTimeout    time.Duration // HTTP timeout for synchronous generation and submit/poll RPCs
+	VideoTimeout      time.Duration // total deadline for async generation polling + artifact download
+	VideoPollInterval time.Duration // delay between async task status polls
+	MaxOutputBytes    int64         // safety cap on downloaded image, video, or audio payloads
+	MaxReferenceBytes int64         // max bytes allowed per local reference image
 }
 
 // UpdateConfig configures release update checks.
@@ -244,6 +254,13 @@ func Default(mode Mode) *Config {
 		Binaries:    BinariesConfig{ProbeTimeout: 15 * time.Second},
 		Providers: ProvidersConfig{TestTimeout: 15 * time.Second, CheckOnStartup: true, AutoCheck: true, CheckConcurrency: 4,
 			DefaultMaxWorkers: 2, DefaultRPM: 0, DefaultRequestGapMs: 0}, // ArcReel _CONNECTIVITY_CHECK_TIMEOUT
+		MediaGen: MediaGenConfig{
+			RequestTimeout:    2 * time.Minute,
+			VideoTimeout:      15 * time.Minute,
+			VideoPollInterval: 4 * time.Second,
+			MaxOutputBytes:    256 << 20, // 256 MiB
+			MaxReferenceBytes: 20 << 20,  // 20 MiB
+		},
 		Network: NetworkConfig{IdleConnTimeout: 90 * time.Second, MaxIdleConns: 100, MaxIdleConnsPerHost: 10},
 		Update: UpdateConfig{
 			FeedURL:        buildinfo.UpdateFeedURL,

@@ -442,6 +442,11 @@ func (s *Service) probeKling(ctx context.Context, root string, r Resolved) error
 	return nil
 }
 
+// KlingJWT mints an HS256 bearer JWT for Kling's API from an access_key and secret_key pair.
+func KlingJWT(ak, sk string, now time.Time) (string, error) {
+	return klingJWT(ak, sk, now)
+}
+
 // klingJWT mints the HS256 token Kling expects (ArcReel kling_shared.py: iss=AK, exp=now+1800, nbf=now-5).
 func klingJWT(ak, sk string, now time.Time) (string, error) {
 	ak, sk = strings.TrimSpace(ak), strings.TrimSpace(sk)
@@ -534,27 +539,37 @@ func defaultBaseURL(id string) string {
 // VertexScopes are the OAuth scopes ArcReel requests (lib VERTEX_SCOPES).
 var VertexScopes = []string{"https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/generative-language"}
 
+// VertexToken exchanges a Google service-account JSON for an OAuth access token, project ID, and TTL.
+func (s *Service) VertexToken(ctx context.Context, raw string) (accessToken, projectID string, expiresIn time.Duration, err error) {
+	return s.exchangeVertexToken(ctx, raw)
+}
+
 // vertexToken exchanges the service account for an OAuth token; success proves the key is valid.
 func (s *Service) vertexToken(ctx context.Context, raw string) error {
+	_, _, _, err := s.exchangeVertexToken(ctx, raw)
+	return err
+}
+
+func (s *Service) exchangeVertexToken(ctx context.Context, raw string) (string, string, time.Duration, error) {
 	sa, err := parseServiceAccount(raw)
 	if err != nil {
-		return fail(OutcomeInvalid, 0, "invalid service-account JSON")
+		return "", "", 0, fail(OutcomeInvalid, 0, "invalid service-account JSON")
 	}
 	block, _ := pem.Decode([]byte(sa.PrivateKey))
 	if block == nil {
-		return fail(OutcomeInvalid, 0, "service account private key is not PEM")
+		return "", "", 0, fail(OutcomeInvalid, 0, "service account private key is not PEM")
 	}
 	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		return fail(OutcomeInvalid, 0, "service account private key cannot be parsed")
+		return "", "", 0, fail(OutcomeInvalid, 0, "service account private key cannot be parsed")
 	}
 	rsaKey, ok := parsed.(*rsa.PrivateKey)
 	if !ok {
-		return fail(OutcomeInvalid, 0, "service account private key is not RSA")
+		return "", "", 0, fail(OutcomeInvalid, 0, "service account private key is not RSA")
 	}
 	tokenURI := cmp.Or(sa.TokenURI, googleTokenURI)
 	if err := domain.ValidateBaseURL(tokenURI); err != nil {
-		return fail(OutcomeInvalid, 0, "invalid token_uri")
+		return "", "", 0, fail(OutcomeInvalid, 0, "invalid token_uri")
 	}
 	now := time.Now().Unix()
 	assertion, err := signJWT(map[string]string{"alg": "RS256", "typ": "JWT"}, map[string]any{
@@ -564,30 +579,41 @@ func (s *Service) vertexToken(ctx context.Context, raw string) error {
 		return rsa.SignPKCS1v15(rand.Reader, rsaKey, crypto.SHA256, sum[:])
 	})
 	if err != nil {
-		return fail(OutcomeInvalid, 0, "cannot sign token request")
+		return "", "", 0, fail(OutcomeInvalid, 0, "cannot sign token request")
 	}
 	form := url.Values{"grant_type": {"urn:ietf:params:oauth:grant-type:jwt-bearer"}, "assertion": {assertion}}
 	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURI, strings.NewReader(form.Encode()))
 	if err != nil {
-		return fail(OutcomeInvalid, 0, "invalid token_uri")
+		return "", "", 0, fail(OutcomeInvalid, 0, "invalid token_uri")
 	}
 	hr.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := s.client.Do(hr)
 	if err != nil {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return "", "", 0, ctx.Err()
 		}
-		return err
+		return "", "", 0, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized {
-		return fail(OutcomeAuthFailed, resp.StatusCode, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, body))
+		return "", "", 0, fail(OutcomeAuthFailed, resp.StatusCode, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, body))
 	}
 	if resp.StatusCode/100 != 2 {
-		return classify(resp.StatusCode, body)
+		return "", "", 0, classify(resp.StatusCode, body)
 	}
-	return nil
+	var tok struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int64  `json:"expires_in"`
+	}
+	if err := json.Unmarshal(body, &tok); err != nil || tok.AccessToken == "" {
+		return "", "", 0, fail(OutcomeHTTPError, resp.StatusCode, "response did not contain access_token")
+	}
+	ttl := time.Duration(tok.ExpiresIn) * time.Second
+	if ttl <= 0 {
+		ttl = 50 * time.Minute
+	}
+	return tok.AccessToken, sa.ProjectID, ttl, nil
 }
 
 // ---- Anthropic ----
@@ -626,6 +652,9 @@ func (s *Service) anthropicModels(ctx context.Context, base, key string) ([]stri
 // ---- custom discovery ----
 
 var versionSuffix = regexp.MustCompile(`/v\d+$`) // ArcReel ensure_openai_base_url
+
+// EnsureOpenAIBase appends /v1 when base has no /v<n> suffix.
+func EnsureOpenAIBase(base string) string { return ensureOpenAIBase(base) }
 
 // ensureOpenAIBase appends /v1 when the base has no version suffix (ArcReel ensure_openai_base_url).
 func ensureOpenAIBase(base string) string {

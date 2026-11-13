@@ -15,6 +15,7 @@ const (
 	PortText  PortType = "text"
 	PortImage PortType = "image"
 	PortVideo PortType = "video"
+	PortAudio PortType = "audio"
 	PortMedia PortType = "media" // Accepts image or video
 )
 
@@ -22,7 +23,7 @@ const (
 var AllPortTypes = []struct {
 	Value  PortType
 	TSName string
-}{{PortText, "Text"}, {PortImage, "Image"}, {PortVideo, "Video"}, {PortMedia, "Media"}}
+}{{PortText, "Text"}, {PortImage, "Image"}, {PortVideo, "Video"}, {PortAudio, "Audio"}, {PortMedia, "Media"}}
 
 // Port is one input or output of a node.
 type Port struct {

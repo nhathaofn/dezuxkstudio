@@ -17,10 +17,12 @@ import (
 	"sync"
 	"testing"
 
+	"app/internal/domain/mediagen"
 	"app/internal/engine"
 	"app/internal/paths"
 	"app/internal/progress"
 	"app/internal/service/workflow"
+	mediagennodes "app/internal/tools/mediagen"
 	"app/internal/tools/watermark"
 )
 
@@ -143,5 +145,50 @@ func TestWorkflowReportsProgressThroughContext(t *testing.T) {
 	}
 	if len(updates) == 0 {
 		t.Fatal("RunGraph without a callback reported nothing through the context")
+	}
+}
+
+type stubMediaGen struct {
+	mediaDir string
+}
+
+func (s *stubMediaGen) GenerateImage(_ context.Context, req mediagen.ImageRequest) (mediagen.Result, error) {
+	return mediagen.Result{Kind: mediagen.KindImage, Path: filepath.Join(s.mediaDir, "i.png"), MimeType: "image/png", Provider: "stub", Model: "m1"}, nil
+}
+func (s *stubMediaGen) GenerateVideo(_ context.Context, req mediagen.VideoRequest) (mediagen.Result, error) {
+	return mediagen.Result{Kind: mediagen.KindVideo, Path: filepath.Join(s.mediaDir, "v.mp4"), MimeType: "video/mp4", Provider: "stub", Model: "m2"}, nil
+}
+func (s *stubMediaGen) GenerateTTS(_ context.Context, req mediagen.TTSRequest) (mediagen.Result, error) {
+	return mediagen.Result{Kind: mediagen.KindTTS, Path: filepath.Join(s.mediaDir, "a.wav"), MimeType: "audio/wav", Provider: "stub", Model: "m3"}, nil
+}
+
+func TestWorkflowRegistersMediaGenNodes(t *testing.T) {
+	tempDir := t.TempDir()
+	svc, err := workflow.New(workflow.Options{
+		Paths:    paths.Paths{Data: tempDir},
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		MediaGen: &stubMediaGen{mediaDir: tempDir},
+	})
+	if err != nil {
+		t.Fatalf("workflow.New: %v", err)
+	}
+	specs := svc.Specs(context.Background())
+	have := map[string]bool{}
+	for _, sp := range specs {
+		have[sp.Type] = true
+	}
+	for _, want := range []string{mediagennodes.NodeTypeImage, mediagennodes.NodeTypeVideo, mediagennodes.NodeTypeTTS} {
+		if !have[want] {
+			t.Fatalf("missing registered node spec %q", want)
+		}
+	}
+	if _, err := svc.RunNode(context.Background(), mediagennodes.NodeTypeImage, json.RawMessage(`{"prompt":"hello"}`)); err != nil {
+		t.Fatalf("RunNode(image): %v", err)
+	}
+	if _, err := svc.RunNode(context.Background(), mediagennodes.NodeTypeVideo, json.RawMessage(`{"prompt":"hello"}`)); err != nil {
+		t.Fatalf("RunNode(video): %v", err)
+	}
+	if _, err := svc.RunNode(context.Background(), mediagennodes.NodeTypeTTS, json.RawMessage(`{"text":"hello"}`)); err != nil {
+		t.Fatalf("RunNode(tts): %v", err)
 	}
 }

@@ -10,6 +10,7 @@ import (
 
 	"app/internal/engine"
 	"app/internal/paths"
+	mediagennodes "app/internal/tools/mediagen"
 	providernodes "app/internal/tools/provider"
 	"app/internal/tools/watermark"
 )
@@ -20,6 +21,8 @@ type Options struct {
 	Logger *slog.Logger
 	// Providers backs the API-provider nodes (nil leaves them out, e.g. in tests).
 	Providers providernodes.Service
+	// MediaGen backs the unified image/video/TTS generation nodes (nil leaves them out in minimal tests).
+	MediaGen mediagennodes.MediaService
 }
 
 // Service manages DezuxkStudio's workflow runtime and registered nodes.
@@ -41,6 +44,12 @@ func New(o Options) (*Service, error) {
 	// (MCP workflow_* tools) all pick it up from its Spec, with no agent-specific code.
 	nodes := []engine.Node{
 		watermark.NewNode(watermark.Options{MediaDir: o.Paths.Media()}),
+	}
+	if o.MediaGen != nil {
+		nodes = append(nodes, mediagennodes.NewNodes(mediagennodes.Options{
+			MediaDir: o.Paths.Media(),
+			Service:  o.MediaGen,
+		})...)
 	}
 	if o.Providers != nil {
 		nodes = append(nodes, providernodes.Nodes(o.Providers)...)

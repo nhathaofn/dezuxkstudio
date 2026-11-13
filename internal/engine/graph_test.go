@@ -60,8 +60,10 @@ func TestCompatible(t *testing.T) {
 		want     bool
 	}{
 		{PortImage, PortImage, true},
+		{PortAudio, PortAudio, true},
 		{PortImage, PortMedia, true},
 		{PortVideo, PortMedia, true},
+		{PortAudio, PortMedia, false},
 		{PortMedia, PortImage, false},
 		{PortImage, PortVideo, false},
 		{PortText, PortImage, false},
@@ -70,6 +72,10 @@ func TestCompatible(t *testing.T) {
 		if got := Compatible(c.from, c.to); got != c.want {
 			t.Errorf("Compatible(%v, %v) = %v; want %v", c.from, c.to, got, c.want)
 		}
+	}
+	ref := RefFor("/media/voice.mp3", MediaAudio)
+	if !ref.Accepts(PortAudio) || ref.Accepts(PortVideo) || ref.MimeType != "audio/mpeg" {
+		t.Errorf("unexpected audio ref %+v", ref)
 	}
 }
 
