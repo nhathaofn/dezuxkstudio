@@ -218,6 +218,105 @@ func (m Agent) Register(r *realtime.Registry) {
 			}
 			return contracts.AgentAllowedDirsResult{Dirs: dirs}, nil
 		})
+
+	realtime.Handle(r, contracts.ActionAgentListCustomizations,
+		func(ctx context.Context, _ *realtime.Request, _ contracts.Empty) (contracts.AgentCustomizationsResult, error) {
+			snap, err := m.Service.ListCustomizations(ctx)
+			if err != nil {
+				return contracts.AgentCustomizationsResult{}, err
+			}
+			return contracts.NewAgentCustomizationsResult(snap), nil
+		})
+
+	realtime.Handle(r, contracts.ActionAgentReloadCustomizations,
+		func(ctx context.Context, _ *realtime.Request, _ contracts.Empty) (contracts.AgentCustomizationsResult, error) {
+			snap, err := m.Service.ReloadCustomizations(ctx)
+			if err != nil {
+				return contracts.AgentCustomizationsResult{}, err
+			}
+			return contracts.NewAgentCustomizationsResult(snap), nil
+		})
+
+	realtime.Handle(r, contracts.ActionAgentSaveSkill,
+		func(ctx context.Context, _ *realtime.Request, p contracts.AgentSaveSkillPayload) (contracts.AgentCustomizationsResult, error) {
+			if err := m.trustedFoldersLocked(); err != nil {
+				return contracts.AgentCustomizationsResult{}, err
+			}
+			snap, err := m.Service.SaveSkill(ctx, p.Name, p.Description, p.UserInvocable, p.Enabled, p.Body)
+			if err != nil {
+				return contracts.AgentCustomizationsResult{}, err
+			}
+			return contracts.NewAgentCustomizationsResult(snap), nil
+		})
+
+	realtime.Handle(r, contracts.ActionAgentDeleteSkill,
+		func(ctx context.Context, _ *realtime.Request, p contracts.AgentCustomizationIDPayload) (contracts.AgentCustomizationsResult, error) {
+			if err := m.trustedFoldersLocked(); err != nil {
+				return contracts.AgentCustomizationsResult{}, err
+			}
+			snap, err := m.Service.DeleteSkill(ctx, p.Name)
+			if err != nil {
+				return contracts.AgentCustomizationsResult{}, err
+			}
+			return contracts.NewAgentCustomizationsResult(snap), nil
+		})
+
+	realtime.Handle(r, contracts.ActionAgentRestoreSkill,
+		func(ctx context.Context, _ *realtime.Request, p contracts.AgentCustomizationIDPayload) (contracts.AgentCustomizationsResult, error) {
+			if err := m.trustedFoldersLocked(); err != nil {
+				return contracts.AgentCustomizationsResult{}, err
+			}
+			snap, err := m.Service.RestoreSkill(ctx, p.Name)
+			if err != nil {
+				return contracts.AgentCustomizationsResult{}, err
+			}
+			return contracts.NewAgentCustomizationsResult(snap), nil
+		})
+
+	realtime.Handle(r, contracts.ActionAgentSaveSubagent,
+		func(ctx context.Context, _ *realtime.Request, p contracts.AgentSaveSubagentPayload) (contracts.AgentCustomizationsResult, error) {
+			if err := m.trustedFoldersLocked(); err != nil {
+				return contracts.AgentCustomizationsResult{}, err
+			}
+			snap, err := m.Service.SaveSubagent(ctx, domainagent.SubagentInfo{
+				Name:        p.Name,
+				Description: p.Description,
+				Tools:       p.Tools,
+				Skills:      p.Skills,
+				Provider:    p.Provider,
+				Model:       p.Model,
+				Enabled:     p.Enabled,
+				Body:        p.Body,
+			})
+			if err != nil {
+				return contracts.AgentCustomizationsResult{}, err
+			}
+			return contracts.NewAgentCustomizationsResult(snap), nil
+		})
+
+	realtime.Handle(r, contracts.ActionAgentDeleteSubagent,
+		func(ctx context.Context, _ *realtime.Request, p contracts.AgentCustomizationIDPayload) (contracts.AgentCustomizationsResult, error) {
+			if err := m.trustedFoldersLocked(); err != nil {
+				return contracts.AgentCustomizationsResult{}, err
+			}
+			snap, err := m.Service.DeleteSubagent(ctx, p.Name)
+			if err != nil {
+				return contracts.AgentCustomizationsResult{}, err
+			}
+			return contracts.NewAgentCustomizationsResult(snap), nil
+		})
+
+	realtime.Handle(r, contracts.ActionAgentRestoreSubagent,
+		func(ctx context.Context, _ *realtime.Request, p contracts.AgentCustomizationIDPayload) (contracts.AgentCustomizationsResult, error) {
+			if err := m.trustedFoldersLocked(); err != nil {
+				return contracts.AgentCustomizationsResult{}, err
+			}
+			snap, err := m.Service.RestoreSubagent(ctx, p.Name)
+			if err != nil {
+				return contracts.AgentCustomizationsResult{}, err
+			}
+			return contracts.NewAgentCustomizationsResult(snap), nil
+		})
 }
 
 func (m Agent) listResult(ctx context.Context) (contracts.AgentListResult, error) {

@@ -16,47 +16,60 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// codeSamples must always be detected as source code / commands.
+// codeSamples contain explicit programming-language Markdown fences that must always be blocked in chat.
 var codeSamples = map[string]string{
-	"fenced python":        "Đây là code:\n```python\nprint('hi')\n```\n",
-	"fenced js one line":   "```js\nconsole.log(1)\n```",
-	"unfenced python":      "def read_csv(path):\n    with open(path) as f:\n        return f.read()\n",
-	"unfenced js":          "const fs = require('fs');\nconst data = fs.readFileSync('a.txt');\nconsole.log(data);\n",
-	"unfenced go":          "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"x\")\n}\n",
-	"c include":            "#include <stdio.h>\nint main() {\n  printf(\"hi\");\n  return 0;\n}\n",
-	"bash script":          "#!/bin/bash\nfor f in *.mp4; do\n  mv \"$f\" \"new_$f\"\ndone\n",
-	"shell commands":       "npm install express\nnode server.js\ncurl -X POST http://localhost:3000\n",
-	"powershell":           "Get-ChildItem *.mp4 | ForEach-Object {\n  Rename-Item $_ -NewName (\"x_\" + $_.Name)\n}\nWrite-Host \"done\"\n",
-	"sql":                  "SELECT name FROM users WHERE id = 1;\nINSERT INTO logs VALUES (1);\nDELETE FROM users WHERE id = 2;\n",
-	"html":                 "<html>\n<body>\n<script>alert(1)</script>\n</body>\n</html>\n",
-	"unlabeled fence code": "```\nimport os\nos.system('dir')\nx = os.getcwd()\n```",
-	"json embedding code":  `{"script": "import os\nos.system('calc')\nprint(os.getcwd())\n"}`,
-	"java":                 "public class Main {\n  public static void main(String[] args) {\n    System.out.println(\"hi\");\n  }\n}\n",
-	"code in dialogue":     "Cảnh 1:\nNhân vật A đọc:\nconst x = fetch('/api');\nlet y = await x.json();\nconsole.log(y);\n",
-	"unterminated fence":   "```python\nimport os\nos.remove('a')\n",
+	"fenced python":       "Đây là code:\n```python\nprint('hi')\n```\n",
+	"fenced js one line":  "```js\nconsole.log(1)\n```",
+	"fenced go":           "```go\npackage main\nfunc main() { fmt.Println(\"x\") }\n```\n",
+	"fenced c":            "```c\n#include <stdio.h>\nint main() { printf(\"hi\"); return 0; }\n```\n",
+	"fenced bash":         "```bash\n#!/bin/bash\nmv \"$f\" \"new_$f\"\n```\n",
+	"fenced shell":        "```sh\nnpm install express\nnode server.js\n```\n",
+	"fenced powershell":   "```powershell\nGet-ChildItem *.mp4 | Rename-Item -NewName { \"x_\" + $_.Name }\n```\n",
+	"fenced sql":          "```sql\nDELETE FROM users WHERE id = 2;\n```\n",
+	"fenced html":         "```html\n<html><body><script>alert(1)</script></body></html>\n```\n",
+	"fenced java":         "```java\npublic class Main { public static void main(String[] args) { System.out.println(\"hi\"); } }\n```\n",
+	"fenced yaml":         "```yaml\nservices:\n  api:\n    image: alpine\n```\n",
+	"unterminated fence":  "```python\nimport os\nos.remove('a')\n",
+	"indented tilde bash": "  ~~~bash\nrm -rf /tmp/demo\n~~~\n",
 }
 
-// proseSamples are legitimate DezuxkStudio content and must never be blocked.
+func longVietnameseMovieScript() string {
+	var sb strings.Builder
+	sb.WriteString("# KỊCH BẢN PHIM NGẮN: ÁNH ĐÈN PHỐ CỔ\n\n")
+	sb.WriteString("| Shot | Thời lượng | Góc máy | Thông số ánh sáng |\n")
+	sb.WriteString("| --- | --- | --- | --- |\n")
+	for i := 1; i <= 120; i++ {
+		sb.WriteString("| S01 | 00:05 | Medium | key_light=5600K, iso=800, lens=35mm |\n")
+		sb.WriteString("[CẢNH NGOẠI — ĐÊM — HÀ NỘI]\n")
+		sb.WriteString("LAN (thì thầm, nhìn ra cửa sổ):\n")
+		sb.WriteString("  (ngừng một nhịp)\n")
+		sb.WriteString("  Nếu ngày mai trời còn mưa: chúng ta dời lịch quay sang thứ Sáu (18:30).\n")
+		sb.WriteString("Prompt: cinematic portrait = soft rain, ratio=16:9, steps=28, cfg=6.5.\n\n")
+	}
+	return sb.String()
+}
+
+// proseSamples are legitimate DezuxkStudio content and must never be corrupted or blocked.
 var proseSamples = map[string]string{
-	"vietnamese script":    "Cảnh 1: Bình minh trên phố cổ Hà Nội.\nNarrator: Mỗi buổi sáng, thành phố thức dậy trong tiếng rao.\nCảnh 2: Cận cảnh ly cà phê trứng.\nNarrator: Hương vị này đã có từ năm 1946.\n",
-	"srt":                  "1\n00:00:01,000 --> 00:00:03,500\nXin chào các bạn!\n\n2\n00:00:03,600 --> 00:00:06,000\nHôm nay chúng ta học nấu phở.\n",
-	"workflow json":        `{"nodes":[{"id":"n1","type":"tool.watermark_remover","params":{"inplace":false,"input":"D:/media/a.mp4"}}],"edges":[]}`,
-	"image prompt":         "A cinematic shot of a lone samurai in the rain, neon reflections, 35mm, shallow depth of field --ar 16:9 --v 6 --style raw\nNegative prompt: blurry, lowres, watermark\n",
-	"markdown steps":       "## Cách xóa watermark\n1. Mở tab **Watermark Remover**.\n2. Kéo thả video (mp4) vào khung.\n3. Chọn vùng watermark rồi nhấn Start.\n> Lưu ý: bật inplace sẽ ghi đè file gốc.\n",
-	"settings explanation": "Thông số gợi ý:\nfps = 30\nresolution = 1920x1080\nbitrate = 8 Mbps\n",
-	"storyboard arrows":    "Luồng cảnh:\nCảnh 1 => Cảnh 2\nCảnh 2 => Cảnh 3\nCảnh 3 => Kết thúc\n",
-	"english script":       "INT. KITCHEN - NIGHT\nMAYA (whispering): Did you hear that?\nJAKE: It's just the wind.\nShe walks to the window and opens it slowly.\n",
-	"one tool mention":     "Bạn cần cài ffmpeg trước. Mình có thể tải nó qua mục Binaries, bạn chỉ cần nhấn Approve.\n",
-	"translation":          "Original: The quick brown fox jumps over the lazy dog.\nBản dịch: Con cáo nâu nhanh nhẹn nhảy qua con chó lười.\n",
-	"fenced srt":           "```srt\n1\n00:00:01,000 --> 00:00:02,000\nXin chào\n```",
-	"fenced json data":     "```json\n{\"title\": \"Video 1\", \"tags\": [\"travel\", \"food\"]}\n```",
-	"csv":                  "scene,duration,description\n1,5s,Mở đầu với flycam\n2,10s,Phỏng vấn nhân vật\n",
+	"vietnamese script":     "Cảnh 1: Bình minh trên phố cổ Hà Nội.\nNarrator: Mỗi buổi sáng, thành phố thức dậy trong tiếng rao.\nCảnh 2: Cận cảnh ly cà phê trứng.\nNarrator: Hương vị này đã có từ năm 1946.\n",
+	"long vietnamese story": longVietnameseMovieScript(),
+	"english screenplay":    "INT. COFFEE SHOP - NIGHT\n\nRAIN streaks the window. MAYA sits across from DEV.\n\nMAYA\n(V.O., wry)\nYou always order tea when ratio=16:9 feels too tight.\n\nDEV\n(CONT'D)\nLook at the shot list: ext=night, iso=1600, shutter=1/50.\n",
+	"srt":                   "1\n00:00:01,000 --> 00:00:03,500\nXin chào các bạn!\n\n2\n00:00:03,600 --> 00:00:06,000\nHôm nay chúng ta học nấu phở.\n",
+	"fenced srt":            "```srt\n1\n00:00:01,000 --> 00:00:02,500\nCảnh 1: Mở đầu.\n```\n",
+	"workflow json":         `{"nodes":[{"id":"n1","type":"tool.watermark_remover","params":{"inplace":false,"input":"D:/media/a.mp4"}}],"edges":[]}`,
+	"fenced json shots":     "```json\n{\n  \"episode\": 1,\n  \"dialogue\": \"Lan nói: \u201cXin chào\u201d\",\n  \"shots\": [\n    {\"id\": \"s1\", \"params\": \"width=1920, height=1080, fps=24\"}\n  ]\n}\n```\n",
+	"bare fence notes":      "```\nShot 1: camera=35mm\nShot 2: mood=noir\nAction: Lan (bước vào): Chào buổi tối!\n```\n",
+	"fenced markdown":       "```markdown\n| Cảnh | Ghi chú |\n| --- | --- |\n| 1 | fade=in |\n```\n",
+	"image prompt":          "A cinematic shot of a lone samurai in the rain, neon reflections, 35mm, shallow depth of field --ar 16:9 --v 6 --style raw\nwidth=1920, height=1080, cfg=7.0, sampler=euler\nNegative prompt: blurry, lowres, watermark\n",
+	"markdown steps":        "## Cách xóa watermark\n1. Mở tab **Watermark Remover** trong DezuxkStudio.\n2. Chọn video cần xử lý.\n3. Nhấn **Chạy** để xuất kết quả.\n",
+	"inline code span":      "```var_a``` là tên trường dữ liệu trong JSON shot list.\n",
+	"json narrative":        `{"notes": "for beat in act1:\n  intensity=high\n  dialogue: Chào bạn!\n"}`,
 }
 
 func TestContainsSourceCodeDetectsCode(t *testing.T) {
 	for name, sample := range codeSamples {
 		if !ContainsSourceCode(sample) {
-			t.Errorf("%s: expected source code to be detected:\n%s", name, sample)
+			t.Errorf("%s: expected ContainsSourceCode to detect fenced code", name)
 		}
 	}
 }
@@ -64,7 +77,7 @@ func TestContainsSourceCodeDetectsCode(t *testing.T) {
 func TestContainsSourceCodeAllowsContent(t *testing.T) {
 	for name, sample := range proseSamples {
 		if ContainsSourceCode(sample) {
-			t.Errorf("%s: legitimate content was flagged as code:\n%s", name, sample)
+			t.Errorf("%s: false positive on legitimate content", name)
 		}
 	}
 }
@@ -85,10 +98,15 @@ func streamThrough(text string, chunk int) (string, *turnOutputGuard) {
 
 func TestStreamFilterPassesContentUnchanged(t *testing.T) {
 	for name, sample := range proseSamples {
-		for _, chunk := range []int{1, 3, 17, 10000} {
+		chunkSizes := []int{1, 3, 17, 10000}
+		if len(sample) > 5000 {
+			// Avoid O(N^2) allocations with 1-rune chunks on a 30k-char fixture while testing streaming chunks.
+			chunkSizes = []int{17, 256, 100000}
+		}
+		for _, chunk := range chunkSizes {
 			got, g := streamThrough(sample, chunk)
 			if got != sample {
-				t.Errorf("%s (chunk=%d): content altered\nwant %q\ngot  %q", name, chunk, sample, got)
+				t.Errorf("%s (chunk=%d): content altered", name, chunk)
 			}
 			if g.blocked() {
 				t.Errorf("%s (chunk=%d): guard blocked legitimate content", name, chunk)
@@ -99,11 +117,8 @@ func TestStreamFilterPassesContentUnchanged(t *testing.T) {
 
 func TestStreamFilterNeverReleasesCode(t *testing.T) {
 	codeMarkers := []string{"print(", "console.log", "fmt.Println", "printf(", "mv \"$f\"", "node server.js",
-		"Rename-Item", "DELETE FROM", "<script>", "os.system", "System.out", "fetch('/api')", "os.remove"}
+		"Rename-Item", "DELETE FROM", "<script>", "os.remove", "System.out", "image: alpine", "rm -rf"}
 	for name, sample := range codeSamples {
-		if name == "json embedding code" {
-			continue // a single-line JSON blob is judged by ContainsSourceCode at the file-write layer
-		}
 		for _, chunk := range []int{1, 4, 10000} {
 			got, g := streamThrough("Đây là câu trả lời.\n"+sample+"\nHết.", chunk)
 			if !g.blocked() {
@@ -149,7 +164,7 @@ func TestThoughtFilterDropsCode(t *testing.T) {
 	g := newTurnOutputGuard("m1")
 	var out strings.Builder
 	out.WriteString(g.filterThought("Người dùng muốn code.\n"))
-	out.WriteString(g.filterThought("def a():\n    import os\n    os.system('x')\n    return 1\n"))
+	out.WriteString(g.filterThought("```python\nimport os\nos.system('x')\n```\n"))
 	_, tail := g.finalize()
 	out.WriteString(tail)
 	if strings.Contains(out.String(), "os.system") {
@@ -158,7 +173,7 @@ func TestThoughtFilterDropsCode(t *testing.T) {
 }
 
 // TestServiceGuardsProviderOutput drives a full turn through Service with a fake Codex runner that emits code,
-// and verifies neither the UI events nor the persisted history contain it.
+// verifying the UI delta stream, final done text, and stored DB history are all clean.
 func TestServiceGuardsProviderOutput(t *testing.T) {
 	dir := t.TempDir()
 	dummyCodex := filepath.Join(dir, "codex.exe")
@@ -192,7 +207,7 @@ func TestServiceGuardsProviderOutput(t *testing.T) {
 		RunCodexTurn: func(_ context.Context, _, _, _, _, _, messageID, _ string) error {
 			acc := &codexStreamAccumulator{providerID: domainagent.ProviderCodex, messageID: messageID, emit: svc.emitChat}
 			msg, _ := json.Marshal("Được thôi, đây là code:\n```python\nimport os\nos.system('calc')\n```\nChúc bạn thành công.")
-			thought, _ := json.Marshal("User wants code.\nimport os\nos.system('calc')\nprint('x')\n")
+			thought, _ := json.Marshal("User wants code.\n```python\nimport os\nos.system('calc')\n```\n")
 			acc.handleLine(`{"type":"item.completed","item":{"type":"reasoning","text":` + string(thought) + `}}`)
 			acc.handleLine(`{"type":"item.completed","item":{"type":"agent_message","text":` + string(msg) + `}}`)
 			return nil
@@ -242,7 +257,7 @@ func TestServiceGuardsProviderOutput(t *testing.T) {
 	}
 }
 
-func TestWorkspaceWriteToolRejectsCode(t *testing.T) {
+func TestWorkspaceWriteToolExtensionBlockingAndJSONValidation(t *testing.T) {
 	dir := t.TempDir()
 	ws := filepath.Join(dir, "ws")
 	svc, err := New(Options{
@@ -269,28 +284,80 @@ func TestWorkspaceWriteToolRejectsCode(t *testing.T) {
 	}
 	defer cs.Close()
 
-	write := func(path, content string) *mcp.CallToolResult {
-		res, err := cs.CallTool(ctx, &mcp.CallToolParams{
-			Name:      "workspace_write_file",
-			Arguments: map[string]any{"path": path, "content": content},
-		})
+	call := func(tool string, args map[string]any) *mcp.CallToolResult {
+		res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: args})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return res
 	}
+	resultText := func(res *mcp.CallToolResult) string {
+		if len(res.Content) == 0 {
+			return ""
+		}
+		if tc, ok := res.Content[0].(*mcp.TextContent); ok {
+			return tc.Text
+		}
+		return ""
+	}
 
-	for name, sample := range codeSamples {
-		target := filepath.Join(ws, "note.txt")
-		if res := write(target, sample); !res.IsError {
-			t.Errorf("%s: expected workspace_write_file to refuse code", name)
+	// Extension blocking prevents writing programming source files.
+	for name, tc := range map[string]struct{ ext, body string }{
+		"python":     {".py", "print('hi')\n"},
+		"shell":      {".sh", "echo hi\n"},
+		"go":         {".go", "package main\nfunc main() {}\n"},
+		"powershell": {".ps1", "Write-Host hi\n"},
+	} {
+		target := filepath.Join(ws, "bad_"+name+tc.ext)
+		if res := call("workspace_write_file", map[string]any{"path": target, "content": tc.body}); !res.IsError {
+			t.Errorf("%s: expected workspace_write_file to reject code extension %s", name, tc.ext)
 		}
 		if _, err := os.Stat(target); err == nil {
-			t.Fatalf("%s: code was written to disk", name)
+			t.Fatalf("%s: forbidden extension %s was written to disk", name, tc.ext)
 		}
 	}
-	if res := write(filepath.Join(ws, "script.md"), proseSamples["vietnamese script"]); res.IsError {
-		t.Fatalf("expected legitimate script to be written, got %+v", res.Content)
+
+	// Long creative scripts / markdown tables / parameter syntax write and read cleanly without false positives.
+	longScriptPath := filepath.Join(ws, "script.md")
+	longScript := longVietnameseMovieScript()
+	if res := call("workspace_write_file", map[string]any{"path": longScriptPath, "content": longScript}); res.IsError {
+		t.Fatalf("expected long script write to succeed, got %s", resultText(res))
+	}
+	if res := call("workspace_read_file", map[string]any{"path": longScriptPath}); res.IsError {
+		t.Fatalf("expected long script read to succeed, got %s", resultText(res))
+	}
+
+	// Pre-write JSON validation rejects broken syntax and hints on typographic curly quotes,
+	// while allowing valid UTF-8 typographic curly quotes inside valid JSON string values.
+	badJSONPath := filepath.Join(ws, "bad_curly.json")
+	resBad := call("workspace_write_file", map[string]any{
+		"path":    badJSONPath,
+		"content": "{“shot”: 1}",
+	})
+	if !resBad.IsError || !strings.Contains(resultText(resBad), "typographic curly quotes") {
+		t.Fatalf("expected curly-quote JSON validation hint, got isError=%v text=%q", resBad.IsError, resultText(resBad))
+	}
+	if _, err := os.Stat(badJSONPath); err == nil {
+		t.Fatal("invalid JSON must not be written to disk")
+	}
+
+	shotListPath := filepath.Join(ws, "shot_list.json")
+	validJSON := "{\"dialogue\": \"\u201cXin ch\u00e0o\u201d\", \"fps\": 24}"
+	if res := call("workspace_write_file", map[string]any{"path": shotListPath, "content": validJSON}); res.IsError {
+		t.Fatalf("valid JSON with UTF-8 curly quotes inside string must succeed, got %s", resultText(res))
+	}
+
+	// workspace_edit_file must also validate resulting JSON before modifying disk.
+	if res := call("workspace_edit_file", map[string]any{
+		"path":    shotListPath,
+		"mode":    "append",
+		"content": "not valid trailing json",
+	}); !res.IsError {
+		t.Fatal("expected workspace_edit_file to reject edit that produces invalid JSON")
+	}
+	raw, _ := os.ReadFile(shotListPath)
+	if string(raw) != validJSON {
+		t.Fatalf("disk file mutated on failed JSON validation: got %q", string(raw))
 	}
 }
 
@@ -312,10 +379,10 @@ func TestStreamFilterReleasesProseBeforeNewline(t *testing.T) {
 }
 
 func TestStreamFilterEarlyReleaseStillBlocksCode(t *testing.T) {
-	text := "Đây là đoạn mã bạn cần nhé:\nimport os\nos.system('calc')\nprint(os.getcwd())\n"
+	text := "Đây là đoạn mã bạn cần nhé:\n```python\nimport os\nos.system('calc')\n```\n"
 	got, g := streamThrough(text, 3)
 	if !g.blocked() || strings.Contains(got, "os.system") {
-		t.Fatalf("expected code blocked even with early prose release, got %q", got)
+		t.Fatalf("expected fenced code blocked even with early prose release, got %q", got)
 	}
 }
 

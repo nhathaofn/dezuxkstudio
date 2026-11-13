@@ -69,15 +69,16 @@ type SystemInfo struct {
 type FolderTarget string
 
 const (
-	FolderLogs        FolderTarget = "logs"
-	FolderData        FolderTarget = "data"
-	FolderConfig      FolderTarget = "config"
-	FolderDiagnostics FolderTarget = "diagnostics"
+	FolderLogs                FolderTarget = "logs"
+	FolderData                FolderTarget = "data"
+	FolderConfig              FolderTarget = "config"
+	FolderDiagnostics         FolderTarget = "diagnostics"
+	FolderAgentCustomizations FolderTarget = "agent_customizations"
 )
 
 // FolderTargets lists valid targets.
 func FolderTargets() []FolderTarget {
-	return []FolderTarget{FolderLogs, FolderData, FolderConfig, FolderDiagnostics}
+	return []FolderTarget{FolderLogs, FolderData, FolderConfig, FolderDiagnostics, FolderAgentCustomizations}
 }
 
 // OpenFolderPayload is the payload of system:open_folder.
@@ -383,14 +384,17 @@ type AgentPromptResult struct {
 
 // AgentChatEvent streams delta/thought/tool/completion/error updates from the active turn.
 type AgentChatEvent struct {
-	Type        agent.ChatEventType `json:"type"`
-	ProviderID  agent.ProviderID    `json:"provider_id"`
-	MessageID   string              `json:"message_id"`
-	Text        string              `json:"text"`
-	Tool        string              `json:"tool,omitempty"`
-	Error       string              `json:"error"`
-	ErrorKey    string              `json:"error_key,omitempty"`
-	ErrorParams map[string]string   `json:"error_params,omitempty"`
+	Type             agent.ChatEventType `json:"type"`
+	ProviderID       agent.ProviderID    `json:"provider_id"`
+	MessageID        string              `json:"message_id"`
+	Text             string              `json:"text"`
+	Tool             string              `json:"tool,omitempty"`
+	SubagentID       string              `json:"subagent_id,omitempty"`
+	SubagentName     string              `json:"subagent_name,omitempty"`
+	SubagentProvider agent.ProviderID    `json:"subagent_provider,omitempty"`
+	Error            string              `json:"error"`
+	ErrorKey         string              `json:"error_key,omitempty"`
+	ErrorParams      map[string]string   `json:"error_params,omitempty"`
 }
 
 // NewAgentChatEvent converts a domain agent.ChatEvent to the wire DTO.
@@ -400,13 +404,14 @@ func NewAgentChatEvent(in agent.ChatEvent) AgentChatEvent {
 
 // AgentChatMessage represents one persisted chat entry in DezuxkStudio history.
 type AgentChatMessage struct {
-	ID         string           `json:"id"`
-	ProviderID agent.ProviderID `json:"provider_id"`
-	Role       string           `json:"role"`
-	Text       string           `json:"text"`
-	Thought    string           `json:"thought,omitempty"`
-	Tool       string           `json:"tool,omitempty"`
-	CreatedAt  int64            `json:"created_at"`
+	ID         string                     `json:"id"`
+	ProviderID agent.ProviderID           `json:"provider_id"`
+	Role       string                     `json:"role"`
+	Text       string                     `json:"text"`
+	Thought    string                     `json:"thought,omitempty"`
+	Tool       string                     `json:"tool,omitempty"`
+	Subagents  []agent.SubagentInvocation `json:"subagents,omitempty"`
+	CreatedAt  int64                      `json:"created_at"`
 	// ConversationID is the chat the message belongs to.
 	ConversationID string `json:"conversation_id,omitempty"`
 }
@@ -508,6 +513,80 @@ type AgentAllowedDirPayload struct {
 func (p AgentAllowedDirPayload) Validate() error {
 	if strings.TrimSpace(p.Dir) == "" {
 		return apperr.Validation("directory path is required")
+	}
+	return nil
+}
+
+// AgentCustomizationsResult returns all shared skills, subagents, and delegatable tool names.
+type AgentCustomizationsResult struct {
+	Dir            string               `json:"dir"`
+	Skills         []agent.SkillInfo    `json:"skills"`
+	Subagents      []agent.SubagentInfo `json:"subagents"`
+	AvailableTools []string             `json:"available_tools"`
+}
+
+// NewAgentCustomizationsResult converts domainagent.CustomizationsSnapshot to the wire DTO.
+func NewAgentCustomizationsResult(in agent.CustomizationsSnapshot) AgentCustomizationsResult {
+	return AgentCustomizationsResult(in)
+}
+
+// AgentCustomizationIDPayload targets one skill or subagent by slug name.
+type AgentCustomizationIDPayload struct {
+	Name string `json:"name"`
+}
+
+// Validate checks customization name presence.
+func (p AgentCustomizationIDPayload) Validate() error {
+	if strings.TrimSpace(p.Name) == "" {
+		return apperr.Validation("customization name is required")
+	}
+	return nil
+}
+
+// AgentSaveSkillPayload creates or updates a shared skill markdown file.
+type AgentSaveSkillPayload struct {
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	UserInvocable bool   `json:"user_invocable"`
+	Enabled       bool   `json:"enabled"`
+	Body          string `json:"body"`
+}
+
+// Validate checks required skill fields.
+func (p AgentSaveSkillPayload) Validate() error {
+	if strings.TrimSpace(p.Name) == "" {
+		return apperr.Validation("skill name is required")
+	}
+	if strings.TrimSpace(p.Description) == "" {
+		return apperr.Validation("skill description is required")
+	}
+	return nil
+}
+
+// AgentSaveSubagentPayload creates or updates a shared subagent markdown file.
+type AgentSaveSubagentPayload struct {
+	Name        string           `json:"name"`
+	Description string           `json:"description"`
+	Tools       []string         `json:"tools"`
+	Skills      []string         `json:"skills"`
+	Provider    agent.ProviderID `json:"provider,omitempty"`
+	Model       string           `json:"model,omitempty"`
+	Enabled     bool             `json:"enabled"`
+	Body        string           `json:"body"`
+}
+
+// Validate checks required subagent fields and provider override validity.
+func (p AgentSaveSubagentPayload) Validate() error {
+	if strings.TrimSpace(p.Name) == "" {
+		return apperr.Validation("subagent name is required")
+	}
+	if strings.TrimSpace(p.Description) == "" {
+		return apperr.Validation("subagent description is required")
+	}
+	if p.Provider != "" {
+		if err := agent.ValidateProviderID(p.Provider); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -126,11 +126,14 @@ func (s *Service) Connect(ctx context.Context, id domainagent.ProviderID) (domai
 
 	// Open the session right away so the provider's model list (and the user's model choice) is ready
 	// before the first message; a failure here is not fatal, the first turn retries lazily.
-	eagerSessionID, sessErr := transport.NewSession(initCtx, workDir, s.systemPrompt(initCtx, id))
+	initSysPrompt := s.systemPrompt(initCtx, id)
+	eagerSessionID, sessErr := transport.NewSession(initCtx, workDir, initSysPrompt)
+	initPromptHash := ""
 	if sessErr != nil {
 		s.log.Warn("agent: eager session/new failed", "provider", id, "error", sessErr)
 		eagerSessionID = ""
 	} else {
+		initPromptHash = promptDigest(initSysPrompt)
 		s.applyACPSessionModels(initCtx, id, transport, eagerSessionID)
 	}
 
@@ -148,7 +151,9 @@ func (s *Service) Connect(ctx context.Context, id domainagent.ProviderID) (domai
 	s.activeInit = initRes
 	s.activeVersion = version
 	s.activeSessionID = eagerSessionID
+	s.activeSessionPromptHash = initPromptHash
 	s.sessionPrimed = false
+	s.resetConversationOnProviderChangeLocked(id)
 	s.states[id] = domainagent.StateConnected
 	s.authStates[id] = domainagent.AuthAuthenticated
 	delete(s.lastErrors, id)
@@ -204,8 +209,10 @@ func (s *Service) connectPerTurnCLI(
 	s.activeID = id
 	s.activeClient = nil
 	s.activeSessionID = ""
+	s.activeSessionPromptHash = ""
 	s.activeInit = nil
 	s.activeVersion = version
+	s.resetConversationOnProviderChangeLocked(id)
 	s.states[id] = domainagent.StateConnected
 	delete(s.lastErrors, id)
 	info := s.buildInfoLocked(spec, resolved, source, customPath, version)
@@ -285,6 +292,7 @@ func (s *Service) clearConnectionLocked() {
 	s.activeClient = nil
 	s.activeID = ""
 	s.activeSessionID = ""
+	s.activeSessionPromptHash = ""
 	s.activeInit = nil
 	s.activeVersion = ""
 	s.turn = nil

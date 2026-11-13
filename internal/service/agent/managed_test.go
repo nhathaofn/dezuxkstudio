@@ -62,7 +62,6 @@ func newManagedService(t *testing.T, m ManagedCLIs, install, update bool, repo *
 		Repo: repo, DataDir: dir, WorkspaceDir: filepath.Join(dir, "ws"), MediaDir: filepath.Join(dir, "media"),
 		ProfilesDir: filepath.Join(dir, "profiles"), Logger: slog.New(slog.DiscardHandler),
 		Managed: m, AutoInstall: install, AutoUpdate: update,
-		Limits: Limits{CLIUpdateInterval: time.Hour},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -143,25 +142,17 @@ func TestProvisionRespectsInstallAndUpdateSwitches(t *testing.T) {
 	if fm.calls[domainagent.ProviderCodex] != 0 || fm.calls[domainagent.ProviderClaude] != 1 {
 		t.Fatalf("install-only: %v", fm.calls)
 	}
-	// Update only: an existing CLI is refreshed, a missing one is not installed.
+	// Update only: an existing CLI is refreshed once at startup and finishes without periodic polling.
 	fm = newFakeManaged(t)
 	fm.have[domainagent.ProviderCodex] = domainagent.ManagedCopy{Version: "1.0.0", Path: filepath.Join(fm.dir, "old")}
 	svc := newManagedService(t, fm, false, true, newFakeRepo())
-	cctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
-	go func() { svc.ProvisionCLIs(cctx); close(done) }()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		fm.mu.Lock()
-		n := fm.calls[domainagent.ProviderCodex]
-		fm.mu.Unlock()
-		if n == 1 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	go func() { svc.ProvisionCLIs(ctx); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("ProvisionCLIs did not return after one startup round")
 	}
-	cancel()
-	<-done
 	if fm.calls[domainagent.ProviderCodex] != 1 || fm.calls[domainagent.ProviderClaude] != 0 {
 		t.Fatalf("update-only: %v", fm.calls)
 	}

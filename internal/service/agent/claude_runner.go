@@ -219,6 +219,34 @@ func buildClaudeArgs(mcpConfigPath, instructions string, devMode bool) []string 
 }
 
 func buildClaudeExecArgs(mcpConfigPath, instructions string) []string {
+	return buildClaudeExecArgsWithTools(mcpConfigPath, instructions, nil)
+}
+
+func buildClaudeAllowedToolsCSV(tools []string) string {
+	if len(tools) == 0 {
+		return claudeMCPAllowedTools
+	}
+	seen := make(map[string]bool, len(tools))
+	out := make([]string, 0, len(tools))
+	for _, t := range tools {
+		t = strings.TrimSpace(t)
+		if t == "" || t == "subagent_run" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, claudeMCPToolPrefix+t)
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return strings.Join(out, ",")
+}
+
+func buildClaudeExecArgsWithTools(mcpConfigPath, instructions string, allowedTools []string) []string {
+	allowedCSV := claudeMCPAllowedTools
+	if allowedTools != nil {
+		allowedCSV = buildClaudeAllowedToolsCSV(allowedTools)
+	}
 	return []string{
 		"-p",
 		"--output-format", "stream-json",
@@ -230,7 +258,7 @@ func buildClaudeExecArgs(mcpConfigPath, instructions string) []string {
 		"--setting-sources", "",
 		"--strict-mcp-config",
 		"--mcp-config", mcpConfigPath,
-		"--allowedTools", claudeMCPAllowedTools,
+		"--allowedTools", allowedCSV,
 		"--permission-mode", "dontAsk",
 		"--system-prompt", instructions,
 	}

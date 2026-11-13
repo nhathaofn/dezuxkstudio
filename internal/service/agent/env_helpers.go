@@ -56,16 +56,14 @@ type promptOptions struct {
 	developerMode bool
 }
 
-func buildHistoryContextPrompt(history []domainagent.ChatMessage, ui UIContext, userPrompt string, limits Limits) string {
-	return buildTurnPrompt(history, ui, userPrompt, limits, promptOptions{})
+func buildHistoryContextPrompt(history []domainagent.ChatMessage, ui UIContext, userPrompt string) string {
+	return buildTurnPrompt(history, ui, userPrompt, promptOptions{})
 }
 
-func buildTurnPrompt(history []domainagent.ChatMessage, ui UIContext, userPrompt string, limits Limits, opts promptOptions) string {
-	limits = limits.withDefaults()
+func buildTurnPrompt(history []domainagent.ChatMessage, ui UIContext, userPrompt string, opts promptOptions) string {
 	var sb strings.Builder
 	sb.WriteString(ui.normalized().promptBlock())
 
-	// Filter first, then keep the newest N within both count and total character budgets.
 	relevant := make([]domainagent.ChatMessage, 0, len(history))
 	for _, m := range history {
 		if m.Role != "user" && m.Role != "assistant" {
@@ -76,51 +74,17 @@ func buildTurnPrompt(history []domainagent.ChatMessage, ui UIContext, userPrompt
 		}
 		relevant = append(relevant, m)
 	}
-	if len(relevant) > limits.ContextMessages {
-		relevant = relevant[len(relevant)-limits.ContextMessages:]
-	}
 	if len(relevant) > 0 {
-		formatted := make([]string, len(relevant))
-		for i, m := range relevant {
+		sb.WriteString("[Recent conversation]\n")
+		for _, m := range relevant {
 			role := "User"
 			if m.Role == "assistant" {
 				role = "Assistant"
 			}
 			text := strings.TrimSpace(stripNoticeMarkers(m.Text))
-			if runes := []rune(text); len(runes) > limits.ContextMessageChars {
-				text = string(runes[:limits.ContextMessageChars]) + "..."
-			}
-			formatted[i] = role + ": " + text
-		}
-		// Walk from newest to oldest so the most recent turns always survive within ContextTotalChars.
-		start := len(formatted)
-		usedRunes := 0
-		for i := len(formatted) - 1; i >= 0; i-- {
-			entry := formatted[i]
-			entryRunes := len([]rune(entry)) + 1
-			if start == len(formatted) {
-				if limits.ContextTotalChars > 0 && entryRunes > limits.ContextTotalChars {
-					r := []rune(entry)
-					keep := max(limits.ContextTotalChars-3, 1)
-					if len(r) > keep {
-						formatted[i] = string(r[:keep]) + "..."
-					}
-					usedRunes = limits.ContextTotalChars
-				} else {
-					usedRunes += entryRunes
-				}
-				start = i
-				continue
-			}
-			if usedRunes+entryRunes > limits.ContextTotalChars {
-				break
-			}
-			usedRunes += entryRunes
-			start = i
-		}
-		sb.WriteString("[Recent conversation]\n")
-		for _, line := range formatted[start:] {
-			sb.WriteString(line)
+			sb.WriteString(role)
+			sb.WriteString(": ")
+			sb.WriteString(text)
 			sb.WriteByte('\n')
 		}
 		sb.WriteByte('\n')

@@ -3,9 +3,12 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,33 +43,35 @@ type CodexAuthProber func(ctx context.Context, executable, profileRoot string) (
 
 // Options configures the agent Service.
 type Options struct {
-	Repo               domainagent.Repository
-	DataDir            string
-	WorkspaceDir       string
-	MediaDir           string
-	ProfilesDir        string
-	DeveloperMode      bool // opt-in unrestricted developer/coding mode (disabled by default)
-	AppVersion         string
-	Limits             Limits        // zero fields use DefaultLimits
-	Secrets            secrets.Store // OS credential store for provider API keys (in-memory when nil)
-	Logger             *slog.Logger
-	Workflow           WorkflowRunner
-	Binaries           BinariesManager
-	Managed            ManagedCLIs // the app's own agent CLI copies; nil keeps using what is on the machine
-	AutoInstall        bool        // install a missing managed copy in the background
-	AutoUpdate         bool        // move managed copies to newer official releases
-	Preferences        PreferencesManager
-	System             SystemInspector
-	Diagnostics        DiagnosticsExporter
-	OnStatusChanged    func(domainagent.ProviderInfo)
-	OnChatEvent        func(domainagent.ChatEvent)
-	OnApprovalsChanged func([]domainagent.ApprovalRequest)
-	OnLoginPrompt      func(domainagent.LoginPrompt) // the page/code the user must use to finish a running sign-in
-	SpawnTransport     TransportFactory
-	RunCodexTurn       CodexTurnRunner
-	ProbeCodexAuth     CodexAuthProber
-	RunClaudeTurn      CodexTurnRunner
-	ProbeClaudeAuth    CodexAuthProber
+	Repo                    domainagent.Repository
+	DataDir                 string
+	WorkspaceDir            string
+	MediaDir                string
+	ProfilesDir             string
+	CustomizationsDir       string
+	DeveloperMode           bool // opt-in unrestricted developer/coding mode (disabled by default)
+	AppVersion              string
+	Limits                  Limits        // zero fields use DefaultLimits
+	Secrets                 secrets.Store // OS credential store for provider API keys (in-memory when nil)
+	Logger                  *slog.Logger
+	Workflow                WorkflowRunner
+	Binaries                BinariesManager
+	Managed                 ManagedCLIs // the app's own agent CLI copies; nil keeps using what is on the machine
+	AutoInstall             bool        // install a missing managed copy in the background
+	AutoUpdate              bool        // move managed copies to newer official releases
+	Preferences             PreferencesManager
+	System                  SystemInspector
+	Diagnostics             DiagnosticsExporter
+	OnStatusChanged         func(domainagent.ProviderInfo)
+	OnChatEvent             func(domainagent.ChatEvent)
+	OnApprovalsChanged      func([]domainagent.ApprovalRequest)
+	OnLoginPrompt           func(domainagent.LoginPrompt) // the page/code the user must use to finish a running sign-in
+	OnCustomizationsChanged func(domainagent.CustomizationsSnapshot)
+	SpawnTransport          TransportFactory
+	RunCodexTurn            CodexTurnRunner
+	ProbeCodexAuth          CodexAuthProber
+	RunClaudeTurn           CodexTurnRunner
+	ProbeClaudeAuth         CodexAuthProber
 }
 
 // Service manages isolated external AI agent connections, MCP tooling, approvals, and chat turns.
@@ -74,66 +79,73 @@ type Service struct {
 	// statusRevision numbers the status snapshots (ProviderInfo.Revision); it only ever grows.
 	statusRevision atomic.Int64
 
-	repo               domainagent.Repository
-	dataDir            string
-	workspaceDir       string
-	mediaDir           string
-	profilesDir        string
-	developerMode      bool
-	appVersion         string
-	limits             Limits
-	log                *slog.Logger
-	workflow           WorkflowRunner
-	binaries           BinariesManager
-	managed            ManagedCLIs
-	autoInstall        bool
-	autoUpdate         bool
-	provisioning       map[domainagent.ProviderID]provisionState
-	onLoginPrompt      func(domainagent.LoginPrompt)
-	loginMu            sync.Mutex
-	logins             map[domainagent.ProviderID]*loginSession
-	preferences        PreferencesManager
-	system             SystemInspector
-	diagnostics        DiagnosticsExporter
-	onStatusChanged    func(domainagent.ProviderInfo)
-	onChatEvent        func(domainagent.ChatEvent)
-	onApprovalsChanged func([]domainagent.ApprovalRequest)
-	spawnTransport     TransportFactory
-	runCodex           CodexTurnRunner
-	probeCodex         CodexAuthProber
-	runClaude          CodexTurnRunner
-	probeClaude        CodexAuthProber
+	repo                    domainagent.Repository
+	dataDir                 string
+	workspaceDir            string
+	mediaDir                string
+	profilesDir             string
+	customizationsDir       string
+	developerMode           bool
+	appVersion              string
+	limits                  Limits
+	log                     *slog.Logger
+	workflow                WorkflowRunner
+	binaries                BinariesManager
+	managed                 ManagedCLIs
+	autoInstall             bool
+	autoUpdate              bool
+	provisioning            map[domainagent.ProviderID]provisionState
+	onLoginPrompt           func(domainagent.LoginPrompt)
+	loginMu                 sync.Mutex
+	logins                  map[domainagent.ProviderID]*loginSession
+	preferences             PreferencesManager
+	system                  SystemInspector
+	diagnostics             DiagnosticsExporter
+	onStatusChanged         func(domainagent.ProviderInfo)
+	onChatEvent             func(domainagent.ChatEvent)
+	onApprovalsChanged      func([]domainagent.ApprovalRequest)
+	onCustomizationsChanged func(domainagent.CustomizationsSnapshot)
+	spawnTransport          TransportFactory
+	spawnTransportCustom    bool
+	runCodex                CodexTurnRunner
+	probeCodex              CodexAuthProber
+	runClaude               CodexTurnRunner
+	probeClaude             CodexAuthProber
 
-	drivers   map[domainagent.ProviderID]providerDriver
-	policy    *AccessPolicy
-	approvals *approvalStore
-	secrets   profileSecrets // API keys of the isolated provider profiles
+	drivers        map[domainagent.ProviderID]providerDriver
+	policy         *AccessPolicy
+	approvals      *approvalStore
+	secrets        profileSecrets // API keys of the isolated provider profiles
+	customizations *customizationManager
+	subagentSem    chan struct{}
 
 	toolDocsOnce sync.Once
 	docs         []toolDoc // registered MCP tools, see toolDocs
 
-	mu              sync.Mutex
-	mcpSrv          *localMCPServer
-	activeID        domainagent.ProviderID
-	activeClient    Transport
-	activeSessionID string
-	activeInit      *InitializeResult
-	activeVersion   string
-	turn            *turn                             // the running chat turn; nil when idle
-	turns           sync.WaitGroup                    // running turn goroutines, waited for on Close
-	sessionPrimed   bool                              // the active ACP session already received the conversation history
-	cliSessions     map[domainagent.ProviderID]string // resumable Codex thread / Claude session per provider
-	models          *modelState
-	uiContext       UIContext
-	states          map[domainagent.ProviderID]domainagent.ConnectionState
-	authStates      map[domainagent.ProviderID]domainagent.AuthState
-	accountInfos    map[domainagent.ProviderID]string
-	lastErrors      map[domainagent.ProviderID]error       // may carry an i18n key (localizedError)
-	cachedVersions  map[domainagent.ProviderID]cachedProbe // CLI --version results
-	authProbes      map[domainagent.ProviderID]cachedProbe // when the CLI auth status was last checked
-	tempWorkspace   string                                 // fallback workspace when none is configured
-	sentScreen      map[string]string                      // screen-context block last sent per provider session
-	conversationID  string                                 // current chat; "" until its first message (new chat on every start)
+	mu                      sync.Mutex
+	mcpSrv                  *localMCPServer
+	activeID                domainagent.ProviderID
+	activeClient            Transport
+	activeSessionID         string
+	activeSessionPromptHash string
+	activeInit              *InitializeResult
+	activeVersion           string
+	turn                    *turn                             // the running chat turn; nil when idle
+	turns                   sync.WaitGroup                    // running turn goroutines, waited for on Close
+	sessionPrimed           bool                              // the active ACP session already received the conversation history
+	cliSessions             map[domainagent.ProviderID]string // resumable Codex thread / Claude session per provider
+	models                  *modelState
+	uiContext               UIContext
+	states                  map[domainagent.ProviderID]domainagent.ConnectionState
+	authStates              map[domainagent.ProviderID]domainagent.AuthState
+	accountInfos            map[domainagent.ProviderID]string
+	lastErrors              map[domainagent.ProviderID]error       // may carry an i18n key (localizedError)
+	cachedVersions          map[domainagent.ProviderID]cachedProbe // CLI --version results
+	authProbes              map[domainagent.ProviderID]cachedProbe // when the CLI auth status was last checked
+	tempWorkspace           string                                 // fallback workspace when none is configured
+	sentScreen              map[string]string                      // screen-context block last sent per provider session
+	conversationID          string                                 // current chat; "" until its first message (new chat on every start)
+	conversationProvider    domainagent.ProviderID                 // provider owning conversationID; "" when unassigned
 
 	codexServer          *codexAppServer // long-lived `codex app-server` for streaming Codex turns
 	codexAppServerBroken map[string]bool // executables whose app-server failed to start (use codex exec)
@@ -161,47 +173,63 @@ func New(o Options) (*Service, error) {
 	if err != nil {
 		o.Logger.Warn("agent: failed to load allowed dirs", "error", err)
 	}
+	custDir := strings.TrimSpace(o.CustomizationsDir)
+	if custDir == "" && strings.TrimSpace(o.DataDir) != "" {
+		custDir = filepath.Join(o.DataDir, "agent-customizations")
+	}
+	var custMgr *customizationManager
+	if custDir != "" {
+		custMgr = newCustomizationManager(custDir)
+		if syncErr := custMgr.EnsureSynced(); syncErr != nil {
+			o.Logger.Warn("agent: failed to sync customizations", "error", syncErr)
+		}
+	}
 	s := &Service{
-		repo:               o.Repo,
-		dataDir:            o.DataDir,
-		workspaceDir:       o.WorkspaceDir,
-		mediaDir:           o.MediaDir,
-		profilesDir:        o.ProfilesDir,
-		developerMode:      o.DeveloperMode,
-		appVersion:         version,
-		limits:             limits,
-		log:                o.Logger,
-		workflow:           o.Workflow,
-		binaries:           o.Binaries,
-		managed:            o.Managed,
-		autoInstall:        o.AutoInstall,
-		autoUpdate:         o.AutoUpdate,
-		provisioning:       make(map[domainagent.ProviderID]provisionState),
-		onLoginPrompt:      o.OnLoginPrompt,
-		logins:             make(map[domainagent.ProviderID]*loginSession),
-		preferences:        o.Preferences,
-		system:             o.System,
-		diagnostics:        o.Diagnostics,
-		onStatusChanged:    o.OnStatusChanged,
-		onChatEvent:        o.OnChatEvent,
-		onApprovalsChanged: o.OnApprovalsChanged,
-		spawnTransport:     o.SpawnTransport,
-		runCodex:           o.RunCodexTurn,
-		probeCodex:         o.ProbeCodexAuth,
-		runClaude:          o.RunClaudeTurn,
-		probeClaude:        o.ProbeClaudeAuth,
-		policy:             NewAccessPolicy(o.DataDir, o.WorkspaceDir, o.MediaDir, o.ProfilesDir, allowedDirs),
-		secrets:            profileSecrets{store: secretStore},
-		approvals:          newApprovalStore(limits.ApprovalTTL, limits.MaxPendingApprovals),
-		models:             newModelState(),
-		cliSessions:        make(map[domainagent.ProviderID]string),
-		states:             make(map[domainagent.ProviderID]domainagent.ConnectionState),
-		authStates:         make(map[domainagent.ProviderID]domainagent.AuthState),
-		accountInfos:       make(map[domainagent.ProviderID]string),
-		lastErrors:         make(map[domainagent.ProviderID]error),
-		cachedVersions:     make(map[domainagent.ProviderID]cachedProbe),
-		authProbes:         make(map[domainagent.ProviderID]cachedProbe),
-		sentScreen:         make(map[string]string),
+		repo:                    o.Repo,
+		dataDir:                 o.DataDir,
+		workspaceDir:            o.WorkspaceDir,
+		mediaDir:                o.MediaDir,
+		profilesDir:             o.ProfilesDir,
+		customizationsDir:       custDir,
+		developerMode:           o.DeveloperMode,
+		appVersion:              version,
+		limits:                  limits,
+		log:                     o.Logger,
+		workflow:                o.Workflow,
+		binaries:                o.Binaries,
+		managed:                 o.Managed,
+		autoInstall:             o.AutoInstall,
+		autoUpdate:              o.AutoUpdate,
+		provisioning:            make(map[domainagent.ProviderID]provisionState),
+		onLoginPrompt:           o.OnLoginPrompt,
+		logins:                  make(map[domainagent.ProviderID]*loginSession),
+		preferences:             o.Preferences,
+		system:                  o.System,
+		diagnostics:             o.Diagnostics,
+		onStatusChanged:         o.OnStatusChanged,
+		onChatEvent:             o.OnChatEvent,
+		onApprovalsChanged:      o.OnApprovalsChanged,
+		onCustomizationsChanged: o.OnCustomizationsChanged,
+		spawnTransport:          o.SpawnTransport,
+		spawnTransportCustom:    o.SpawnTransport != nil,
+		runCodex:                o.RunCodexTurn,
+		probeCodex:              o.ProbeCodexAuth,
+		runClaude:               o.RunClaudeTurn,
+		probeClaude:             o.ProbeClaudeAuth,
+		policy:                  NewAccessPolicy(o.DataDir, o.WorkspaceDir, o.MediaDir, o.ProfilesDir, allowedDirs),
+		secrets:                 profileSecrets{store: secretStore},
+		approvals:               newApprovalStore(limits.ApprovalTTL, limits.MaxPendingApprovals),
+		customizations:          custMgr,
+		subagentSem:             make(chan struct{}, limits.MaxConcurrentSubagents),
+		models:                  newModelState(),
+		cliSessions:             make(map[domainagent.ProviderID]string),
+		states:                  make(map[domainagent.ProviderID]domainagent.ConnectionState),
+		authStates:              make(map[domainagent.ProviderID]domainagent.AuthState),
+		accountInfos:            make(map[domainagent.ProviderID]string),
+		lastErrors:              make(map[domainagent.ProviderID]error),
+		cachedVersions:          make(map[domainagent.ProviderID]cachedProbe),
+		authProbes:              make(map[domainagent.ProviderID]cachedProbe),
+		sentScreen:              make(map[string]string),
 
 		codexAppServerBroken: make(map[string]bool),
 		spawnCodexAppServer:  startCodexAppServer,
@@ -211,14 +239,7 @@ func New(o Options) (*Service, error) {
 		// The process outlives the Connect call that starts it, so it is not bound to that call's ctx;
 		// Disconnect/Close end it.
 		s.spawnTransport = func(_ context.Context, executable string, args []string, workDir string, env []string, onEvent func(SessionUpdate), onExit func(error)) (Transport, error) {
-			client, spawnErr := SpawnACP(context.Background(), executable, args, workDir, env, s.toolNames(), s.log, onEvent, onExit)
-			if spawnErr != nil {
-				return nil, spawnErr
-			}
-			if s.developerMode {
-				client.SetAllowAllPermissions(true)
-			}
-			return client, nil
+			return s.spawnScopedTransport(context.Background(), executable, args, workDir, env, s.toolNames(), onEvent, onExit)
 		}
 	}
 	if s.runCodex == nil {
@@ -340,4 +361,166 @@ func errText(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func promptDigest(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *Service) spawnScopedTransport(ctx context.Context, executable string, args []string, workDir string, env, ownTools []string, onEvent func(SessionUpdate), onExit func(error)) (Transport, error) {
+	client, spawnErr := SpawnACP(ctx, executable, args, workDir, env, ownTools, s.log, onEvent, onExit)
+	if spawnErr != nil {
+		return nil, spawnErr
+	}
+	if s.developerMode {
+		client.SetAllowAllPermissions(true)
+	}
+	return client, nil
+}
+
+func (s *Service) spawnSubagentTransport(ctx context.Context, executable string, args []string, workDir string, env, ownTools []string, onEvent func(SessionUpdate), onExit func(error)) (Transport, error) {
+	if s.spawnTransportCustom && s.spawnTransport != nil {
+		return s.spawnTransport(ctx, executable, args, workDir, env, onEvent, onExit)
+	}
+	return s.spawnScopedTransport(ctx, executable, args, workDir, env, ownTools, onEvent, onExit)
+}
+
+func (s *Service) availableSubagentTools() []string {
+	all := s.toolNames()
+	out := make([]string, 0, len(all))
+	for _, name := range all {
+		if name == "subagent_run" {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+func (s *Service) sanitizeSubagentTools(tools []string) []string {
+	if len(tools) == 0 {
+		return nil
+	}
+	allowed := make(map[string]bool)
+	for _, name := range s.availableSubagentTools() {
+		allowed[name] = true
+	}
+	seen := make(map[string]bool)
+	var clean []string
+	for _, t := range tools {
+		t = strings.TrimSpace(t)
+		if t == "" || t == "subagent_run" || !allowed[t] || seen[t] {
+			continue
+		}
+		seen[t] = true
+		clean = append(clean, t)
+	}
+	return clean
+}
+
+func (s *Service) notifyCustomizationsChanged(snap domainagent.CustomizationsSnapshot) {
+	if s.onCustomizationsChanged != nil {
+		s.onCustomizationsChanged(snap)
+	}
+}
+
+// ListCustomizations returns all shared skills and subagents together with available delegatable tools.
+func (s *Service) ListCustomizations(_ context.Context) (domainagent.CustomizationsSnapshot, error) {
+	avail := s.availableSubagentTools()
+	if s.customizations == nil {
+		return domainagent.CustomizationsSnapshot{
+			Dir:            s.customizationsDir,
+			AvailableTools: avail,
+		}, nil
+	}
+	return s.customizations.Snapshot(avail)
+}
+
+// ReloadCustomizations re-syncs disk customizations with built-ins and emits an updated snapshot.
+func (s *Service) ReloadCustomizations(_ context.Context) (domainagent.CustomizationsSnapshot, error) {
+	avail := s.availableSubagentTools()
+	if s.customizations == nil {
+		return domainagent.CustomizationsSnapshot{
+			Dir:            s.customizationsDir,
+			AvailableTools: avail,
+		}, nil
+	}
+	if err := s.customizations.EnsureSynced(); err != nil {
+		return domainagent.CustomizationsSnapshot{}, err
+	}
+	snap, err := s.customizations.Snapshot(avail)
+	if err != nil {
+		return domainagent.CustomizationsSnapshot{}, err
+	}
+	s.notifyCustomizationsChanged(snap)
+	return snap, nil
+}
+
+// SaveSkill creates or updates a shared skill markdown file on disk.
+func (s *Service) SaveSkill(ctx context.Context, name, description string, userInvocable, enabled bool, body string) (domainagent.CustomizationsSnapshot, error) {
+	if s.customizations == nil {
+		return domainagent.CustomizationsSnapshot{}, fmt.Errorf("customizations storage is not configured")
+	}
+	if err := s.customizations.SaveSkill(strings.TrimSpace(strings.ToLower(name)), description, userInvocable, enabled, body); err != nil {
+		return domainagent.CustomizationsSnapshot{}, err
+	}
+	return s.ReloadCustomizations(ctx)
+}
+
+// DeleteSkill removes a skill (or tombstones a built-in skill so upgrades do not re-create it).
+func (s *Service) DeleteSkill(ctx context.Context, name string) (domainagent.CustomizationsSnapshot, error) {
+	if s.customizations == nil {
+		return domainagent.CustomizationsSnapshot{}, fmt.Errorf("customizations storage is not configured")
+	}
+	if err := s.customizations.Delete(domainagent.CustomizationSkill, strings.TrimSpace(strings.ToLower(name))); err != nil {
+		return domainagent.CustomizationsSnapshot{}, err
+	}
+	return s.ReloadCustomizations(ctx)
+}
+
+// RestoreSkill restores a built-in skill back to its default content.
+func (s *Service) RestoreSkill(ctx context.Context, name string) (domainagent.CustomizationsSnapshot, error) {
+	if s.customizations == nil {
+		return domainagent.CustomizationsSnapshot{}, fmt.Errorf("customizations storage is not configured")
+	}
+	if err := s.customizations.RestoreBuiltIn(domainagent.CustomizationSkill, strings.TrimSpace(strings.ToLower(name))); err != nil {
+		return domainagent.CustomizationsSnapshot{}, err
+	}
+	return s.ReloadCustomizations(ctx)
+}
+
+// SaveSubagent creates or updates a shared subagent markdown file on disk.
+func (s *Service) SaveSubagent(ctx context.Context, spec domainagent.SubagentInfo) (domainagent.CustomizationsSnapshot, error) {
+	if s.customizations == nil {
+		return domainagent.CustomizationsSnapshot{}, fmt.Errorf("customizations storage is not configured")
+	}
+	spec.Name = strings.TrimSpace(strings.ToLower(spec.Name))
+	spec.Tools = s.sanitizeSubagentTools(spec.Tools)
+	if err := s.customizations.SaveSubagent(spec); err != nil {
+		return domainagent.CustomizationsSnapshot{}, err
+	}
+	return s.ReloadCustomizations(ctx)
+}
+
+// DeleteSubagent removes a subagent (or tombstones a built-in subagent so upgrades do not re-create it).
+func (s *Service) DeleteSubagent(ctx context.Context, name string) (domainagent.CustomizationsSnapshot, error) {
+	if s.customizations == nil {
+		return domainagent.CustomizationsSnapshot{}, fmt.Errorf("customizations storage is not configured")
+	}
+	if err := s.customizations.Delete(domainagent.CustomizationSubagent, strings.TrimSpace(strings.ToLower(name))); err != nil {
+		return domainagent.CustomizationsSnapshot{}, err
+	}
+	return s.ReloadCustomizations(ctx)
+}
+
+// RestoreSubagent restores a built-in subagent back to its default content.
+func (s *Service) RestoreSubagent(ctx context.Context, name string) (domainagent.CustomizationsSnapshot, error) {
+	if s.customizations == nil {
+		return domainagent.CustomizationsSnapshot{}, fmt.Errorf("customizations storage is not configured")
+	}
+	if err := s.customizations.RestoreBuiltIn(domainagent.CustomizationSubagent, strings.TrimSpace(strings.ToLower(name))); err != nil {
+		return domainagent.CustomizationsSnapshot{}, err
+	}
+	return s.ReloadCustomizations(ctx)
 }

@@ -64,6 +64,8 @@ func (s *Service) OpenFolder(target contracts.FolderTarget) error {
 		dir = s.paths.Config
 	case contracts.FolderDiagnostics:
 		dir = s.paths.Diagnostics()
+	case contracts.FolderAgentCustomizations:
+		dir = s.paths.AgentCustomizations()
 	default:
 		return apperr.Validation(fmt.Sprintf("unknown folder target %q", target))
 	}

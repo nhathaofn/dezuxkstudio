@@ -260,24 +260,25 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 	}
 
 	agentSvc, err := agentsvc.New(agentsvc.Options{
-		Repo:          sqlite.NewAgentRepository(c.db),
-		DataDir:       o.Paths.Data,
-		WorkspaceDir:  workDir,
-		MediaDir:      o.Paths.Media(),
-		ProfilesDir:   o.Paths.AgentProfiles(),
-		DeveloperMode: cfg.DeveloperMode(),
-		AppVersion:    buildinfo.Version,
-		Secrets:       secretStore,
-		Limits:        agentsvc.LimitsFrom(cfg),
-		Logger:        o.Logger,
-		Workflow:      wfSvc,
-		Binaries:      binSvc,
-		Managed:       agentCLIs,
-		AutoInstall:   cfg.Agent.AutoInstallCLI,
-		AutoUpdate:    cfg.Agent.AutoUpdateCLI,
-		Preferences:   prefSvc,
-		System:        sysSvc,
-		Diagnostics:   diagSvc,
+		Repo:              sqlite.NewAgentRepository(c.db),
+		DataDir:           o.Paths.Data,
+		WorkspaceDir:      workDir,
+		MediaDir:          o.Paths.Media(),
+		ProfilesDir:       o.Paths.AgentProfiles(),
+		CustomizationsDir: o.Paths.AgentCustomizations(),
+		DeveloperMode:     cfg.DeveloperMode(),
+		AppVersion:        buildinfo.Version,
+		Secrets:           secretStore,
+		Limits:            agentsvc.LimitsFrom(cfg),
+		Logger:            o.Logger,
+		Workflow:          wfSvc,
+		Binaries:          binSvc,
+		Managed:           agentCLIs,
+		AutoInstall:       cfg.Agent.AutoInstallCLI,
+		AutoUpdate:        cfg.Agent.AutoUpdateCLI,
+		Preferences:       prefSvc,
+		System:            sysSvc,
+		Diagnostics:       diagSvc,
 		OnStatusChanged: func(info domainagent.ProviderInfo) {
 			c.hub.Publish(contracts.EventAgentStatusChanged, contracts.NewAgentProviderInfo(info))
 		},
@@ -289,6 +290,9 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		},
 		OnApprovalsChanged: func(approvals []domainagent.ApprovalRequest) {
 			c.hub.Publish(contracts.EventAgentApprovals, contracts.NewAgentApprovalListResult(approvals))
+		},
+		OnCustomizationsChanged: func(snap domainagent.CustomizationsSnapshot) {
+			c.hub.Publish(contracts.EventAgentCustomizationsChanged, contracts.NewAgentCustomizationsResult(snap))
 		},
 	})
 	if err != nil {

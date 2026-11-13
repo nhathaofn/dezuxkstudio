@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -21,9 +22,26 @@ const (
 	defaultSearchMaxResults = 50
 	maxSearchResultsCap     = 200
 	maxSearchSnippetRunes   = 300
-	defaultDocReadChars     = 16000
-	maxDocReadChars         = 32000
+	defaultDocReadChars     = 32000
+	maxDocReadChars         = 100000
 )
+
+// validateJSONWrite validates JSON syntax for .json files before touching disk or prompting for
+// approval, surfacing clear syntax errors and a curly-quote hint when typographic quotes break parsing.
+func validateJSONWrite(path, content string) string {
+	if !strings.EqualFold(filepath.Ext(path), ".json") {
+		return ""
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		msg := fmt.Sprintf("invalid JSON for %s: %v", filepath.Base(path), err)
+		if strings.ContainsAny(content, "\u201c\u201d\u201e\u201f") {
+			msg += "; hint: typographic curly quotes (\u201c \u201d) were found; use standard ASCII double quotes (\") for JSON keys and string delimiters, and escape inner quotes with \\\""
+		}
+		return msg
+	}
+	return ""
+}
 
 type workspaceListEntry struct {
 	Name  string    `json:"name"`
@@ -142,9 +160,6 @@ func (s *Service) handleWorkspaceReadTextSlice(target string, info os.FileInfo, 
 			return mcpError("file is not a UTF-8 text file")
 		}
 		content := string(b)
-		if !s.developerMode && ContainsSourceCode(content) {
-			return mcpError("refused: this file contains source code or terminal commands, which DezuxkStudio Assistant does not work with")
-		}
 		return mcpJSON(map[string]any{"path": target, "size": len(b), "content": content})
 	}
 
@@ -213,9 +228,6 @@ func (s *Service) handleWorkspaceReadTextSlice(target string, info os.FileInfo, 
 	}
 
 	chunk := sb.String()
-	if !s.developerMode && ContainsSourceCode(chunk) {
-		return mcpError("refused: this file contains source code or terminal commands, which DezuxkStudio Assistant does not work with")
-	}
 	nextStart := 0
 	if hasMore {
 		nextStart = lastIncluded + 1
@@ -242,14 +254,10 @@ func truncateUTF8Bytes(s string, maxBytes int) string {
 	return s[:maxBytes]
 }
 
-func (s *Service) handleWorkspaceEditFile(in editFileToolInput) (*mcp.CallToolResult, any, error) {
+func (s *Service) handleWorkspaceEditFile(ctx context.Context, in editFileToolInput) (*mcp.CallToolResult, any, error) {
 	target, err := s.policy.ValidateWrite(in.Path)
 	if err != nil {
 		return mcpError(err.Error())
-	}
-	if !s.developerMode && ContainsSourceCode(in.Content) {
-		s.log.Warn("agent: blocked workspace_edit_file containing source code", "path", target)
-		return mcpError("refused: content contains source code or terminal commands; DezuxkStudio Assistant only writes non-code content (scripts for videos, prompts, subtitles, notes, data)")
 	}
 
 	mode := strings.ToLower(strings.TrimSpace(in.Mode))
@@ -338,9 +346,8 @@ func (s *Service) handleWorkspaceEditFile(in editFileToolInput) (*mcp.CallToolRe
 		return mcpError(fmt.Sprintf("unsupported edit mode %q: expected \"replace\" or \"append\"", in.Mode))
 	}
 
-	if !s.developerMode && ContainsSourceCode(updated) {
-		s.log.Warn("agent: blocked workspace_edit_file resulting content with source code", "path", target)
-		return mcpError("refused: resulting file contains source code or terminal commands; DezuxkStudio Assistant only edits non-code content")
+	if errMsg := validateJSONWrite(target, updated); errMsg != "" {
+		return mcpError(errMsg)
 	}
 
 	totalLines := strings.Count(strings.ReplaceAll(updated, "\r\n", "\n"), "\n") + 1
@@ -355,7 +362,7 @@ func (s *Service) handleWorkspaceEditFile(in editFileToolInput) (*mcp.CallToolRe
 	}
 
 	if statErr == nil && !s.policy.IsTrusted(target) {
-		return s.needsApproval("workspace_edit_file", "Edit "+filepath.Base(target),
+		return s.needsApproval(ctx, "workspace_edit_file", "Edit "+filepath.Base(target),
 			fmt.Sprintf("Edit %s using mode %q (%d bytes resulting).", target, mode, len(updated)),
 			func(context.Context) (any, error) { return applyEdit() })
 	}
@@ -425,9 +432,6 @@ func (s *Service) handleWorkspaceSearchText(in searchTextToolInput) (*mcp.CallTo
 			return nil
 		}
 		content := string(b)
-		if !s.developerMode && ContainsSourceCode(content) {
-			return nil
-		}
 		filesSearched++
 		rel, relErr := filepath.Rel(target, path)
 		if relErr != nil {
@@ -479,12 +483,9 @@ func (s *Service) handleWorkspaceReadDocument(in readDocumentToolInput) (*mcp.Ca
 	if err != nil {
 		return mcpError(err.Error())
 	}
-	format, fullText, err := extractDocumentText(target)
+	format, fullText, sourceTruncated, err := extractDocumentTextBounded(target, maxExtractedDocumentRunes)
 	if err != nil {
 		return mcpError(err.Error())
-	}
-	if !s.developerMode && ContainsSourceCode(fullText) {
-		return mcpError("refused: this document contains source code or terminal commands, which DezuxkStudio Assistant does not work with")
 	}
 
 	runes := []rune(fullText)
@@ -499,26 +500,28 @@ func (s *Service) handleWorkspaceReadDocument(in readDocumentToolInput) (*mcp.Ca
 	}
 	if offset >= totalChars {
 		return mcpJSON(map[string]any{
-			"path":         target,
-			"format":       format,
-			"offset_chars": offset,
-			"limit_chars":  limit,
-			"total_chars":  totalChars,
-			"has_more":     false,
-			"next_offset":  totalChars,
-			"content":      "",
+			"path":             target,
+			"format":           format,
+			"offset_chars":     offset,
+			"limit_chars":      limit,
+			"total_chars":      totalChars,
+			"source_truncated": sourceTruncated,
+			"has_more":         false,
+			"next_offset":      totalChars,
+			"content":          "",
 		})
 	}
 	end := min(offset+limit, totalChars)
 	hasMore := end < totalChars
 	return mcpJSON(map[string]any{
-		"path":         target,
-		"format":       format,
-		"offset_chars": offset,
-		"limit_chars":  limit,
-		"total_chars":  totalChars,
-		"has_more":     hasMore,
-		"next_offset":  end,
-		"content":      string(runes[offset:end]),
+		"path":             target,
+		"format":           format,
+		"offset_chars":     offset,
+		"limit_chars":      limit,
+		"total_chars":      totalChars,
+		"source_truncated": sourceTruncated,
+		"has_more":         hasMore,
+		"next_offset":      end,
+		"content":          string(runes[offset:end]),
 	})
 }

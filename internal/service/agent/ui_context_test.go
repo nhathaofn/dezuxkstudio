@@ -15,7 +15,7 @@ func TestUIContextPromptBlock(t *testing.T) {
 		Settings:      map[string]string{"corner": "bottom-right", "inplace": "false", "output_dir": ""},
 		LastResult:    "2/3 images had a watermark",
 	}
-	got := buildHistoryContextPrompt(nil, ui, "xử lý mấy ảnh này", DefaultLimits())
+	got := buildHistoryContextPrompt(nil, ui, "xử lý mấy ảnh này")
 	for _, want := range []string{
 		"Screen: Watermark (route /watermark)",
 		"Feature on this screen: tool.watermark_remover",

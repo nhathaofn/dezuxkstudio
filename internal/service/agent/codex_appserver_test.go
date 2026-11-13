@@ -166,8 +166,8 @@ func TestCodexAppServerStreamsDeltasAndReusesThread(t *testing.T) {
 		kinds = append(kinds, string(e.Type)+":"+e.Text)
 	}
 	mu.Unlock()
-	// The guard holds an unfinished one-word thought until the turn ends.
-	want := []string{"tool_call:studio_list_capabilities", "tool_result:completed", "delta:Xin chào bạn ", "delta:nhé", "thought:Thinking", "done:"}
+	// Unfenced non-code reasoning chunks stream immediately without waiting for turn completion.
+	want := []string{"thought:Thinking", "tool_call:studio_list_capabilities", "tool_result:completed", "delta:Xin chào bạn ", "delta:nhé", "done:"}
 	if strings.Join(kinds, "|") != strings.Join(want, "|") {
 		t.Fatalf("events = %v, want %v (retried errors and the completed message must not be re-emitted)", kinds, want)
 	}

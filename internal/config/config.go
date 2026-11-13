@@ -146,7 +146,7 @@ type UpdateConfig struct {
 	CheckOnStartup bool
 }
 
-// AgentConfig tunes the external AI agent integration (timeouts, caches, chat context size).
+// AgentConfig tunes the external AI agent integration (timeouts, caches, workspace mode).
 type AgentConfig struct {
 	RestoreConnection   bool          // reconnect the agent left connected when the app last ran
 	TurnTimeout         time.Duration // max silence (no streamed output or tool activity) in one chat turn
@@ -158,14 +158,10 @@ type AgentConfig struct {
 	InterruptWait       time.Duration // how long a cancelled turn waits for the CLI to report what it produced
 	StatusCacheTTL      time.Duration // how long CLI auth/version probe results are reused
 	AutoInstallCLI      bool          // download the agent CLIs into the app's own folder when they are missing
-	AutoUpdateCLI       bool          // keep the app's own agent CLIs on the newest official release
-	CLIUpdateInterval   time.Duration // how often to look for a newer agent CLI release
+	AutoUpdateCLI       bool          // check once at startup to keep the app's own agent CLIs on the newest official release
 	ApprovalTTL         time.Duration // pending approvals expire after this long
 	HistoryLimit        int           // messages returned to the chat UI
 	MaxPendingApprovals int           // agent actions waiting for approval at most
-	ContextMessages     int           // past user/assistant messages replayed into a new session
-	ContextMessageChars int           // per-message cap (runes) when replaying history
-	ContextTotalChars   int           // total character budget across replayed chat messages
 	Mode                string        // "assistant" (default, restricted) or "developer" (opt-in coding/tools)
 	WorkspaceDir        string        // optional directory override for the agent workspace
 }
@@ -207,6 +203,7 @@ func Default(mode Mode) *Config {
 	if buildinfo.IsDev() {
 		origins = append(origins, DevOrigins()...)
 	}
+	releaseBuild := buildinfo.IsRelease()
 
 	return &Config{
 		Mode: mode,
@@ -251,7 +248,7 @@ func Default(mode Mode) *Config {
 		Update: UpdateConfig{
 			FeedURL:        buildinfo.UpdateFeedURL,
 			Timeout:        10 * time.Second,
-			CheckOnStartup: true,
+			CheckOnStartup: releaseBuild,
 		},
 		Agent: AgentConfig{
 			RestoreConnection:   true,
@@ -264,14 +261,10 @@ func Default(mode Mode) *Config {
 			InterruptWait:       5 * time.Second,
 			StatusCacheTTL:      5 * time.Minute,
 			AutoInstallCLI:      true,
-			AutoUpdateCLI:       true,
-			CLIUpdateInterval:   6 * time.Hour,
+			AutoUpdateCLI:       releaseBuild,
 			ApprovalTTL:         30 * time.Minute,
 			HistoryLimit:        200,
 			MaxPendingApprovals: 20,
-			ContextMessages:     24,
-			ContextMessageChars: 12000,
-			ContextTotalChars:   48000,
 			Mode:                "assistant",
 		},
 		Desktop: DesktopConfig{

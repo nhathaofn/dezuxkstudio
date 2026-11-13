@@ -118,25 +118,32 @@ func TestPickAuthMethod(t *testing.T) {
 	}
 }
 
-func TestHistoryPromptKeepsNewestConversationMessages(t *testing.T) {
+func TestHistoryPromptPreservesMessagesWithoutTruncation(t *testing.T) {
 	var history []domainagent.ChatMessage
-	for i := range 4 {
+	longScript := strings.Repeat("Kịch bản cảnh quay dài.\n", 2600) // ~60k+ bytes / >55k runes
+	for i := range 30 {
+		text := fmt.Sprintf("question-%02d", i)
+		if i == 5 {
+			text = longScript
+		}
 		history = append(history,
-			domainagent.ChatMessage{Role: "user", Text: fmt.Sprintf("question-%d", i)},
+			domainagent.ChatMessage{Role: "user", Text: text},
+			domainagent.ChatMessage{Role: "assistant", Text: fmt.Sprintf("reply-%02d\n[[notice:code_blocked]]", i)},
+			domainagent.ChatMessage{Role: "user", Text: "   "},
 			domainagent.ChatMessage{Role: "error", Text: "boom"},
 		)
 	}
-	got := buildHistoryContextPrompt(history, UIContext{}, "now", Limits{ContextMessages: 3, ContextMessageChars: 5})
-	if strings.Contains(got, "boom") || strings.Contains(got, "quest-0") {
-		t.Fatalf("errors must be skipped and only the newest messages kept:\n%s", got)
+	got := buildHistoryContextPrompt(history, UIContext{}, "now")
+	if strings.Contains(got, "boom") || strings.Contains(got, "[[notice:code_blocked]]") {
+		t.Fatalf("errors and notice markers must be skipped:\n%s", got)
 	}
-	for _, want := range []string{"User: quest...", "now"} {
+	for _, want := range []string{"User: question-00", "User: question-29", longScript, "Assistant: reply-00", "Assistant: reply-29", "now"} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("prompt missing %q:\n%s", want, got)
+			t.Fatalf("prompt missing %q", want[:min(len(want), 40)])
 		}
 	}
-	if n := strings.Count(got, "User: "); n != 3 {
-		t.Fatalf("want 3 replayed messages after filtering errors, got %d:\n%s", n, got)
+	if n := strings.Count(got, "\nUser: ") + strings.Count(got, "\nAssistant: "); n != 60 {
+		t.Fatalf("want all 60 non-empty user/assistant messages (>24, >48k), got %d", n)
 	}
 }
 
@@ -516,28 +523,23 @@ func TestAuthProbeTimeoutIsUnknown(t *testing.T) {
 	}
 }
 
-func TestTurnPromptBudgetAndReminderScoping(t *testing.T) {
+func TestTurnPromptKeepsFullHistoryAndReminderScoping(t *testing.T) {
 	history := []domainagent.ChatMessage{
 		{Role: "user", Text: "first long message 11111111111111111111"},
 		{Role: "assistant", Text: "first reply 22222222222222222222"},
 		{Role: "user", Text: "latest prompt 333"},
 	}
-	got := buildTurnPrompt(history, UIContext{}, "now", Limits{
-		ContextMessages:     10,
-		ContextMessageChars: 200,
-		ContextTotalChars:   40,
-	}, promptOptions{skipReminder: true})
-	if strings.Contains(got, "first long message") {
-		t.Fatalf("expected oldest message dropped to satisfy ContextTotalChars, got %q", got)
-	}
-	if !strings.Contains(got, "User: latest prompt 333") {
-		t.Fatalf("expected newest history entry kept within ContextTotalChars, got %q", got)
+	got := buildTurnPrompt(history, UIContext{}, "now", promptOptions{skipReminder: true})
+	for _, want := range []string{"first long message 11111111111111111111", "first reply 22222222222222222222", "User: latest prompt 333"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected full history entry %q preserved, got %q", want, got)
+		}
 	}
 	if strings.Contains(got, "[Rules reminder]") {
 		t.Fatalf("expected reminder omitted when skipReminder is true, got %q", got)
 	}
 
-	devPrompt := buildTurnPrompt(nil, UIContext{}, "edit main.go", Limits{}, promptOptions{developerMode: true})
+	devPrompt := buildTurnPrompt(nil, UIContext{}, "edit main.go", promptOptions{developerMode: true})
 	if strings.Contains(devPrompt, "[Rules reminder]") {
 		t.Fatalf("developer mode prompt must not inject assistant rules reminder: %q", devPrompt)
 	}
@@ -570,5 +572,133 @@ func TestDeveloperModeProviderArgsAndPrompt(t *testing.T) {
 	agySpec := domainagent.Registry[domainagent.ProviderAntigravity]
 	if got := strings.Join(svcDev.acpArgsFor(agySpec), " "); strings.Contains(got, "--sandbox") || !strings.Contains(got, "--include-default-customizations=true") {
 		t.Fatalf("developer agy args unexpected: %s", got)
+	}
+}
+
+func TestConversationsAreIsolatedPerProvider(t *testing.T) {
+	dir := t.TempDir()
+	codexExe := filepath.Join(dir, "codex.exe")
+	claudeExe := filepath.Join(dir, "claude.exe")
+	for _, p := range []string{codexExe, claudeExe} {
+		if err := os.WriteFile(p, []byte("stub"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var mu sync.Mutex
+	var claudePrompts []string
+	done := make(chan struct{}, 8)
+	var svc *Service
+	var err error
+	svc, err = New(Options{
+		Repo: newFakeRepo(), DataDir: dir, WorkspaceDir: filepath.Join(dir, "ws"), MediaDir: filepath.Join(dir, "media"),
+		ProfilesDir: filepath.Join(dir, "profiles"), Logger: slog.New(slog.DiscardHandler),
+		OnChatEvent: func(e domainagent.ChatEvent) {
+			if e.Type == domainagent.ChatEventDone || e.Type == domainagent.ChatEventError {
+				done <- struct{}{}
+			}
+		},
+		ProbeCodexAuth: func(context.Context, string, string) (domainagent.AuthState, string) {
+			return domainagent.AuthAuthenticated, "codex-user"
+		},
+		RunCodexTurn: func(_ context.Context, _, _, _, _, _, _, _ string) error {
+			svc.setCLISession(domainagent.ProviderCodex, "codex-sess-1")
+			return nil
+		},
+		ProbeClaudeAuth: func(context.Context, string, string) (domainagent.AuthState, string) {
+			return domainagent.AuthAuthenticated, "claude-user"
+		},
+		RunClaudeTurn: func(_ context.Context, _, _, _, _, _, _, prompt string) error {
+			mu.Lock()
+			claudePrompts = append(claudePrompts, prompt)
+			mu.Unlock()
+			svc.setCLISession(domainagent.ProviderClaude, "claude-sess-1")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	ctx := context.Background()
+	if _, err := svc.SetCustomPath(ctx, domainagent.ProviderCodex, codexExe); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetCustomPath(ctx, domainagent.ProviderClaude, claudeExe); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.Connect(ctx, domainagent.ProviderCodex); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.SendPrompt(ctx, "codex-only-secret-context"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("codex turn timed out")
+	}
+	convCodex := svc.CurrentConversationID()
+	if convCodex == "" {
+		t.Fatal("expected Codex conversation ID after first turn")
+	}
+
+	// Reconnecting the same provider keeps its open conversation.
+	if _, err := svc.Connect(ctx, domainagent.ProviderCodex); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.CurrentConversationID(); got != convCodex {
+		t.Fatalf("reconnecting same provider changed conversation: got %q want %q", got, convCodex)
+	}
+
+	// Connecting a different provider clears the active chat so history never leaks across providers.
+	if _, err := svc.Connect(ctx, domainagent.ProviderClaude); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.CurrentConversationID(); got != "" {
+		t.Fatalf("switching to Claude must clear Codex conversation, still got %q", got)
+	}
+	if _, _, err := svc.SendPrompt(ctx, "hello claude"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("claude turn timed out")
+	}
+	if convClaude := svc.CurrentConversationID(); convClaude == "" || convClaude == convCodex {
+		t.Fatalf("expected separate Claude conversation ID, got %q (codex=%q)", convClaude, convCodex)
+	}
+	mu.Lock()
+	if len(claudePrompts) != 1 || strings.Contains(claudePrompts[0], "codex-only-secret-context") {
+		t.Fatalf("Codex history leaked into Claude prompt: %+v", claudePrompts)
+	}
+	mu.Unlock()
+
+	// Viewing an old Codex chat while Claude is connected must refuse sending prompts on it.
+	if _, _, err := svc.OpenConversation(ctx, convCodex); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = svc.SendPrompt(ctx, "should be rejected")
+	var appErr *apperr.Error
+	if !errors.As(err, &appErr) || appErr.Code != apperr.CodeConflict || appErr.Details["msg_key"] != msgConversationWrongProvider {
+		t.Fatalf("expected CodeConflict/%s when sending to wrong provider's chat, got %v", msgConversationWrongProvider, err)
+	}
+
+	// Switching back to Codex preserves the viewed Codex chat and allows continuing it.
+	if _, err := svc.Connect(ctx, domainagent.ProviderCodex); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.CurrentConversationID(); got != convCodex {
+		t.Fatalf("switching back to matching provider lost opened conversation: got %q want %q", got, convCodex)
+	}
+	if _, _, err := svc.SendPrompt(ctx, "continue codex"); err != nil {
+		t.Fatalf("sending on matching provider failed: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("continued codex turn timed out")
 	}
 }

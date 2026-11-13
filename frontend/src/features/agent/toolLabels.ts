@@ -24,6 +24,8 @@ const toolKeys: Record<string, MessageKey> = {
   workspace_edit_file: "agent.tool.workspace_edit_file",
   workspace_move_file: "agent.tool.workspace_move_file",
   workspace_delete_file: "agent.tool.workspace_delete_file",
+  skill_read: "agent.tool.skill_read",
+  subagent_run: "agent.tool.subagent_run",
 };
 
 /** Strips provider prefixes such as "mcp__dezuxk__" or "dezuxk/". */

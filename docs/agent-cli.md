@@ -28,8 +28,8 @@ The facts of each channel are declared once in `domain/agent/agent.go` (`Provide
 base URL, platform tokens, executable path. To add a CLI, add its spec; to add a new kind of channel, add a
 scheme in `agentcli/release.go`.
 
-Config (`agent.*`): `auto_install_cli`, `auto_update_cli`, `cli_update_interval`.
-`Service.ProvisionCLIs` runs in the background at start-up and then every interval; progress reaches the UI
+Config (`agent.*`): `auto_install_cli`, `auto_update_cli` (auto-update defaults on only for release builds).
+`Service.ProvisionCLIs` runs once in the background at start-up (never periodically while the app is open); progress reaches the UI
 as `ProviderInfo.Installing` / `InstallPercent`.
 
 Live check against the real channels (network, several hundred MB):

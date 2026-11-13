@@ -16,30 +16,28 @@ var clientName = buildinfo.ProductName
 // Names shared by every provider integration. They identify DezuxkStudio's MCP server and handshake
 // to the external CLIs, so they live in one place instead of being repeated per runner.
 const (
-	mcpServerName  = "dezuxk" // MCP server key in every provider's config
-	mcpToolPrefix  = "mcp__" + mcpServerName + "__"
-	mcpTokenEnvVar = "DEZUXK_AGENT_TOKEN" // env var carrying the per-process MCP bearer token
+	mcpServerName                = "dezuxk" // MCP server key in every provider's config
+	mcpToolPrefix                = "mcp__" + mcpServerName + "__"
+	mcpTokenEnvVar               = "DEZUXK_AGENT_TOKEN" // env var carrying the per-process MCP bearer token
+	defaultMaxConcurrentSubagent = 4                    // max parallel subagent_run invocations per turn
 )
 
 // Limits tunes timeouts, caches and chat context size. Zero fields fall back to DefaultLimits.
 type Limits struct {
-	TurnTimeout         time.Duration
-	InitializeTimeout   time.Duration
-	VersionProbeTimeout time.Duration
-	AuthProbeTimeout    time.Duration
-	LoginTimeout        time.Duration
-	ModelCatalogTimeout time.Duration
-	MCPToolTimeout      time.Duration // max duration of one MCP tool call the CLI waits for (workflow runs)
-	MCPShutdownTimeout  time.Duration // graceful stop of the local MCP server
-	InterruptWait       time.Duration // how long a cancelled Codex turn waits for turn/completed
-	StatusCacheTTL      time.Duration
-	ApprovalTTL         time.Duration
-	MaxPendingApprovals int
-	CLIUpdateInterval   time.Duration // how often the app looks for newer agent CLIs
-	HistoryLimit        int
-	ContextMessages     int
-	ContextMessageChars int
-	ContextTotalChars   int
+	TurnTimeout            time.Duration
+	InitializeTimeout      time.Duration
+	VersionProbeTimeout    time.Duration
+	AuthProbeTimeout       time.Duration
+	LoginTimeout           time.Duration
+	ModelCatalogTimeout    time.Duration
+	MCPToolTimeout         time.Duration // max duration of one MCP tool call the CLI waits for (workflow runs)
+	MCPShutdownTimeout     time.Duration // graceful stop of the local MCP server
+	InterruptWait          time.Duration // how long a cancelled Codex turn waits for turn/completed
+	StatusCacheTTL         time.Duration
+	ApprovalTTL            time.Duration
+	MaxPendingApprovals    int
+	HistoryLimit           int
+	MaxConcurrentSubagents int
 }
 
 // LimitsFrom builds the service limits from the application config — the only place their
@@ -54,17 +52,14 @@ func LimitsFrom(c *config.Config) Limits {
 		LoginTimeout:        a.LoginTimeout,
 		ModelCatalogTimeout: a.ModelCatalogTimeout,
 		// An MCP tool call may run a whole workflow, which the hub bounds by the long action timeout.
-		MCPToolTimeout:      c.Realtime.LongActionTimeout,
-		MCPShutdownTimeout:  c.Server.ShutdownTimeout,
-		InterruptWait:       a.InterruptWait,
-		StatusCacheTTL:      a.StatusCacheTTL,
-		ApprovalTTL:         a.ApprovalTTL,
-		MaxPendingApprovals: a.MaxPendingApprovals,
-		CLIUpdateInterval:   a.CLIUpdateInterval,
-		HistoryLimit:        a.HistoryLimit,
-		ContextMessages:     a.ContextMessages,
-		ContextMessageChars: a.ContextMessageChars,
-		ContextTotalChars:   a.ContextTotalChars,
+		MCPToolTimeout:         c.Realtime.LongActionTimeout,
+		MCPShutdownTimeout:     c.Server.ShutdownTimeout,
+		InterruptWait:          a.InterruptWait,
+		StatusCacheTTL:         a.StatusCacheTTL,
+		ApprovalTTL:            a.ApprovalTTL,
+		MaxPendingApprovals:    a.MaxPendingApprovals,
+		HistoryLimit:           a.HistoryLimit,
+		MaxConcurrentSubagents: defaultMaxConcurrentSubagent,
 	}
 }
 
@@ -85,7 +80,6 @@ func (l Limits) withDefaults() Limits {
 		{&l.InterruptWait, &d.InterruptWait},
 		{&l.StatusCacheTTL, &d.StatusCacheTTL},
 		{&l.ApprovalTTL, &d.ApprovalTTL},
-		{&l.CLIUpdateInterval, &d.CLIUpdateInterval},
 	}
 	for _, f := range durations {
 		if *f.v <= 0 {
@@ -94,10 +88,8 @@ func (l Limits) withDefaults() Limits {
 	}
 	ints := []struct{ v, def *int }{
 		{&l.HistoryLimit, &d.HistoryLimit},
-		{&l.ContextMessages, &d.ContextMessages},
-		{&l.ContextMessageChars, &d.ContextMessageChars},
-		{&l.ContextTotalChars, &d.ContextTotalChars},
 		{&l.MaxPendingApprovals, &d.MaxPendingApprovals},
+		{&l.MaxConcurrentSubagents, &d.MaxConcurrentSubagents},
 	}
 	for _, f := range ints {
 		if *f.v <= 0 {

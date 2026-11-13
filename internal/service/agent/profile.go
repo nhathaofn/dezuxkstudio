@@ -75,6 +75,17 @@ func (s *Service) systemPrompt(ctx context.Context, id domainagent.ProviderID) s
 		sb.WriteString("\n\n")
 		sb.WriteString(s.toolsBlock(hint))
 	}
+	if s.customizations != nil {
+		skillsBlock, subagentsBlock := s.customizations.PromptCatalogBlocks()
+		if skillsBlock != "" {
+			sb.WriteString("\n\n")
+			sb.WriteString(skillsBlock)
+		}
+		if subagentsBlock != "" {
+			sb.WriteString("\n\n")
+			sb.WriteString(subagentsBlock)
+		}
+	}
 	return sb.String()
 }
 

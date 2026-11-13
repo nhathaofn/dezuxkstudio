@@ -279,7 +279,8 @@ func (p *AccessPolicy) ValidateAllowedDirCandidate(dir string) (string, error) {
 	return resolved, nil
 }
 
-// Resolve turns a user/agent supplied path into a clean absolute path and rejects protected locations.
+// Resolve turns a user/agent supplied path into a clean absolute path and enforces that
+// it stays inside DezuxkStudio's workspace, media, or user-trusted folders and outside protected paths.
 // Relative paths are resolved against the agent workspace.
 func (p *AccessPolicy) Resolve(raw string) (string, error) {
 	return p.resolve(raw, false)
@@ -321,6 +322,9 @@ func (p *AccessPolicy) resolve(raw string, allowNetwork bool) (string, error) {
 	}
 	if reason := p.protectedReason(resolved); reason != "" {
 		return "", fmt.Errorf("access denied: %q is %s", raw, reason)
+	}
+	if !allowNetwork && !p.IsTrusted(resolved) {
+		return "", fmt.Errorf("access denied: %q is outside DezuxkStudio's workspace, media, and trusted folders", raw)
 	}
 	return resolved, nil
 }
@@ -496,7 +500,7 @@ func (p *AccessPolicy) ValidateDocumentRead(raw string) (string, error) {
 	return "", fmt.Errorf("access denied: workspace_read_document only supports .docx, .odt, .rtf, and .pdf files, got %q", filepath.Base(target))
 }
 
-// ValidateWrite allows creating/updating text content files anywhere that is not protected.
+// ValidateWrite allows creating/updating text content files inside trusted roots.
 func (p *AccessPolicy) ValidateWrite(raw string) (string, error) {
 	target, err := p.Resolve(raw)
 	if err != nil {
@@ -533,7 +537,7 @@ func (p *AccessPolicy) ValidateMove(srcRaw, dstRaw string) (string, string, erro
 	return src, dst, nil
 }
 
-// ValidateDelete allows deleting non-code files; callers require approval outside trusted roots.
+// ValidateDelete allows deleting non-code files inside trusted roots.
 func (p *AccessPolicy) ValidateDelete(raw string) (string, error) {
 	target, err := p.Resolve(raw)
 	if err != nil {

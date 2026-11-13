@@ -140,3 +140,34 @@ func TestExtractDocumentFormats(t *testing.T) {
 func extractRTFFileForTest(path string) (string, string, error) {
 	return extractDocumentText(path)
 }
+
+func TestExtractDocumentSupportsLargeDocsAndReportsTruncation(t *testing.T) {
+	dir := t.TempDir()
+	body := strings.Repeat("a", 300_000)
+	docPath := filepath.Join(dir, "large.docx")
+	writeZipFixture(t, docPath, map[string]string{
+		"word/document.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+			`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+			`<w:p><w:r><w:t>` + body + `</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+	})
+
+	format, text, err := extractDocumentText(docPath)
+	if err != nil {
+		t.Fatalf("extractDocumentText: %v", err)
+	}
+	if format != "docx" {
+		t.Fatalf("unexpected format %q", format)
+	}
+	if got := len([]rune(text)); got != 300_000 {
+		t.Fatalf("expected 300000 runes without 250k truncation, got %d", got)
+	}
+
+	_, bounded, truncated, err := extractDocumentTextBounded(docPath, 50)
+	if err != nil {
+		t.Fatalf("extractDocumentTextBounded: %v", err)
+	}
+	if !truncated || len([]rune(bounded)) != 50 {
+		t.Fatalf("expected truncated=true and 50 runes, got truncated=%v len=%d", truncated, len([]rune(bounded)))
+	}
+}

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"app/internal/buildinfo"
 )
 
 func env(m map[string]string) func(string) (string, bool) {
@@ -244,5 +246,25 @@ func TestAgentModeValidation(t *testing.T) {
 	bad.Agent.Mode = "unsafe"
 	if err := bad.Validate(); err == nil {
 		t.Fatal("unknown agent.mode must be rejected")
+	}
+}
+
+func TestUpdateDefaultsFollowBuildKind(t *testing.T) {
+	orig := buildinfo.Version
+	t.Cleanup(func() { buildinfo.Version = orig })
+
+	buildinfo.Version = "0.0.0-dev"
+	devCfg := Default(ModeDesktop)
+	if devCfg.Update.CheckOnStartup || devCfg.Agent.AutoUpdateCLI {
+		t.Fatalf("dev build must disable startup auto-updates: update=%v cli=%v",
+			devCfg.Update.CheckOnStartup, devCfg.Agent.AutoUpdateCLI)
+	}
+
+	buildinfo.Version = "1.0.0"
+	relCfg := Default(ModeDesktop)
+	want := !buildinfo.IsDev()
+	if relCfg.Update.CheckOnStartup != want || relCfg.Agent.AutoUpdateCLI != want {
+		t.Fatalf("release build startup auto-updates mismatch: got update=%v cli=%v want=%v",
+			relCfg.Update.CheckOnStartup, relCfg.Agent.AutoUpdateCLI, want)
 	}
 }

@@ -394,6 +394,86 @@ func TestAgentRealtimeActions(t *testing.T) {
 	}
 }
 
+func TestAgentCustomizationsRealtimeActions(t *testing.T) {
+	h := startCore(t, nil)
+	ws := h.dial()
+
+	listRes, _ := ws.call(contracts.ActionAgentListCustomizations, contracts.Empty{})
+	if !listRes.Success {
+		t.Fatalf("agent:list_customizations failed: %+v", listRes.Error)
+	}
+	var initial contracts.AgentCustomizationsResult
+	if err := json.Unmarshal(listRes.Data, &initial); err != nil {
+		t.Fatal(err)
+	}
+	if len(initial.Skills) < 2 || len(initial.Subagents) < 2 || len(initial.AvailableTools) == 0 {
+		t.Fatalf("expected starter customizations and available tools, got %+v", initial)
+	}
+
+	saveSkillRes, _ := ws.call(contracts.ActionAgentSaveSkill, contracts.AgentSaveSkillPayload{
+		Name:          "e2e-skill",
+		Description:   "E2E custom skill",
+		UserInvocable: true,
+		Enabled:       true,
+		Body:          "Follow step 1.",
+	})
+	if !saveSkillRes.Success {
+		t.Fatalf("agent:save_skill failed: %+v", saveSkillRes.Error)
+	}
+
+	delSkillRes, _ := ws.call(contracts.ActionAgentDeleteSkill, contracts.AgentCustomizationIDPayload{Name: "e2e-skill"})
+	if !delSkillRes.Success {
+		t.Fatalf("agent:delete_skill failed: %+v", delSkillRes.Error)
+	}
+
+	delBuiltInRes, _ := ws.call(contracts.ActionAgentDeleteSkill, contracts.AgentCustomizationIDPayload{Name: "brief-structuring"})
+	if !delBuiltInRes.Success {
+		t.Fatalf("agent:delete_skill built-in failed: %+v", delBuiltInRes.Error)
+	}
+
+	restSkillRes, _ := ws.call(contracts.ActionAgentRestoreSkill, contracts.AgentCustomizationIDPayload{Name: "brief-structuring"})
+	if !restSkillRes.Success {
+		t.Fatalf("agent:restore_skill failed: %+v", restSkillRes.Error)
+	}
+
+	saveSubRes, _ := ws.call(contracts.ActionAgentSaveSubagent, contracts.AgentSaveSubagentPayload{
+		Name:        "e2e-sub",
+		Description: "E2E subagent",
+		Skills:      []string{"review-checklist"},
+		Tools:       []string{"workspace_read_file", "subagent_run"},
+		Enabled:     true,
+		Body:        "Inspect safely.",
+	})
+	if !saveSubRes.Success {
+		t.Fatalf("agent:save_subagent failed: %+v", saveSubRes.Error)
+	}
+	var afterSubSave contracts.AgentCustomizationsResult
+	if err := json.Unmarshal(saveSubRes.Data, &afterSubSave); err != nil {
+		t.Fatal(err)
+	}
+	var sawSanitized bool
+	for _, sa := range afterSubSave.Subagents {
+		if sa.Name == "e2e-sub" {
+			sawSanitized = true
+			for _, tl := range sa.Tools {
+				if tl == "subagent_run" {
+					t.Fatalf("subagent_run must be sanitized out on SaveSubagent")
+				}
+			}
+		}
+	}
+	if !sawSanitized {
+		t.Fatalf("expected e2e-sub in AgentCustomizationsResult")
+	}
+
+	if delSubRes, _ := ws.call(contracts.ActionAgentDeleteSubagent, contracts.AgentCustomizationIDPayload{Name: "e2e-sub"}); !delSubRes.Success {
+		t.Fatalf("agent:delete_subagent failed: %+v", delSubRes.Error)
+	}
+	if restSubRes, _ := ws.call(contracts.ActionAgentRestoreSubagent, contracts.AgentCustomizationIDPayload{Name: "workspace-reviewer"}); !restSubRes.Success {
+		t.Fatalf("agent:restore_subagent failed: %+v", restSubRes.Error)
+	}
+}
+
 // Browser clients mirror the server's real timeouts from /runtime-config.json; before, they used a
 // hard-coded 30s and reported ERR_TIMEOUT while a reconfigured server was still working.
 func TestRuntimeConfigCarriesServerTimeouts(t *testing.T) {

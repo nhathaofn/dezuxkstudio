@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"testing"
@@ -258,6 +259,45 @@ func TestAgentConversations(t *testing.T) {
 	}
 	if gone, _ := repo.ListConversationMessages(ctx, "a", 10); len(gone) != 0 {
 		t.Fatalf("delete must remove its messages: %+v", gone)
+	}
+}
+
+func TestAgentListConversationMessagesUnboundedWhenLimitNonPositive(t *testing.T) {
+	ctx := context.Background()
+	db := open(t, t.TempDir())
+	defer db.Close()
+	repo := NewAgentRepository(db)
+	if err := repo.SaveConversation(ctx, agent.Conversation{
+		ID: "long", Title: "long chat", ProviderID: agent.ProviderCodex, CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const total = 235
+	for i := range total {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		if err := repo.AppendChatMessage(ctx, agent.ChatMessage{
+			ID: fmt.Sprintf("m-%03d", i), Role: role, Text: fmt.Sprintf("msg-%03d", i),
+			CreatedAt: int64(i + 1), ConversationID: "long", ProviderID: agent.ProviderCodex,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	msgs, err := repo.ListConversationMessages(ctx, "long", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != total || msgs[0].ID != "m-000" || msgs[total-1].ID != "m-234" {
+		t.Fatalf("expected all %d messages in chronological order, got len=%d", total, len(msgs))
+	}
+	capped, err := repo.ListConversationMessages(ctx, "long", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(capped) != 50 || capped[0].ID != "m-185" || capped[49].ID != "m-234" {
+		t.Fatalf("expected last 50 chronological messages when limit=50, got len=%d first=%q last=%q", len(capped), capped[0].ID, capped[len(capped)-1].ID)
 	}
 }
 

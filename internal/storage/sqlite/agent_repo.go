@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -67,17 +68,44 @@ func (r *AgentRepository) SetCustomPath(ctx context.Context, id agent.ProviderID
 	return nil
 }
 
+type chatMessageMetadata struct {
+	Subagents []agent.SubagentInvocation `json:"subagents,omitempty"`
+}
+
+func encodeChatMetadata(msg agent.ChatMessage) string {
+	if len(msg.Subagents) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(chatMessageMetadata{Subagents: msg.Subagents})
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func decodeChatMetadata(raw string, msg *agent.ChatMessage) {
+	if raw == "" {
+		return
+	}
+	var meta chatMessageMetadata
+	if json.Unmarshal([]byte(raw), &meta) == nil {
+		msg.Subagents = meta.Subagents
+	}
+}
+
 // AppendChatMessage persists a single chat message in DezuxkStudio's isolated history.
 func (r *AgentRepository) AppendChatMessage(ctx context.Context, msg agent.ChatMessage) error {
+	meta := encodeChatMetadata(msg)
 	_, err := r.db.sql.ExecContext(ctx, `
-		INSERT INTO agent_chat_messages (id, provider_id, role, text, thought, tool, created_at, conversation_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO agent_chat_messages (id, provider_id, role, text, thought, tool, created_at, conversation_id, metadata)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			text = excluded.text,
 			thought = excluded.thought,
 			tool = excluded.tool,
-			role = excluded.role;`,
-		msg.ID, string(msg.ProviderID), msg.Role, msg.Text, msg.Thought, msg.Tool, msg.CreatedAt, msg.ConversationID)
+			role = excluded.role,
+			metadata = excluded.metadata;`,
+		msg.ID, string(msg.ProviderID), msg.Role, msg.Text, msg.Thought, msg.Tool, msg.CreatedAt, msg.ConversationID, meta)
 	if err != nil {
 		return fmt.Errorf("sqlite: append agent chat message: %w", err)
 	}
@@ -105,9 +133,9 @@ func (r *AgentRepository) ListChatMessages(ctx context.Context, limit int) ([]ag
 		limit = 200
 	}
 	rows, err := r.db.sql.QueryContext(ctx, `
-		SELECT id, provider_id, role, text, thought, tool, created_at
+		SELECT id, provider_id, role, text, thought, tool, created_at, metadata
 		FROM (
-			SELECT id, provider_id, role, text, thought, tool, created_at
+			SELECT id, provider_id, role, text, thought, tool, created_at, metadata
 			FROM agent_chat_messages
 			ORDER BY created_at DESC, id DESC
 			LIMIT ?
@@ -121,11 +149,12 @@ func (r *AgentRepository) ListChatMessages(ctx context.Context, limit int) ([]ag
 	var out []agent.ChatMessage
 	for rows.Next() {
 		var m agent.ChatMessage
-		var pid string
-		if err := rows.Scan(&m.ID, &pid, &m.Role, &m.Text, &m.Thought, &m.Tool, &m.CreatedAt); err != nil {
+		var pid, meta string
+		if err := rows.Scan(&m.ID, &pid, &m.Role, &m.Text, &m.Thought, &m.Tool, &m.CreatedAt, &meta); err != nil {
 			return nil, fmt.Errorf("sqlite: scan agent chat message: %w", err)
 		}
 		m.ProviderID = agent.ProviderID(pid)
+		decodeChatMetadata(meta, &m)
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -181,21 +210,31 @@ func (r *AgentRepository) ListConversations(ctx context.Context, limit int) ([]a
 	return out, nil
 }
 
-// ListConversationMessages returns the newest messages of one conversation in chronological order.
+// ListConversationMessages returns messages of one conversation in chronological order.
+// When limit > 0, only the newest limit messages are returned.
 func (r *AgentRepository) ListConversationMessages(ctx context.Context, conversationID string, limit int) ([]agent.ChatMessage, error) {
-	if limit <= 0 {
-		limit = 200
-	}
-	rows, err := r.db.sql.QueryContext(ctx, `
-		SELECT id, provider_id, role, text, thought, tool, created_at, conversation_id
-		FROM (
-			SELECT id, provider_id, role, text, thought, tool, created_at, conversation_id
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if limit > 0 {
+		rows, err = r.db.sql.QueryContext(ctx, `
+			SELECT id, provider_id, role, text, thought, tool, created_at, conversation_id, metadata
+			FROM (
+				SELECT id, provider_id, role, text, thought, tool, created_at, conversation_id, metadata
+				FROM agent_chat_messages
+				WHERE conversation_id = ?
+				ORDER BY created_at DESC, id DESC
+				LIMIT ?
+			) sub
+			ORDER BY created_at ASC, id ASC;`, conversationID, limit)
+	} else {
+		rows, err = r.db.sql.QueryContext(ctx, `
+			SELECT id, provider_id, role, text, thought, tool, created_at, conversation_id, metadata
 			FROM agent_chat_messages
 			WHERE conversation_id = ?
-			ORDER BY created_at DESC, id DESC
-			LIMIT ?
-		) sub
-		ORDER BY created_at ASC, id ASC;`, conversationID, limit)
+			ORDER BY created_at ASC, id ASC;`, conversationID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list conversation messages: %w", err)
 	}
@@ -203,11 +242,12 @@ func (r *AgentRepository) ListConversationMessages(ctx context.Context, conversa
 	var out []agent.ChatMessage
 	for rows.Next() {
 		var m agent.ChatMessage
-		var pid string
-		if err := rows.Scan(&m.ID, &pid, &m.Role, &m.Text, &m.Thought, &m.Tool, &m.CreatedAt, &m.ConversationID); err != nil {
+		var pid, meta string
+		if err := rows.Scan(&m.ID, &pid, &m.Role, &m.Text, &m.Thought, &m.Tool, &m.CreatedAt, &m.ConversationID, &meta); err != nil {
 			return nil, fmt.Errorf("sqlite: scan conversation message: %w", err)
 		}
 		m.ProviderID = agent.ProviderID(pid)
+		decodeChatMetadata(meta, &m)
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {

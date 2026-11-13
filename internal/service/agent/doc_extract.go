@@ -18,49 +18,72 @@ import (
 )
 
 const (
-	maxDocumentFileBytes         = 32 << 20 // 32 MiB max document file size
-	maxDocumentUncompressedBytes = 16 << 20 // 16 MiB bound on decompressed XML or stream payloads
-	maxExtractedDocumentRunes    = 250_000  // safety cap so gigantic docs stay bounded in memory
+	maxDocumentFileBytes         = 32 << 20  // 32 MiB max document file size
+	maxDocumentUncompressedBytes = 16 << 20  // 16 MiB bound on decompressed XML or stream payloads
+	maxExtractedDocumentRunes    = 1_000_000 // safety cap (~200+ dense pages) so gigantic docs stay bounded in memory
 )
 
 // extractDocumentText extracts clean plain text from .docx, .odt, .rtf, and .pdf files
 // using only the Go standard library and bounded memory/decompression limits.
 func extractDocumentText(path string) (string, string, error) {
+	format, text, _, err := extractDocumentTextBounded(path, maxExtractedDocumentRunes)
+	return format, text, err
+}
+
+func extractDocumentTextBounded(path string, maxRunes int) (string, string, bool, error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	if info.IsDir() {
-		return "", "", fmt.Errorf("target path is a folder; use workspace_list_files")
+		return "", "", false, fmt.Errorf("target path is a folder; use workspace_list_files")
 	}
 	if info.Size() > maxDocumentFileBytes {
-		return "", "", fmt.Errorf("document exceeds maximum readable size (%d bytes)", maxDocumentFileBytes)
+		return "", "", false, fmt.Errorf("document exceeds maximum readable size (%d bytes)", maxDocumentFileBytes)
 	}
 
 	ext := strings.ToLower(filepath.Ext(path))
+	var format, text string
 	switch ext {
 	case ".docx":
-		text, err := extractDOCXText(path)
-		return "docx", text, err
+		format = "docx"
+		text, err = extractDOCXText(path)
 	case ".odt":
-		text, err := extractODTText(path)
-		return "odt", text, err
+		format = "odt"
+		text, err = extractODTText(path)
 	case ".rtf":
-		data, err := readBoundedFile(path, maxDocumentFileBytes)
-		if err != nil {
-			return "", "", err
+		var data []byte
+		data, err = readBoundedFile(path, maxDocumentFileBytes)
+		if err == nil {
+			format = "rtf"
+			text = extractRTFText(data)
 		}
-		return "rtf", extractRTFText(data), nil
 	case ".pdf":
-		data, err := readBoundedFile(path, maxDocumentFileBytes)
-		if err != nil {
-			return "", "", err
+		var data []byte
+		data, err = readBoundedFile(path, maxDocumentFileBytes)
+		if err == nil {
+			format = "pdf"
+			text, err = extractPDFText(data)
 		}
-		text, err := extractPDFText(data)
-		return "pdf", text, err
 	default:
-		return "", "", fmt.Errorf("unsupported document format %q", ext)
+		return "", "", false, fmt.Errorf("unsupported document format %q", ext)
 	}
+	if err != nil {
+		return "", "", false, err
+	}
+	clamped, truncated := clampDocumentRunes(text, maxRunes)
+	return format, clamped, truncated, nil
+}
+
+func clampDocumentRunes(text string, maxRunes int) (string, bool) {
+	if maxRunes <= 0 {
+		return text, false
+	}
+	r := []rune(text)
+	if len(r) <= maxRunes {
+		return text, false
+	}
+	return string(r[:maxRunes]), true
 }
 
 func readBoundedFile(path string, limit int64) ([]byte, error) {
@@ -101,11 +124,7 @@ func normalizeExtractedText(s string) string {
 		blanks = 0
 		out = append(out, trimmedRight)
 	}
-	res := strings.TrimSpace(strings.Join(out, "\n"))
-	if r := []rune(res); len(r) > maxExtractedDocumentRunes {
-		res = string(r[:maxExtractedDocumentRunes])
-	}
-	return res
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
 // extractDOCXText reads body paragraphs and tables from word/document.xml inside a .docx archive.

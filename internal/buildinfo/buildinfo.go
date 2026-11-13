@@ -7,7 +7,10 @@
 // The literals below are only development fallbacks.
 package buildinfo
 
-import "runtime"
+import (
+	"runtime"
+	"strings"
+)
 
 var (
 	// AppID is the stable machine identifier of the desktop product. It names the
@@ -65,3 +68,9 @@ func Get() Info {
 
 // IsDev reports whether the binary was built with the "dev" build tag (wails dev).
 func IsDev() bool { return devBuild }
+
+// IsRelease reports whether the binary is a tagged/versioned production build
+// (as opposed to `wails dev` or an unversioned `0.0.0-dev` local run).
+func IsRelease() bool {
+	return !IsDev() && Version != "" && Version != "0.0.0-dev" && !strings.HasSuffix(Version, "-dev")
+}

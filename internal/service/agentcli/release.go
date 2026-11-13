@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,10 +14,19 @@ import (
 
 	"app/internal/apperr"
 	domainagent "app/internal/domain/agent"
+	"app/internal/httpclient"
 )
 
 // maxMetadata bounds a metadata response; real ones are a few KB.
 const maxMetadata = 4 << 20
+
+type httpStatusError struct {
+	code int
+	err  error
+}
+
+func (e httpStatusError) Error() string { return e.err.Error() }
+func (e httpStatusError) Unwrap() error { return e.err }
 
 func (m *Manager) get(ctx context.Context, rawURL string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
@@ -30,7 +40,10 @@ func (m *Manager) get(ctx context.Context, rawURL string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, apperr.Wrap(apperr.CodeUnavailable, fmt.Sprintf("download server returned HTTP %d", resp.StatusCode), nil)
+		return nil, httpStatusError{
+			code: resp.StatusCode,
+			err:  apperr.Wrap(apperr.CodeUnavailable, fmt.Sprintf("download server returned HTTP %d", resp.StatusCode), nil),
+		}
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, maxMetadata))
 }
@@ -112,17 +125,15 @@ func (m *Manager) Latest(ctx context.Context, id domainagent.ProviderID) (Releas
 		return Release{Version: version, URL: manifest.URL, Algo: "sha512", Checksum: manifest.SHA512}, nil
 
 	case domainagent.SchemeReleasePackage:
-		var latest struct {
-			Tag string `json:"tag_name"`
-		}
-		if err := m.getJSON(ctx, spec.LatestAPI, &latest); err != nil {
-			return Release{}, err
-		}
-		version, err := checkVersion(strings.TrimPrefix(latest.Tag, spec.TagPrefix))
+		rawTag, err := m.latestReleaseTag(ctx, spec.LatestAPI)
 		if err != nil {
 			return Release{}, err
 		}
-		tag := url.PathEscape(latest.Tag)
+		version, err := checkVersion(strings.TrimPrefix(rawTag, spec.TagPrefix))
+		if err != nil {
+			return Release{}, err
+		}
+		tag := url.PathEscape(rawTag)
 		asset := strings.ReplaceAll(spec.PackageAsset, "{platform}", platform)
 		sums, err := m.get(ctx, join(spec.BaseURL, tag, spec.ChecksumAsset))
 		if err != nil {
@@ -135,6 +146,25 @@ func (m *Manager) Latest(ctx context.Context, id domainagent.ProviderID) (Releas
 		return Release{Version: version, URL: join(spec.BaseURL, tag, asset), Algo: "sha256", Checksum: sum, Archive: true}, nil
 	}
 	return Release{}, fmt.Errorf("agentcli: unknown install scheme %q", spec.Scheme)
+}
+
+func (m *Manager) latestReleaseTag(ctx context.Context, latestAPI string) (string, error) {
+	var latest struct {
+		Tag string `json:"tag_name"`
+	}
+	err := m.getJSON(ctx, latestAPI, &latest)
+	if err == nil {
+		return latest.Tag, nil
+	}
+	var st httpStatusError
+	if errors.As(err, &st) && (st.code == http.StatusForbidden || st.code == http.StatusTooManyRequests) && m.webLatestURL != nil {
+		if webURL, ok := m.webLatestURL(latestAPI); ok {
+			if tag, _, fbErr := httpclient.ResolveGitHubLatestTag(ctx, m.client, webURL, m.ua); fbErr == nil {
+				return tag, nil
+			}
+		}
+	}
+	return "", err
 }
 
 // checksumFor reads "<hex>  <name>" lines (sha256sum format) and returns the hash of name.

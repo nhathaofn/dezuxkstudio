@@ -20,19 +20,21 @@ func (s *Service) CurrentConversationID() string {
 
 // NewConversation starts a new chat. Earlier chats stay in history (ListConversations).
 func (s *Service) NewConversation(_ context.Context) error {
-	return s.switchConversation("")
+	return s.switchConversation("", "")
 }
 
 // switchConversation makes id the current chat ("" = a new one) and resets the provider sessions, so the
-// next turn starts a fresh session primed with that chat's own history.
-func (s *Service) switchConversation(id string) error {
+// next turn resumes that chat's own provider session or starts fresh.
+func (s *Service) switchConversation(id string, convProvider domainagent.ProviderID) error {
 	s.mu.Lock()
 	if s.turn != nil {
 		s.mu.Unlock()
 		return userError(apperr.CodeConflict, msgClearWhileBusy, "cannot switch chats while the agent is busy", nil)
 	}
 	s.conversationID = id
+	s.conversationProvider = convProvider
 	s.activeSessionID = ""
+	s.activeSessionPromptHash = ""
 	s.sessionPrimed = false
 	clear(s.cliSessions)
 	clear(s.sentScreen)
@@ -40,6 +42,28 @@ func (s *Service) switchConversation(id string) error {
 	s.approvals.clear()
 	s.emitApprovals()
 	return nil
+}
+
+// resetConversationOnProviderChangeLocked starts a fresh conversation when connecting a different provider
+// from the one that owns the active chat. Caller holds s.mu.
+func (s *Service) resetConversationOnProviderChangeLocked(id domainagent.ProviderID) {
+	if s.conversationID == "" || s.conversationProvider == "" || s.conversationProvider == id {
+		return
+	}
+	s.conversationID = ""
+	s.conversationProvider = ""
+	s.sessionPrimed = false
+	clear(s.cliSessions)
+	clear(s.sentScreen)
+}
+
+func conversationProviderFromMessages(msgs []domainagent.ChatMessage) domainagent.ProviderID {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].ProviderID != "" {
+			return msgs[i].ProviderID
+		}
+	}
+	return ""
 }
 
 // History returns the current chat's messages (empty for a new chat) and its ID.
@@ -73,7 +97,7 @@ func (s *Service) OpenConversation(ctx context.Context, id string) (string, []do
 	if sessErr != nil && s.log != nil {
 		s.log.Warn("agent: failed to load conversation sessions", "conversation_id", id, "error", sessErr)
 	}
-	if err := s.switchConversation(id); err != nil {
+	if err := s.switchConversation(id, conversationProviderFromMessages(msgs)); err != nil {
 		return "", nil, err
 	}
 	s.restoreCLISessions(id, savedSessions)
@@ -87,7 +111,7 @@ func (s *Service) DeleteConversation(ctx context.Context, id string) error {
 	current := s.conversationID == id
 	s.mu.Unlock()
 	if current {
-		if err := s.switchConversation(""); err != nil {
+		if err := s.switchConversation("", ""); err != nil {
 			return err
 		}
 	}

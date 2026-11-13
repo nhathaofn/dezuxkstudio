@@ -123,7 +123,7 @@ The agent has no hard-coded feature list. Choose the feature's shape so the agen
 - Never reuse a removed action/event name for a different meaning. SQLite migrations follow the same rule: append-only.
 
 ## 14. Performance & resource limits
-- Every limit is a config key (`realtime.max_concurrent_actions` 64, `realtime.max_message_bytes` 1 MiB, `realtime.client_buffer_size` 256, `agent.history_limit` 200, `agent.max_pending_approvals` 20, `agent.context_messages` 10 x `agent.context_message_chars` 1200, `log.max_size_mb` 10 x `log.max_backups` 3) or a named constant with a comment saying why (`maxNodeInputFiles` 10 000 per agent run, MCP request body 4 MiB (`mcpMaxRequestBytes`), Codex JSON-RPC line 16 MiB, CLI stream-json line 4 MiB (`cliStdoutLineMax`)).
+- Every limit is a config key (`realtime.max_concurrent_actions` 64, `realtime.max_message_bytes` 1 MiB, `realtime.client_buffer_size` 256, `agent.history_limit` 200, `agent.max_pending_approvals` 20, `log.max_size_mb` 10 x `log.max_backups` 3) or a named constant with a comment saying why (`maxNodeInputFiles` 10 000 per agent run, MCP request body 4 MiB (`mcpMaxRequestBytes`), Codex JSON-RPC line 32 MiB (`codexAppServerMaxLine`), CLI stream-json line 32 MiB (`cliStdoutLineMax`)).
 - CPU-parallel work uses a bounded worker pool; `0` workers = automatic (CPU count); the user-settable maximum is declared in the spec (watermark: 64).
 - Batches must not need memory proportional to the whole batch: stream items to workers (`ProcessStream`) instead of loading every file first.
 - Hot paths (sending a prompt, finishing a turn, status pushes) never spawn processes: use cached state (`statusInfo`) and refresh in the background.

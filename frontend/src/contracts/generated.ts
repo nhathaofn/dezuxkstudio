@@ -16,7 +16,7 @@ export type Theme = (typeof ThemeValues)[number];
 export const LanguageValues = ["en", "vi"] as const;
 export type Language = (typeof LanguageValues)[number];
 
-export const FolderTargetValues = ["logs", "data", "config", "diagnostics"] as const;
+export const FolderTargetValues = ["logs", "data", "config", "diagnostics", "agent_customizations"] as const;
 export type FolderTarget = (typeof FolderTargetValues)[number];
 
 export const AppModeValues = ["desktop", "client", "server"] as const;
@@ -43,8 +43,14 @@ export type AgentAuthState = (typeof AgentAuthStateValues)[number];
 export const AgentSourceValues = ["custom", "managed", "system", "none"] as const;
 export type AgentSource = (typeof AgentSourceValues)[number];
 
-export const AgentChatEventTypeValues = ["delta", "thought", "tool_call", "tool_result", "done", "error", "system"] as const;
+export const AgentChatEventTypeValues = ["delta", "thought", "tool_call", "tool_result", "subagent_start", "subagent_delta", "subagent_tool_call", "subagent_tool_result", "subagent_done", "done", "error", "system"] as const;
 export type AgentChatEventType = (typeof AgentChatEventTypeValues)[number];
+
+export const AgentCustomizationKindValues = ["skill", "subagent"] as const;
+export type AgentCustomizationKind = (typeof AgentCustomizationKindValues)[number];
+
+export const AgentCustomizationStateValues = ["managed", "user_modified", "user_only", "tombstone"] as const;
+export type AgentCustomizationState = (typeof AgentCustomizationStateValues)[number];
 
 export const ProviderCapabilityValues = ["llm", "image", "video", "tts"] as const;
 export type ProviderCapability = (typeof ProviderCapabilityValues)[number];
@@ -102,6 +108,9 @@ export interface AgentChatEvent {
   message_id: string;
   text: string;
   tool?: string;
+  subagent_id?: string;
+  subagent_name?: string;
+  subagent_provider?: AgentProviderID;
   error: string;
   error_key?: string;
   error_params?: Record<string, string>;
@@ -114,6 +123,7 @@ export interface AgentChatMessage {
   text: string;
   thought?: string;
   tool?: string;
+  subagents?: SubagentInvocation[];
   created_at: number;
   conversation_id?: string;
 }
@@ -133,6 +143,17 @@ export interface AgentConversationIDPayload {
 
 export interface AgentConversationListResult {
   conversations: AgentConversation[];
+}
+
+export interface AgentCustomizationIDPayload {
+  name: string;
+}
+
+export interface AgentCustomizationsResult {
+  dir: string;
+  skills: SkillInfo[];
+  subagents: SubagentInfo[];
+  available_tools: string[];
 }
 
 export interface AgentHistoryResult {
@@ -207,6 +228,25 @@ export interface AgentProviderInfo {
 export interface AgentResolveApprovalPayload {
   id: string;
   approve: boolean;
+}
+
+export interface AgentSaveSkillPayload {
+  name: string;
+  description: string;
+  user_invocable: boolean;
+  enabled: boolean;
+  body: string;
+}
+
+export interface AgentSaveSubagentPayload {
+  name: string;
+  description: string;
+  tools: string[];
+  skills: string[];
+  provider?: AgentProviderID;
+  model?: string;
+  enabled: boolean;
+  body: string;
 }
 
 export interface AgentSendPromptPayload {
@@ -653,6 +693,19 @@ export interface SettingSpec {
   max: number;
 }
 
+export interface SkillInfo {
+  name: string;
+  description: string;
+  user_invocable: boolean;
+  enabled: boolean;
+  body: string;
+  source_state: AgentCustomizationState;
+  built_in: boolean;
+  tombstoned?: boolean;
+  file_path?: string;
+  resources?: string[];
+}
+
 export interface Spec {
   type: string;
   provider: string;
@@ -661,6 +714,31 @@ export interface Spec {
   inputs: Port[];
   outputs: Port[];
   params: Param[];
+}
+
+export interface SubagentInfo {
+  name: string;
+  description: string;
+  tools: string[];
+  skills: string[];
+  provider?: AgentProviderID;
+  model?: string;
+  enabled: boolean;
+  body: string;
+  source_state: AgentCustomizationState;
+  built_in: boolean;
+  tombstoned?: boolean;
+  file_path?: string;
+}
+
+export interface SubagentInvocation {
+  id: string;
+  name: string;
+  provider?: AgentProviderID;
+  status: string;
+  text?: string;
+  tools?: string[];
+  error?: string;
 }
 
 export interface SystemInfo {
@@ -792,6 +870,22 @@ export const Actions = {
   AGENT_REMOVE_ALLOWED_DIR: "agent:remove_allowed_dir",
   /** Selects the model and reasoning effort used by an agent provider. */
   AGENT_SET_MODEL: "agent:set_model",
+  /** Lists shared agent skills, subagents, and delegatable MCP tools. */
+  AGENT_LIST_CUSTOMIZATIONS: "agent:list_customizations",
+  /** Re-syncs agent skills and subagents from disk with built-in templates. */
+  AGENT_RELOAD_CUSTOMIZATIONS: "agent:reload_customizations",
+  /** Creates or updates a shared agent skill markdown file. */
+  AGENT_SAVE_SKILL: "agent:save_skill",
+  /** Deletes a custom skill or tombstones a built-in skill. */
+  AGENT_DELETE_SKILL: "agent:delete_skill",
+  /** Restores a built-in skill back to its default content. */
+  AGENT_RESTORE_SKILL: "agent:restore_skill",
+  /** Creates or updates a shared agent subagent markdown specification. */
+  AGENT_SAVE_SUBAGENT: "agent:save_subagent",
+  /** Deletes a custom subagent or tombstones a built-in subagent. */
+  AGENT_DELETE_SUBAGENT: "agent:delete_subagent",
+  /** Restores a built-in subagent back to its default content. */
+  AGENT_RESTORE_SUBAGENT: "agent:restore_subagent",
   /** Lists built-in API providers with their credentials (secrets masked), custom providers and the secret storage backend. */
   PROVIDERS_LIST: "providers:list",
   /** Saves a credential for a built-in provider; the first one becomes active. */
@@ -875,6 +969,14 @@ export interface ActionMap {
   "agent:add_allowed_dir": { payload: AgentAllowedDirPayload; result: AgentAllowedDirsResult };
   "agent:remove_allowed_dir": { payload: AgentAllowedDirPayload; result: AgentAllowedDirsResult };
   "agent:set_model": { payload: AgentSetModelPayload; result: AgentProviderInfo };
+  "agent:list_customizations": { payload: Empty; result: AgentCustomizationsResult };
+  "agent:reload_customizations": { payload: Empty; result: AgentCustomizationsResult };
+  "agent:save_skill": { payload: AgentSaveSkillPayload; result: AgentCustomizationsResult };
+  "agent:delete_skill": { payload: AgentCustomizationIDPayload; result: AgentCustomizationsResult };
+  "agent:restore_skill": { payload: AgentCustomizationIDPayload; result: AgentCustomizationsResult };
+  "agent:save_subagent": { payload: AgentSaveSubagentPayload; result: AgentCustomizationsResult };
+  "agent:delete_subagent": { payload: AgentCustomizationIDPayload; result: AgentCustomizationsResult };
+  "agent:restore_subagent": { payload: AgentCustomizationIDPayload; result: AgentCustomizationsResult };
   "providers:list": { payload: Empty; result: ProvidersListResult };
   "providers:create_credential": { payload: CreateCredentialPayload; result: ProviderCredential };
   "providers:update_credential": { payload: UpdateCredentialPayload; result: ProviderCredential };
@@ -916,6 +1018,8 @@ export const Events = {
   AGENT_LOGIN_PROMPT: "agent:login_prompt",
   /** Pending agent approval queue changed. */
   AGENT_APPROVALS: "agent:approvals",
+  /** Shared agent skills or subagents changed. */
+  AGENT_CUSTOMIZATIONS_CHANGED: "agent:customizations_changed",
   /** Provider credentials or custom providers changed. */
   PROVIDERS_CHANGED: "providers:changed",
 } as const;
@@ -928,6 +1032,7 @@ export interface EventMap {
   "agent:chat_event": AgentChatEvent;
   "agent:login_prompt": AgentLoginPrompt;
   "agent:approvals": AgentApprovalListResult;
+  "agent:customizations_changed": AgentCustomizationsResult;
   "providers:changed": ProvidersListResult;
 }
 

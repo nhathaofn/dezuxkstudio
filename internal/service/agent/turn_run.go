@@ -35,6 +35,16 @@ func (s *Service) SendPrompt(ctx context.Context, text string) (string, domainag
 		s.mu.Unlock()
 		return "", "", userError(apperr.CodeConflict, msgBusy, "agent is already processing a prompt", nil)
 	}
+	if s.conversationID != "" && s.conversationProvider != "" && s.conversationProvider != providerID {
+		otherName := domainagent.Registry[s.conversationProvider].Name
+		if otherName == "" {
+			otherName = string(s.conversationProvider)
+		}
+		s.mu.Unlock()
+		return "", "", userError(apperr.CodeConflict, msgConversationWrongProvider,
+			fmt.Sprintf("this conversation belongs to %s; switch to %s or start a new chat", otherName, otherName),
+			map[string]string{"provider": otherName})
+	}
 	client := s.activeClient
 	sessionID := s.activeSessionID
 	uiCtx := s.uiContext
@@ -49,12 +59,16 @@ func (s *Service) SendPrompt(ctx context.Context, text string) (string, domainag
 	if newConversation {
 		s.conversationID = uuid.NewString()
 	}
+	if s.conversationProvider == "" {
+		s.conversationProvider = providerID
+	}
 	conversationID := s.conversationID
 
 	// Like actions, a turn times out after agent.turn_timeout WITHOUT activity (streamed text,
 	// tool events, workflow progress from an MCP tool), not after a fixed total duration.
 	turnCtx, touchTurn, cancelTurn := progress.NewIdleContext(context.Background(), s.limits.TurnTimeout)
 	t := newTurn(messageID, conversationID, providerID, connToken, touchTurn, context.CancelFunc(cancelTurn))
+	t.ctx = turnCtx
 	if s.developerMode {
 		t.guard.disable()
 	}
@@ -69,10 +83,13 @@ func (s *Service) SendPrompt(ctx context.Context, text string) (string, domainag
 	if err := s.repo.SaveConversation(ctx, conv); err != nil {
 		s.log.Warn("agent: failed to save conversation", "error", err)
 	}
-	// Read twice the replay size: error/empty rows are filtered out before the newest N are kept.
-	history, err := s.repo.ListConversationMessages(ctx, conversationID, s.limits.ContextMessages*2)
-	if err != nil {
-		s.log.Warn("agent: failed to read history before turn", "error", err)
+	var history []domainagent.ChatMessage
+	if !newConversation {
+		var histErr error
+		history, histErr = s.repo.ListConversationMessages(ctx, conversationID, 0)
+		if histErr != nil {
+			s.log.Warn("agent: failed to read history before turn", "error", histErr)
+		}
 	}
 	if err := s.repo.AppendChatMessage(ctx, domainagent.ChatMessage{
 		ID:             userMsgID,
@@ -87,10 +104,15 @@ func (s *Service) SendPrompt(ctx context.Context, text string) (string, domainag
 
 	s.emitStatusOf(ctx, providerID)
 
+	effectivePrompt := trimmed
+	if s.customizations != nil {
+		effectivePrompt = s.customizations.ExpandSlashInvocation(trimmed)
+	}
+
 	safego.Go("agent.turn", func() {
 		defer s.turns.Done()
 		defer t.cancel()
-		err := s.runTurn(turnCtx, t, client, sessionID, trimmed, history, uiCtx)
+		err := s.runTurn(turnCtx, t, client, sessionID, effectivePrompt, history, uiCtx)
 		s.endTurn(t, turnResult(turnCtx, err, s.limits.TurnTimeout))
 	})
 
@@ -135,12 +157,17 @@ func (s *Service) runTurn(ctx context.Context, t *turn, client Transport, sessio
 	if client == nil {
 		return fmt.Errorf("agent transport is not connected")
 	}
-	if sessionID == "" {
+	sysPrompt := s.systemPrompt(ctx, t.providerID)
+	wantHash := promptDigest(sysPrompt)
+	s.mu.Lock()
+	currentHash := s.activeSessionPromptHash
+	s.mu.Unlock()
+	if sessionID == "" || (currentHash != "" && currentHash != wantHash) {
 		cwd, err := s.ensureWorkspaceDir()
 		if err != nil {
 			return err
 		}
-		newSessionID, err := client.NewSession(ctx, cwd, s.systemPrompt(ctx, t.providerID))
+		newSessionID, err := client.NewSession(ctx, cwd, sysPrompt)
 		if err != nil {
 			return err
 		}
@@ -148,6 +175,7 @@ func (s *Service) runTurn(ctx context.Context, t *turn, client Transport, sessio
 		s.mu.Lock()
 		if s.connSeq.Load() == t.connToken {
 			s.activeSessionID = newSessionID
+			s.activeSessionPromptHash = wantHash
 			s.sessionPrimed = false
 		}
 		s.mu.Unlock()
@@ -162,9 +190,9 @@ func (s *Service) runTurn(ctx context.Context, t *turn, client Transport, sessio
 	sessionKey := "acp:" + sessionID
 	var turnPrompt string
 	if primed {
-		turnPrompt = buildTurnPrompt(nil, s.screenContextForTurn(sessionKey, ui), prompt, s.limits, s.turnPromptOptions(t.providerID, nil))
+		turnPrompt = buildTurnPrompt(nil, s.screenContextForTurn(sessionKey, ui), prompt, s.turnPromptOptions(t.providerID, nil))
 	} else {
-		turnPrompt = buildTurnPrompt(history, ui, prompt, s.limits, s.turnPromptOptions(t.providerID, history))
+		turnPrompt = buildTurnPrompt(history, ui, prompt, s.turnPromptOptions(t.providerID, history))
 	}
 	err := client.Prompt(ctx, sessionID, turnPrompt)
 	if err == nil {
@@ -199,7 +227,7 @@ func (s *Service) runCLITurn(ctx context.Context, drv turnDriver, t *turn, promp
 			h = nil // a resumed CLI session already holds the conversation
 			sessionKey = cliSessionKey(t.providerID, s.cliSessionFor(t.providerID))
 		}
-		fullPrompt := buildTurnPrompt(h, s.screenContextForTurn(sessionKey, ui), prompt, s.limits, s.turnPromptOptions(t.providerID, h))
+		fullPrompt := buildTurnPrompt(h, s.screenContextForTurn(sessionKey, ui), prompt, s.turnPromptOptions(t.providerID, h))
 		err := drv.runTurn(ctx, resolved, workDir, mcpSrv.url, mcpSrv.token, t.id, fullPrompt)
 		if err == nil {
 			s.rememberScreenContext(cliSessionKey(t.providerID, s.cliSessionFor(t.providerID)), ui)
@@ -279,7 +307,8 @@ func (s *Service) endTurn(t *turn, err error) {
 // into later prompts and shown in the UI.
 func (s *Service) storeReply(t *turn) {
 	text, thought := t.guard.sanitizedText(), t.guard.sanitizedThought()
-	if strings.TrimSpace(text) == "" && strings.TrimSpace(thought) == "" {
+	subagents := t.subagentList()
+	if strings.TrimSpace(text) == "" && strings.TrimSpace(thought) == "" && len(subagents) == 0 {
 		return
 	}
 	now := time.Now().UnixMilli()
@@ -291,6 +320,7 @@ func (s *Service) storeReply(t *turn) {
 		Text:           text,
 		Thought:        thought,
 		Tool:           t.toolList(),
+		Subagents:      subagents,
 		CreatedAt:      now,
 		ConversationID: t.conversationID,
 	}); err != nil {
@@ -333,6 +363,21 @@ func (s *Service) emitChat(evt domainagent.ChatEvent) {
 		}
 	case domainagent.ChatEventToolCall:
 		t.noteTool(evt.Tool)
+	case domainagent.ChatEventSubagentStart:
+		t.recordSubagentStart(evt.SubagentID, evt.SubagentName, evt.SubagentProvider)
+	case domainagent.ChatEventSubagentDelta:
+		if evt.Text == "" {
+			return
+		}
+		t.appendSubagentText(evt.SubagentID, evt.Text)
+	case domainagent.ChatEventSubagentToolCall:
+		t.recordSubagentTool(evt.SubagentID, evt.Tool)
+	case domainagent.ChatEventSubagentDone:
+		status := "done"
+		if evt.Error != "" {
+			status = "error"
+		}
+		t.finishSubagent(evt.SubagentID, status, evt.Error)
 	}
 	s.emitChatRaw(evt)
 }

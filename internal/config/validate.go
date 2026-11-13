@@ -73,7 +73,6 @@ func (c *Config) Validate() error {
 			"agent.interrupt_wait":         c.Agent.InterruptWait,
 			"agent.status_cache_ttl":       c.Agent.StatusCacheTTL,
 			"agent.approval_ttl":           c.Agent.ApprovalTTL,
-			"agent.cli_update_interval":    c.Agent.CLIUpdateInterval,
 		})
 		positiveInts(add, map[string]int{
 			"providers.check_concurrency":     c.Providers.CheckConcurrency,
@@ -86,9 +85,6 @@ func (c *Config) Validate() error {
 			"network.max_idle_conns_per_host": c.Network.MaxIdleConnsPerHost,
 			"agent.history_limit":             c.Agent.HistoryLimit,
 			"agent.max_pending_approvals":     c.Agent.MaxPendingApprovals,
-			"agent.context_messages":          c.Agent.ContextMessages,
-			"agent.context_message_chars":     c.Agent.ContextMessageChars,
-			"agent.context_total_chars":       c.Agent.ContextTotalChars,
 		})
 		switch strings.ToLower(strings.TrimSpace(c.Agent.Mode)) {
 		case "", "assistant":

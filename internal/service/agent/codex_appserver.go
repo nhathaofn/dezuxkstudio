@@ -26,7 +26,7 @@ import (
 // app-server (older versions, protocol changes). The app-server protocol is marked experimental by Codex.
 
 const (
-	codexAppServerMaxLine = 16 << 20 // largest JSON-RPC line accepted from the app-server
+	codexAppServerMaxLine = 32 << 20 // largest JSON-RPC line accepted from the app-server
 )
 
 // errCodexAppServerUnavailable means the app-server could not be started or initialized; the caller

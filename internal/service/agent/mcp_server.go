@@ -9,8 +9,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
+	domainagent "app/internal/domain/agent"
 	"app/internal/progress"
 	"app/internal/safego"
 
@@ -27,11 +30,41 @@ const (
 	mcpHeartbeatsPerTurnTimeout = 4
 )
 
+type subagentContextKey struct{}
+
+type subagentRunMarker struct {
+	ID       string
+	Name     string
+	Provider domainagent.ProviderID
+	TurnID   string
+}
+
+func withSubagentContext(ctx context.Context, m subagentRunMarker) context.Context {
+	return context.WithValue(ctx, subagentContextKey{}, m)
+}
+
+func subagentFromContext(ctx context.Context) (subagentRunMarker, bool) {
+	if ctx == nil {
+		return subagentRunMarker{}, false
+	}
+	m, ok := ctx.Value(subagentContextKey{}).(subagentRunMarker)
+	return m, ok && m.ID != ""
+}
+
+type scopedMCPSession struct {
+	handler http.Handler
+	marker  subagentRunMarker
+}
+
 type localMCPServer struct {
+	svc             *Service
 	http            *http.Server
 	shutdownTimeout time.Duration
 	url             string
 	token           string
+
+	scopedMu sync.RWMutex
+	scoped   map[string]*scopedMCPSession
 }
 
 func startLocalMCPServer(s *Service, log *slog.Logger) (*localMCPServer, error) {
@@ -53,9 +86,11 @@ func startLocalMCPServer(s *Service, log *slog.Logger) (*localMCPServer, error) 
 	)
 
 	srv := &localMCPServer{
+		svc:             s,
 		url:             "http://" + addr + "/mcp",
 		token:           token,
 		shutdownTimeout: s.limits.MCPShutdownTimeout,
+		scoped:          make(map[string]*scopedMCPSession),
 	}
 	srv.http = &http.Server{
 		ReadHeaderTimeout: mcpReadHeaderTimeout,
@@ -69,21 +104,31 @@ func startLocalMCPServer(s *Service, log *slog.Logger) (*localMCPServer, error) 
 				http.Error(w, "Forbidden origin", http.StatusForbidden)
 				return
 			}
-			if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1 {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
+			authHeader := r.Header.Get("Authorization")
+			var targetHandler http.Handler = handler
+			turnID := ""
+			reqCtx := r.Context()
+			if subtle.ConstantTimeCompare([]byte(authHeader), []byte("Bearer "+token)) != 1 {
+				scopedSess := srv.matchScopedSession(authHeader)
+				if scopedSess == nil {
+					http.Error(w, "Unauthorized", http.StatusUnauthorized)
+					return
+				}
+				targetHandler = scopedSess.handler
+				turnID = scopedSess.marker.TurnID
+				reqCtx = withSubagentContext(reqCtx, scopedSess.marker)
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, mcpMaxRequestBytes)
 			// A tool call is activity of the running chat turn, and so is any progress the tool
 			// reports while it runs (e.g. a workflow): both re-arm the turn's idle timeout.
-			s.touchTurn("")
-			touch := func() { s.touchTurn("") }
-			r = r.WithContext(progress.With(r.Context(), progress.Sink{
+			s.touchTurn(turnID)
+			touch := func() { s.touchTurn(turnID) }
+			reqCtx = progress.With(reqCtx, progress.Sink{
 				Report:   func(progress.Update) { touch() },
 				Beat:     touch,
 				Interval: s.limits.TurnTimeout / mcpHeartbeatsPerTurnTimeout,
-			}))
-			handler.ServeHTTP(w, r)
+			})
+			targetHandler.ServeHTTP(w, r.WithContext(reqCtx))
 		}),
 	}
 
@@ -95,8 +140,61 @@ func startLocalMCPServer(s *Service, log *slog.Logger) (*localMCPServer, error) 
 	return srv, nil
 }
 
+func (m *localMCPServer) matchScopedSession(authHeader string) *scopedMCPSession {
+	rawTok, ok := strings.CutPrefix(authHeader, "Bearer ")
+	if !ok || rawTok == "" {
+		return nil
+	}
+	m.scopedMu.RLock()
+	defer m.scopedMu.RUnlock()
+	for tok, sess := range m.scoped {
+		if subtle.ConstantTimeCompare([]byte(rawTok), []byte(tok)) == 1 {
+			return sess
+		}
+	}
+	return nil
+}
+
+func (m *localMCPServer) registerScopedSession(allowedTools []string, marker subagentRunMarker) (string, error) {
+	if m == nil || m.svc == nil {
+		return "", fmt.Errorf("agent mcp server is unavailable")
+	}
+	var secret [32]byte
+	if _, err := rand.Read(secret[:]); err != nil {
+		return "", fmt.Errorf("agent mcp: generate scoped token: %w", err)
+	}
+	tok := hex.EncodeToString(secret[:])
+	scopedSrv := m.svc.buildMCPServerForTools(allowedTools)
+	handler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return scopedSrv },
+		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
+	)
+	m.scopedMu.Lock()
+	if m.scoped == nil {
+		m.scoped = make(map[string]*scopedMCPSession)
+	}
+	m.scoped[tok] = &scopedMCPSession{handler: handler, marker: marker}
+	m.scopedMu.Unlock()
+	return tok, nil
+}
+
+func (m *localMCPServer) unregisterScopedSession(tok string) {
+	if m == nil || tok == "" {
+		return
+	}
+	m.scopedMu.Lock()
+	delete(m.scoped, tok)
+	m.scopedMu.Unlock()
+}
+
 func (m *localMCPServer) close() {
-	if m == nil || m.http == nil {
+	if m == nil {
+		return
+	}
+	m.scopedMu.Lock()
+	clear(m.scoped)
+	m.scopedMu.Unlock()
+	if m.http == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), m.shutdownTimeout)

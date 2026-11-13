@@ -83,6 +83,9 @@ func (p Paths) AgentWorkspace() string { return filepath.Join(p.Data, "agent-wor
 // AgentProfiles holds the isolated per-provider CLI profiles (credentials, sessions) of AI agents.
 func (p Paths) AgentProfiles() string { return filepath.Join(p.Data, "agent-profiles") }
 
+// AgentCustomizations stores shared agent skills, subagents, and their sync manifest.
+func (p Paths) AgentCustomizations() string { return filepath.Join(p.Data, "agent-customizations") }
+
 // Backups is where database snapshots are kept before schema migrations.
 func (p Paths) Backups() string { return filepath.Join(p.Data, "backups") }
 

@@ -109,11 +109,27 @@ func writeCodexBaseInstructions(profileRoot, instructions string) (string, error
 	return path, nil
 }
 
+func writeCodexEphemeralInstructions(profileRoot, runID, instructions string) (string, func(), error) {
+	subDir := filepath.Join(profileRoot, "subagents")
+	if err := os.MkdirAll(subDir, 0o700); err != nil {
+		return "", func() {}, fmt.Errorf("codex: create subagent dir: %w", err)
+	}
+	path := filepath.Join(subDir, fmt.Sprintf("instructions-%s.md", runID))
+	if err := fsutil.WriteFileAtomic(path, []byte(instructions+"\n"), 0o600); err != nil {
+		return "", func() {}, fmt.Errorf("codex: write ephemeral subagent instructions: %w", err)
+	}
+	return path, func() { _ = os.Remove(path) }, nil
+}
+
 // buildCodexExecArgs builds a `codex exec` (first turn) or `codex exec resume <id>` (later turns) command line.
 // The working directory is set through cmd.Dir because `exec resume` has no -C flag; the sandbox is set through
 // config so both forms stay identical. Sessions are persisted only inside the isolated CODEX_HOME.
 func buildCodexExecArgs(mcpURL, instructions, baseInstructionsFile, resumeID string, toolTimeout time.Duration) []string {
 	return buildCodexExecArgsForMode(mcpURL, instructions, baseInstructionsFile, resumeID, toolTimeout, false)
+}
+
+func buildCodexExecArgsForSubagent(mcpURL, instructions, baseInstructionsFile string, toolTimeout time.Duration) []string {
+	return buildCodexExecArgsForMode(mcpURL, instructions, baseInstructionsFile, "", toolTimeout, false)
 }
 
 func buildCodexExecArgsForMode(mcpURL, instructions, baseInstructionsFile, resumeID string, toolTimeout time.Duration, devMode bool) []string {
@@ -370,7 +386,7 @@ func (s *Service) runCodexExecTurn(ctx context.Context, executable, profileRoot,
 // Output limits of a per-turn CLI run. A stream-json line can carry a whole tool result, so stdout lines
 // may be large; stderr is only kept as the error text, so a short tail is enough.
 const (
-	cliStdoutLineMax = 4 << 20
+	cliStdoutLineMax = 32 << 20
 	cliStderrLineMax = 256 << 10
 	cliStderrKeep    = 8 << 10
 )
