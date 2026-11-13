@@ -553,6 +553,9 @@ func (s *Service) vertexToken(ctx context.Context, raw string) error {
 		return fail(OutcomeInvalid, 0, "service account private key is not RSA")
 	}
 	tokenURI := cmp.Or(sa.TokenURI, googleTokenURI)
+	if err := domain.ValidateBaseURL(tokenURI); err != nil {
+		return fail(OutcomeInvalid, 0, "invalid token_uri")
+	}
 	now := time.Now().Unix()
 	assertion, err := signJWT(map[string]string{"alg": "RS256", "typ": "JWT"}, map[string]any{
 		"iss": sa.ClientEmail, "scope": strings.Join(VertexScopes, " "), "aud": tokenURI, "iat": now, "exp": now + 3600,

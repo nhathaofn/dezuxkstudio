@@ -25,6 +25,7 @@ func CORS(allowed []string) Middleware {
 				h.Set("Access-Control-Allow-Origin", origin)
 				h.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 				h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+				h.Set("Access-Control-Expose-Headers", "Content-Disposition")
 				h.Add("Vary", "Origin")
 			}
 			if r.Method == http.MethodOptions {
@@ -48,6 +49,14 @@ func RequireToken(token string) Middleware {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// RequireAuth enforces Bearer authentication unless allowAnonymous is true and token is empty.
+func RequireAuth(token string, allowAnonymous bool) Middleware {
+	if token == "" && allowAnonymous {
+		return func(next http.Handler) http.Handler { return next }
+	}
+	return RequireToken(token)
 }
 
 // RequireJSON rejects bodies that are not application/json, which also forces a

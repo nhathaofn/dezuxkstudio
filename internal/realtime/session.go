@@ -120,6 +120,10 @@ func (s *session) enqueue(v any) {
 		s.hub.log.Error("realtime: marshal outbound message", "client_id", s.id, "error", err)
 		return
 	}
+	s.enqueueBytes(data)
+}
+
+func (s *session) enqueueBytes(data []byte) {
 	s.sendMu.RLock()
 	defer s.sendMu.RUnlock()
 	if s.closed {
@@ -147,8 +151,8 @@ func (s *session) emit(event, refID string, data any) {
 	})
 }
 
-// handleAction acquires a concurrency slot (applying back-pressure to this client),
-// then executes the handler in its own goroutine.
+// handleAction tracks the request immediately and acquires a concurrency slot asynchronously
+// so readLoop is never blocked by QueueTimeout and can process MessageCancel right away.
 func (s *session) handleAction(msg contracts.ClientMessage) {
 	if msg.ID == "" {
 		s.respondError("", apperr.New(apperr.CodeBadRequest, "action id is required"))
@@ -160,42 +164,49 @@ func (s *session) handleAction(msg contracts.ClientMessage) {
 		return
 	}
 
-	if !s.hub.acquire(s.ctx) {
-		s.respondError(msg.ID, apperr.New(apperr.CodeConcurrencyLimit, "server busy, try again"))
-		return
-	}
-
-	timeout := s.hub.actionTimeout(msg.Action)
-	ctx, resetTimeout, cancel := progress.NewIdleContext(s.ctx, timeout)
-	if !s.trackInflight(msg.ID, cancel) {
-		cancel()
-		s.hub.release()
+	actionCtxBase, cancelAction := context.WithCancel(s.ctx)
+	if !s.trackInflight(msg.ID, cancelAction) {
+		cancelAction()
 		s.respondError(msg.ID, apperr.New(apperr.CodeBadRequest, "duplicate action id"))
 		return
 	}
-
-	req := &Request{ID: msg.ID, Action: msg.Action, ClientID: s.id}
-	// The single progress path: any report or beat re-arms the idle timeout here and, through the
-	// action:progress frame, on the client too.
-	send := func(p contracts.ActionProgress) {
-		resetTimeout()
-		s.emit(contracts.EventActionProgress, msg.ID, p)
-	}
-	actionCtx := progress.With(ctx, progress.Sink{
-		Report: func(u progress.Update) {
-			send(contracts.ActionProgress{Percent: clampPercent(u.Percent), Message: u.Message, MsgKey: u.Key, MsgParams: u.Params})
-		},
-		Beat:     func() { send(contracts.ActionProgress{Heartbeat: true}) },
-		Interval: s.hub.opts.KeepAliveInterval,
-	})
 
 	// The session still holds a WaitGroup slot here, so Add cannot race with Hub.Close's Wait.
 	s.hub.wg.Add(1)
 	safego.Go("realtime.action", func() {
 		defer s.hub.wg.Done()
+		defer cancelAction()
+
+		if !s.hub.acquire(actionCtxBase) {
+			s.untrackInflight(msg.ID)
+			if actionCtxBase.Err() != nil {
+				s.respondError(msg.ID, apperr.Wrap(apperr.CodeCancelled, "action cancelled", actionCtxBase.Err()))
+			} else {
+				s.respondError(msg.ID, apperr.New(apperr.CodeConcurrencyLimit, "server busy, try again"))
+			}
+			return
+		}
 		defer s.hub.release()
 		defer s.untrackInflight(msg.ID)
-		defer cancel()
+
+		timeout := s.hub.actionTimeout(msg.Action)
+		ctx, resetTimeout, cancelIdle := progress.NewIdleContext(actionCtxBase, timeout)
+		defer cancelIdle()
+
+		req := &Request{ID: msg.ID, Action: msg.Action, ClientID: s.id}
+		// The single progress path: any report or beat re-arms the idle timeout here and, through the
+		// action:progress frame, on the client too.
+		send := func(p contracts.ActionProgress) {
+			resetTimeout()
+			s.emit(contracts.EventActionProgress, msg.ID, p)
+		}
+		actionCtx := progress.With(ctx, progress.Sink{
+			Report: func(u progress.Update) {
+				send(contracts.ActionProgress{Percent: clampPercent(u.Percent), Message: u.Message, MsgKey: u.Key, MsgParams: u.Params})
+			},
+			Beat:     func() { send(contracts.ActionProgress{Heartbeat: true}) },
+			Interval: s.hub.opts.KeepAliveInterval,
+		})
 
 		result, err := s.hub.execute(actionCtx, req, handler, msg.Payload)
 		if err != nil {

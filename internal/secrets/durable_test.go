@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -139,5 +140,57 @@ func TestKeyringChunksLargeValues(t *testing.T) {
 	_ = k.Delete("big")
 	if _, err := k.Get("big"); !errors.Is(err, ErrNotFound) {
 		t.Fatal("not deleted")
+	}
+}
+
+func TestEncryptedFileDPAPIProtectionAndMigration(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows DPAPI only")
+	}
+	dir := t.TempDir()
+	f, err := NewEncryptedFile(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Set("k", "secret-val")
+
+	rawKey, err := os.ReadFile(filepath.Join(dir, masterKeyFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(rawKey), masterKeyDPAPIPrefix) {
+		t.Fatalf("expected master.key to be DPAPI-protected, got %q", string(rawKey))
+	}
+
+	// Verify legacy plaintext master.key still loads and automatically upgrades to DPAPI.
+	legacyDir := t.TempDir()
+	rawPlain := make([]byte, 32)
+	for i := range rawPlain {
+		rawPlain[i] = byte(i + 1)
+	}
+	// Write a legacy base64 key first, store encrypted data using it, then reopen to verify upgrade.
+	if err := os.WriteFile(filepath.Join(legacyDir, masterKeyFileName), []byte("AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lf, err := NewEncryptedFile(legacyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lf.Set("legacy", "val123"); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := os.ReadFile(filepath.Join(legacyDir, masterKeyFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(upgraded), masterKeyDPAPIPrefix) {
+		t.Fatalf("expected legacy master.key to migrate to DPAPI, got %q", string(upgraded))
+	}
+	reopened, err := NewEncryptedFile(legacyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := reopened.Get("legacy"); err != nil || got != "val123" {
+		t.Fatalf("got %q err=%v", got, err)
 	}
 }

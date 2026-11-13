@@ -211,10 +211,6 @@ describe("Language Switching & Catalog Integrity", () => {
     const vietnameseSampleKeys: MessageKey[] = [
       "header.nav.ariaLabel",
       "settings.nav.ariaLabel",
-      "settings.devMode.on",
-      "settings.devMode.off",
-      "settings.devMode.enable",
-      "settings.devMode.disable",
       "system.uptime.hm",
       "system.uptime.ms",
       "tools.browse.title",
@@ -247,7 +243,6 @@ describe("Language Switching & Catalog Integrity", () => {
     let currentLang = usePreferencesStore.getState().prefs.language;
     expect(currentLang).toBe("en");
     expect(translate(currentLang, "watermark.workers.count", { count: 4 })).toBe("4 Workers");
-    expect(translate(currentLang, "settings.devMode.on")).toBe("ON");
     expect(translate(currentLang, "header.nav.ariaLabel")).toBe("Main navigation");
 
     // Switch to vi
@@ -255,7 +250,6 @@ describe("Language Switching & Catalog Integrity", () => {
     currentLang = usePreferencesStore.getState().prefs.language;
     expect(currentLang).toBe("vi");
     expect(translate(currentLang, "watermark.workers.count", { count: 4 })).toBe("4 Luồng");
-    expect(translate(currentLang, "settings.devMode.on")).toBe("BẬT");
     expect(translate(currentLang, "header.nav.ariaLabel")).toBe("Điều hướng chính");
 
     // Switch back to en
@@ -271,10 +265,6 @@ describe("JSX Components Interpolation & Key Validation", () => {
     const m3Keys: Record<string, Record<string, string | number> | undefined> = {
       "header.nav.ariaLabel": undefined,
       "settings.nav.ariaLabel": undefined,
-      "settings.devMode.on": undefined,
-      "settings.devMode.off": undefined,
-      "settings.devMode.enable": undefined,
-      "settings.devMode.disable": undefined,
       "system.uptime.hm": { h: 2, m: 35 },
       "system.uptime.ms": { m: 15, s: 42 },
       "tools.browse.title": { name: "ffmpeg.exe" },

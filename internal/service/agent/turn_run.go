@@ -73,6 +73,7 @@ func (s *Service) SendPrompt(ctx context.Context, text string) (string, domainag
 		t.guard.disable()
 	}
 	s.turn = t
+	s.runningTurns[t] = struct{}{}
 	s.turns.Add(1)
 	s.mu.Unlock()
 
@@ -110,7 +111,13 @@ func (s *Service) SendPrompt(ctx context.Context, text string) (string, domainag
 	}
 
 	safego.Go("agent.turn", func() {
-		defer s.turns.Done()
+		defer close(t.done)
+		defer func() {
+			s.mu.Lock()
+			delete(s.runningTurns, t)
+			s.mu.Unlock()
+			s.turns.Done()
+		}()
 		defer t.cancel()
 		err := s.runTurn(turnCtx, t, client, sessionID, effectivePrompt, history, uiCtx)
 		s.endTurn(t, turnResult(turnCtx, err, s.limits.TurnTimeout))

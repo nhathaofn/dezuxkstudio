@@ -14,7 +14,6 @@ type idleContext struct {
 	deadline   time.Time
 	done       chan struct{}
 	err        error
-	generation uint64
 	stopParent func() bool
 }
 
@@ -41,7 +40,8 @@ func newIdleContext(parent context.Context, timeout time.Duration) (*idleContext
 	c.timer = time.AfterFunc(timeout, func() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		if c.generation == 0 && c.err == nil {
+		// Re-check deadline under lock so a timer invocation that raced with reset() does not expire early.
+		if c.err == nil && time.Until(c.deadline) <= 0 {
 			c.err = context.DeadlineExceeded
 			close(c.done)
 		}
@@ -63,20 +63,10 @@ func newIdleContext(parent context.Context, timeout time.Duration) (*idleContext
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		if c.err == nil {
-			c.generation++
-			gen := c.generation
 			c.deadline = time.Now().Add(c.timeout)
 			if c.timer != nil {
-				c.timer.Stop()
+				c.timer.Reset(c.timeout)
 			}
-			c.timer = time.AfterFunc(c.timeout, func() {
-				c.mu.Lock()
-				defer c.mu.Unlock()
-				if c.generation == gen && c.err == nil {
-					c.err = context.DeadlineExceeded
-					close(c.done)
-				}
-			})
 		}
 	}
 

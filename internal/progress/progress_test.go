@@ -55,3 +55,26 @@ func TestKeepAliveStopsWithContext(t *testing.T) {
 		t.Fatal("kept beating after the context ended")
 	}
 }
+
+func TestIdleContextTouchAndExpire(t *testing.T) {
+	ctx, touch, cancel := NewIdleContext(context.Background(), 40*time.Millisecond)
+	defer cancel()
+
+	// Repeated touches keep the reusable timer alive past the initial 40ms window.
+	for range 4 {
+		time.Sleep(20 * time.Millisecond)
+		if ctx.Err() != nil {
+			t.Fatalf("idleContext expired despite touch: %v", ctx.Err())
+		}
+		touch()
+	}
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("idleContext did not expire after going idle")
+	}
+	if ctx.Err() != context.DeadlineExceeded {
+		t.Fatalf("expected DeadlineExceeded, got %v", ctx.Err())
+	}
+}

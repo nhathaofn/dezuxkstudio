@@ -132,8 +132,20 @@ func (h *Hub) Publish(event string, data any) {
 		h.log.Error("realtime: publish of undeclared event dropped", "event", event)
 		return
 	}
-	for _, s := range h.snapshot() {
-		s.emit(event, "", data)
+	sessions := h.snapshot()
+	if len(sessions) == 0 {
+		return
+	}
+	// Marshal once for all connected subscribers instead of repeating per session.
+	payload, err := json.Marshal(contracts.EventMessage{
+		Type: contracts.MessageEvent, Event: event, Data: data, Timestamp: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		h.log.Error("realtime: marshal broadcast event", "event", event, "error", err)
+		return
+	}
+	for _, s := range sessions {
+		s.enqueueBytes(payload)
 	}
 }
 

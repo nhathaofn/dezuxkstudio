@@ -10,7 +10,6 @@ export const appConfig = {
     manualWsUrl: "dezuxk.manual_ws_url",
     themeHint: "dezuxk.theme_hint",
     languageHint: "dezuxk.language_hint",
-    devMode: "dezuxk.dev_mode",
     agentDrawerWidth: "dezuxk-agent-drawer-width",
   },
   /** Reconnect backoff with full jitter. */
@@ -79,4 +78,8 @@ export const appConfig = {
   runtimeConfigPath: "/runtime-config.json",
   /** Path of the WebSocket endpoint when deriving it from window.location. */
   wsPath: "/ws",
+  /** Authenticated HTTP media staging upload endpoint (browser and remote client modes). */
+  mediaUploadPath: "/api/media/upload",
+  /** Authenticated HTTP media download endpoint (browser and remote client modes). */
+  mediaDownloadPath: "/api/media/download",
 } as const;

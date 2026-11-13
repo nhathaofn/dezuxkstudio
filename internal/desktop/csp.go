@@ -20,10 +20,17 @@ func contentSecurityPolicy(cfg *config.Config) string {
 	switch cfg.Mode {
 	case config.ModeClient:
 		if u, err := url.Parse(cfg.Client.RemoteURL); err == nil && u.Host != "" {
-			connect = append(connect, u.Scheme+"://"+u.Host)
+			switch strings.ToLower(u.Scheme) {
+			case "wss", "https":
+				connect = append(connect, "wss://"+u.Host, "https://"+u.Host)
+			case "ws", "http":
+				connect = append(connect, "ws://"+u.Host, "http://"+u.Host)
+			default:
+				connect = append(connect, u.Scheme+"://"+u.Host)
+			}
 		}
 	default:
-		connect = append(connect, "ws://127.0.0.1:*", "ws://localhost:*")
+		connect = append(connect, "ws://127.0.0.1:*", "ws://localhost:*", "http://127.0.0.1:*", "http://localhost:*")
 	}
 	if buildinfo.IsDev() {
 		// Vite dev server: HMR socket and the inline React-refresh preamble.
@@ -35,7 +42,7 @@ func contentSecurityPolicy(cfg *config.Config) string {
 		"default-src 'self'",
 		"script-src " + strings.Join(script, " "),
 		"style-src 'self' 'unsafe-inline'",
-		"img-src 'self' data:",
+		"img-src 'self' data: blob:",
 		"font-src 'self' data:",
 		"connect-src " + strings.Join(connect, " "),
 		"object-src 'none'",

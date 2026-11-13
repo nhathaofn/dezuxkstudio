@@ -1,18 +1,43 @@
 import { appConfig } from "../../config/appConfig";
 import React from "react";
 import { useFlash } from "../../lib/hooks/useFlash";
-import { Layers, FileImage, Loader2, CheckCircle2, Check, AlertCircle, Copy } from "lucide-react";
+import {
+  Layers,
+  FileImage,
+  Loader2,
+  CheckCircle2,
+  Check,
+  AlertCircle,
+  Copy,
+  Download,
+} from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { translateServerMessage, useT } from "../../lib/i18n";
+import { mediaBasename } from "../../lib/rtClient";
+import { useConnectionStore } from "../connection/useConnectionStore";
 import { useWatermarkStore } from "./useWatermarkStore";
 
 export const WatermarkResultsCard: React.FC = () => {
   const t = useT();
   const [copiedPath, flashCopiedPath] = useFlash<string>(appConfig.ui.copyFeedbackMs);
+  const endpointMode = useConnectionStore((s) => s.endpoint?.mode);
+  const isRemoteMode = endpointMode === "browser" || endpointMode === "client";
 
-  const { inputPath, inputPaths, loading, progress, result } = useWatermarkStore();
+  const {
+    inputPath,
+    inputPaths,
+    remoteNameMap,
+    loading,
+    downloadingPath,
+    progress,
+    result,
+    downloadOutput,
+  } = useWatermarkStore();
+
+  const displayName = (rawPath: string) =>
+    remoteNameMap[rawPath] || (isRemoteMode ? mediaBasename(rawPath) : rawPath);
 
   const handleCopy = (text: string) => {
     void navigator.clipboard.writeText(text);
@@ -117,19 +142,38 @@ export const WatermarkResultsCard: React.FC = () => {
               <div className="watermark-file-meta">
                 <div className="muted-text">{t("watermark.result.path")}</div>
                 <div className="watermark-file-path" title={result.image.localUrl}>
-                  {result.image.localUrl}
+                  {displayName(result.image.localUrl)}
                 </div>
               </div>
 
-              <Button
-                size="sm"
-                iconOnly
-                onClick={() => handleCopy(result.image.localUrl)}
-                title={t("watermark.copyPath")}
-                aria-label={t("watermark.copyPath")}
-              >
-                {copiedPath === result.image.localUrl ? <Check size={12} /> : <Copy size={12} />}
-              </Button>
+              {isRemoteMode ? (
+                <Button
+                  size="sm"
+                  iconOnly
+                  disabled={downloadingPath === result.image.localUrl}
+                  onClick={() =>
+                    void downloadOutput(result.image.localUrl, mediaBasename(result.image.localUrl))
+                  }
+                  title={t("watermark.download")}
+                  aria-label={t("watermark.download")}
+                >
+                  {downloadingPath === result.image.localUrl ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <Download size={12} />
+                  )}
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  iconOnly
+                  onClick={() => handleCopy(result.image.localUrl)}
+                  title={t("watermark.copyPath")}
+                  aria-label={t("watermark.copyPath")}
+                >
+                  {copiedPath === result.image.localUrl ? <Check size={12} /> : <Copy size={12} />}
+                </Button>
+              )}
             </div>
           )}
 
@@ -140,11 +184,11 @@ export const WatermarkResultsCard: React.FC = () => {
                 <div key={`${item.path}-${idx}`} className="watermark-file-row">
                   <div className="watermark-file-meta">
                     <div className="watermark-file-path" title={item.path}>
-                      {item.path}
+                      {displayName(item.path)}
                     </div>
                     {item.out_path && item.out_path !== item.path && (
                       <div className="watermark-file-subpath" title={item.out_path}>
-                        → {item.out_path}
+                        → {displayName(item.out_path)}
                       </div>
                     )}
                     {item.error && <div className="watermark-file-error">{item.error}</div>}
@@ -170,17 +214,35 @@ export const WatermarkResultsCard: React.FC = () => {
                       </Badge>
                     )}
 
-                    {item.out_path && (
-                      <button
-                        type="button"
-                        onClick={() => handleCopy(item.out_path)}
-                        className="watermark-icon-btn"
-                        title={t("watermark.copyPath")}
-                        aria-label={t("watermark.copyPath")}
-                      >
-                        {copiedPath === item.out_path ? <Check size={12} /> : <Copy size={12} />}
-                      </button>
-                    )}
+                    {item.out_path &&
+                      (isRemoteMode ? (
+                        <button
+                          type="button"
+                          disabled={downloadingPath === item.out_path}
+                          onClick={() =>
+                            void downloadOutput(item.out_path, mediaBasename(item.out_path))
+                          }
+                          className="watermark-icon-btn"
+                          title={t("watermark.download")}
+                          aria-label={t("watermark.download")}
+                        >
+                          {downloadingPath === item.out_path ? (
+                            <Loader2 size={12} className="animate-spin" />
+                          ) : (
+                            <Download size={12} />
+                          )}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleCopy(item.out_path)}
+                          className="watermark-icon-btn"
+                          title={t("watermark.copyPath")}
+                          aria-label={t("watermark.copyPath")}
+                        >
+                          {copiedPath === item.out_path ? <Check size={12} /> : <Copy size={12} />}
+                        </button>
+                      ))}
                   </div>
                 </div>
               ))}

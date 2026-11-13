@@ -11,15 +11,16 @@ import (
 
 // AccessPolicy decides which files DezuxkStudio's agent may touch.
 //
-// DezuxkStudio is a desktop app, so the agent works on the user's whole machine by default. The policy only
-// blocks what must never be touched:
+// The agent is strictly confined to trusted directories (DezuxkStudio's workspace, media dir,
+// user-granted trusted folders, and future project folders). Any path outside trusted directories
+// is denied outright. Even inside trusted directories, the policy blocks:
 //   - secrets and credentials (SSH/cloud keys, .env, password stores, browser profiles, CLI agent configs);
-//   - source code and executables (the agent is not a programming assistant);
+//   - source code and executables (unless DeveloperMode is explicitly enabled);
 //   - operating-system directories and DezuxkStudio's own internal data (database, isolated agent profiles, logs).
 //
-// Paths are additionally classified as *trusted* (DezuxkStudio workspace, media dir, folders the user granted, and
-// in the future project folders): there the agent works freely. Elsewhere on the machine reading and creating files
-// is free, but destructive actions (overwrite, delete) require the user's approval in the UI.
+// Within allowed trusted directories, workspace file tools run directly without interactive file
+// approval prompts; destructive engine-node parameters (e.g. InPlace overwrite or provider delete)
+// still require explicit UI approval.
 type AccessPolicy struct {
 	mu           sync.RWMutex
 	dataDir      string

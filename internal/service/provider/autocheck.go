@@ -105,9 +105,31 @@ func (s *Service) checkAndRefresh(ctx context.Context, id string) {
 		}
 		return
 	}
-	if _, err := s.repo.GetCustom(ctx, id); err == nil {
-		if res, err := s.TestCustom(ctx, id); err == nil && res.OK() {
-			if _, err := s.DiscoverModelsFor(ctx, id); err != nil && ctx.Err() == nil {
+	if rc, err := s.ResolveCustom(ctx, id); err == nil || isSecretMissing(err) {
+		var res TestResult
+		var found []DiscoveredModel
+		switch {
+		case isSecretMissing(err):
+			res = TestResult{Outcome: domain.OutcomeSecretMissing, Detail: "the stored key is gone; enter it again"}
+		default:
+			// Custom connectivity test IS model discovery, so run discover once and use the result
+			// for both health and model merging.
+			res, err = s.run(ctx, []string{rc.APIKey}, func(ctx context.Context) ([]string, error) {
+				var derr error
+				found, derr = s.discover(ctx, rc.Provider.DiscoveryFormat, rc.Provider.BaseURL, rc.APIKey)
+				return discoveredIDs(found), derr
+			})
+			if err != nil {
+				return
+			}
+		}
+		s.recordHealth(ctx, func(h domain.Health) error { return s.repo.SetCustomHealth(ctx, id, h) }, res)
+		if res.OK() {
+			var add []domain.Model
+			for _, d := range found {
+				add = append(add, d.AsModel())
+			}
+			if _, err := s.SetModels(ctx, id, domain.MergeDiscovered(rc.Provider.Models, add)); err != nil && ctx.Err() == nil {
 				_ = s.repo.SetCustomHealth(ctx, id, modelsFailed(err))
 			}
 		}

@@ -58,7 +58,34 @@ func New(o Options) (*Service, error) {
 	if o.Repo == nil || o.Secrets == nil || o.Client == nil || o.TestTimeout <= 0 {
 		return nil, errors.New("provider: incomplete options")
 	}
-	return &Service{repo: o.Repo, secrets: o.Secrets, client: o.Client, testTimeout: o.TestTimeout, limitDefaults: o.LimitDefaults, onChanged: o.OnChanged, auto: newAutoCheck(), autoOn: o.AutoCheck}, nil
+	return &Service{
+		repo:          o.Repo,
+		secrets:       o.Secrets,
+		client:        withRedirectGuard(o.Client),
+		testTimeout:   o.TestTimeout,
+		limitDefaults: o.LimitDefaults,
+		onChanged:     o.OnChanged,
+		auto:          newAutoCheck(),
+		autoOn:        o.AutoCheck,
+	}, nil
+}
+
+func withRedirectGuard(base *http.Client) *http.Client {
+	c := *base
+	prev := base.CheckRedirect
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if err := domain.ValidateOutboundURL(req.URL.String()); err != nil {
+			return fmt.Errorf("blocked redirect target: %w", err)
+		}
+		if prev != nil {
+			return prev(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &c
 }
 
 func (s *Service) changed() {
@@ -186,6 +213,10 @@ func hints(vals map[string]string) map[string]string {
 
 // CreateCredential saves a new credential; the first one of a provider becomes active.
 func (s *Service) CreateCredential(ctx context.Context, providerID string, in domain.Input) (domain.Credential, error) {
+	return s.createCredential(ctx, providerID, in, true)
+}
+
+func (s *Service) createCredential(ctx context.Context, providerID string, in domain.Input, autoCheck bool) (domain.Credential, error) {
 	m, err := lookup(providerID)
 	if err != nil {
 		return domain.Credential{}, err
@@ -215,7 +246,9 @@ func (s *Service) CreateCredential(ctx context.Context, providerID string, in do
 		return domain.Credential{}, err
 	}
 	s.changed()
-	s.startAutoCheck(c.ID) // is the key alive, which models does it offer
+	if autoCheck {
+		s.startAutoCheck(c.ID) // is the key alive, which models does it offer
+	}
 	return c, nil
 }
 
@@ -364,11 +397,17 @@ func (s *Service) DeleteCredential(ctx context.Context, id string) error {
 
 // ActivateCredential makes id the active credential of its provider.
 func (s *Service) ActivateCredential(ctx context.Context, id string) error {
+	return s.activateCredential(ctx, id, true)
+}
+
+func (s *Service) activateCredential(ctx context.Context, id string, autoCheck bool) error {
 	if err := s.repo.ActivateCredential(ctx, id); err != nil {
 		return err
 	}
 	s.changed()
-	s.startAutoCheck(id) // the models come from the active key: refresh them
+	if autoCheck {
+		s.startAutoCheck(id) // the models come from the active key: refresh them
+	}
 	return nil
 }
 
@@ -383,6 +422,10 @@ func customModelsOrEmpty(m []domain.Model) []domain.Model {
 
 // CreateCustom saves a custom provider.
 func (s *Service) CreateCustom(ctx context.Context, in domain.CustomInput) (domain.CustomProvider, error) {
+	return s.createCustom(ctx, in, true)
+}
+
+func (s *Service) createCustom(ctx context.Context, in domain.CustomInput, autoCheck bool) (domain.CustomProvider, error) {
 	if err := in.Validate(); err != nil {
 		return domain.CustomProvider{}, err
 	}
@@ -403,7 +446,9 @@ func (s *Service) CreateCustom(ctx context.Context, in domain.CustomInput) (doma
 		return domain.CustomProvider{}, err
 	}
 	s.changed()
-	s.startAutoCheck(p.ID) // is the endpoint alive, which models does it offer
+	if autoCheck {
+		s.startAutoCheck(p.ID) // is the endpoint alive, which models does it offer
+	}
 	return p, nil
 }
 

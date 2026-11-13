@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -254,7 +253,7 @@ func truncateUTF8Bytes(s string, maxBytes int) string {
 	return s[:maxBytes]
 }
 
-func (s *Service) handleWorkspaceEditFile(ctx context.Context, in editFileToolInput) (*mcp.CallToolResult, any, error) {
+func (s *Service) handleWorkspaceEditFile(in editFileToolInput) (*mcp.CallToolResult, any, error) {
 	target, err := s.policy.ValidateWrite(in.Path)
 	if err != nil {
 		return mcpError(err.Error())
@@ -351,26 +350,13 @@ func (s *Service) handleWorkspaceEditFile(ctx context.Context, in editFileToolIn
 	}
 
 	totalLines := strings.Count(strings.ReplaceAll(updated, "\r\n", "\n"), "\n") + 1
-	applyEdit := func() (any, error) {
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return nil, err
-		}
-		if err := fsutil.WriteFileAtomic(target, []byte(updated), 0o644); err != nil {
-			return nil, err
-		}
-		return map[string]any{"ok": true, "path": target, "mode": mode, "bytes": len(updated), "total_lines": totalLines}, nil
-	}
-
-	if statErr == nil && !s.policy.IsTrusted(target) {
-		return s.needsApproval(ctx, "workspace_edit_file", "Edit "+filepath.Base(target),
-			fmt.Sprintf("Edit %s using mode %q (%d bytes resulting).", target, mode, len(updated)),
-			func(context.Context) (any, error) { return applyEdit() })
-	}
-	res, err := applyEdit()
-	if err != nil {
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return mcpError(err.Error())
 	}
-	return mcpJSON(res)
+	if err := fsutil.WriteFileAtomic(target, []byte(updated), 0o644); err != nil {
+		return mcpError(err.Error())
+	}
+	return mcpJSON(map[string]any{"ok": true, "path": target, "mode": mode, "bytes": len(updated), "total_lines": totalLines})
 }
 
 func (s *Service) handleWorkspaceSearchText(in searchTextToolInput) (*mcp.CallToolResult, any, error) {

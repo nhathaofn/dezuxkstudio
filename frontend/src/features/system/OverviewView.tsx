@@ -1,9 +1,8 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowRight, Code2, Cpu, Radio, Settings, Sparkles, Terminal, Wrench } from "lucide-react";
+import { ArrowRight, Cpu, Radio, Settings, Sparkles, Terminal, Wrench } from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
 import { useConnectionStore } from "../connection/useConnectionStore";
-import { usePreferencesStore } from "../preferences/usePreferencesStore";
 import { SystemCard } from "./SystemCard";
 import { UpdateCard } from "./UpdateCard";
 import { useSystemStore } from "./useSystemStore";
@@ -16,7 +15,6 @@ export const OverviewView: React.FC = () => {
 
   const info = useSystemStore((s) => s.info);
   const status = useConnectionStore((s) => s.status);
-  const devMode = usePreferencesStore((s) => s.devMode);
 
   const formatUptime = (sec: number): string => formatDuration(t, sec);
 
@@ -53,7 +51,6 @@ export const OverviewView: React.FC = () => {
             <Radio size={12} className="dashboard-badge-icon" />
             {t(`status.${status}`)}
           </Badge>
-          {devMode && <Badge>{t("settings.devMode.badge")}</Badge>}
         </div>
       </div>
 
@@ -141,28 +138,6 @@ export const OverviewView: React.FC = () => {
                 <p className="dashboard-action-desc">{t("overview.action.settingsDesc")}</p>
               </div>
             </div>
-
-            {/* DevTools Shortcut (spans full width cleanly when devMode enabled) */}
-            {devMode && (
-              <div
-                className="dashboard-action-card dashboard-action-card--wide"
-                role="button"
-                tabIndex={0}
-                onClick={() => navigate("/settings?tab=devtools")}
-                onKeyDown={(e) => handleShortcutKeyDown(e, "/settings?tab=devtools")}
-              >
-                <div className="dashboard-action-body">
-                  <span className="dashboard-action-icon">
-                    <Code2 size={18} />
-                  </span>
-                  <div>
-                    <h3 className="dashboard-action-title">{t("settings.tabs.devtools")}</h3>
-                    <p className="dashboard-action-desc">{t("settings.devMode.desc")}</p>
-                  </div>
-                </div>
-                <ArrowRight size={16} className="dashboard-action-arrow" />
-              </div>
-            )}
           </div>
         </section>
 

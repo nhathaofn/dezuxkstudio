@@ -38,6 +38,7 @@ export class RealtimeClient {
   private readonly listeners = new Map<string, Set<Listener<unknown>>>();
   private readonly statusListeners = new Set<Listener<ConnectionStatus>>();
   private readonly conn: ConnectionManager;
+  private endpoint: Endpoint | null = null;
   private actionTimeoutMs: number = appConfig.fallback.actionTimeoutMs;
   private longActionTimeoutMs: number = appConfig.fallback.longActionTimeoutMs;
 
@@ -53,9 +54,14 @@ export class RealtimeClient {
   }
 
   connect(endpoint: Endpoint): void {
+    this.endpoint = endpoint;
     this.actionTimeoutMs = endpoint.actionTimeoutMs;
     this.longActionTimeoutMs = endpoint.longActionTimeoutMs;
     this.conn.connect(endpoint.url, endpoint.token);
+  }
+
+  getEndpoint(): Endpoint | null {
+    return this.endpoint;
   }
 
   disconnect(): void {
@@ -85,11 +91,6 @@ export class RealtimeClient {
     opts: RequestOptions = {}
   ): Promise<ActionMap[A]["result"]> {
     return this.send(action, payload, opts) as Promise<ActionMap[A]["result"]>;
-  }
-
-  /** Untyped variant for developer tools (action tester). */
-  requestRaw(action: string, payload: unknown, opts: RequestOptions = {}): Promise<unknown> {
-    return this.send(action, payload, opts);
   }
 
   async ping(): Promise<number> {

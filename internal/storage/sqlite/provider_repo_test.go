@@ -124,10 +124,12 @@ func TestProviderModelsSettingsDefaults(t *testing.T) {
 		t.Fatalf("auto must clear: %v", defs)
 	}
 
-	// deleting a custom provider removes its models and settings
+	// deleting a custom provider removes its models, settings, and matching defaults
 	p, _ := r.CreateCustom(ctx, provider.CustomProvider{Name: "x", DiscoveryFormat: provider.DiscoveryOpenAI, BaseURL: "http://x"})
 	_ = r.UpdateSettings(ctx, p.ID, provider.Settings{"video_max_workers": 2}, nil)
 	_ = r.ReplaceModels(ctx, p.ID, models[:1])
+	_ = r.SetDefault(ctx, provider.PurposeImage, p.ID+"/gpt-image-1")
+	_ = r.SetDefault(ctx, provider.PurposeText, "openai/gpt-4o")
 	if err := r.DeleteCustom(ctx, p.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -136,5 +138,8 @@ func TestProviderModelsSettingsDefaults(t *testing.T) {
 	}
 	if s, _ := r.GetSettings(ctx, p.ID); len(s) != 0 {
 		t.Fatal("settings left")
+	}
+	if defs, _ := r.GetDefaults(ctx); defs[provider.PurposeImage] != "" || defs[provider.PurposeText] != "openai/gpt-4o" {
+		t.Fatalf("custom default not cleaned or unrelated default lost: %v", defs)
 	}
 }

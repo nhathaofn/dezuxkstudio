@@ -462,7 +462,7 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 
 	addMCPTool(server, "workspace_write_file",
 		"Create or replace a text file inside DezuxkStudio's workspace, media, or trusted folders.",
-		func(ctx context.Context, in writeFileToolInput) (*mcp.CallToolResult, any, error) {
+		func(_ context.Context, in writeFileToolInput) (*mcp.CallToolResult, any, error) {
 			target, err := s.policy.ValidateWrite(in.Path)
 			if err != nil {
 				return mcpError(err.Error())
@@ -470,36 +470,24 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 			if errMsg := validateJSONWrite(target, in.Content); errMsg != "" {
 				return mcpError(errMsg)
 			}
-			content := in.Content
-			write := func(context.Context) (any, error) {
-				if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-					return nil, err
-				}
-				if err := fsutil.WriteFileAtomic(target, []byte(content), 0o644); err != nil {
-					return nil, err
-				}
-				return map[string]any{"ok": true, "path": target, "bytes": len(content)}, nil
-			}
-			if _, statErr := os.Stat(target); statErr == nil && !s.policy.IsTrusted(target) {
-				return s.needsApproval(ctx, "workspace_write_file", "Overwrite "+filepath.Base(target),
-					fmt.Sprintf("Replace the existing file %s (%d bytes of new content).", target, len(content)), write)
-			}
-			res, err := write(context.Background())
-			if err != nil {
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return mcpError(err.Error())
 			}
-			return mcpJSON(res)
+			if err := fsutil.WriteFileAtomic(target, []byte(in.Content), 0o644); err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(map[string]any{"ok": true, "path": target, "bytes": len(in.Content)})
 		})
 
 	addMCPTool(server, "workspace_edit_file",
 		"Append to or replace a section (old_text or start_line/end_line) in a text file without rewriting the whole file.",
-		func(ctx context.Context, in editFileToolInput) (*mcp.CallToolResult, any, error) {
-			return s.handleWorkspaceEditFile(ctx, in)
+		func(_ context.Context, in editFileToolInput) (*mcp.CallToolResult, any, error) {
+			return s.handleWorkspaceEditFile(in)
 		})
 
 	addMCPTool(server, "workspace_move_file",
-		"Move or rename a file, keeping its type. Replacing a file needs approval.",
-		func(ctx context.Context, in moveFileToolInput) (*mcp.CallToolResult, any, error) {
+		"Move or rename a file within trusted folders, keeping its type.",
+		func(_ context.Context, in moveFileToolInput) (*mcp.CallToolResult, any, error) {
 			src, dst, err := s.policy.ValidateMove(in.Source, in.Destination)
 			if err != nil {
 				return mcpError(err.Error())
@@ -511,32 +499,21 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 			if st.IsDir() {
 				return mcpError("moving whole folders is not supported; move the files inside it")
 			}
-			move := func(context.Context) (any, error) {
-				if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-					return nil, err
-				}
-				if err := os.Rename(src, dst); err != nil {
-					return nil, err
-				}
-				return map[string]any{"ok": true, "source": src, "destination": dst}, nil
+			if _, err := os.Stat(dst); err == nil && !in.Overwrite {
+				return mcpError(fmt.Sprintf("destination %q already exists (set overwrite=true to replace it)", dst))
 			}
-			if _, err := os.Stat(dst); err == nil {
-				if !in.Overwrite {
-					return mcpError(fmt.Sprintf("destination %q already exists (set overwrite=true to replace it)", dst))
-				}
-				return s.needsApproval(ctx, "workspace_move_file", "Replace "+filepath.Base(dst),
-					fmt.Sprintf("Move %s to %s, replacing the existing file.", src, dst), move)
-			}
-			res, err := move(context.Background())
-			if err != nil {
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 				return mcpError(err.Error())
 			}
-			return mcpJSON(res)
+			if err := os.Rename(src, dst); err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(map[string]any{"ok": true, "source": src, "destination": dst})
 		})
 
 	addMCPTool(server, "workspace_delete_file",
 		"Delete a file inside DezuxkStudio's workspace, media, or trusted folders.",
-		func(ctx context.Context, in deleteFileToolInput) (*mcp.CallToolResult, any, error) {
+		func(_ context.Context, in deleteFileToolInput) (*mcp.CallToolResult, any, error) {
 			target, err := s.policy.ValidateDelete(in.Path)
 			if err != nil {
 				return mcpError(err.Error())
@@ -548,21 +525,10 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 			if info.IsDir() {
 				return mcpError("deleting folders is not allowed")
 			}
-			del := func(context.Context) (any, error) {
-				if err := os.Remove(target); err != nil {
-					return nil, err
-				}
-				return map[string]any{"ok": true, "deleted": target}, nil
-			}
-			if !s.policy.IsTrusted(target) {
-				return s.needsApproval(ctx, "workspace_delete_file", "Delete "+filepath.Base(target),
-					fmt.Sprintf("Permanently delete %s (%d bytes).", target, info.Size()), del)
-			}
-			res, err := del(context.Background())
-			if err != nil {
+			if err := os.Remove(target); err != nil {
 				return mcpError(err.Error())
 			}
-			return mcpJSON(res)
+			return mcpJSON(map[string]any{"ok": true, "deleted": target})
 		})
 
 	addMCPTool(server, "skill_read",

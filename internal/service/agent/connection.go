@@ -262,6 +262,7 @@ func (s *Service) Disconnect(ctx context.Context) error {
 	client := s.activeClient
 	prevID := s.activeID
 	t := s.turn
+	pending := s.pendingTurnsLocked()
 	s.connSeq.Add(1)
 	s.clearConnectionLocked()
 	if prevID != "" {
@@ -270,12 +271,18 @@ func (s *Service) Disconnect(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 
+	for _, p := range pending {
+		p.cancel()
+	}
 	if t != nil {
 		t.cancel()
 	}
 	if client != nil {
 		_ = client.Close()
 	}
+	// Wait for cancelled turn goroutines to finish endTurn/storeReply before releasing the driver
+	// or letting a reconnect read/append conversation history.
+	s.waitTurnsDone(ctx, pending)
 	if prevID != "" {
 		s.driver(prevID).release()
 		// Pending actions belong to the session that proposed them.
@@ -285,6 +292,33 @@ func (s *Service) Disconnect(ctx context.Context) error {
 		s.emitStatusOf(ctx, prevID)
 	}
 	return nil
+}
+
+func (s *Service) pendingTurnsLocked() []*turn {
+	if len(s.runningTurns) == 0 {
+		return nil
+	}
+	out := make([]*turn, 0, len(s.runningTurns))
+	for t := range s.runningTurns {
+		out = append(out, t)
+	}
+	return out
+}
+
+func (s *Service) waitTurnsDone(ctx context.Context, pending []*turn) {
+	if len(pending) == 0 {
+		return
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, s.limits.InterruptWait)
+	defer cancel()
+	for _, p := range pending {
+		select {
+		case <-p.done:
+		case <-waitCtx.Done():
+			s.log.Warn("agent: timed out waiting for cancelled turn to stop", "turn_id", p.id, "error", waitCtx.Err())
+			return
+		}
+	}
 }
 
 // clearConnectionLocked forgets the active connection and its running turn. Caller holds s.mu.

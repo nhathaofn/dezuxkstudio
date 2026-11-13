@@ -4,11 +4,17 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { getBridge, isDesktop, onFileDrop } from "../../lib/bridge";
 import { isMessageKey, useT } from "../../lib/i18n";
+import { useConnectionStore } from "../connection/useConnectionStore";
 import { findParam, integerChoices, useNodeSpec } from "../workflow/useNodeSpecs";
 import { WATERMARK_NODE, useWatermarkStore } from "./useWatermarkStore";
 
+const isImageFile = (name: string, mime?: string) =>
+  /\.(png|jpe?g|webp)$/i.test(name) || /^image\/(png|jpeg|webp)$/i.test(mime || "");
+
 export const WatermarkConfigCard: React.FC = () => {
   const t = useT();
+  const endpointMode = useConnectionStore((s) => s.endpoint?.mode);
+  const isRemoteMode = endpointMode === "browser" || endpointMode === "client";
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropzoneRef = useRef<HTMLDivElement>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -22,6 +28,7 @@ export const WatermarkConfigCard: React.FC = () => {
     corner,
     setInputPath,
     setInputPaths,
+    setQueuedFiles,
     setInPlace,
     setOutputDir,
     setWorkers,
@@ -41,7 +48,7 @@ export const WatermarkConfigCard: React.FC = () => {
   };
 
   useEffect(() => {
-    const isImageFile = (p: string) => /\.(png|jpe?g|webp)$/i.test(p);
+    if (isRemoteMode) return;
 
     const unsub = onFileDrop((x, y, paths) => {
       setDragActive(false);
@@ -60,7 +67,7 @@ export const WatermarkConfigCard: React.FC = () => {
           (dropzoneRef.current === target || dropzoneRef.current.contains(target)));
 
       if (isInsideDropzone) {
-        const validPaths = paths.filter(isImageFile);
+        const validPaths = paths.filter((p) => isImageFile(p));
         if (validPaths.length > 0) {
           setInputPaths(validPaths);
         }
@@ -70,11 +77,11 @@ export const WatermarkConfigCard: React.FC = () => {
     return () => {
       unsub();
     };
-  }, [setInputPaths]);
+  }, [isRemoteMode, setInputPaths]);
 
   const handleBrowse = async () => {
     const bridge = getBridge();
-    if (bridge?.BrowseImages) {
+    if (!isRemoteMode && bridge?.BrowseImages) {
       try {
         const selected = await bridge.BrowseImages(t("watermark.browse.title"));
         if (selected && selected.length > 0) {
@@ -83,7 +90,7 @@ export const WatermarkConfigCard: React.FC = () => {
       } catch (err) {
         console.error("BrowseImages failed", err);
       }
-    } else if (bridge?.BrowseImage) {
+    } else if (!isRemoteMode && bridge?.BrowseImage) {
       try {
         const selected = await bridge.BrowseImage(t("watermark.browse.title"));
         if (selected) {
@@ -111,22 +118,25 @@ export const WatermarkConfigCard: React.FC = () => {
     }
   };
 
-  const extractPathsFromFileList = (files: FileList | null): string[] => {
-    if (!files || files.length === 0) return [];
-    const paths: string[] = [];
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const filePath = (file as unknown as { path?: string }).path || file.name;
-      if (filePath) paths.push(filePath);
+  const applySelectedFiles = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const accepted = Array.from(files).filter((f) => isImageFile(f.name, f.type));
+    if (accepted.length === 0) return;
+
+    const nativePaths = accepted
+      .map((f) => (f as unknown as { path?: string }).path)
+      .filter((p): p is string => Boolean(p));
+
+    if (!isRemoteMode && nativePaths.length === accepted.length) {
+      setInputPaths(nativePaths);
+      return;
     }
-    return paths;
+    setQueuedFiles(accepted);
   };
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const paths = extractPathsFromFileList(e.target.files);
-    if (paths.length > 0) {
-      setInputPaths(paths);
-    }
+    applySelectedFiles(e.target.files);
+    e.target.value = "";
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -142,15 +152,12 @@ export const WatermarkConfigCard: React.FC = () => {
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragActive(false);
-    if (isDesktop()) {
-      // In desktop mode (Windows WebView2), DOM DragEvent loses absolute paths.
+    if (isDesktop() && !isRemoteMode) {
+      // In standalone desktop mode (Windows WebView2), DOM DragEvent loses absolute paths.
       // Native Wails onFileDrop handles setting input paths with absolute paths.
       return;
     }
-    const paths = extractPathsFromFileList(e.dataTransfer.files);
-    if (paths.length > 0) {
-      setInputPaths(paths);
-    }
+    applySelectedFiles(e.dataTransfer.files);
   };
 
   const handleDropzoneKeyDown = (e: React.KeyboardEvent) => {
@@ -263,8 +270,8 @@ export const WatermarkConfigCard: React.FC = () => {
             </div>
           </div>
 
-          {/* Output Directory Input with Folder Picker */}
-          {!inPlace && (
+          {/* Output Directory Input with Folder Picker (desktop mode only) */}
+          {!inPlace && !isRemoteMode && (
             <div className="form-group">
               <label className="field-label">{t("watermark.outputDir")}</label>
               <div className="watermark-dir-row">

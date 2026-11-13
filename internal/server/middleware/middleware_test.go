@@ -53,6 +53,21 @@ func TestRequireTokenFailsClosed(t *testing.T) {
 	}
 }
 
+func TestRequireAuth(t *testing.T) {
+	if w := serve(RequireAuth("", false)(ok), "POST", "", "", ""); w.Code != http.StatusUnauthorized {
+		t.Errorf("empty token without anonymous must fail closed: %d", w.Code)
+	}
+	if w := serve(RequireAuth("", true)(ok), "POST", "", "", ""); w.Code != http.StatusOK {
+		t.Errorf("anonymous without configured token should pass: %d", w.Code)
+	}
+	if w := serve(RequireAuth("secret", true)(ok), "POST", "", "", ""); w.Code != http.StatusUnauthorized {
+		t.Errorf("configured token must still be enforced even if anonymous flag set: %d", w.Code)
+	}
+	if w := serve(RequireAuth("secret", true)(ok), "POST", "", "", "secret"); w.Code != http.StatusOK {
+		t.Errorf("valid token should pass: %d", w.Code)
+	}
+}
+
 func TestRequireJSON(t *testing.T) {
 	if w := serve(RequireJSON(ok), "POST", "", "text/plain", ""); w.Code != http.StatusUnsupportedMediaType {
 		t.Errorf("text/plain: %d", w.Code)

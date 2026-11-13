@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -320,5 +321,49 @@ func TestAgentRememberedConnection(t *testing.T) {
 	}
 	if id, _ := r.RememberedConnection(ctx); id != "" {
 		t.Fatalf("forget failed: %q", id)
+	}
+}
+
+func TestWALConcurrentReadsWithWriter(t *testing.T) {
+	ctx := context.Background()
+	db := open(t, t.TempDir())
+	defer db.Close()
+	if db.reader == db.sql {
+		t.Fatal("expected distinct reader pool for file-backed WAL database")
+	}
+	// Reader pool enforces query_only(1) so writes cannot accidentally use reader handle.
+	if _, err := db.read().ExecContext(ctx, "DELETE FROM user_settings"); err == nil {
+		t.Fatal("expected reader pool to reject writes via PRAGMA query_only")
+	}
+
+	r := NewAgentRepository(db)
+	var wg sync.WaitGroup
+	errs := make(chan error, 16)
+	for g := range 6 {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := range 25 {
+				if _, err := r.ListConversations(ctx, 20); err != nil {
+					errs <- fmt.Errorf("reader %d step %d: %w", id, i, err)
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := range 25 {
+			if err := r.SetRememberedConnection(ctx, agent.ProviderID(fmt.Sprintf("p-%d", i))); err != nil {
+				errs <- fmt.Errorf("writer step %d: %w", i, err)
+				return
+			}
+		}
+	}()
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
 	}
 }

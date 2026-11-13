@@ -354,6 +354,16 @@ func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPat
 		}
 		outPath = filepath.Join(destDir, base+"_nowm"+outExt)
 	}
+	if in.InPlace && !strings.EqualFold(outPath, resPath) {
+		if _, err := os.Stat(outPath); err == nil {
+			res.Error = fmt.Sprintf("target file %q already exists", outPath)
+			return res, ""
+		} else if !os.IsNotExist(err) {
+			res.Error = fmt.Sprintf("failed to inspect target %q: %v", outPath, err)
+			return res, ""
+		}
+	}
+
 	if err := engine.CheckFile(ctx, outPath, true); err != nil {
 		res.Error = fmt.Sprintf("failed to write file %q: %v", outPath, err)
 		return res, ""
@@ -369,7 +379,7 @@ func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPat
 		res.Error = fmt.Sprintf("failed to write file %q: %v", outPath, err)
 		return res, ""
 	}
-	if in.InPlace && outPath != resPath {
+	if in.InPlace && !strings.EqualFold(outPath, resPath) {
 		_ = os.Remove(resPath)
 	}
 	res.OutPath = outPath
@@ -394,7 +404,7 @@ func resolveFilePath(p, mediaDir string) string {
 	if mediaDir != "" {
 		joined := filepath.Join(mediaDir, target)
 		rel, err := filepath.Rel(mediaDir, joined)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, "..") {
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return ""
 		}
 		return joined

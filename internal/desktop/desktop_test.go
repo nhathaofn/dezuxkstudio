@@ -98,18 +98,33 @@ func TestClientModeReadsTokenFromCredentialStore(t *testing.T) {
 
 func TestContentSecurityPolicy(t *testing.T) {
 	desktop := contentSecurityPolicy(config.Default(config.ModeDesktop))
-	if !strings.Contains(desktop, "ws://127.0.0.1:*") || strings.Contains(desktop, "example.com") {
+	if !strings.Contains(desktop, "ws://127.0.0.1:*") || !strings.Contains(desktop, "http://127.0.0.1:*") || strings.Contains(desktop, "example.com") {
 		t.Errorf("desktop CSP: %s", desktop)
 	}
-	if !strings.Contains(desktop, "object-src 'none'") {
+	if !strings.Contains(desktop, "object-src 'none'") || !strings.Contains(desktop, "img-src 'self' data: blob:") {
 		t.Errorf("hardening directives missing: %s", desktop)
 	}
 
-	cfg := config.Default(config.ModeClient)
-	cfg.Client.RemoteURL = "wss://core.example.com:8443/ws"
-	client := contentSecurityPolicy(cfg)
-	if !strings.Contains(client, "wss://core.example.com:8443") || strings.Contains(client, "ws://127.0.0.1") {
-		t.Errorf("client CSP: %s", client)
+	for _, tc := range []struct {
+		remote string
+		want   []string
+	}{
+		{"wss://core.example.com:8443/ws", []string{"wss://core.example.com:8443", "https://core.example.com:8443"}},
+		{"https://core.example.com:8443/ws", []string{"wss://core.example.com:8443", "https://core.example.com:8443"}},
+		{"ws://core.local:9000/ws", []string{"ws://core.local:9000", "http://core.local:9000"}},
+		{"http://core.local:9000", []string{"ws://core.local:9000", "http://core.local:9000"}},
+	} {
+		cfg := config.Default(config.ModeClient)
+		cfg.Client.RemoteURL = tc.remote
+		client := contentSecurityPolicy(cfg)
+		for _, w := range tc.want {
+			if !strings.Contains(client, w) {
+				t.Errorf("remote=%s: expected %q in CSP %s", tc.remote, w, client)
+			}
+		}
+		if strings.Contains(client, "ws://127.0.0.1") {
+			t.Errorf("remote=%s: unexpected loopback in client CSP %s", tc.remote, client)
+		}
 	}
 }
 

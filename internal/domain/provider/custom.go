@@ -143,6 +143,16 @@ func (in *CustomInput) Validate() error {
 // link-local / cloud-metadata hosts (ArcReel validate_anthropic_base_url + artifact_http_client).
 // Loopback and private ranges stay allowed for local servers (Ollama, LM Studio).
 func ValidateBaseURL(raw string) error {
+	return validateURL(raw, false)
+}
+
+// ValidateOutboundURL validates a target URL including redirect targets, allowing query strings
+// while still enforcing http(s), no embedded credentials, and no link-local or metadata hosts.
+func ValidateOutboundURL(raw string) error {
+	return validateURL(raw, true)
+}
+
+func validateURL(raw string, allowQueryOrFragment bool) error {
 	bad := func(key, msg string) error {
 		return apperr.New(apperr.CodeValidation, msg).WithDetails(map[string]any{"field": "base_url"}).WithMsg(key, nil)
 	}
@@ -150,15 +160,30 @@ func ValidateBaseURL(raw string) error {
 	if raw == "" || err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return bad("errors.provider.base_url_scheme", "Base URL must be an http(s) URL")
 	}
-	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+	if u.User != nil || (!allowQueryOrFragment && (u.RawQuery != "" || u.ForceQuery || u.Fragment != "")) {
 		return bad("errors.provider.base_url_parts", "Base URL must not contain credentials, a query or a fragment")
 	}
-	h := strings.ToLower(u.Hostname())
-	if ip := net.ParseIP(h); ip != nil && (ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()) {
+	h := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if h == "" {
+		return bad("errors.provider.base_url_scheme", "Base URL must be an http(s) URL")
+	}
+	if ip := net.ParseIP(h); ip != nil && IsUnsafeOutboundIP(ip) {
 		return bad("errors.provider.base_url_link_local", "Base URL points at a link-local address")
 	}
-	if h == "metadata.google.internal" || h == "metadata" || strings.HasSuffix(h, ".internal.") {
+	if h == "metadata.google.internal" || h == "metadata" || strings.HasSuffix(h, ".internal") {
 		return bad("errors.provider.base_url_metadata", "Base URL points at a cloud metadata service")
 	}
 	return nil
+}
+
+// IsUnsafeOutboundIP reports whether ip is a link-local, unspecified, or multicast address that
+// must never be contacted via SSRF or DNS rebinding (e.g. cloud metadata 169.254.169.254).
+func IsUnsafeOutboundIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	return ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
 }

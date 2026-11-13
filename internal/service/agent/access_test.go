@@ -306,7 +306,8 @@ func TestDestructiveAndOutsideActionsRequireTrustOrApproval(t *testing.T) {
 		t.Fatalf("untrusted file must remain untouched, got %q err=%v", string(raw), err)
 	}
 
-	// Inside workspace, normal file operations succeed directly and overwriting via move needs approval.
+	// Inside workspace/media/trusted folders, file operations execute directly; move requires overwrite=true
+	// when the destination already exists, without prompting for file approval.
 	wsFile := filepath.Join(f.ws, "tmp.txt")
 	mustWrite(t, wsFile, "x")
 	if payload, isErr := f.call(t, "workspace_delete_file", map[string]any{"path": wsFile}); isErr || payload["ok"] != true {
@@ -316,11 +317,19 @@ func TestDestructiveAndOutsideActionsRequireTrustOrApproval(t *testing.T) {
 	moveDst := filepath.Join(f.ws, "dst.txt")
 	mustWrite(t, moveSrc, "new")
 	mustWrite(t, moveDst, "existing")
-	payload, _ = f.call(t, "workspace_move_file", map[string]any{
+	if _, isErr := f.call(t, "workspace_move_file", map[string]any{
+		"source": moveSrc, "destination": moveDst, "overwrite": false,
+	}); !isErr {
+		t.Fatalf("expected move without overwrite=true to fail when destination exists")
+	}
+	payload, isErr = f.call(t, "workspace_move_file", map[string]any{
 		"source": moveSrc, "destination": moveDst, "overwrite": true,
 	})
-	if payload["status"] != "needs_approval" {
-		t.Fatalf("expected overwriting move to require approval, got %v", payload)
+	if isErr || payload["ok"] != true {
+		t.Fatalf("expected overwriting move inside workspace to succeed directly, got isErr=%v payload=%v", isErr, payload)
+	}
+	if raw, err := os.ReadFile(moveDst); err != nil || string(raw) != "new" {
+		t.Fatalf("expected destination to be replaced with %q, got %q err=%v", "new", string(raw), err)
 	}
 }
 

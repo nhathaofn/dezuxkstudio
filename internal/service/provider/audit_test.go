@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,8 +28,16 @@ func TestRedactMasksCredentialsAndTruncatesRunes(t *testing.T) {
 }
 
 func TestValidateBaseURLHardening(t *testing.T) {
-	for _, bad := range []string{"https://u:p@x.com/v1", "https://x.com/v1?k=1", "https://x.com/v1#f",
-		"http://169.254.169.254/", "http://metadata.google.internal/", "ftp://x"} {
+	for _, bad := range []string{
+		"https://u:p@x.com/v1",
+		"https://x.com/v1?k=1",
+		"https://x.com/v1#f",
+		"http://169.254.169.254/",
+		"http://metadata.google.internal/",
+		"http://foo.internal/",
+		"http://foo.internal./",
+		"ftp://x",
+	} {
 		if domain.ValidateBaseURL(bad) == nil {
 			t.Errorf("%s must be rejected", bad)
 		}
@@ -37,6 +46,30 @@ func TestValidateBaseURLHardening(t *testing.T) {
 		if err := domain.ValidateBaseURL(ok); err != nil {
 			t.Errorf("%s: %v", ok, err)
 		}
+	}
+}
+
+func TestVertexTokenRejectsUnsafeTokenURI(t *testing.T) {
+	sa, _ := newServiceAccountJSON(t, "http://169.254.169.254/latest/meta-data")
+	e := newEnv(t, 2*time.Second)
+	res := e.testCred(t, domain.IDGeminiVertex, "", map[string]string{"credentials_file": sa})
+	if res.Outcome != OutcomeInvalid {
+		t.Fatalf("expected OutcomeInvalid for metadata token_uri, got %+v", res)
+	}
+}
+
+func TestProbeBlocksMetadataRedirect(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://metadata.google.internal/computeMetadata/v1/", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	e := newEnv(t, 2*time.Second)
+	models, err := e.svc.DiscoverModels(context.Background(), DiscoverRequest{
+		DiscoveryFormat: domain.DiscoveryOpenAI, BaseURL: srv.URL, APIKey: probeKey,
+	})
+	if err == nil {
+		t.Fatalf("expected metadata redirect to be blocked, got models=%+v", models)
 	}
 }
 
