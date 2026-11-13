@@ -1,47 +1,48 @@
 # Test Suite Readiness Report (`TEST_READY.md`)
 
-**Date**: 2026-11-01  
+**Date**: 2026-11-13 (counts refreshed on branch `refactor/agent-turn-lifecycle`)  
 **Status**: **ALL TESTS PASSING (100% GREEN)**  
-**Milestone**: M-E2E / M4 Automated Verification Track  
+**Milestone**: M6 Hardening (see `PROJECT.md`)  
 
 ---
 
 ## 1. Executive Summary
 
-A comprehensive, requirement-driven, opaque-box automated test suite has been designed and implemented across both the Go backend and React/TypeScript frontend.
+| Test Track | Scope | Passed | Failed | Skipped |
+|:---|:---|:---:|:---:|:---:|
+| **Go — full repo** (`go test -count=1 ./...`) | 39 packages, 452 top-level tests | 452 | 0 | 8 (live CLI tests, need a signed-in agent) |
+| **Go — cross-package suite** (`./test`) | 6 files, 28 top-level tests | 28 | 0 | 0 |
+| **Frontend Vitest** (`npm --prefix frontend test`) | 23 files | 205 | 0 | 0 |
+| **Frontend typecheck & lint** | `tsc --noEmit`, ESLint | clean | 0 | — |
 
-| Test Track | Test Files | Total Tests | Passed | Failed | Execution Time |
-|:---|:---:|:---:|:---:|:---:|:---:|
-| **Go Backend E2E Suite** | 2 | 14 | 14 | 0 | ~1.0 s |
-| **Go Backend Full Repo** (`./...`) | 38 packages | 38 | 38 | 0 | ~7.5 s |
-| **Frontend Vitest Suite** | 5 | 44 | 44 | 0 | ~0.8 s |
-| **Frontend Typecheck & Lint** | — | 0 errors | Clean | 0 | ~7.0 s |
-| **TOTAL E2E & Unit Tests** | **7 files** | **58 tests** | **58** | **0** | **Clean** |
+Numbers change with every feature; regenerate them with the commands in §4 rather than editing by hand.
 
 ---
 
 ## 2. Test Files Inventory
 
-### Backend (Go)
-1. **`test/e2e_refactor_test.go`** (NEW — Exclusive Write Ownership):
-   - `TestE2E_Tier1_R2_BackendEnglishStandardization_ToolMetadata`: Zero Vietnamese diacritics in node metadata, labels, ports, parameters.
-   - `TestE2E_Tier1_R2_BackendEnglishStandardization_GraphErrors`: Engine-level cycle, duplicate node ID, and unknown node type error English standardization; realtime empty graph error validation.
-   - `TestE2E_Tier1_R3_CentralizedBinariesManifest`: Validates `binaries.Manifest`, HTTPS URL scheme, platform specs (`windows_amd64`, `windows_arm64`), and version regex extraction.
-   - `TestE2E_Tier1_R4_CoreLifecycleAndEndpoints`: HTTP `/health` check and authenticated WebSocket handshake.
-   - `TestE2E_Tier2_BoundaryAndCornerCases`: Empty binary IDs, non-existent tool lookups, version extraction with empty/garbage strings, system path traversal protection.
-   - `TestE2E_Tier3_CrossFeature_ErrorContractsAndCodes`: Realtime structured error body formatting across multiple actions.
-   - `TestE2E_Tier4_Scenario_EndToEndWorkflow`: Multi-client workflow with language preference switching, manifest listing, custom binary path configuration, and English validation error persistence.
-2. **`test/e2e_test.go`** (Existing core tests):
-   - 7 end-to-end tests covering action routing, preferences roundtrip, diagnostics progress, open folder, HTTP endpoints, broadcast endpoints, and binary probe/set_path actions.
+Test files are named after the domain/behaviour they cover (never after the process that produced them).
+
+### Backend (Go) — `test/`
+- `e2e_test.go`, `e2e_refactor_test.go` — headless core end to end: routing, preferences, diagnostics, HTTP/WS endpoints, binaries, English error contracts.
+- `resilience_migrations_binaries_watermark_test.go` — migration resilience, binary SHA-256 tampering, watermark MIME/transcode integrity.
+- `edgecases_manifest_engine_secrets_download_test.go` — binaries manifest regexes, engine cycle detection and errors, DPAPI multi-byte data, crash-safe downloads.
+- `edgecases_sqlite_preferences_test.go` — clean database migration, preferences persistence.
+- `migration_version_test.go` — migration numbering.
+
+Package tests live next to the code (`internal/**/_test.go`, `pkg/**/_test.go`). Notable:
+- `internal/tools/watermark/node_guard_test.go` — file guard for remote clients, streaming order and per-image progress.
+- `internal/service/agent/access_test.go` — access policy incl. `CheckTrustedFile`.
+- `internal/realtime/hub_test.go` — auth, protocol version negotiation (`SupportedProtocolVersions`).
+- `internal/realtime/modules/agent_test.go` — trusted folders locked in server mode.
 
 ### Frontend (TypeScript / Vitest)
-1. **`frontend/src/lib/i18n/localization_audit.test.ts`** (NEW — Exclusive Write Ownership):
-   - 14 tests covering 100% key parity between `en.ts` and `vi.ts`, non-empty translations, placeholder symmetry, zero Vietnamese diacritics in English dictionary, boundary cases (omitted vars, malicious tokens), error code integration (`describeError`), and real-world multi-module language switching.
-2. **`frontend/src/features/binaries/useBinariesStore.test.ts`** (NEW — Exclusive Write Ownership):
-   - 9 tests covering `fetchBinaries`, `probe`, `setCustomPath`, `download` with progress tracking, network timeout handling, non-existent binary ID probing, custom path reset, and full lifecycle simulation.
-3. **`frontend/src/lib/i18n/i18n.test.ts`** (Existing): 3 tests.
-4. **`frontend/src/lib/rtClient/rtClient.test.ts`** (Existing): 15 tests.
-5. **`frontend/src/features/preferences/usePreferencesStore.test.ts`** (Existing): 3 tests.
+- `lib/i18n/` — `i18n.test.ts`, `localization_audit.test.ts`, `serverMessages.test.ts`, `i18n_robustness.test.ts`.
+- `lib/rtClient/` — `rtClient.test.ts`, `connection.test.ts` (half-open detection).
+- `features/watermark/watermark.test.ts` — rendering, spec-driven settings, live progress, store payloads.
+- `features/workflow/useNodeSpecs.test.ts` — spec loading (reload on connect, latest load wins).
+- `features/agent/AgentDrawer.folders.test.ts` — folder add/remove only on desktop with a local core.
+- `features/agent/`, `features/binaries/`, `features/preferences/`, `features/providers/` — store and UI tests.
 
 ---
 
@@ -68,9 +69,9 @@ A comprehensive, requirement-driven, opaque-box automated test suite has been de
 - [x] **Store Integration**: Frontend Zustand `useBinariesStore` actions (`fetchBinaries`, `probe`, `setCustomPath`, `download`) properly interface with the manifest actions.
 
 ### R4. Automated Verification & Project Health
-- [x] `go test -v ./test/...` passes (14/14 tests pass).
-- [x] `go test ./...` passes across all 38 Go packages.
-- [x] `npm.cmd --prefix frontend test` passes (44/44 tests pass).
+- [x] `go test -v ./test/...` passes (28/28 top-level tests).
+- [x] `go test ./...` passes across all 39 Go packages.
+- [x] `npm.cmd --prefix frontend test` passes (205/205 tests).
 - [x] `npm.cmd --prefix frontend run typecheck` passes with 0 errors.
 - [x] `npm.cmd --prefix frontend run lint` passes with 0 warnings/errors.
 

@@ -1,6 +1,6 @@
 # Test Infrastructure & Automated Verification Architecture
 
-DezuxkStudio employs a unified, multi-tiered, opaque-box automated test infrastructure that covers both the Headless Go Core and the React 19 / TypeScript Frontend.
+DezuxkStudio employs a unified, multi-tiered, opaque-box automated test infrastructure that covers both the Headless Go Core and the React 18 / TypeScript Frontend.
 
 ---
 
@@ -22,7 +22,7 @@ DezuxkStudio employs a unified, multi-tiered, opaque-box automated test infrastr
 - **Audit & Store Harness** (`frontend/src/lib/i18n/`, `frontend/src/features/binaries/`):
   - `localization_audit.test.ts`: Automated dictionary parity auditing, placeholder symmetry analysis, Vietnamese diacritic integrity check on English catalogs, and `describeError` integration.
   - `useBinariesStore.test.ts`: Zustand state store verification for binary actions (`fetchBinaries`, `probe`, `setCustomPath`, `download`), signal abortion, and progress callbacks.
-  - Existing suite: `i18n.test.ts`, `rtClient.test.ts`, `usePreferencesStore.test.ts`.
+  - Existing suite: `i18n.test.ts`, `rtClient.test.ts`, `connection.test.ts`, `usePreferencesStore.test.ts`, `features/watermark/watermark.test.ts`.
 
 ---
 

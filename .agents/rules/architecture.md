@@ -93,6 +93,9 @@ The agent has no hard-coded feature list. Choose the feature's shape so the agen
 - The node's `engine.Spec` is the agent's only contract. `engine.ValidateSpec` runs at startup (the app refuses to start on an incomplete spec): non-empty `Label`/`Description`; every param labelled; `select` has `Options`/`OptionsFrom` and a valid `Default`; integer `Default` within `Min..Max`; `Destructive` only on toggles and defaulting to `false`; `ParamRoleOutputDir` only on text params; known port types; unique names.
 - `Default` values are the UI's defaults; the UI should read them from the spec, not repeat them.
 - Node results carry counts, per-file in/out paths, status and actionable errors (the agent may only report what the result says). Nodes honour `ctx`, report with `progress.Report`, write with `fsutil`.
+- Nodes call `engine.CheckFile(ctx, path, write)` before reading or writing any local file. Remote clients of a headless server get a guard (`AccessPolicy.CheckTrustedFile`) through the ctx; local callers get none. A path a node writes to (e.g. `output_dir`) is anchored exactly like its inputs before it is checked, never left relative to the process working directory.
+- Trust model of `--mode server`: an authenticated WebSocket client is NOT trusted with the server's disk. It may only touch media, workspace and the trusted folders, and cannot change that list (`agent:add_allowed_dir` / `agent:remove_allowed_dir` answer `ERR_UNAVAILABLE`); the owner edits trusted folders from the desktop app.
+- A screen that runs one node uses its generated types (`NodeTypes` / `NodeMap`, listed in `contracts.Nodes()`) and reads options, limits and defaults from `workflow:specs` (`useNodeSpec`); it never re-declares them.
 - MCP tools:
   - Anything that modifies or deletes the user's data outside trusted dirs, or turns on a `Destructive` param → `s.needsApproval(tool, title, summary, exec)`. Read-only and trusted-dir work runs directly.
   - Every path goes through `s.policy` (`Resolve`, `ValidateRead`, `ValidateWrite`).
@@ -102,6 +105,7 @@ The agent has no hard-coded feature list. Choose the feature's shape so the agen
 
 ### Agent package structure
 - Providers are drivers (`agent/drivers.go`): a `turnDriver` runs each chat turn as its own CLI invocation (Codex, Claude), a `sessionDriver` keeps one ACP connection (Antigravity). Lifecycle code (probe, login, connect, turns) never branches on a provider ID; a new provider is a `domain/agent` spec in `providerSpecs` plus a driver in `newDrivers`. CLI quirks (resume errors, login args) are spec data.
+- `Service` methods are grouped by responsibility: `service.go` (construction, shutdown), `provider_status.go` (probe, executables, sign-in), `connection.go`, `conversation.go`, `turn_run.go`, `access.go`, `approvals.go`, `ui_context.go`. New code goes into the matching file, not `service.go`.
 - A chat turn is one `*turn` (`agent/turn.go`). Every way it ends goes through `Service.endTurn` exactly once, which stores the guard-sanitized reply and the error. Runners only stream events through `emitChat`; they never write chat history.
 - No package-level mutable state: the MCP tool list, the profile secret store and the driver table belong to the `Service`. Lists derived from the registered MCP tools (capabilities snapshot, ACP permission allow-list, `<tools>` prompt layer) are generated, never written by hand.
 
