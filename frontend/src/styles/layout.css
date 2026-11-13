@@ -621,6 +621,11 @@
   min-height: 0;
 }
 
+.watermark-progress {
+  max-width: 320px;
+  margin-top: var(--space-2);
+}
+
 .watermark-config-stack {
   display: flex;
   flex-direction: column;

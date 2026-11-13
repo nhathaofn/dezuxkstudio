@@ -234,8 +234,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     try {
       const res = await rtClient.request(Actions.AGENT_HISTORY, {});
       set(historyState(res));
-    } catch {
-      // Ignore history hydration errors on bootstrap
+    } catch (err) {
+      set({ error: toActionError(err) });
     }
   },
 
@@ -243,8 +243,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     try {
       const res = await rtClient.request(Actions.AGENT_LIST_APPROVALS, {});
       set({ approvals: res.approvals ?? [] });
-    } catch {
-      // Ignore approval fetch errors on bootstrap
+    } catch (err) {
+      set({ error: toActionError(err) });
     }
   },
 
@@ -252,8 +252,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     try {
       const res = await rtClient.request(Actions.AGENT_LIST_ALLOWED_DIRS, {});
       set({ allowedDirs: res.dirs ?? [] });
-    } catch {
-      // Ignore allowed dirs fetch errors on bootstrap
+    } catch (err) {
+      set({ error: toActionError(err) });
     }
   },
 

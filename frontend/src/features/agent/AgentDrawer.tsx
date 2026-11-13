@@ -18,6 +18,7 @@ import { useT } from "../../lib/i18n";
 import { useConnectionStore } from "../connection/useConnectionStore";
 import { AgentChatTab } from "./AgentChatTab";
 import { AgentProviderCard } from "./AgentProviderCard";
+import { useSystemStore } from "../system/useSystemStore";
 import { useAgentStore } from "./useAgentStore";
 
 export const AgentDrawer: React.FC = () => {
@@ -31,6 +32,11 @@ export const AgentDrawer: React.FC = () => {
   const allowedDirs = useAgentStore((s) => s.allowedDirs);
   const loadingProviders = useAgentStore((s) => s.loadingProviders);
   const error = useAgentStore((s) => s.error);
+  const clearError = useAgentStore((s) => s.clearError);
+  // Trusted folders bound what remote clients may touch, so a headless server refuses changes to them
+  // (agent:add/remove_allowed_dir). Only the desktop app on a non-server core can edit the list.
+  const coreMode = useSystemStore((s) => s.info?.mode);
+  const canEditFolders = isDesktop() && coreMode !== "server";
   const closePanel = useAgentStore((s) => s.closePanel);
   const setPanelWidth = useAgentStore((s) => s.setPanelWidth);
   const setActiveTab = useAgentStore((s) => s.setActiveTab);
@@ -174,6 +180,15 @@ export const AgentDrawer: React.FC = () => {
       {error && (
         <div className="agent-drawer__error">
           <ErrorText error={error} />
+          <button
+            type="button"
+            className="agent-drawer__error-dismiss"
+            onClick={clearError}
+            title={t("dialog.close")}
+            aria-label={t("dialog.close")}
+          >
+            <X size={12} />
+          </button>
         </div>
       )}
 
@@ -206,7 +221,7 @@ export const AgentDrawer: React.FC = () => {
                 <h3 className="agent-folders-section__title">{t("agent.folders.title")}</h3>
                 <p className="agent-folders-section__desc">{t("agent.folders.desc")}</p>
               </div>
-              {isDesktop() && (
+              {canEditFolders && (
                 <Button size="sm" onClick={() => void handleAddFolder()} disabled={!coreConnected}>
                   <FolderPlus size={12} />
                   {t("agent.folders.add")}
@@ -223,15 +238,17 @@ export const AgentDrawer: React.FC = () => {
                     <span className="agent-folder-item__path" title={dir}>
                       {dir}
                     </span>
-                    <Button
-                      size="sm"
-                      iconOnly
-                      onClick={() => void removeAllowedDir(dir)}
-                      title={t("agent.folders.remove")}
-                      aria-label={t("agent.folders.remove")}
-                    >
-                      <Trash2 size={12} />
-                    </Button>
+                    {canEditFolders && (
+                      <Button
+                        size="sm"
+                        iconOnly
+                        onClick={() => void removeAllowedDir(dir)}
+                        title={t("agent.folders.remove")}
+                        aria-label={t("agent.folders.remove")}
+                      >
+                        <Trash2 size={12} />
+                      </Button>
+                    )}
                   </li>
                 ))}
               </ul>

@@ -212,6 +212,19 @@ describe("useAgentStore", () => {
     expect(useAgentStore.getState().sending).toBe(false);
   });
 
+  it.each([
+    ["fetchHistory", "agent history unavailable"],
+    ["fetchApprovals", "approval queue unavailable"],
+    ["fetchAllowedDirs", "allowed dirs unavailable"],
+  ] as const)("%s surfaces a load failure instead of swallowing it", async (action, msg) => {
+    useAgentStore.setState({ error: null });
+    vi.spyOn(rtClient, "request").mockRejectedValueOnce(new ActionError("ERR_UNAVAILABLE", msg));
+    await useAgentStore.getState()[action]();
+    expect(useAgentStore.getState().error?.message).toContain(msg);
+    useAgentStore.getState().clearError();
+    expect(useAgentStore.getState().error).toBeNull();
+  });
+
   it("converts failed sendPrompt RPC into an error bubble", async () => {
     useAgentStore.setState({
       providers: [{ ...mockProviders[0], state: "connected", active: true }],

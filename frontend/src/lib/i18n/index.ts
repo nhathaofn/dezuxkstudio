@@ -3,7 +3,7 @@ import { usePreferencesStore } from "../../features/preferences/usePreferencesSt
 import type { ActionError } from "../rtClient";
 import { isMessageKey, translate, type Translate } from "./translate";
 
-export { translate, type Translate } from "./translate";
+export { isMessageKey, translate, type Translate } from "./translate";
 export type { MessageKey } from "./en";
 
 /** Hook returning a translate function bound to the user's language preference. */
