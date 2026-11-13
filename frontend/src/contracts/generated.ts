@@ -415,6 +415,12 @@ export interface GraphResult {
   nodes: Record<string, NodeRun>;
 }
 
+export interface MediaRef {
+  localUrl: string;
+  kind: string;
+  mimeType?: string;
+}
+
 export interface ModelCandidate {
   ref: string;
   provider_id: string;
@@ -574,6 +580,42 @@ export interface PurposeDefault {
   effective: string;
   chosen_unavailable: boolean;
   candidates: ModelCandidate[];
+}
+
+export interface RemoverImage {
+  localUrl: string;
+  kind: string;
+  mimeType?: string;
+}
+
+export interface RemoverInput {
+  image?: RemoverImage;
+  images?: MediaRef[];
+  inplace?: boolean;
+  output_dir?: string;
+  workers?: number;
+  corner?: string;
+  min_score?: number;
+  min_gain?: number;
+  max_gain?: number;
+}
+
+export interface RemoverItem {
+  path: string;
+  out_path: string;
+  detected: boolean;
+  score: number;
+  size?: number;
+  error?: string;
+}
+
+export interface RemoverOutput {
+  image: MediaRef;
+  images: MediaRef[];
+  detected: boolean;
+  total_count: number;
+  detected_count: number;
+  results?: RemoverItem[];
 }
 
 export interface ResponseMessage {
@@ -848,6 +890,16 @@ export interface ActionMap {
   "providers:update_settings": { payload: UpdateSettingsPayload; result: ProviderSettingsResult };
   "providers:defaults": { payload: Empty; result: ProviderDefaultsResult };
   "providers:set_default": { payload: SetDefaultPayload; result: ProviderDefaultsResult };
+}
+
+/** Built-in workflow node types (contracts.Nodes). Settings come from workflow:specs. */
+export const NodeTypes = {
+  WATERMARK_REMOVER: "tool.watermark_remover",
+} as const;
+export type NodeType = (typeof NodeTypes)[keyof typeof NodeTypes];
+
+export interface NodeMap {
+  "tool.watermark_remover": { input: RemoverInput; output: RemoverOutput };
 }
 
 export const Events = {

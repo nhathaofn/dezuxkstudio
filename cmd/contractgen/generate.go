@@ -61,6 +61,9 @@ func Generate() ([]byte, error) {
 			roots = append(roots, m.Result)
 		}
 	}
+	for _, n := range contracts.Nodes() {
+		roots = append(roots, n.Input, n.Output)
+	}
 	for _, r := range roots {
 		if _, err := g.tsType(r); err != nil {
 			return nil, err
@@ -98,6 +101,21 @@ func Generate() ([]byte, error) {
 		p, _ := g.tsType(a.Payload)
 		r, _ := g.tsType(a.Result)
 		fmt.Fprintf(&b, "  %q: { payload: %s; result: %s };\n", a.Name, p, r)
+	}
+	b.WriteString("}\n\n")
+
+	// Built-in nodes run directly by feature screens.
+	b.WriteString("/** Built-in workflow node types (contracts.Nodes). Settings come from workflow:specs. */\n")
+	b.WriteString("export const NodeTypes = {\n")
+	for _, n := range contracts.Nodes() {
+		fmt.Fprintf(&b, "  %s: %q,\n", n.Key, n.Type)
+	}
+	b.WriteString("} as const;\nexport type NodeType = (typeof NodeTypes)[keyof typeof NodeTypes];\n\n")
+	b.WriteString("export interface NodeMap {\n")
+	for _, n := range contracts.Nodes() {
+		in, _ := g.tsType(n.Input)
+		out, _ := g.tsType(n.Output)
+		fmt.Fprintf(&b, "  %q: { input: %s; output: %s };\n", n.Type, in, out)
 	}
 	b.WriteString("}\n\n")
 

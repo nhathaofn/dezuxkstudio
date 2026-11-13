@@ -55,7 +55,7 @@ func TestWatermarkRemoverNode_DirectRun(t *testing.T) {
 	}
 
 	outBytes, _ := json.Marshal(outRaw)
-	var out watermark.NodeOutput
+	var out watermark.RemoverOutput
 	if err := json.Unmarshal(outBytes, &out); err != nil {
 		t.Fatalf("failed to unmarshal output: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestWatermarkRemoverNode_RelativePathWithMediaDir(t *testing.T) {
 	}
 
 	outBytes, _ := json.Marshal(outRaw)
-	var out watermark.NodeOutput
+	var out watermark.RemoverOutput
 	_ = json.Unmarshal(outBytes, &out)
 	if out.Image.LocalURL == "" {
 		t.Fatalf("expected resolved output LocalURL")
@@ -141,7 +141,7 @@ func TestWatermarkRemoverNode_BatchMultiThreaded(t *testing.T) {
 	}
 
 	outBytes, _ := json.Marshal(outRaw)
-	var out watermark.NodeOutput
+	var out watermark.RemoverOutput
 	if err := json.Unmarshal(outBytes, &out); err != nil {
 		t.Fatalf("unmarshal batch output: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestWatermarkRemoverNode_InPlaceAtomic(t *testing.T) {
 	}
 
 	outBytes, _ := json.Marshal(outRaw)
-	var out watermark.NodeOutput
+	var out watermark.RemoverOutput
 	if err := json.Unmarshal(outBytes, &out); err != nil {
 		t.Fatalf("unmarshal output failed: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestWatermarkRemoverNode_InPlaceAtomicWriteFailurePreservesOriginal(t *test
 	}
 
 	outBytes, _ := json.Marshal(outRaw)
-	var out watermark.NodeOutput
+	var out watermark.RemoverOutput
 	_ = json.Unmarshal(outBytes, &out)
 
 	if len(out.Results) != 1 || out.Results[0].Error == "" {
@@ -363,7 +363,7 @@ func TestWatermarkRemoverNode_PathTraversalBlocked(t *testing.T) {
 		}
 
 		outBytes, _ := json.Marshal(outRaw)
-		var out watermark.NodeOutput
+		var out watermark.RemoverOutput
 		if err := json.Unmarshal(outBytes, &out); err != nil {
 			t.Fatalf("unmarshal node output: %v", err)
 		}
@@ -431,7 +431,7 @@ func TestWatermarkRemoverNode_JPEGPreserved(t *testing.T) {
 	}
 
 	outBytes, _ := json.Marshal(outRaw)
-	var out watermark.NodeOutput
+	var out watermark.RemoverOutput
 	if err := json.Unmarshal(outBytes, &out); err != nil {
 		t.Fatalf("unmarshal output failed: %v", err)
 	}
@@ -469,7 +469,7 @@ func TestWatermarkRemoverNode_AllFailedReturnsError(t *testing.T) {
 	}
 
 	outBytes, _ := json.Marshal(outRaw)
-	var out watermark.NodeOutput
+	var out watermark.RemoverOutput
 	_ = json.Unmarshal(outBytes, &out)
 	if len(out.Images) != 0 {
 		t.Fatalf("expected out.Images to be empty, got: %d", len(out.Images))
@@ -489,7 +489,7 @@ func TestWatermarkRemoverNode_PartialFailureOmitsFailedRef(t *testing.T) {
 	}
 
 	outBytes, _ := json.Marshal(outRaw)
-	var out watermark.NodeOutput
+	var out watermark.RemoverOutput
 	_ = json.Unmarshal(outBytes, &out)
 
 	if len(out.Images) != 1 {
