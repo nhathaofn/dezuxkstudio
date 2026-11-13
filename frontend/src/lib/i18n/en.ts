@@ -495,7 +495,10 @@ export const en = {
     "Connect an isolated agent in Connections to assist with DezuxkStudio features and workflows.",
   "agent.chat.readyTitle": "Connected to {name}",
   "agent.chat.readyDesc":
-    "Isolated DezuxkStudio Assistant: supports app features, scripts, prompts, translations, and workspace files. Code editing is disabled.",
+    "Isolated DezuxkStudio Assistant: supports app features, scripts, prompts, translations, and workspace/document files. Code editing is disabled.",
+  "agent.chat.readyDescDev":
+    "Developer mode: supports code editing, shell/project tools, and all DezuxkStudio features inside the configured workspace.",
+  "agent.mode.developer": "Dev mode",
   "agent.chat.goConnections": "Configure Connections",
   "agent.chat.placeholder": "Ask {name} to use DezuxkStudio features…",
   "agent.chat.placeholderOffline": "Connect an agent in Connections to send messages…",
@@ -549,7 +552,10 @@ export const en = {
   "agent.tool.diagnostics_export": "Exported diagnostics",
   "agent.tool.workspace_list_files": "Listed files",
   "agent.tool.workspace_read_file": "Opened a file",
+  "agent.tool.workspace_read_document": "Read a document",
+  "agent.tool.workspace_search_text": "Searched files",
   "agent.tool.workspace_write_file": "Wrote a file",
+  "agent.tool.workspace_edit_file": "Edited a file",
   "agent.tool.workspace_move_file": "Moved a file",
   "agent.tool.workspace_delete_file": "Deleted a file",
   "agent.connections.subtitle":

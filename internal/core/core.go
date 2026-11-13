@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -249,24 +250,34 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		Dir: o.Paths.AgentCLIs(), Client: o.HTTPClient, Logger: o.Logger, UserAgent: buildinfo.ProductName + "/" + buildinfo.Version,
 	})
 
+	workDir := o.Paths.AgentWorkspace()
+	if customWS := strings.TrimSpace(cfg.Agent.WorkspaceDir); customWS != "" {
+		if !filepath.IsAbs(customWS) {
+			workDir = filepath.Join(o.Paths.Data, customWS)
+		} else {
+			workDir = filepath.Clean(customWS)
+		}
+	}
+
 	agentSvc, err := agentsvc.New(agentsvc.Options{
-		Repo:         sqlite.NewAgentRepository(c.db),
-		DataDir:      o.Paths.Data,
-		WorkspaceDir: o.Paths.AgentWorkspace(),
-		MediaDir:     o.Paths.Media(),
-		ProfilesDir:  o.Paths.AgentProfiles(),
-		AppVersion:   buildinfo.Version,
-		Secrets:      secretStore,
-		Limits:       agentsvc.LimitsFrom(cfg),
-		Logger:       o.Logger,
-		Workflow:     wfSvc,
-		Binaries:     binSvc,
-		Managed:      agentCLIs,
-		AutoInstall:  cfg.Agent.AutoInstallCLI,
-		AutoUpdate:   cfg.Agent.AutoUpdateCLI,
-		Preferences:  prefSvc,
-		System:       sysSvc,
-		Diagnostics:  diagSvc,
+		Repo:          sqlite.NewAgentRepository(c.db),
+		DataDir:       o.Paths.Data,
+		WorkspaceDir:  workDir,
+		MediaDir:      o.Paths.Media(),
+		ProfilesDir:   o.Paths.AgentProfiles(),
+		DeveloperMode: cfg.DeveloperMode(),
+		AppVersion:    buildinfo.Version,
+		Secrets:       secretStore,
+		Limits:        agentsvc.LimitsFrom(cfg),
+		Logger:        o.Logger,
+		Workflow:      wfSvc,
+		Binaries:      binSvc,
+		Managed:       agentCLIs,
+		AutoInstall:   cfg.Agent.AutoInstallCLI,
+		AutoUpdate:    cfg.Agent.AutoUpdateCLI,
+		Preferences:   prefSvc,
+		System:        sysSvc,
+		Diagnostics:   diagSvc,
 		OnStatusChanged: func(info domainagent.ProviderInfo) {
 			c.hub.Publish(contracts.EventAgentStatusChanged, contracts.NewAgentProviderInfo(info))
 		},

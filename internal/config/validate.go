@@ -88,7 +88,17 @@ func (c *Config) Validate() error {
 			"agent.max_pending_approvals":     c.Agent.MaxPendingApprovals,
 			"agent.context_messages":          c.Agent.ContextMessages,
 			"agent.context_message_chars":     c.Agent.ContextMessageChars,
+			"agent.context_total_chars":       c.Agent.ContextTotalChars,
 		})
+		switch strings.ToLower(strings.TrimSpace(c.Agent.Mode)) {
+		case "", "assistant":
+		case "developer":
+			if c.Mode == ModeServer {
+				add("agent.mode cannot be \"developer\" when mode is %q", ModeServer)
+			}
+		default:
+			add("invalid agent.mode %q: expected \"assistant\" or \"developer\"", c.Agent.Mode)
+		}
 		if c.Realtime.KeepAliveInterval >= c.Realtime.ActionTimeout {
 			add("realtime.keepalive_interval must be < realtime.action_timeout")
 		}

@@ -83,6 +83,7 @@ interface AgentState {
   panelWidth: number;
   activeTab: AgentDrawerTab;
   providers: AgentProviderInfo[];
+  developerMode: boolean;
   approvals: AgentApprovalRequest[];
   allowedDirs: string[];
   loadingProviders: boolean;
@@ -166,6 +167,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   panelWidth: readSavedWidth(),
   activeTab: "chat",
   providers: [],
+  developerMode: false,
   approvals: [],
   allowedDirs: [],
   loadingProviders: false,
@@ -212,6 +214,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
               next
             )
           ),
+          developerMode: Boolean(res.developer_mode),
           loadingProviders: false,
           ...(turnOver
             ? {

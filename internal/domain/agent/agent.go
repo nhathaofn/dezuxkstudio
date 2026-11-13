@@ -353,6 +353,8 @@ type Repository interface {
 	SaveConversation(ctx context.Context, c Conversation) error
 	ListConversations(ctx context.Context, limit int) ([]Conversation, error)
 	ListConversationMessages(ctx context.Context, conversationID string, limit int) ([]ChatMessage, error)
+	GetConversationSessions(ctx context.Context, conversationID string) (map[ProviderID]string, error)
+	SetConversationSession(ctx context.Context, conversationID string, providerID ProviderID, sessionID string) error
 	DeleteConversation(ctx context.Context, conversationID string) error
 	ListAllowedDirs(ctx context.Context) ([]string, error)
 	AddAllowedDir(ctx context.Context, dir string) error

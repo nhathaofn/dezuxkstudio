@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"app/internal/domain/agent"
 )
@@ -215,9 +216,67 @@ func (r *AgentRepository) ListConversationMessages(ctx context.Context, conversa
 	return out, nil
 }
 
+// GetConversationSessions returns the saved provider CLI session/thread IDs for conversationID.
+func (r *AgentRepository) GetConversationSessions(ctx context.Context, conversationID string) (map[agent.ProviderID]string, error) {
+	rows, err := r.db.sql.QueryContext(ctx, `
+		SELECT provider_id, session_id
+		FROM agent_conversation_sessions
+		WHERE conversation_id = ?
+	`, conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: get conversation sessions: %w", err)
+	}
+	defer rows.Close()
+
+	sessions := make(map[agent.ProviderID]string)
+	for rows.Next() {
+		var prov, sess string
+		if err := rows.Scan(&prov, &sess); err != nil {
+			return nil, fmt.Errorf("sqlite: scan conversation session: %w", err)
+		}
+		if prov != "" && sess != "" {
+			sessions[agent.ProviderID(prov)] = sess
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: get conversation sessions: %w", err)
+	}
+	return sessions, nil
+}
+
+// SetConversationSession persists (or clears when sessionID == "") the provider CLI session ID for conversationID.
+func (r *AgentRepository) SetConversationSession(ctx context.Context, conversationID string, providerID agent.ProviderID, sessionID string) error {
+	if conversationID == "" || providerID == "" {
+		return nil
+	}
+	if sessionID == "" {
+		if _, err := r.db.sql.ExecContext(ctx, `
+			DELETE FROM agent_conversation_sessions
+			WHERE conversation_id = ? AND provider_id = ?
+		`, conversationID, string(providerID)); err != nil {
+			return fmt.Errorf("sqlite: delete conversation session: %w", err)
+		}
+		return nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := r.db.sql.ExecContext(ctx, `
+		INSERT INTO agent_conversation_sessions (conversation_id, provider_id, session_id, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(conversation_id, provider_id) DO UPDATE SET
+			session_id = excluded.session_id,
+			updated_at = excluded.updated_at
+	`, conversationID, string(providerID), sessionID, now); err != nil {
+		return fmt.Errorf("sqlite: upsert conversation session: %w", err)
+	}
+	return nil
+}
+
 // DeleteConversation removes a conversation and its messages.
 func (r *AgentRepository) DeleteConversation(ctx context.Context, conversationID string) error {
 	return r.db.inTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM agent_conversation_sessions WHERE conversation_id = ?`, conversationID); err != nil {
+			return fmt.Errorf("sqlite: delete conversation sessions: %w", err)
+		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM agent_chat_messages WHERE conversation_id = ?`, conversationID); err != nil {
 			return fmt.Errorf("sqlite: delete conversation messages: %w", err)
 		}

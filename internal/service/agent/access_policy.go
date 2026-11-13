@@ -28,6 +28,20 @@ type AccessPolicy struct {
 	profilesDir  string
 	trustedDirs  []string
 	protected    []string // absolute directories that are always off-limits
+	devMode      bool
+}
+
+// SetDeveloperMode toggles opt-in developer/coding file permissions (guarded by config).
+func (p *AccessPolicy) SetDeveloperMode(enabled bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.devMode = enabled
+}
+
+func (p *AccessPolicy) isDeveloperMode() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.devMode
 }
 
 // FileClass groups file extensions by what the agent may do with them.
@@ -69,6 +83,41 @@ var documentExtensions = map[string]bool{
 	".zip": true, ".rar": true, ".7z": true, ".tar": true, ".gz": true,
 	".ttf": true, ".otf": true, ".woff": true, ".woff2": true,
 	".prproj": true, ".aep": true, ".drp": true, ".fcpxml": true, ".kdenlive": true, ".cube": true,
+}
+
+// readableDocumentExtensions are document formats whose plain text can be extracted via workspace_read_document.
+var readableDocumentExtensions = map[string]bool{
+	".docx": true,
+	".odt":  true,
+	".rtf":  true,
+	".pdf":  true,
+}
+
+// developerSourceExtensions are source/config/script extensions permitted ONLY when Developer Mode is enabled.
+// Executables (.exe, .dll, ...) and secret/database containers (.pem, .key, .env, .db, ...) stay forbidden.
+var developerSourceExtensions = map[string]bool{
+	".go": true, ".mod": true, ".sum": true, ".ts": true, ".tsx": true, ".js": true, ".jsx": true, ".mjs": true, ".cjs": true,
+	".py": true, ".pyw": true, ".ipynb": true, ".rb": true, ".php": true, ".rs": true, ".c": true, ".h": true, ".cpp": true,
+	".hpp": true, ".cc": true, ".cs": true, ".java": true, ".kt": true, ".kts": true, ".swift": true, ".dart": true,
+	".lua": true, ".pl": true, ".r": true, ".scala": true, ".groovy": true, ".gradle": true, ".vue": true, ".svelte": true,
+	".html": true, ".htm": true, ".css": true, ".scss": true, ".sass": true, ".less": true, ".svg": true, ".sql": true,
+	".yaml": true, ".yml": true, ".toml": true, ".ini": true, ".cfg": true, ".conf": true, ".properties": true,
+	".tf": true, ".nix": true, ".asm": true, ".s": true,
+	".sh": true, ".bash": true, ".zsh": true, ".fish": true, ".ps1": true, ".psm1": true, ".psd1": true, ".bat": true, ".cmd": true,
+}
+
+// developerProjectFileNames are build/project config file names unlocked ONLY in Developer Mode.
+var developerProjectFileNames = map[string]bool{
+	"package.json": true, "package-lock.json": true, "tsconfig.json": true, "jsconfig.json": true, "composer.json": true,
+	"wails.json": true, "deno.json": true, "go.work": true, "dockerfile": true, "makefile": true, "cmakelists.txt": true,
+	"requirements.txt": true, "pipfile": true, "gemfile": true, "cargo.lock": true, "yarn.lock": true, "pnpm-lock.yaml": true,
+}
+
+// developerConfigSegmentNames are hidden repo/editor folders allowed in Developer Mode (excluding secret/profile dirs).
+var developerConfigSegmentNames = map[string]bool{
+	".git": true, ".svn": true, ".hg": true, ".vscode": true, ".idea": true, ".vs": true,
+	".claude": true, ".codex": true, ".gemini": true, ".agents": true, ".cursor": true, ".continue": true,
+	"node_modules": true,
 }
 
 // forbiddenExtensions are source code, scripts, executables, and secret containers.
@@ -315,7 +364,7 @@ func (p *AccessPolicy) underTrustedShare(path string) bool {
 }
 
 func (p *AccessPolicy) protectedReason(resolved string) string {
-	if hasForbiddenSegment(resolved) {
+	if hasForbiddenSegment(resolved, p.isDeveloperMode()) {
 		return "inside a protected folder (credentials, developer or system data)"
 	}
 	if p.dataDir != "" && isWithinDir(resolved, p.dataDir) {
@@ -379,6 +428,37 @@ func IsMediaClass(c FileClass) bool {
 	return c == FileClassImage || c == FileClassVideo || c == FileClassAudio
 }
 
+// Classify returns the effective FileClass taking Developer Mode into account.
+func (p *AccessPolicy) Classify(path string) FileClass { return p.classifyForPolicy(path) }
+
+// classifyForPolicy returns the effective FileClass taking Developer Mode into account.
+// Assistant mode uses the strict ClassifyFile rules unchanged; Developer Mode additionally allows
+// source/config text files while keeping executables and credential files forbidden.
+func (p *AccessPolicy) classifyForPolicy(path string) FileClass {
+	c := ClassifyFile(path)
+	if !p.isDeveloperMode() || c != FileClassForbidden {
+		return c
+	}
+	base := strings.ToLower(filepath.Base(path))
+	// Secret files always stay forbidden, even in developer mode.
+	if forbiddenFileNames[base] && !developerProjectFileNames[base] {
+		return FileClassForbidden
+	}
+	if base == ".env" || strings.HasPrefix(base, ".env.") ||
+		strings.HasPrefix(base, "id_rsa") || strings.HasPrefix(base, "id_ed25519") || strings.HasPrefix(base, "id_ecdsa") {
+		return FileClassForbidden
+	}
+	if developerProjectFileNames[base] ||
+		strings.HasPrefix(base, "tsconfig") || strings.HasPrefix(base, ".eslintrc") || strings.HasPrefix(base, ".prettierrc") {
+		return FileClassText
+	}
+	ext := strings.ToLower(filepath.Ext(base))
+	if ext == "" || developerSourceExtensions[ext] {
+		return FileClassText
+	}
+	return FileClassForbidden
+}
+
 // ValidateDir resolves a directory the agent wants to list or use.
 func (p *AccessPolicy) ValidateDir(raw string) (string, error) {
 	return p.Resolve(raw)
@@ -390,7 +470,7 @@ func (p *AccessPolicy) ValidateRead(raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	switch c := ClassifyFile(target); {
+	switch c := p.classifyForPolicy(target); {
 	case c == FileClassText || IsMediaClass(c):
 		return target, nil
 	case c == FileClassForbidden:
@@ -400,13 +480,29 @@ func (p *AccessPolicy) ValidateRead(raw string) (string, error) {
 	}
 }
 
+// ValidateDocumentRead allows extracting plain text from supported rich documents (.docx, .odt, .rtf, .pdf).
+func (p *AccessPolicy) ValidateDocumentRead(raw string) (string, error) {
+	target, err := p.Resolve(raw)
+	if err != nil {
+		return "", err
+	}
+	ext := strings.ToLower(filepath.Ext(target))
+	if readableDocumentExtensions[ext] {
+		return target, nil
+	}
+	if p.classifyForPolicy(target) == FileClassText {
+		return "", fmt.Errorf("plain text files use workspace_read_file instead of workspace_read_document (%q)", filepath.Base(target))
+	}
+	return "", fmt.Errorf("access denied: workspace_read_document only supports .docx, .odt, .rtf, and .pdf files, got %q", filepath.Base(target))
+}
+
 // ValidateWrite allows creating/updating text content files anywhere that is not protected.
 func (p *AccessPolicy) ValidateWrite(raw string) (string, error) {
 	target, err := p.Resolve(raw)
 	if err != nil {
 		return "", err
 	}
-	if ClassifyFile(target) != FileClassText {
+	if p.classifyForPolicy(target) != FileClassText {
 		return "", fmt.Errorf("access denied: the assistant only writes text content files (.txt, .md, .json, .srt, .vtt, .csv, .xml), got %q", filepath.Base(target))
 	}
 	return target, nil
@@ -422,14 +518,14 @@ func (p *AccessPolicy) ValidateMove(srcRaw, dstRaw string) (string, string, erro
 	if err != nil {
 		return "", "", fmt.Errorf("destination %w", err)
 	}
-	srcClass := ClassifyFile(src)
+	srcClass := p.classifyForPolicy(src)
 	if srcClass == FileClassForbidden {
 		return "", "", fmt.Errorf("access denied: cannot move source code, executables, or secret files")
 	}
 	if st, err := os.Stat(dst); err == nil && st.IsDir() {
 		dst = filepath.Join(dst, filepath.Base(src))
 	}
-	dstClass := ClassifyFile(dst)
+	dstClass := p.classifyForPolicy(dst)
 	if dstClass != srcClass || (srcClass == FileClassOther || srcClass == FileClassDocument) &&
 		!strings.EqualFold(filepath.Ext(src), filepath.Ext(dst)) {
 		return "", "", fmt.Errorf("access denied: moving/renaming must keep the file type (%s → %s)", filepath.Ext(src), filepath.Ext(dst))
@@ -448,7 +544,7 @@ func (p *AccessPolicy) ValidateDelete(raw string) (string, error) {
 			return "", fmt.Errorf("access denied: cannot delete a DezuxkStudio root folder")
 		}
 	}
-	if ClassifyFile(target) == FileClassForbidden {
+	if p.classifyForPolicy(target) == FileClassForbidden {
 		return "", fmt.Errorf("access denied: cannot delete source code, executables, or secret files")
 	}
 	return target, nil
@@ -459,14 +555,19 @@ func (p *AccessPolicy) VisibleInListing(full string, isDir bool) bool {
 	if p.protectedReason(full) != "" {
 		return false
 	}
-	return isDir || ClassifyFile(full) != FileClassForbidden
+	return isDir || p.classifyForPolicy(full) != FileClassForbidden
 }
 
-func hasForbiddenSegment(path string) bool {
+func hasForbiddenSegment(path string, devMode bool) bool {
 	for _, seg := range strings.Split(filepath.Clean(path), string(filepath.Separator)) {
-		if forbiddenSegmentNames[strings.ToLower(seg)] {
-			return true
+		lower := strings.ToLower(seg)
+		if !forbiddenSegmentNames[lower] {
+			continue
 		}
+		if devMode && developerConfigSegmentNames[lower] {
+			continue
+		}
+		return true
 	}
 	return false
 }

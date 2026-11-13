@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -323,6 +324,138 @@ func TestCheckTrustedFile(t *testing.T) {
 	for _, bad := range []string{filepath.Join(outside, "c.png"), filepath.Join(media, "..", "elsewhere", "d.png")} {
 		if err := p.CheckTrustedFile(bad, false); err == nil {
 			t.Errorf("%s should be denied", bad)
+		}
+	}
+}
+
+func TestLargeScriptToolsAndDocumentRead(t *testing.T) {
+	f := newAccessFixture(t)
+
+	// 1. Large script (> 64 KiB) read in line chunks + search + surgical edit + append.
+	var big strings.Builder
+	for i := 1; i <= 2500; i++ {
+		fmt.Fprintf(&big, "Cảnh %04d: Nội dung lời thoại dài để kiểm tra phân trang kịch bản %s.\n", i, strings.Repeat("x", 24))
+	}
+	scriptPath := filepath.Join(f.ws, "big_script.md")
+	mustWrite(t, scriptPath, big.String())
+
+	// Whole-file read fails safely with chunk hint; start_line/end_line succeeds.
+	if _, isErr := f.call(t, "workspace_read_file", map[string]any{"path": scriptPath}); !isErr {
+		t.Fatal("expected unpaged >64KiB read to fail")
+	}
+	payload, isErr := f.call(t, "workspace_read_file", map[string]any{
+		"path": scriptPath, "start_line": 2495, "end_line": 2500,
+	})
+	if isErr {
+		t.Fatalf("paged read failed: %v", payload)
+	}
+	if !strings.Contains(payload["content"].(string), "Cảnh 2500") || payload["start_line"].(float64) != 2495 {
+		t.Fatalf("unexpected paged read payload: %v", payload)
+	}
+
+	// Recursive listing picks up subfolder files cleanly.
+	mustWrite(t, filepath.Join(f.ws, "ep1", "scene1.txt"), "Nhân vật Minh xuất hiện.")
+	payload, isErr = f.call(t, "workspace_list_files", map[string]any{"dir": f.ws, "recursive": true})
+	if isErr || !strings.Contains(fmt.Sprint(payload["entries"]), "ep1/scene1.txt") {
+		t.Fatalf("recursive list missed nested file: isErr=%v payload=%v", isErr, payload)
+	}
+
+	// Search locates line inside nested script while ignoring forbidden code in user folder.
+	mustWrite(t, filepath.Join(f.ws, "hidden.go"), "package main\n// Nhân vật Minh\n")
+	payload, isErr = f.call(t, "workspace_search_text", map[string]any{"dir": f.ws, "query": "Nhân vật Minh"})
+	if isErr {
+		t.Fatalf("search failed: %v", payload)
+	}
+	matches := payload["matches"].([]any)
+	if len(matches) != 1 || matches[0].(map[string]any)["rel_path"] != "ep1/scene1.txt" {
+		t.Fatalf("unexpected search matches: %v", matches)
+	}
+
+	// Surgical edit in trusted workspace works directly; outside trusted workspace needs approval; code edit rejected.
+	payload, isErr = f.call(t, "workspace_edit_file", map[string]any{
+		"path": scriptPath, "mode": "replace", "old_text": "Cảnh 2500", "content": "Cảnh Cuối",
+	})
+	if isErr || payload["ok"] != true {
+		t.Fatalf("replace edit failed: %v", payload)
+	}
+	payload, isErr = f.call(t, "workspace_edit_file", map[string]any{
+		"path": scriptPath, "mode": "append", "content": "Hết tập 1.\n",
+	})
+	if isErr || payload["ok"] != true {
+		t.Fatalf("append edit failed: %v", payload)
+	}
+	editedBytes, _ := os.ReadFile(scriptPath)
+	if !strings.Contains(string(editedBytes), "Cảnh Cuối") || !strings.HasSuffix(string(editedBytes), "Hết tập 1.\n") {
+		t.Fatalf("edits did not land cleanly in file")
+	}
+
+	if _, isErr := f.call(t, "workspace_edit_file", map[string]any{
+		"path": scriptPath, "mode": "append", "content": "package main\nfunc main() {\n\tprintln(\"hi\")\n}\n",
+	}); !isErr {
+		t.Fatal("assistant mode must block code injection via workspace_edit_file")
+	}
+
+	outsideFile := filepath.Join(f.user, "note.txt")
+	mustWrite(t, outsideFile, "Dòng 1\nDòng 2\n")
+	payload, _ = f.call(t, "workspace_edit_file", map[string]any{
+		"path": outsideFile, "mode": "append", "content": "Dòng 3\n",
+	})
+	if payload["status"] != "needs_approval" {
+		t.Fatalf("expected outside trusted folder edit to require approval, got %v", payload)
+	}
+
+	// 2. Document reading works via workspace_read_document with pagination and rejects code-laden docs.
+	docPath := filepath.Join(f.user, "brief.docx")
+	docXML := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+		`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+		`<w:p><w:r><w:t>Kịch bản gốc rất hay.</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+	writeZipFixture(t, docPath, map[string]string{"word/document.xml": docXML})
+
+	payload, isErr = f.call(t, "workspace_read_document", map[string]any{
+		"path": docPath, "offset_chars": 0, "limit_chars": 8,
+	})
+	if isErr || payload["has_more"] != true || payload["content"] != "Kịch bản" {
+		t.Fatalf("unexpected paged document response: isErr=%v payload=%v", isErr, payload)
+	}
+	payload2, isErr2 := f.call(t, "workspace_read_document", map[string]any{
+		"path": docPath, "offset_chars": int(payload["next_offset"].(float64)), "limit_chars": 50,
+	})
+	if isErr2 || payload2["has_more"] != false || !strings.Contains(payload2["content"].(string), "rất hay.") {
+		t.Fatalf("unexpected second page document response: isErr=%v payload=%v", isErr2, payload2)
+	}
+}
+
+func TestDeveloperModePolicyAllowsCodeOutsideSecrets(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "repo")
+	profiles := filepath.Join(root, "profiles")
+	for _, d := range []string{ws, profiles} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := NewAccessPolicy(root, ws, filepath.Join(root, "media"), profiles, nil)
+	p.SetDeveloperMode(true)
+
+	for _, allowed := range []string{
+		filepath.Join(ws, "main.go"),
+		filepath.Join(ws, "package.json"),
+		filepath.Join(ws, "Makefile"),
+		filepath.Join(ws, ".git", "HEAD"),
+	} {
+		if _, err := p.ValidateRead(allowed); err != nil {
+			t.Errorf("developer mode should allow reading %s: %v", allowed, err)
+		}
+	}
+	for _, denied := range []string{
+		filepath.Join(ws, ".env"),
+		filepath.Join(ws, "id_rsa"),
+		filepath.Join(ws, "app.exe"),
+		filepath.Join(profiles, "claude", "secret.json"),
+	} {
+		if _, err := p.ValidateRead(denied); err == nil {
+			t.Errorf("developer mode must still deny secret/binary/profile path %s", denied)
 		}
 	}
 }

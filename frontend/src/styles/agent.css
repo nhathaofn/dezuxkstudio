@@ -108,6 +108,12 @@
   border-color: transparent;
 }
 
+.agent-badge-dev {
+  background-color: color-mix(in srgb, var(--accent-primary) 16%, transparent);
+  color: var(--accent-primary);
+  border-color: color-mix(in srgb, var(--accent-primary) 35%, transparent);
+}
+
 .agent-drawer__actions {
   display: flex;
   align-items: center;

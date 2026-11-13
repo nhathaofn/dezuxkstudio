@@ -113,6 +113,10 @@ func writeCodexBaseInstructions(profileRoot, instructions string) (string, error
 // The working directory is set through cmd.Dir because `exec resume` has no -C flag; the sandbox is set through
 // config so both forms stay identical. Sessions are persisted only inside the isolated CODEX_HOME.
 func buildCodexExecArgs(mcpURL, instructions, baseInstructionsFile, resumeID string, toolTimeout time.Duration) []string {
+	return buildCodexExecArgsForMode(mcpURL, instructions, baseInstructionsFile, resumeID, toolTimeout, false)
+}
+
+func buildCodexExecArgsForMode(mcpURL, instructions, baseInstructionsFile, resumeID string, toolTimeout time.Duration, devMode bool) []string {
 	args := []string{"exec"}
 	if resumeID != "" {
 		args = append(args, "resume", resumeID)
@@ -128,7 +132,7 @@ func buildCodexExecArgs(mcpURL, instructions, baseInstructionsFile, resumeID str
 	if baseInstructionsFile == "" {
 		args = append(args, "-c", "developer_instructions="+strconv.Quote(instructions))
 	}
-	args = append(args, codexPolicyArgs(mcpURL, baseInstructionsFile, toolTimeout)...)
+	args = append(args, codexPolicyArgsForMode(mcpURL, baseInstructionsFile, toolTimeout, devMode)...)
 	return append(args, "-")
 }
 
@@ -166,10 +170,20 @@ var codexLeanArgs = []string{
 // codexPolicyArgs pins Codex to DezuxkStudio's policy. toolTimeout raises Codex's MCP tool call
 // limit (60s by default) so a workflow run through a tool is not abandoned while it still runs.
 func codexPolicyArgs(mcpURL, baseInstructionsFile string, toolTimeout time.Duration) []string {
+	return codexPolicyArgsForMode(mcpURL, baseInstructionsFile, toolTimeout, false)
+}
+
+func codexPolicyArgsForMode(mcpURL, baseInstructionsFile string, toolTimeout time.Duration, devMode bool) []string {
+	sandbox := "read-only"
+	shellTool := "false"
+	if devMode {
+		sandbox = "workspace-write"
+		shellTool = "true"
+	}
 	args := []string{
-		"-c", `sandbox_mode="read-only"`,
+		"-c", "sandbox_mode=" + strconv.Quote(sandbox),
 		"-c", `approval_policy="never"`,
-		"-c", "features.shell_tool=false",
+		"-c", "features.shell_tool=" + shellTool,
 		"-c", "features.apps=false",
 		"-c", "mcp_servers." + mcpServerName + ".url=" + strconv.Quote(mcpURL),
 		"-c", "mcp_servers." + mcpServerName + ".bearer_token_env_var=" + strconv.Quote(mcpTokenEnvVar),
@@ -178,7 +192,11 @@ func codexPolicyArgs(mcpURL, baseInstructionsFile string, toolTimeout time.Durat
 	if toolTimeout > 0 {
 		args = append(args, "-c", "mcp_servers."+mcpServerName+".tool_timeout_sec="+strconv.FormatInt(int64(toolTimeout.Seconds()), 10))
 	}
-	args = append(args, codexLeanArgs...)
+	if devMode {
+		args = append(args, "-c", "features.view_image=true", "-c", `model_verbosity="medium"`)
+	} else {
+		args = append(args, codexLeanArgs...)
+	}
 	if baseInstructionsFile != "" {
 		args = append(args, "-c", "model_instructions_file="+strconv.Quote(baseInstructionsFile))
 	}
@@ -322,7 +340,7 @@ func (s *Service) runCodexExecTurn(ctx context.Context, executable, profileRoot,
 		return err
 	}
 	resumeID := s.cliSessionFor(domainagent.ProviderCodex)
-	args := buildCodexExecArgs(mcpURL, instructions, baseFile, resumeID, s.limits.MCPToolTimeout)
+	args := buildCodexExecArgsForMode(mcpURL, instructions, baseFile, resumeID, s.limits.MCPToolTimeout, s.developerMode)
 	if modelArgs := codexModelArgs(s.effectiveSelection(domainagent.ProviderCodex)); len(modelArgs) > 0 {
 		args = append(args[:len(args)-1:len(args)-1], append(modelArgs, "-")...) // keep "-" (stdin prompt) last
 	}

@@ -498,7 +498,10 @@ export const vi: Record<MessageKey, string> = {
     "Vào tab Kết nối để nối vào Agent cô lập của DezuxkStudio và hỗ trợ các tính năng trong ứng dụng.",
   "agent.chat.readyTitle": "Đã nối tới {name}",
   "agent.chat.readyDesc":
-    "Chế độ Trợ lý DezuxkStudio cô lập: hỗ trợ tính năng app, viết kịch bản, tạo prompt, dịch và xử lý file tài liệu/media. Tự động từ chối chỉnh sửa code.",
+    "Chế độ Trợ lý DezuxkStudio cô lập: hỗ trợ tính năng app, viết kịch bản, tạo prompt, dịch và đọc file tài liệu/media. Tự động từ chối chỉnh sửa code.",
+  "agent.chat.readyDescDev":
+    "Chế độ Dev: mở khoá chỉnh sửa code, công cụ dự án/terminal và toàn bộ tính năng DezuxkStudio trong thư mục làm việc được cấu hình.",
+  "agent.mode.developer": "Chế độ Dev",
   "agent.chat.goConnections": "Mở tab Kết nối",
   "agent.chat.placeholder": "Nhờ {name} hỗ trợ tính năng của DezuxkStudio…",
   "agent.chat.placeholderOffline": "Hãy kết nối một Agent ở tab Kết nối để bắt đầu chat…",
@@ -551,7 +554,10 @@ export const vi: Record<MessageKey, string> = {
   "agent.tool.diagnostics_export": "Xuất chẩn đoán",
   "agent.tool.workspace_list_files": "Liệt kê file",
   "agent.tool.workspace_read_file": "Mở file",
+  "agent.tool.workspace_read_document": "Đọc tài liệu",
+  "agent.tool.workspace_search_text": "Tìm trong file",
   "agent.tool.workspace_write_file": "Ghi file",
+  "agent.tool.workspace_edit_file": "Sửa nội dung file",
   "agent.tool.workspace_move_file": "Di chuyển file",
   "agent.tool.workspace_delete_file": "Xoá file",
   "agent.connections.subtitle":

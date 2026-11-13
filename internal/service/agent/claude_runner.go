@@ -203,6 +203,21 @@ func writeClaudeMCPConfig(profileRoot, mcpURL, mcpToken string) (string, func(),
 	return cfgPath, func() { _ = os.Remove(cfgPath) }, nil
 }
 
+func buildClaudeArgs(mcpConfigPath, instructions string, devMode bool) []string {
+	if !devMode {
+		return buildClaudeExecArgs(mcpConfigPath, instructions)
+	}
+	return []string{
+		"-p",
+		"--output-format", "stream-json",
+		"--include-partial-messages",
+		"--verbose",
+		"--mcp-config", mcpConfigPath,
+		"--permission-mode", "bypassPermissions",
+		"--system-prompt", instructions,
+	}
+}
+
 func buildClaudeExecArgs(mcpConfigPath, instructions string) []string {
 	return []string{
 		"-p",
@@ -533,7 +548,7 @@ func (s *Service) runClaudeTurn(ctx context.Context, executable, profileRoot, wo
 	defer cleanup()
 	env = append(env, claudeMCPTimeoutEnv(s.limits.MCPToolTimeout)...)
 
-	args := buildClaudeExecArgs(mcpCfgPath, s.systemPrompt(ctx, domainagent.ProviderClaude))
+	args := buildClaudeArgs(mcpCfgPath, s.systemPrompt(ctx, domainagent.ProviderClaude), s.developerMode)
 	args = append(args, claudeModelArgs(s.effectiveSelection(domainagent.ProviderClaude))...)
 	// Keep one conversation per chat: the first turn names the session, later turns resume it.
 	// Sessions are stored only inside the isolated CLAUDE_CONFIG_DIR.

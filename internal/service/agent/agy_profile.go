@@ -99,11 +99,19 @@ func (ps profileSecrets) clearAgyAuth(profileRoot string) {
 // It injects ONLY DezuxkStudio's authenticated MCP server and denies built-in coding/shell tools,
 // never touching the user's real ~/.gemini or %APPDATA%\antigravity-cli directories.
 func (ps profileSecrets) prepareAgyProfile(profileRoot, mcpURL, mcpToken string) (string, map[string]string, error) {
+	return ps.prepareAgyProfileMode(profileRoot, mcpURL, mcpToken, false)
+}
+
+func (ps profileSecrets) prepareAgyProfileMode(profileRoot, mcpURL, mcpToken string, devMode bool) (string, map[string]string, error) {
 	useOAuth := ps.loadAgyAPIKey(profileRoot) == "" && loadAgyOAuthLabel(profileRoot) != ""
-	return ps.prepareAgyProfileWithMode(profileRoot, mcpURL, mcpToken, useOAuth)
+	return ps.prepareAgyProfileWithOptions(profileRoot, mcpURL, mcpToken, useOAuth, devMode)
 }
 
 func (ps profileSecrets) prepareAgyProfileWithMode(profileRoot, mcpURL, mcpToken string, useOAuth bool) (string, map[string]string, error) {
+	return ps.prepareAgyProfileWithOptions(profileRoot, mcpURL, mcpToken, useOAuth, false)
+}
+
+func (ps profileSecrets) prepareAgyProfileWithOptions(profileRoot, mcpURL, mcpToken string, useOAuth, devMode bool) (string, map[string]string, error) {
 	if profileRoot == "" {
 		return "", nil, fmt.Errorf("agent: antigravity profile root is required")
 	}
@@ -145,11 +153,15 @@ func (ps profileSecrets) prepareAgyProfileWithMode(profileRoot, mcpURL, mcpToken
 	}
 
 	// Unless user explicitly signed in via Google OAuth, force modelProvider="gemini" so agy never reads
-	// Windows OS Credential Manager keyring behind the user's back; always deny built-in coding/shell tools.
+	// Windows OS Credential Manager keyring behind the user's back. In assistant mode, deny built-in coding tools.
 	settingsCfg := map[string]any{
 		"enableTelemetry": false,
 		"toolPermission":  "request-review",
-		"permissions": map[string]any{
+	}
+	if devMode {
+		settingsCfg["toolPermission"] = "auto"
+	} else {
+		settingsCfg["permissions"] = map[string]any{
 			"deny": []string{
 				"command(*)",
 				"run_command(*)",
@@ -169,7 +181,7 @@ func (ps profileSecrets) prepareAgyProfileWithMode(profileRoot, mcpURL, mcpToken
 				"write_file(*)",
 				"edit_file(*)",
 			},
-		},
+		}
 	}
 	if !useOAuth {
 		settingsCfg["modelProvider"] = "gemini"

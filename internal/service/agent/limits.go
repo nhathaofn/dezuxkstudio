@@ -39,6 +39,7 @@ type Limits struct {
 	HistoryLimit        int
 	ContextMessages     int
 	ContextMessageChars int
+	ContextTotalChars   int
 }
 
 // LimitsFrom builds the service limits from the application config — the only place their
@@ -63,6 +64,7 @@ func LimitsFrom(c *config.Config) Limits {
 		HistoryLimit:        a.HistoryLimit,
 		ContextMessages:     a.ContextMessages,
 		ContextMessageChars: a.ContextMessageChars,
+		ContextTotalChars:   a.ContextTotalChars,
 	}
 }
 
@@ -94,6 +96,7 @@ func (l Limits) withDefaults() Limits {
 		{&l.HistoryLimit, &d.HistoryLimit},
 		{&l.ContextMessages, &d.ContextMessages},
 		{&l.ContextMessageChars, &d.ContextMessageChars},
+		{&l.ContextTotalChars, &d.ContextTotalChars},
 		{&l.MaxPendingApprovals, &d.MaxPendingApprovals},
 	}
 	for _, f := range ints {

@@ -7,10 +7,8 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	domainagent "app/internal/domain/agent"
 	domainbinaries "app/internal/domain/binaries"
@@ -70,16 +68,43 @@ type preferencesUpdateToolInput struct {
 }
 
 type listFilesToolInput struct {
-	Dir string `json:"dir,omitempty" jsonschema:"Absolute folder path; default: agent workspace"`
+	Dir        string `json:"dir,omitempty" jsonschema:"Absolute folder path; default: agent workspace"`
+	Recursive  bool   `json:"recursive,omitempty" jsonschema:"Include files in subfolders"`
+	MaxEntries int    `json:"max_entries,omitempty" jsonschema:"Maximum entries to return (default 300, max 1000)"`
 }
 
 type readFileToolInput struct {
-	Path string `json:"path" jsonschema:"Text, image, video or audio file path"`
+	Path      string `json:"path" jsonschema:"Text, image, video or audio file path"`
+	StartLine int    `json:"start_line,omitempty" jsonschema:"1-based starting line for large files (enables chunked reading past 64 KiB)"`
+	EndLine   int    `json:"end_line,omitempty" jsonschema:"1-based inclusive ending line (optional)"`
 }
 
 type writeFileToolInput struct {
 	Path    string `json:"path" jsonschema:"Text file path (.txt .md .json .srt .vtt .csv .xml); relative = agent workspace"`
 	Content string `json:"content"`
+}
+
+type editFileToolInput struct {
+	Path       string `json:"path" jsonschema:"Text file path; relative = agent workspace"`
+	Mode       string `json:"mode,omitempty" jsonschema:"replace (default) or append"`
+	Content    string `json:"content" jsonschema:"Replacement text or text to append"`
+	OldText    string `json:"old_text,omitempty" jsonschema:"Exact text block to replace (when mode=replace)"`
+	ReplaceAll bool   `json:"replace_all,omitempty" jsonschema:"Replace every occurrence of old_text"`
+	StartLine  int    `json:"start_line,omitempty" jsonschema:"1-based starting line to replace if old_text is omitted"`
+	EndLine    int    `json:"end_line,omitempty" jsonschema:"1-based inclusive ending line to replace"`
+}
+
+type searchTextToolInput struct {
+	Dir           string `json:"dir,omitempty" jsonschema:"Folder to search; default: agent workspace"`
+	Query         string `json:"query" jsonschema:"Text query to search across readable text files"`
+	CaseSensitive bool   `json:"case_sensitive,omitempty" jsonschema:"Case-sensitive search (default false)"`
+	MaxResults    int    `json:"max_results,omitempty" jsonschema:"Max matching lines (default 50, max 200)"`
+}
+
+type readDocumentToolInput struct {
+	Path        string `json:"path" jsonschema:"Document path (.docx, .odt, .rtf, .pdf)"`
+	OffsetChars int    `json:"offset_chars,omitempty" jsonschema:"0-based character offset to start reading"`
+	LimitChars  int    `json:"limit_chars,omitempty" jsonschema:"Max characters per chunk (default 16000, max 32000)"`
 }
 
 type moveFileToolInput struct {
@@ -168,6 +193,13 @@ func (s *Service) toolDocs() []toolDoc {
 	return s.docs
 }
 
+func (s *Service) mcpInstructions() string {
+	if s.developerMode {
+		return "DezuxkStudio tools (developer mode active); call workflow_list_specs before running an app feature."
+	}
+	return mcpServerInstructions
+}
+
 // buildMCPServer returns a new MCP server with every DezuxkStudio tool registered.
 func (s *Service) buildMCPServer() *mcp.Server { return s.buildToolset().server }
 
@@ -176,7 +208,7 @@ func (s *Service) buildToolset() *mcpToolset {
 	// instructions into each tool's description (Codex does: 16 tools × ~9k characters ≈ 38k tokens), so
 	// the server only states a one-line reminder.
 	server := &mcpToolset{server: mcp.NewServer(&mcp.Implementation{Name: mcpServerName, Version: s.appVersion}, &mcp.ServerOptions{
-		Instructions: mcpServerInstructions,
+		Instructions: s.mcpInstructions(),
 	})}
 
 	addMCPTool(server, "studio_list_capabilities",
@@ -330,56 +362,13 @@ func (s *Service) buildToolset() *mcpToolset {
 		})
 
 	addMCPTool(server, "workspace_list_files",
-		"List a folder (system, credential and code files are hidden).",
+		"List a folder or subfolder tree (supports recursive=true; protected files are hidden).",
 		func(_ context.Context, in listFilesToolInput) (*mcp.CallToolResult, any, error) {
-			target, err := s.policy.ValidateDir(in.Dir)
-			if err != nil {
-				return mcpError(err.Error())
-			}
-			entries, err := os.ReadDir(target)
-			if err != nil {
-				return mcpError(err.Error())
-			}
-			type item struct {
-				Name  string    `json:"name"`
-				Path  string    `json:"path"`
-				IsDir bool      `json:"is_dir"`
-				Class FileClass `json:"class,omitempty"`
-				Size  int64     `json:"size,omitempty"`
-			}
-			out := make([]item, 0, len(entries))
-			counts := map[FileClass]int{}
-			truncated := false
-			for _, e := range entries {
-				full := filepath.Join(target, e.Name())
-				if !s.policy.VisibleInListing(full, e.IsDir()) {
-					continue
-				}
-				it := item{Name: e.Name(), Path: full, IsDir: e.IsDir()}
-				if !e.IsDir() {
-					it.Class = ClassifyFile(full)
-					counts[it.Class]++
-					if info, statErr := e.Info(); statErr == nil {
-						it.Size = info.Size()
-					}
-				}
-				if len(out) >= maxListEntries {
-					truncated = true
-					continue
-				}
-				out = append(out, it)
-			}
-			sort.Slice(out, func(i, j int) bool {
-				if out[i].IsDir != out[j].IsDir {
-					return out[i].IsDir
-				}
-				return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
-			})
-			return mcpJSON(map[string]any{"dir": target, "trusted": s.policy.IsTrusted(target), "counts": counts, "truncated": truncated, "entries": out})
+			return s.handleWorkspaceListFiles(in)
 		})
 
 	addMCPTool(server, "workspace_read_file",
-		"Open a text file (content), image (view) or video/audio (metadata).",
+		"Open a text file (supports start_line/end_line chunked reads past 64 KiB), image, or media metadata.",
 		func(_ context.Context, in readFileToolInput) (*mcp.CallToolResult, any, error) {
 			target, err := s.policy.ValidateRead(in.Path)
 			if err != nil {
@@ -392,7 +381,7 @@ func (s *Service) buildToolset() *mcpToolset {
 			if info.IsDir() {
 				return mcpError("target path is a folder; use workspace_list_files")
 			}
-			switch class := ClassifyFile(target); class {
+			switch class := s.policy.Classify(target); class {
 			case FileClassImage:
 				if info.Size() > maxImageReadBytes {
 					return mcpJSON(map[string]any{"path": target, "class": class, "size": info.Size(), "note": "image too large to display; metadata only"})
@@ -410,31 +399,29 @@ func (s *Service) buildToolset() *mcpToolset {
 			case FileClassVideo, FileClassAudio:
 				return mcpJSON(map[string]any{"path": target, "class": class, "size": info.Size(), "modified": info.ModTime()})
 			}
-			if info.Size() > maxWorkspaceReadBytes {
-				return mcpError(fmt.Sprintf("file exceeds maximum readable size (%d bytes)", maxWorkspaceReadBytes))
-			}
-			b, err := os.ReadFile(target)
-			if err != nil {
-				return mcpError(err.Error())
-			}
-			if !utf8.Valid(b) || strings.ContainsRune(string(b), 0) {
-				return mcpError("file is not a UTF-8 text file")
-			}
-			content := string(b)
-			if ContainsSourceCode(content) {
-				return mcpError("refused: this file contains source code or terminal commands, which DezuxkStudio Assistant does not work with")
-			}
-			return mcpJSON(map[string]any{"path": target, "size": len(b), "content": content})
+			return s.handleWorkspaceReadTextSlice(target, info, in.StartLine, in.EndLine)
+		})
+
+	addMCPTool(server, "workspace_read_document",
+		"Extract paged plain text from .docx, .odt, .rtf, or .pdf documents (offset_chars/limit_chars).",
+		func(_ context.Context, in readDocumentToolInput) (*mcp.CallToolResult, any, error) {
+			return s.handleWorkspaceReadDocument(in)
+		})
+
+	addMCPTool(server, "workspace_search_text",
+		"Search for text across readable files in a folder and its subfolders.",
+		func(_ context.Context, in searchTextToolInput) (*mcp.CallToolResult, any, error) {
+			return s.handleWorkspaceSearchText(in)
 		})
 
 	addMCPTool(server, "workspace_write_file",
-		"Create or update a text file. Overwriting outside trusted folders needs approval.",
+		"Create or replace a text file. Overwriting outside trusted folders needs approval.",
 		func(_ context.Context, in writeFileToolInput) (*mcp.CallToolResult, any, error) {
 			target, err := s.policy.ValidateWrite(in.Path)
 			if err != nil {
 				return mcpError(err.Error())
 			}
-			if ContainsSourceCode(in.Content) {
+			if !s.developerMode && ContainsSourceCode(in.Content) {
 				s.log.Warn("agent: blocked workspace_write_file containing source code", "path", target)
 				return mcpError("refused: content contains source code or terminal commands; DezuxkStudio Assistant only writes non-code content (scripts for videos, prompts, subtitles, notes, data)")
 			}
@@ -457,6 +444,12 @@ func (s *Service) buildToolset() *mcpToolset {
 				return mcpError(err.Error())
 			}
 			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "workspace_edit_file",
+		"Append to or replace a section (old_text or start_line/end_line) in a text file without rewriting the whole file.",
+		func(_ context.Context, in editFileToolInput) (*mcp.CallToolResult, any, error) {
+			return s.handleWorkspaceEditFile(in)
 		})
 
 	addMCPTool(server, "workspace_move_file",
@@ -602,6 +595,7 @@ func (s *Service) buildCapabilitiesSnapshot(ctx context.Context) map[string]any 
 	return map[string]any{
 		"app":                   clientName,
 		"version":               s.appVersion,
+		"developer_mode":        s.developerMode,
 		"current_screen":        ui,
 		"dezuxkstudio_features": appFeatures,
 		"assistant_extras":      assistantExtras,

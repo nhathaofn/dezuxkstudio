@@ -13,6 +13,13 @@ import (
 	"app/internal/progress"
 )
 
+func (s *Service) acpArgsFor(spec domainagent.ProviderSpec) []string {
+	if s.developerMode && spec.ID == domainagent.ProviderAntigravity {
+		return []string{"acp", "--include-default-customizations=true"}
+	}
+	return spec.ACPArgs
+}
+
 // Connect starts the local MCP server and activates the selected isolated provider.
 func (s *Service) Connect(ctx context.Context, id domainagent.ProviderID) (domainagent.ProviderInfo, error) {
 	if err := domainagent.ValidateProviderID(id); err != nil {
@@ -94,7 +101,7 @@ func (s *Service) Connect(ctx context.Context, id domainagent.ProviderID) (domai
 	transport, err := s.spawnTransport(
 		ctx,
 		resolved,
-		spec.ACPArgs,
+		s.acpArgsFor(spec),
 		workDir,
 		procEnv,
 		func(upd SessionUpdate) { s.handleSessionUpdate(connToken, upd) },

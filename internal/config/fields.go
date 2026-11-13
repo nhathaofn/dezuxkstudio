@@ -95,9 +95,12 @@ func fields(c *Config) []field {
 		{key: "agent.cli_update_interval", usage: "how often to look for a newer agent CLI release", val: durationValue{&c.Agent.CLIUpdateInterval}},
 		{key: "agent.approval_ttl", usage: "pending agent approvals expire after this long", val: durationValue{&c.Agent.ApprovalTTL}},
 		{key: "agent.history_limit", usage: "agent chat messages shown in the UI", val: intValue{&c.Agent.HistoryLimit}},
+		{key: "agent.mode", usage: "agent runtime mode: assistant (default, restricted) or developer (opt-in coding/tools)", val: stringValue{&c.Agent.Mode}},
+		{key: "agent.workspace_dir", usage: "override directory used as the agent workspace (empty = app default)", val: stringValue{&c.Agent.WorkspaceDir}},
 		{key: "agent.max_pending_approvals", usage: "agent actions waiting for approval at most", val: intValue{&c.Agent.MaxPendingApprovals}},
 		{key: "agent.context_messages", usage: "past chat messages replayed into a new agent session", val: intValue{&c.Agent.ContextMessages}},
 		{key: "agent.context_message_chars", usage: "max characters per replayed chat message", val: intValue{&c.Agent.ContextMessageChars}},
+		{key: "agent.context_total_chars", usage: "total character budget across replayed chat messages", val: intValue{&c.Agent.ContextTotalChars}},
 
 		{key: "desktop.width", usage: "initial window width (0 = 80% of primary screen)", val: intValue{&c.Desktop.Width}},
 		{key: "desktop.height", usage: "initial window height (0 = 80% of primary screen)", val: intValue{&c.Desktop.Height}},

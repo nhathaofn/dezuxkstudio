@@ -446,4 +446,14 @@ describe("provider status snapshots", () => {
       1
     );
   });
+
+  it("tracks developer_mode returned by agent:list", async () => {
+    useAgentStore.setState({ developerMode: false });
+    vi.spyOn(rtClient, "request").mockResolvedValueOnce({
+      providers: [connectedWithModels],
+      developer_mode: true,
+    });
+    await useAgentStore.getState().fetchProviders();
+    expect(useAgentStore.getState().developerMode).toBe(true);
+  });
 });

@@ -515,3 +515,60 @@ func TestAuthProbeTimeoutIsUnknown(t *testing.T) {
 		t.Fatalf("claude: %s, want unknown", got)
 	}
 }
+
+func TestTurnPromptBudgetAndReminderScoping(t *testing.T) {
+	history := []domainagent.ChatMessage{
+		{Role: "user", Text: "first long message 11111111111111111111"},
+		{Role: "assistant", Text: "first reply 22222222222222222222"},
+		{Role: "user", Text: "latest prompt 333"},
+	}
+	got := buildTurnPrompt(history, UIContext{}, "now", Limits{
+		ContextMessages:     10,
+		ContextMessageChars: 200,
+		ContextTotalChars:   40,
+	}, promptOptions{skipReminder: true})
+	if strings.Contains(got, "first long message") {
+		t.Fatalf("expected oldest message dropped to satisfy ContextTotalChars, got %q", got)
+	}
+	if !strings.Contains(got, "User: latest prompt 333") {
+		t.Fatalf("expected newest history entry kept within ContextTotalChars, got %q", got)
+	}
+	if strings.Contains(got, "[Rules reminder]") {
+		t.Fatalf("expected reminder omitted when skipReminder is true, got %q", got)
+	}
+
+	devPrompt := buildTurnPrompt(nil, UIContext{}, "edit main.go", Limits{}, promptOptions{developerMode: true})
+	if strings.Contains(devPrompt, "[Rules reminder]") {
+		t.Fatalf("developer mode prompt must not inject assistant rules reminder: %q", devPrompt)
+	}
+}
+
+func TestDeveloperModeProviderArgsAndPrompt(t *testing.T) {
+	if !strings.Contains(DeveloperInstructions(), "Developer Mode") {
+		t.Fatalf("expected DeveloperInstructions to load profile/developer.md")
+	}
+
+	restrictedClaude := strings.Join(buildClaudeArgs("mcp.json", "sys", false), " ")
+	if !strings.Contains(restrictedClaude, "--restricted") || !strings.Contains(restrictedClaude, "--tools ") {
+		t.Fatalf("assistant claude args must stay restricted: %s", restrictedClaude)
+	}
+	devClaude := strings.Join(buildClaudeArgs("mcp.json", "sys", true), " ")
+	if strings.Contains(devClaude, "--restricted") || !strings.Contains(devClaude, "--permission-mode bypassPermissions") || !strings.Contains(devClaude, "--mcp-config mcp.json") {
+		t.Fatalf("developer claude args unexpected: %s", devClaude)
+	}
+
+	restrictedCodex := strings.Join(codexPolicyArgsForMode("http://127.0.0.1:1/mcp", "", 0, false), " ")
+	if !strings.Contains(restrictedCodex, `sandbox_mode="read-only"`) || !strings.Contains(restrictedCodex, "features.shell_tool=false") {
+		t.Fatalf("assistant codex args must stay read-only: %s", restrictedCodex)
+	}
+	devCodex := strings.Join(codexPolicyArgsForMode("http://127.0.0.1:1/mcp", "", 0, true), " ")
+	if !strings.Contains(devCodex, `sandbox_mode="workspace-write"`) || !strings.Contains(devCodex, "features.shell_tool=true") || !strings.Contains(devCodex, "mcp_servers.dezuxk.url=") {
+		t.Fatalf("developer codex args unexpected: %s", devCodex)
+	}
+
+	svcDev := &Service{developerMode: true}
+	agySpec := domainagent.Registry[domainagent.ProviderAntigravity]
+	if got := strings.Join(svcDev.acpArgsFor(agySpec), " "); strings.Contains(got, "--sandbox") || !strings.Contains(got, "--include-default-customizations=true") {
+		t.Fatalf("developer agy args unexpected: %s", got)
+	}
+}

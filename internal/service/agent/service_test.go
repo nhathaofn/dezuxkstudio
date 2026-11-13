@@ -32,6 +32,7 @@ type fakeRepo struct {
 	models      map[domainagent.ProviderID]domainagent.ModelSelection
 
 	conversations map[string]domainagent.Conversation
+	cliSessions   map[string]map[domainagent.ProviderID]string
 }
 
 func newFakeRepo() *fakeRepo {
@@ -172,10 +173,43 @@ func (r *fakeRepo) ListConversationMessages(_ context.Context, id string, limit 
 	return out, nil
 }
 
+func (r *fakeRepo) GetConversationSessions(_ context.Context, conversationID string) (map[domainagent.ProviderID]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	src := r.cliSessions[conversationID]
+	out := make(map[domainagent.ProviderID]string, len(src))
+	for k, v := range src {
+		if v != "" {
+			out[k] = v
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeRepo) SetConversationSession(_ context.Context, conversationID string, providerID domainagent.ProviderID, sessionID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.cliSessions == nil {
+		r.cliSessions = make(map[string]map[domainagent.ProviderID]string)
+	}
+	if sessionID == "" {
+		if r.cliSessions[conversationID] != nil {
+			delete(r.cliSessions[conversationID], providerID)
+		}
+		return nil
+	}
+	if r.cliSessions[conversationID] == nil {
+		r.cliSessions[conversationID] = make(map[domainagent.ProviderID]string)
+	}
+	r.cliSessions[conversationID][providerID] = sessionID
+	return nil
+}
+
 func (r *fakeRepo) DeleteConversation(_ context.Context, id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.conversations, id)
+	delete(r.cliSessions, id)
 	kept := r.messages[:0]
 	for _, m := range r.messages {
 		if m.ConversationID != id {

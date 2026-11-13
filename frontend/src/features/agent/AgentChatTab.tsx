@@ -229,6 +229,7 @@ const EmptyState: React.FC<{
 }> = ({ provider, onPick, onConnect }) => {
   const t = useT();
   const screen = useScreenContextStore((s) => s.context);
+  const developerMode = useAgentStore((s) => s.developerMode);
 
   if (!provider) {
     return (
@@ -260,7 +261,9 @@ const EmptyState: React.FC<{
       <div className="agent-empty-state__title">
         {t("agent.chat.readyTitle", { name: provider.name })}
       </div>
-      <p className="agent-empty-state__desc">{t("agent.chat.readyDesc")}</p>
+      <p className="agent-empty-state__desc">
+        {t(developerMode ? "agent.chat.readyDescDev" : "agent.chat.readyDesc")}
+      </p>
       <div className="agent-suggestions" role="list">
         {suggestions.slice(0, 4).map((s) => (
           <button

@@ -97,8 +97,9 @@ type ACPClient struct {
 	log     *slog.Logger
 	onEvent func(SessionUpdate)
 	onExit  func(error)
-	// ownTools are DezuxkStudio's MCP tools: the only tools whose permission requests are granted.
-	ownTools map[string]bool
+	// ownTools are DezuxkStudio's MCP tools: the only tools whose permission requests are granted in assistant mode.
+	ownTools            map[string]bool
+	allowAllPermissions atomic.Bool
 
 	nextID   atomic.Int64
 	writeMu  sync.Mutex
@@ -468,9 +469,19 @@ func (c *ACPClient) handleLine(line string) {
 	}
 }
 
+// SetAllowAllPermissions configures whether non-Dezuxk built-in coding/shell tool permissions are allowed
+// (used only in opt-in Developer Mode).
+func (c *ACPClient) SetAllowAllPermissions(allow bool) {
+	c.allowAllPermissions.Store(allow)
+}
+
 func (c *ACPClient) handleServerRequest(id json.RawMessage, method string, params json.RawMessage) {
 	if method == "session/request_permission" {
-		if optID, allowed := allowedDezuxkPermissionOption(params, c.ownTools); allowed {
+		optID, allowed := allowedDezuxkPermissionOption(params, c.ownTools)
+		if !allowed && c.allowAllPermissions.Load() {
+			optID, allowed = firstAllowPermissionOption(params)
+		}
+		if allowed {
 			c.replyResult(id, map[string]any{
 				"outcome": map[string]any{
 					"outcome":  "selected",
@@ -516,6 +527,27 @@ func allowedDezuxkPermissionOption(raw json.RawMessage, ownTools map[string]bool
 		return "", false
 	}
 	if !isDezuxkToolPermission(req.ToolCall.Title, ownTools) {
+		return "", false
+	}
+	for _, opt := range req.Options {
+		if opt.Kind == "allow_once" || opt.Kind == "allow_always" {
+			return opt.OptionID, true
+		}
+	}
+	return "", false
+}
+
+func firstAllowPermissionOption(raw json.RawMessage) (string, bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+	var req struct {
+		Options []struct {
+			OptionID string `json:"optionId"`
+			Kind     string `json:"kind"`
+		} `json:"options"`
+	}
+	if json.Unmarshal(raw, &req) != nil {
 		return "", false
 	}
 	for _, opt := range req.Options {

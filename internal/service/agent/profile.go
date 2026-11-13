@@ -26,6 +26,9 @@ import (
 //go:embed profile/policy.md
 var embeddedPolicy string
 
+//go:embed profile/developer.md
+var embeddedDeveloperPolicy string
+
 // SystemInstructions returns the policy layer alone ({{app}} replaced). It is the fallback prompt when
 // runtime context is unavailable and the source of truth for the rules.
 func SystemInstructions() string {
@@ -34,13 +37,29 @@ func SystemInstructions() string {
 	return strings.ReplaceAll(policy, "{{app}}", clientName)
 }
 
+// DeveloperInstructions returns the opt-in Developer Mode base system prompt ({{app}} replaced).
+func DeveloperInstructions() string {
+	policy := strings.ReplaceAll(strings.TrimSpace(embeddedDeveloperPolicy), "\r\n", "\n")
+	return strings.ReplaceAll(policy, "{{app}}", clientName)
+}
+
 // systemPrompt assembles all layers for a new session of provider id.
 func (s *Service) systemPrompt(ctx context.Context, id domainagent.ProviderID) string {
 	var sb strings.Builder
-	sb.WriteString(SystemInstructions())
+	if s.developerMode {
+		sb.WriteString(DeveloperInstructions())
+	} else {
+		sb.WriteString(SystemInstructions())
+	}
 
 	sb.WriteString("\n\n<application>\n")
 	fmt.Fprintf(&sb, "name: %s\nversion: %s\nplatform: %s\n", clientName, s.appVersion, runtime.GOOS)
+	if s.developerMode {
+		sb.WriteString("mode: developer\n")
+		if s.workspaceDir != "" {
+			fmt.Fprintf(&sb, "workspace_dir: %s\n", s.workspaceDir)
+		}
+	}
 	if s.preferences != nil {
 		if prefs, err := s.preferences.Get(ctx); err == nil && prefs.Language != "" {
 			fmt.Fprintf(&sb, "interface_language: %s\n", prefs.Language)

@@ -55,6 +55,9 @@ func (s *Service) SendPrompt(ctx context.Context, text string) (string, domainag
 	// tool events, workflow progress from an MCP tool), not after a fixed total duration.
 	turnCtx, touchTurn, cancelTurn := progress.NewIdleContext(context.Background(), s.limits.TurnTimeout)
 	t := newTurn(messageID, conversationID, providerID, connToken, touchTurn, context.CancelFunc(cancelTurn))
+	if s.developerMode {
+		t.guard.disable()
+	}
 	s.turn = t
 	s.turns.Add(1)
 	s.mu.Unlock()
@@ -112,6 +115,17 @@ func (s *Service) CancelPrompt(_ context.Context) error {
 	return nil
 }
 
+func (s *Service) turnPromptOptions(id domainagent.ProviderID, replayedHistory []domainagent.ChatMessage) promptOptions {
+	if s.developerMode {
+		return promptOptions{skipReminder: true, developerMode: true}
+	}
+	// Providers with a dedicated, non-appendable system prompt (Claude/Codex) only need a reminder when
+	// replaying long raw conversation logs across a cold session start; short/resumed turns keep clean prompts.
+	hasStrongSystemPrompt := id == domainagent.ProviderClaude || id == domainagent.ProviderCodex
+	skip := hasStrongSystemPrompt && len(replayedHistory) < 8
+	return promptOptions{skipReminder: skip, developerMode: false}
+}
+
 // runTurn runs one turn on its provider. Text and tool events reach the UI (and the turn's guard) through
 // emitChat as they stream; endTurn stores the result.
 func (s *Service) runTurn(ctx context.Context, t *turn, client Transport, sessionID, prompt string, history []domainagent.ChatMessage, ui UIContext) error {
@@ -148,9 +162,9 @@ func (s *Service) runTurn(ctx context.Context, t *turn, client Transport, sessio
 	sessionKey := "acp:" + sessionID
 	var turnPrompt string
 	if primed {
-		turnPrompt = buildHistoryContextPrompt(nil, s.screenContextForTurn(sessionKey, ui), prompt, s.limits)
+		turnPrompt = buildTurnPrompt(nil, s.screenContextForTurn(sessionKey, ui), prompt, s.limits, s.turnPromptOptions(t.providerID, nil))
 	} else {
-		turnPrompt = buildHistoryContextPrompt(history, ui, prompt, s.limits)
+		turnPrompt = buildTurnPrompt(history, ui, prompt, s.limits, s.turnPromptOptions(t.providerID, history))
 	}
 	err := client.Prompt(ctx, sessionID, turnPrompt)
 	if err == nil {
@@ -185,7 +199,7 @@ func (s *Service) runCLITurn(ctx context.Context, drv turnDriver, t *turn, promp
 			h = nil // a resumed CLI session already holds the conversation
 			sessionKey = cliSessionKey(t.providerID, s.cliSessionFor(t.providerID))
 		}
-		fullPrompt := buildHistoryContextPrompt(h, s.screenContextForTurn(sessionKey, ui), prompt, s.limits)
+		fullPrompt := buildTurnPrompt(h, s.screenContextForTurn(sessionKey, ui), prompt, s.limits, s.turnPromptOptions(t.providerID, h))
 		err := drv.runTurn(ctx, resolved, workDir, mcpSrv.url, mcpSrv.token, t.id, fullPrompt)
 		if err == nil {
 			s.rememberScreenContext(cliSessionKey(t.providerID, s.cliSessionFor(t.providerID)), ui)

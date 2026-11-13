@@ -318,3 +318,27 @@ func TestStreamFilterEarlyReleaseStillBlocksCode(t *testing.T) {
 		t.Fatalf("expected code blocked even with early prose release, got %q", got)
 	}
 }
+
+func TestStreamFilterAllowsScreenplayParentheticals(t *testing.T) {
+	g := newTurnOutputGuard("m1")
+	var got strings.Builder
+	for _, chunk := range []string{"[Cảnh 1] ", "Minh (thì thầm): ", "Chúng ta đi thôi."} {
+		out := g.filterText(chunk)
+		if out == "" {
+			t.Fatalf("expected screenplay chunk %q to stream without paragraph hold", chunk)
+		}
+		got.WriteString(out)
+	}
+	tail, _ := g.finalize()
+	got.WriteString(tail)
+	if g.blocked() || got.String() != "[Cảnh 1] Minh (thì thầm): Chúng ta đi thôi." {
+		t.Fatalf("unexpected screenplay stream: blocked=%v got=%q", g.blocked(), got.String())
+	}
+
+	gDev := newTurnOutputGuard("m2")
+	gDev.disable()
+	code := "```go\npackage main\nfunc main() { println(1) }\n```"
+	if out := gDev.filterText(code); out != code || gDev.blocked() {
+		t.Fatalf("disabled developer guard must stream code untouched, got %q", out)
+	}
+}

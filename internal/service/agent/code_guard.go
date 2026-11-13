@@ -346,7 +346,7 @@ func partialLooksLikeProse(p string) bool {
 		strings.HasPrefix(t, "<") || strings.HasPrefix(t, "$") || strings.HasPrefix(t, "#!") || isCodeLikeLine(p) {
 		return false
 	}
-	if strings.ContainsAny(t, "(){}[];=<>$|\\`") {
+	if strings.ContainsAny(t, "{};=<>$|\\`") || hasCodeLikeGrouping(t) {
 		return false
 	}
 	nonASCII := false
@@ -357,6 +357,60 @@ func partialLooksLikeProse(p string) bool {
 		}
 	}
 	return nonASCII || len(strings.Fields(t)) >= 4
+}
+
+var codeKeywordBeforeParen = map[string]bool{
+	"if": true, "for": true, "while": true, "switch": true, "catch": true, "with": true, "elif": true,
+	"def": true, "func": true, "fn": true, "function": true, "return": true, "class": true,
+	"import": true, "typeof": true, "sizeof": true, "await": true,
+}
+
+func isASCIIWordByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
+}
+
+// hasCodeLikeGrouping allows natural screenplay parentheticals/cues like "(thì thầm)" or "[Cảnh 1]"
+// to stream smoothly while still holding function calls, indexing, and code-style groupings until \n.
+func hasCodeLikeGrouping(t string) bool {
+	for i := 0; i < len(t); i++ {
+		switch t[i] {
+		case '(':
+			// Attached call like foo(...) or obj.bar(...)
+			if i > 0 && (isASCIIWordByte(t[i-1]) || t[i-1] == '.' || t[i-1] == ')' || t[i-1] == ']') {
+				return true
+			}
+			// Spaced keyword call like `if (x)`, `while (...)`
+			if i > 0 {
+				before := strings.TrimSpace(t[:i])
+				fields := strings.Fields(before)
+				if len(fields) > 0 && codeKeywordBeforeParen[strings.ToLower(fields[len(fields)-1])] {
+					return true
+				}
+			}
+			// Argument literals like `('/api')` or `("fmt")`
+			rest := strings.TrimSpace(t[i+1:])
+			if strings.HasPrefix(rest, "'") || strings.HasPrefix(rest, `"`) {
+				return true
+			}
+		case '[':
+			if i > 0 && (isASCIIWordByte(t[i-1]) || t[i-1] == ')' || t[i-1] == ']') {
+				return true
+			}
+			rest := strings.TrimSpace(t[i+1:])
+			if strings.HasPrefix(rest, "'") || strings.HasPrefix(rest, `"`) || strings.HasPrefix(rest, "[") {
+				return true
+			}
+		case ')':
+			if i+1 < len(t) && (t[i+1] == '.' || t[i+1] == '[' || t[i+1] == '(') {
+				return true
+			}
+		case ']':
+			if i+1 < len(t) && (t[i+1] == '.' || t[i+1] == '[' || t[i+1] == '(') {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // flush releases whatever is still held at the end of the message.
@@ -479,10 +533,18 @@ type turnOutputGuard struct {
 	thoughtOut strings.Builder
 	noticed    bool
 	finalized  bool
+	bypass     bool
 }
 
 func newTurnOutputGuard(messageID string) *turnOutputGuard {
 	return &turnOutputGuard{messageID: messageID, notice: noticeMarker(noticeCodeBlocked)}
+}
+
+// disable marks the guard as transparent (used in opt-in Developer Mode).
+func (g *turnOutputGuard) disable() {
+	g.mu.Lock()
+	g.bypass = true
+	g.mu.Unlock()
 }
 
 // filterText returns the safe portion of an answer chunk (with a one-time refusal notice once blocked).
@@ -491,6 +553,10 @@ func (g *turnOutputGuard) filterText(chunk string) string {
 	defer g.mu.Unlock()
 	if g.finalized {
 		return ""
+	}
+	if g.bypass {
+		g.textOut.WriteString(chunk)
+		return chunk
 	}
 	safe, blocked := g.text.push(chunk)
 	return g.recordText(safe, blocked)
@@ -502,6 +568,10 @@ func (g *turnOutputGuard) filterThought(chunk string) string {
 	defer g.mu.Unlock()
 	if g.finalized {
 		return ""
+	}
+	if g.bypass {
+		g.thoughtOut.WriteString(chunk)
+		return chunk
 	}
 	safe, _ := g.thought.push(chunk)
 	g.thoughtOut.WriteString(safe)
@@ -516,6 +586,9 @@ func (g *turnOutputGuard) finalize() (string, string) {
 		return "", ""
 	}
 	g.finalized = true
+	if g.bypass {
+		return "", ""
+	}
 	safe, blocked := g.text.flush()
 	textTail := g.recordText(safe, blocked)
 	thoughtTail, _ := g.thought.flush()

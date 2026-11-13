@@ -29,6 +29,7 @@ export const AgentDrawer: React.FC = () => {
   const panelWidth = useAgentStore((s) => s.panelWidth);
   const activeTab = useAgentStore((s) => s.activeTab);
   const providers = useAgentStore((s) => s.providers);
+  const developerMode = useAgentStore((s) => s.developerMode);
   const allowedDirs = useAgentStore((s) => s.allowedDirs);
   const loadingProviders = useAgentStore((s) => s.loadingProviders);
   const error = useAgentStore((s) => s.error);
@@ -111,6 +112,7 @@ export const AgentDrawer: React.FC = () => {
           <Badge className={activeProvider ? "agent-badge-online" : ""}>
             {activeProvider ? activeProvider.name : t("agent.status.disconnected")}
           </Badge>
+          {developerMode && <Badge className="agent-badge-dev">{t("agent.mode.developer")}</Badge>}
         </div>
 
         <div className="agent-drawer__actions">

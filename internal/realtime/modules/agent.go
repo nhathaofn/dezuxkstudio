@@ -225,7 +225,7 @@ func (m Agent) listResult(ctx context.Context) (contracts.AgentListResult, error
 	if err != nil {
 		return contracts.AgentListResult{}, err
 	}
-	return toContractAgentList(list), nil
+	return toContractAgentList(list, m.Service.DeveloperMode()), nil
 }
 
 func historyResult(id string, msgs []domainagent.ChatMessage) contracts.AgentHistoryResult {
@@ -236,10 +236,10 @@ func historyResult(id string, msgs []domainagent.ChatMessage) contracts.AgentHis
 	return contracts.AgentHistoryResult{ConversationID: id, Messages: out}
 }
 
-func toContractAgentList(in []domainagent.ProviderInfo) contracts.AgentListResult {
+func toContractAgentList(in []domainagent.ProviderInfo, developerMode bool) contracts.AgentListResult {
 	items := make([]contracts.AgentProviderInfo, len(in))
 	for i, it := range in {
 		items[i] = contracts.NewAgentProviderInfo(it)
 	}
-	return contracts.AgentListResult{Providers: items}
+	return contracts.AgentListResult{Providers: items, DeveloperMode: developerMode}
 }

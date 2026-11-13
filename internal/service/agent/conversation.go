@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"strings"
+	"time"
 
 	"app/internal/apperr"
 	domainagent "app/internal/domain/agent"
@@ -68,9 +69,14 @@ func (s *Service) OpenConversation(ctx context.Context, id string) (string, []do
 	if len(msgs) == 0 {
 		return "", nil, userError(apperr.CodeNotFound, msgConversationGone, "conversation not found", nil)
 	}
+	savedSessions, sessErr := s.repo.GetConversationSessions(ctx, id)
+	if sessErr != nil && s.log != nil {
+		s.log.Warn("agent: failed to load conversation sessions", "conversation_id", id, "error", sessErr)
+	}
 	if err := s.switchConversation(id); err != nil {
 		return "", nil, err
 	}
+	s.restoreCLISessions(id, savedSessions)
 	return id, msgs, nil
 }
 
@@ -116,12 +122,37 @@ func (s *Service) cliSessionFor(id domainagent.ProviderID) string {
 	return s.cliSessions[id]
 }
 
-func (s *Service) setCLISession(id domainagent.ProviderID, sessionID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if sessionID == "" {
-		delete(s.cliSessions, id)
+func (s *Service) restoreCLISessions(conversationID string, sessions map[domainagent.ProviderID]string) {
+	if conversationID == "" || len(sessions) == 0 {
 		return
 	}
-	s.cliSessions[id] = sessionID
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conversationID != conversationID {
+		return
+	}
+	for provID, sessID := range sessions {
+		if provID != "" && sessID != "" {
+			s.cliSessions[provID] = sessID
+		}
+	}
+}
+
+func (s *Service) setCLISession(id domainagent.ProviderID, sessionID string) {
+	s.mu.Lock()
+	convID := s.conversationID
+	if sessionID == "" {
+		delete(s.cliSessions, id)
+	} else {
+		s.cliSessions[id] = sessionID
+	}
+	s.mu.Unlock()
+
+	if convID != "" && s.repo != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := s.repo.SetConversationSession(ctx, convID, id, sessionID); err != nil && s.log != nil {
+			s.log.Warn("agent: failed to persist conversation session", "conversation_id", convID, "provider", id, "error", err)
+		}
+	}
 }

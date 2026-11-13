@@ -142,6 +142,7 @@ export interface AgentHistoryResult {
 
 export interface AgentListResult {
   providers: AgentProviderInfo[];
+  developer_mode?: boolean;
 }
 
 export interface AgentLoginCodePayload {

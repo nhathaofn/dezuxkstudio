@@ -165,6 +165,14 @@ type AgentConfig struct {
 	MaxPendingApprovals int           // agent actions waiting for approval at most
 	ContextMessages     int           // past user/assistant messages replayed into a new session
 	ContextMessageChars int           // per-message cap (runes) when replaying history
+	ContextTotalChars   int           // total character budget across replayed chat messages
+	Mode                string        // "assistant" (default, restricted) or "developer" (opt-in coding/tools)
+	WorkspaceDir        string        // optional directory override for the agent workspace
+}
+
+// DeveloperMode reports whether the agent runs in opt-in developer mode (not remote server mode).
+func (c Config) DeveloperMode() bool {
+	return c.Mode != ModeServer && strings.EqualFold(strings.TrimSpace(c.Agent.Mode), "developer")
 }
 
 // DesktopConfig configures the native window and desktop startup.
@@ -261,8 +269,10 @@ func Default(mode Mode) *Config {
 			ApprovalTTL:         30 * time.Minute,
 			HistoryLimit:        200,
 			MaxPendingApprovals: 20,
-			ContextMessages:     10,
-			ContextMessageChars: 1200,
+			ContextMessages:     24,
+			ContextMessageChars: 12000,
+			ContextTotalChars:   48000,
+			Mode:                "assistant",
 		},
 		Desktop: DesktopConfig{
 			Width:        0, // 0 = auto (80% of primary screen)

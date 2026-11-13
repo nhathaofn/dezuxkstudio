@@ -127,3 +127,110 @@ func TestCodexResumeArgs(t *testing.T) {
 		t.Fatalf("thread id not captured: %q", acc.threadID)
 	}
 }
+
+func TestCLISessionPersistsAcrossSwitchAndRestart(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "codex.exe")
+	if err := os.WriteFile(exe, []byte("stub"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo := newFakeRepo()
+	ctx := context.Background()
+
+	var mu sync.Mutex
+	var prompts []string
+	var sawResume []string
+
+	newSvc := func() (*Service, chan struct{}) {
+		done := make(chan struct{}, 8)
+		var s *Service
+		var err error
+		s, err = New(Options{
+			Repo: repo, DataDir: dir, WorkspaceDir: filepath.Join(dir, "ws"), MediaDir: filepath.Join(dir, "media"),
+			ProfilesDir: filepath.Join(dir, "profiles"), Logger: slog.New(slog.DiscardHandler),
+			OnChatEvent: func(e domainagent.ChatEvent) {
+				if e.Type == domainagent.ChatEventDone || e.Type == domainagent.ChatEventError {
+					done <- struct{}{}
+				}
+			},
+			ProbeCodexAuth: func(context.Context, string, string) (domainagent.AuthState, string) {
+				return domainagent.AuthAuthenticated, "test"
+			},
+			RunCodexTurn: func(_ context.Context, _, _, _, _, _, _, prompt string) error {
+				mu.Lock()
+				cur := s.cliSessionFor(domainagent.ProviderCodex)
+				sawResume = append(sawResume, cur)
+				prompts = append(prompts, prompt)
+				mu.Unlock()
+				if cur == "" {
+					s.setCLISession(domainagent.ProviderCodex, "thread-persisted-1")
+				}
+				return nil
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.SetCustomPath(ctx, domainagent.ProviderCodex, exe); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Connect(ctx, domainagent.ProviderCodex); err != nil {
+			t.Fatal(err)
+		}
+		return s, done
+	}
+
+	svc1, done1 := newSvc()
+	if _, _, err := svc1.SendPrompt(ctx, "Tạo dàn ý kịch bản 30 cảnh"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done1:
+	case <-time.After(3 * time.Second):
+		t.Fatal("turn 1 timed out")
+	}
+	convA := svc1.CurrentConversationID()
+	if convA == "" {
+		t.Fatal("expected conversation id after first prompt")
+	}
+
+	// Switching to a new chat hides conversation A's CLI session while keeping it stored in repo.
+	if err := svc1.NewConversation(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if svc1.cliSessionFor(domainagent.ProviderCodex) != "" {
+		t.Fatal("new conversation must start without previous chat's CLI session")
+	}
+	// Reopening conversation A in the same service restores its session.
+	if _, _, err := svc1.OpenConversation(ctx, convA); err != nil {
+		t.Fatal(err)
+	}
+	if got := svc1.cliSessionFor(domainagent.ProviderCodex); got != "thread-persisted-1" {
+		t.Fatalf("expected restored session after reopen, got %q", got)
+	}
+	_ = svc1.Close()
+
+	// Simulated app restart: fresh Service backed by the same repo resumes native thread without history replay.
+	svc2, done2 := newSvc()
+	defer svc2.Close()
+	if _, _, err := svc2.OpenConversation(ctx, convA); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc2.SendPrompt(ctx, "Viết tiếp cảnh 2"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done2:
+	case <-time.After(3 * time.Second):
+		t.Fatal("turn 2 timed out")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sawResume) != 2 || sawResume[0] != "" || sawResume[1] != "thread-persisted-1" {
+		t.Fatalf("unexpected resume sequence across restart: %#v", sawResume)
+	}
+	if strings.Contains(prompts[1], "[Recent conversation]") {
+		t.Fatalf("resumed turn after restart should not replay text history, got %q", prompts[1])
+	}
+}

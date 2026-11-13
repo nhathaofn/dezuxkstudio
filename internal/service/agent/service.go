@@ -45,6 +45,7 @@ type Options struct {
 	WorkspaceDir       string
 	MediaDir           string
 	ProfilesDir        string
+	DeveloperMode      bool // opt-in unrestricted developer/coding mode (disabled by default)
 	AppVersion         string
 	Limits             Limits        // zero fields use DefaultLimits
 	Secrets            secrets.Store // OS credential store for provider API keys (in-memory when nil)
@@ -78,6 +79,7 @@ type Service struct {
 	workspaceDir       string
 	mediaDir           string
 	profilesDir        string
+	developerMode      bool
 	appVersion         string
 	limits             Limits
 	log                *slog.Logger
@@ -165,6 +167,7 @@ func New(o Options) (*Service, error) {
 		workspaceDir:       o.WorkspaceDir,
 		mediaDir:           o.MediaDir,
 		profilesDir:        o.ProfilesDir,
+		developerMode:      o.DeveloperMode,
 		appVersion:         version,
 		limits:             limits,
 		log:                o.Logger,
@@ -208,7 +211,14 @@ func New(o Options) (*Service, error) {
 		// The process outlives the Connect call that starts it, so it is not bound to that call's ctx;
 		// Disconnect/Close end it.
 		s.spawnTransport = func(_ context.Context, executable string, args []string, workDir string, env []string, onEvent func(SessionUpdate), onExit func(error)) (Transport, error) {
-			return SpawnACP(context.Background(), executable, args, workDir, env, s.toolNames(), s.log, onEvent, onExit)
+			client, spawnErr := SpawnACP(context.Background(), executable, args, workDir, env, s.toolNames(), s.log, onEvent, onExit)
+			if spawnErr != nil {
+				return nil, spawnErr
+			}
+			if s.developerMode {
+				client.SetAllowAllPermissions(true)
+			}
+			return client, nil
 		}
 	}
 	if s.runCodex == nil {
@@ -227,8 +237,12 @@ func New(o Options) (*Service, error) {
 	// last revision it saw and drops anything lower.
 	s.statusRevision.Store(time.Now().UnixMicro())
 	s.loadModelSelections(context.Background())
+	s.policy.SetDeveloperMode(o.DeveloperMode)
 	return s, nil
 }
+
+// DeveloperMode reports whether the agent runs in opt-in developer mode.
+func (s *Service) DeveloperMode() bool { return s.developerMode }
 
 // Close shuts down the active agent subprocess, MCP server, and clears ephemeral tokens.
 func (s *Service) Close() error {

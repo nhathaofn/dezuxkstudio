@@ -301,7 +301,8 @@ func NewAgentProviderInfo(in agent.ProviderInfo) AgentProviderInfo {
 
 // AgentListResult answers agent:list and agent:disconnect.
 type AgentListResult struct {
-	Providers []AgentProviderInfo `json:"providers"`
+	Providers     []AgentProviderInfo `json:"providers"`
+	DeveloperMode bool                `json:"developer_mode,omitempty"`
 }
 
 // AgentProviderIDPayload targets a specific agent provider.
