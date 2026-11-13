@@ -8,6 +8,7 @@ import (
 
 	domainagent "app/internal/domain/agent"
 
+	"app/internal/apperr"
 	"github.com/google/uuid"
 )
 
@@ -109,4 +110,32 @@ func (a *approvalStore) clearProvider(providerID domainagent.ProviderID) bool {
 		}
 	}
 	return removed
+}
+
+// ListApprovals returns pending high-impact actions waiting for user approval in the desktop UI.
+func (s *Service) ListApprovals() []domainagent.ApprovalRequest {
+	return s.approvals.list()
+}
+
+// ResolveApproval approves or rejects a pending action proposed by an agent MCP tool call.
+func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) (any, error) {
+	item, ok := s.approvals.consume(id)
+	s.emitApprovals()
+	if !ok {
+		return nil, userError(apperr.CodeNotFound, msgApprovalGone, "approval request is no longer pending", nil)
+	}
+	if !approve {
+		return map[string]any{"approved": false}, nil
+	}
+	res, err := item.exec(ctx)
+	if err != nil {
+		return nil, apperr.Unavailable(err.Error())
+	}
+	return res, nil
+}
+
+func (s *Service) emitApprovals() {
+	if s.onApprovalsChanged != nil {
+		s.onApprovalsChanged(s.approvals.list())
+	}
 }
