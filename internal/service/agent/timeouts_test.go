@@ -44,6 +44,7 @@ func slowCLI(t *testing.T) string {
 func TestModelCatalogRefreshDoesNotBlock(t *testing.T) {
 	limits := DefaultLimits()
 	svc := &Service{models: newModelState(), repo: newFakeRepo(), log: slog.New(slog.DiscardHandler), limits: limits}
+	svc.drivers = newDrivers(svc)
 	exe := slowCLI(t)
 
 	start := time.Now()

@@ -31,6 +31,8 @@ type turnDriver interface {
 	providerDriver
 	// prepare readies the isolated profile before the provider is marked connected.
 	prepare() error
+	// loadModels reads the models the CLI offers to the signed-in account.
+	loadModels(ctx context.Context, executable string) ([]domainagent.ModelOption, error)
 	runTurn(ctx context.Context, executable, workDir, mcpURL, mcpToken, messageID, prompt string) error
 }
 
@@ -86,6 +88,9 @@ func (d codexDriver) toolCallHint() string {
 	}
 	return "If they are not in your tool list, call them from the code runner as " + call + "."
 }
+func (d codexDriver) loadModels(ctx context.Context, exe string) ([]domainagent.ModelOption, error) {
+	return d.s.loadCodexModels(ctx, exe)
+}
 func (d codexDriver) prepare() error { _, err := prepareCodexProfile(d.profile()); return err }
 func (d codexDriver) login(ctx context.Context, exe, apiKey string) error {
 	if strings.TrimSpace(apiKey) == "" {
@@ -115,6 +120,9 @@ func (claudeDriver) toolCallHint() string { return "" }
 func (d claudeDriver) prepare() error {
 	_, err := d.s.secrets.prepareClaudeProfile(d.profile())
 	return err
+}
+func (claudeDriver) loadModels(ctx context.Context, exe string) ([]domainagent.ModelOption, error) {
+	return loadClaudeModels(ctx, exe)
 }
 func (d claudeDriver) login(ctx context.Context, exe, apiKey string) error {
 	if strings.TrimSpace(apiKey) == "" {

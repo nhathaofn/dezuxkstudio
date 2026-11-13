@@ -32,11 +32,11 @@ type modelState struct {
 	// catalogFrom records which executable a per-turn CLI's catalog was read from, and when;
 	// the same freshness rule as the version/auth probe caches (cachedProbe).
 	catalogFrom map[domainagent.ProviderID]cachedProbe
-	// agyDefault is the model Antigravity reported as default for new sessions.
-	agyDefault string
-	loading    map[domainagent.ProviderID]bool   // a background catalog load is in flight
-	current    map[domainagent.ProviderID]string // model the provider reports as active (Antigravity)
-	selection  map[domainagent.ProviderID]domainagent.ModelSelection
+	// sessionDefault is the model an ACP provider reported as default for new sessions.
+	sessionDefault map[domainagent.ProviderID]string
+	loading        map[domainagent.ProviderID]bool   // a background catalog load is in flight
+	current        map[domainagent.ProviderID]string // model the provider reports as active (Antigravity)
+	selection      map[domainagent.ProviderID]domainagent.ModelSelection
 	// codeMode records, per provider, which models only reach tools through a code runner (Codex
 	// "tool_mode": "code_mode_only"); such models are not shown tool definitions natively.
 	codeMode map[domainagent.ProviderID]map[string]bool
@@ -44,12 +44,13 @@ type modelState struct {
 
 func newModelState() *modelState {
 	return &modelState{
-		catalogs:    make(map[domainagent.ProviderID][]domainagent.ModelOption),
-		catalogFrom: make(map[domainagent.ProviderID]cachedProbe),
-		loading:     make(map[domainagent.ProviderID]bool),
-		current:     make(map[domainagent.ProviderID]string),
-		selection:   make(map[domainagent.ProviderID]domainagent.ModelSelection),
-		codeMode:    make(map[domainagent.ProviderID]map[string]bool),
+		catalogs:       make(map[domainagent.ProviderID][]domainagent.ModelOption),
+		sessionDefault: make(map[domainagent.ProviderID]string),
+		catalogFrom:    make(map[domainagent.ProviderID]cachedProbe),
+		loading:        make(map[domainagent.ProviderID]bool),
+		current:        make(map[domainagent.ProviderID]string),
+		selection:      make(map[domainagent.ProviderID]domainagent.ModelSelection),
+		codeMode:       make(map[domainagent.ProviderID]map[string]bool),
 	}
 }
 
@@ -94,8 +95,8 @@ func (s *Service) fillModelInfo(info *domainagent.ProviderInfo) {
 func (s *Service) invalidateModelCatalog(id domainagent.ProviderID) {
 	s.models.mu.Lock()
 	defer s.models.mu.Unlock()
-	if id == domainagent.ProviderAntigravity {
-		return // Antigravity's list comes from each ACP session and is replaced on connect
+	if !s.isPerTurn(id) {
+		return // an ACP provider's list comes from each session and is replaced on connect
 	}
 	delete(s.models.catalogs, id)
 	delete(s.models.catalogFrom, id)
@@ -167,7 +168,7 @@ func (s *Service) SetModel(ctx context.Context, id domainagent.ProviderID, model
 	if isActiveACP && sessionID != "" {
 		target := model
 		if target == "" {
-			target = s.agyDefaultModel()
+			target = s.sessionDefaultModel(id)
 		}
 		if target != "" {
 			if err := client.SetModel(ctx, sessionID, target); err != nil {
@@ -194,11 +195,11 @@ func (s *Service) SetModel(ctx context.Context, id domainagent.ProviderID, model
 	return info, err
 }
 
-// agyDefaultModel is the model Antigravity reported as its own default for new sessions.
-func (s *Service) agyDefaultModel() string {
+// sessionDefaultModel is the model an ACP provider reported as its own default for new sessions.
+func (s *Service) sessionDefaultModel(id domainagent.ProviderID) string {
 	s.models.mu.Lock()
 	defer s.models.mu.Unlock()
-	return s.models.agyDefault
+	return s.models.sessionDefault[id]
 }
 
 // applyACPSessionModels records the models an ACP session offers and applies the user's selection.
@@ -209,8 +210,8 @@ func (s *Service) applyACPSessionModels(ctx context.Context, id domainagent.Prov
 	}
 	s.models.mu.Lock()
 	s.models.catalogs[id] = models
-	if id == domainagent.ProviderAntigravity && s.models.agyDefault == "" {
-		s.models.agyDefault = current // provider default (first session's currentModelId)
+	if _, known := s.models.sessionDefault[id]; !known {
+		s.models.sessionDefault[id] = current // provider default (first session's currentModelId)
 	}
 	s.models.current[id] = current
 	s.models.mu.Unlock()
@@ -239,7 +240,7 @@ func (s *Service) modelCatalogFresh(id domainagent.ProviderID, executable string
 // status when it arrives. Probe/List use it so reading the catalog (a CLI spawn bounded by
 // agent.model_catalog_timeout) never holds up the action response.
 func (s *Service) refreshModelCatalogAsync(id domainagent.ProviderID, executable string) {
-	if id == domainagent.ProviderAntigravity || executable == "" || s.modelCatalogFresh(id, executable) {
+	if !s.isPerTurn(id) || executable == "" || s.modelCatalogFresh(id, executable) {
 		return
 	}
 	s.models.mu.Lock()
@@ -265,21 +266,13 @@ func (s *Service) refreshModelCatalogAsync(id domainagent.ProviderID, executable
 // ensureModelCatalog loads the per-turn CLI model catalog once per executable and reports
 // whether a new catalog was loaded.
 func (s *Service) ensureModelCatalog(ctx context.Context, id domainagent.ProviderID, executable string) bool {
-	if id == domainagent.ProviderAntigravity || executable == "" || s.modelCatalogFresh(id, executable) {
+	drv, ok := s.turnDriverFor(id)
+	if !ok || executable == "" || s.modelCatalogFresh(id, executable) {
 		return false
 	}
-	var (
-		models []domainagent.ModelOption
-		err    error
-	)
 	ctx, cancel := context.WithTimeout(ctx, s.limits.ModelCatalogTimeout)
 	defer cancel()
-	switch id {
-	case domainagent.ProviderCodex:
-		models, err = s.loadCodexModels(ctx, executable)
-	case domainagent.ProviderClaude:
-		models, err = loadClaudeModels(ctx, executable)
-	}
+	models, err := drv.loadModels(ctx, executable)
 	if err != nil || len(models) == 0 {
 		s.log.Warn("agent: load model catalog", "provider", id, "error", err)
 		return false
