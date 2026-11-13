@@ -19,6 +19,13 @@ import (
 // ProtocolVersion is negotiated as a WebSocket subprotocol.
 const ProtocolVersion = "dezuxk.v1"
 
+// SupportedProtocolVersions lists every subprotocol the hub accepts, newest first. When a breaking
+// change bumps ProtocolVersion, the previous version stays here until older clients are gone
+// (architecture rule §13), so client/server mode keeps working across mixed versions.
+func SupportedProtocolVersions() []string {
+	return []string{ProtocolVersion}
+}
+
 // AuthSubprotocolPrefix carries the access token as a second subprotocol ("auth.<token>"),
 // keeping it out of URLs and logs.
 const AuthSubprotocolPrefix = "auth."

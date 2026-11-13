@@ -231,6 +231,25 @@ func TestBearerAndProtocolVersion(t *testing.T) {
 	}
 }
 
+// Every supported version (the current one and, during a rollout, the previous) negotiates as itself;
+// the newest offered by the client wins.
+func TestSupportedProtocolVersionsNegotiate(t *testing.T) {
+	_, srv, _ := newTestHub(t, nil)
+	versions := contracts.SupportedProtocolVersions()
+	if len(versions) == 0 || versions[0] != contracts.ProtocolVersion {
+		t.Fatalf("current version must come first: %v", versions)
+	}
+	for _, v := range versions {
+		c, _, err := dial(t, srv, v, contracts.AuthSubprotocolPrefix+testToken)
+		if err != nil {
+			t.Fatalf("%s: %v", v, err)
+		}
+		if got := c.conn.Subprotocol(); got != v {
+			t.Fatalf("offered %q, negotiated %q", v, got)
+		}
+	}
+}
+
 func TestAnonymousRequiresOptIn(t *testing.T) {
 	if _, err := New(Options{Logger: slog.New(slog.DiscardHandler)}); err == nil {
 		t.Fatal("hub without token or AllowAnonymous accepted")

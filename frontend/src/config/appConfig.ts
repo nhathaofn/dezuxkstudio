@@ -19,6 +19,16 @@ export const appConfig = {
     maxDelayMs: 10_000,
     factor: 1.5,
   },
+  /**
+   * Half-open socket detection. Browsers hide WebSocket pings, so after `idleMs` without any frame
+   * from the server the client sends a system:ping; if nothing arrives within `timeoutMs` more the
+   * socket is treated as dead and the client reconnects (in-flight requests fail as disconnected).
+   */
+  liveness: {
+    checkIntervalMs: 5_000,
+    idleMs: 20_000,
+    timeoutMs: 10_000,
+  },
   /** Used when no ConnectionInfo is available (browser thin-client mode). */
   fallback: {
     actionTimeoutMs: 30_000,
