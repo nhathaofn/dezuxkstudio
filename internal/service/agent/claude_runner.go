@@ -203,7 +203,50 @@ func writeClaudeMCPConfig(profileRoot, mcpURL, mcpToken string) (string, func(),
 	return cfgPath, func() { _ = os.Remove(cfgPath) }, nil
 }
 
+func buildClaudeArgs(mcpConfigPath, instructions string, devMode bool) []string {
+	if !devMode {
+		return buildClaudeExecArgs(mcpConfigPath, instructions)
+	}
+	return []string{
+		"-p",
+		"--output-format", "stream-json",
+		"--include-partial-messages",
+		"--verbose",
+		"--mcp-config", mcpConfigPath,
+		"--permission-mode", "bypassPermissions",
+		"--system-prompt", instructions,
+	}
+}
+
 func buildClaudeExecArgs(mcpConfigPath, instructions string) []string {
+	return buildClaudeExecArgsWithTools(mcpConfigPath, instructions, nil)
+}
+
+func buildClaudeAllowedToolsCSV(tools []string) string {
+	if len(tools) == 0 {
+		return claudeMCPAllowedTools
+	}
+	seen := make(map[string]bool, len(tools))
+	out := make([]string, 0, len(tools))
+	for _, t := range tools {
+		t = strings.TrimSpace(t)
+		if t == "" || t == "subagent_run" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, claudeMCPToolPrefix+t)
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return strings.Join(out, ",")
+}
+
+func buildClaudeExecArgsWithTools(mcpConfigPath, instructions string, allowedTools []string) []string {
+	allowedCSV := claudeMCPAllowedTools
+	if allowedTools != nil {
+		allowedCSV = buildClaudeAllowedToolsCSV(allowedTools)
+	}
 	return []string{
 		"-p",
 		"--output-format", "stream-json",
@@ -215,7 +258,7 @@ func buildClaudeExecArgs(mcpConfigPath, instructions string) []string {
 		"--setting-sources", "",
 		"--strict-mcp-config",
 		"--mcp-config", mcpConfigPath,
-		"--allowedTools", claudeMCPAllowedTools,
+		"--allowedTools", allowedCSV,
 		"--permission-mode", "dontAsk",
 		"--system-prompt", instructions,
 	}
@@ -533,7 +576,7 @@ func (s *Service) runClaudeTurn(ctx context.Context, executable, profileRoot, wo
 	defer cleanup()
 	env = append(env, claudeMCPTimeoutEnv(s.limits.MCPToolTimeout)...)
 
-	args := buildClaudeExecArgs(mcpCfgPath, s.systemPrompt(ctx, domainagent.ProviderClaude))
+	args := buildClaudeArgs(mcpCfgPath, s.systemPrompt(ctx, domainagent.ProviderClaude), s.developerMode)
 	args = append(args, claudeModelArgs(s.effectiveSelection(domainagent.ProviderClaude))...)
 	// Keep one conversation per chat: the first turn names the session, later turns resume it.
 	// Sessions are stored only inside the isolated CLAUDE_CONFIG_DIR.

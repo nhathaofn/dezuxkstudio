@@ -32,3 +32,21 @@ func TestWailsJSONMatchesBuildInfo(t *testing.T) {
 		}
 	}
 }
+
+func TestIsRelease(t *testing.T) {
+	orig := Version
+	t.Cleanup(func() { Version = orig })
+
+	Version = "0.0.0-dev"
+	if IsRelease() {
+		t.Fatal("0.0.0-dev must not be treated as a release build")
+	}
+	Version = "1.2.3-dev"
+	if IsRelease() {
+		t.Fatal("1.2.3-dev must not be treated as a release build")
+	}
+	Version = "0.2.1"
+	if IsRelease() != !IsDev() {
+		t.Fatalf("version 0.2.1 with dev=%v: IsRelease()=%v", IsDev(), IsRelease())
+	}
+}

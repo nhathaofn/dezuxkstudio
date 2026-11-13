@@ -11,23 +11,24 @@ import (
 // parameters, so the UI shows them in the user's language. The English text stays as the fallback for
 // logs, older clients and persisted history. Keys must exist in every frontend locale.
 const (
-	msgNotSignedIn        = "agent.err.notSignedIn"        // {name}
-	msgExecutableNotFound = "agent.err.executableNotFound" // {name}
-	msgCustomPathMissing  = "agent.err.customPathMissing"  // {path} {fallback}
-	msgCustomPathGone     = "agent.err.customPathGone"     // {path}
-	msgTurnTimeout        = "agent.err.turnTimeout"        // {duration}
-	msgNotConnected       = "agent.err.notConnected"
-	msgBusy               = "agent.err.busy"
-	msgPromptEmpty        = "agent.err.promptEmpty"
-	msgClearWhileBusy     = "agent.err.clearWhileBusy"
-	msgApprovalGone       = "agent.err.approvalGone"
-	msgModelChangeBusy    = "agent.err.modelChangeBusy"
-	msgProcessExited      = "agent.err.processExited" // {detail}
-	msgConnectionClosed   = "agent.err.connectionClosed"
-	msgTooManyApprovals   = "agent.err.tooManyApprovals" // {max}
-	msgSuperseded         = "agent.err.superseded"
-	msgSignInFailed       = "agent.err.signInFailed" // {detail}
-	msgConversationGone   = "agent.err.conversationGone"
+	msgNotSignedIn               = "agent.err.notSignedIn"        // {name}
+	msgExecutableNotFound        = "agent.err.executableNotFound" // {name}
+	msgCustomPathMissing         = "agent.err.customPathMissing"  // {path} {fallback}
+	msgCustomPathGone            = "agent.err.customPathGone"     // {path}
+	msgTurnTimeout               = "agent.err.turnTimeout"        // {duration}
+	msgNotConnected              = "agent.err.notConnected"
+	msgBusy                      = "agent.err.busy"
+	msgPromptEmpty               = "agent.err.promptEmpty"
+	msgClearWhileBusy            = "agent.err.clearWhileBusy"
+	msgApprovalGone              = "agent.err.approvalGone"
+	msgModelChangeBusy           = "agent.err.modelChangeBusy"
+	msgProcessExited             = "agent.err.processExited" // {detail}
+	msgConnectionClosed          = "agent.err.connectionClosed"
+	msgTooManyApprovals          = "agent.err.tooManyApprovals" // {max}
+	msgSuperseded                = "agent.err.superseded"
+	msgSignInFailed              = "agent.err.signInFailed" // {detail}
+	msgConversationGone          = "agent.err.conversationGone"
+	msgConversationWrongProvider = "agent.err.conversationWrongProvider" // {provider}
 )
 
 // Notices are inserted into assistant text as a language-neutral marker line, e.g. "[[notice:code_blocked]]".

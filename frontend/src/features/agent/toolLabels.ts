@@ -18,9 +18,14 @@ const toolKeys: Record<string, MessageKey> = {
   diagnostics_export: "agent.tool.diagnostics_export",
   workspace_list_files: "agent.tool.workspace_list_files",
   workspace_read_file: "agent.tool.workspace_read_file",
+  workspace_read_document: "agent.tool.workspace_read_document",
+  workspace_search_text: "agent.tool.workspace_search_text",
   workspace_write_file: "agent.tool.workspace_write_file",
+  workspace_edit_file: "agent.tool.workspace_edit_file",
   workspace_move_file: "agent.tool.workspace_move_file",
   workspace_delete_file: "agent.tool.workspace_delete_file",
+  skill_read: "agent.tool.skill_read",
+  subagent_run: "agent.tool.subagent_run",
 };
 
 /** Strips provider prefixes such as "mcp__dezuxk__" or "dezuxk/". */

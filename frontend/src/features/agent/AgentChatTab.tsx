@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertCircle,
   ArrowDown,
   Bot,
   Check,
@@ -16,7 +17,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import type { AgentProviderInfo } from "../../contracts/generated";
+import type { AgentProviderInfo, SubagentInvocation } from "../../contracts/generated";
 import { Button } from "../../components/ui/Button";
 import { translateServerMessage, useT, type MessageKey } from "../../lib/i18n";
 import { AgentHistoryList } from "./AgentHistoryList";
@@ -84,6 +85,74 @@ const ToolList: React.FC<{ tools: NonNullable<AgentChatMessage["tools"]> }> = ({
           <span>{toolLabel(t, tool.name)}</span>
         </span>
       ))}
+    </div>
+  );
+};
+
+const SubagentCard: React.FC<{ item: SubagentInvocation }> = ({ item }) => {
+  const t = useT();
+  const [open, setOpen] = useState(item.status !== "done");
+  const isRunning = item.status === "running";
+  const isError = item.status === "error";
+  const statusText = isRunning
+    ? t("agent.subagent.running", { name: item.name })
+    : isError
+      ? t("agent.subagent.error", { name: item.name })
+      : t("agent.subagent.done", { name: item.name });
+  const toolCount = item.tools?.length ?? 0;
+
+  return (
+    <div className={`agent-subagent-card agent-subagent-card--${item.status}`}>
+      <button
+        type="button"
+        className="agent-subagent-card__header"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="agent-subagent-card__chev">
+          {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        </span>
+        <span className="agent-subagent-card__icon">
+          {isRunning ? (
+            <Loader2 size={13} className="animate-spin" />
+          ) : isError ? (
+            <AlertCircle size={13} />
+          ) : (
+            <Check size={13} />
+          )}
+        </span>
+        <span className="agent-subagent-card__title">{statusText}</span>
+        {item.provider && <span className="agent-subagent-card__badge">{item.provider}</span>}
+        {toolCount > 0 && (
+          <span className="agent-subagent-card__count">
+            {t("agent.subagent.tools", { count: toolCount })}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="agent-subagent-card__body">
+          {item.tools && item.tools.length > 0 && (
+            <div className="agent-tools-list">
+              {item.tools.map((toolName, i) => (
+                <span
+                  key={`${toolName}-${i}`}
+                  className="agent-tool-pill agent-tool-pill--done"
+                  title={toolName}
+                >
+                  <Wrench size={10} />
+                  <span>{toolLabel(t, toolName)}</span>
+                </span>
+              ))}
+            </div>
+          )}
+          {item.error && <div className="agent-subagent-card__error">{item.error}</div>}
+          {item.text && (
+            <div className={`agent-subagent-card__text${isRunning ? " is-streaming" : ""}`}>
+              <Markdown text={item.text} />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -189,6 +258,14 @@ const ChatBubble: React.FC<ChatBubbleProps> = React.memo(
           <pre className="agent-msg__detail agent-thought__body">{msg.thought}</pre>
         )}
 
+        {msg.subagents && msg.subagents.length > 0 && (
+          <div className="agent-subagents-list">
+            {msg.subagents.map((sa) => (
+              <SubagentCard key={sa.id} item={sa} />
+            ))}
+          </div>
+        )}
+
         {isError ? (
           <div className="agent-msg__error" role="alert">
             <span>{errorText}</span>
@@ -203,7 +280,7 @@ const ChatBubble: React.FC<ChatBubbleProps> = React.memo(
           <div className={`agent-msg__body${msg.streaming ? " is-streaming" : ""}`}>
             <Markdown text={msg.text} />
           </div>
-        ) : msg.streaming && !msg.thought ? (
+        ) : msg.streaming && !msg.thought && !(msg.subagents && msg.subagents.length > 0) ? (
           <div className="agent-msg__body agent-typing">
             {t("agent.chat.thinking")}
             <span className="agent-dots" aria-hidden="true" />
@@ -229,6 +306,7 @@ const EmptyState: React.FC<{
 }> = ({ provider, onPick, onConnect }) => {
   const t = useT();
   const screen = useScreenContextStore((s) => s.context);
+  const developerMode = useAgentStore((s) => s.developerMode);
 
   if (!provider) {
     return (
@@ -260,7 +338,9 @@ const EmptyState: React.FC<{
       <div className="agent-empty-state__title">
         {t("agent.chat.readyTitle", { name: provider.name })}
       </div>
-      <p className="agent-empty-state__desc">{t("agent.chat.readyDesc")}</p>
+      <p className="agent-empty-state__desc">
+        {t(developerMode ? "agent.chat.readyDescDev" : "agent.chat.readyDesc")}
+      </p>
       <div className="agent-suggestions" role="list">
         {suggestions.slice(0, 4).map((s) => (
           <button
@@ -315,7 +395,10 @@ const ComposerModelPicker: React.FC<{ provider: AgentProviderInfo; disabled: boo
           aria-label={t("agent.model.effort")}
           title={t("agent.model.effort")}
         >
-          <option value="">{t("agent.model.effortDefault")}</option>
+          <option value="">
+            {t("agent.model.effortDefault")}
+            {selected?.default_effort ? ` (${selected.default_effort})` : ""}
+          </option>
           {efforts.map((e) => (
             <option key={e} value={e}>
               {e}
@@ -339,12 +422,18 @@ export const AgentChatTab: React.FC<AgentChatTabProps> = ({ connectedToCore }) =
 const AgentChatPane: React.FC<AgentChatTabProps> = ({ connectedToCore }) => {
   const t = useT();
   const providers = useAgentStore((s) => s.providers);
+  const conversationId = useAgentStore((s) => s.conversationId);
+  const conversations = useAgentStore((s) => s.conversations);
   const messages = useAgentStore((s) => s.messages);
   const approvals = useAgentStore((s) => s.approvals);
   const prompt = useAgentStore((s) => s.prompt);
+  const skills = useAgentStore((s) => s.skills);
   const sending = useAgentStore((s) => s.sending);
+  const busyAction = useAgentStore((s) => s.busyAction);
   const setPrompt = useAgentStore((s) => s.setPrompt);
   const setActiveTab = useAgentStore((s) => s.setActiveTab);
+  const connectProvider = useAgentStore((s) => s.connectProvider);
+  const newChat = useAgentStore((s) => s.newChat);
   const sendPrompt = useAgentStore((s) => s.sendPrompt);
   const cancelPrompt = useAgentStore((s) => s.cancelPrompt);
   const retryLast = useAgentStore((s) => s.retryLast);
@@ -354,8 +443,39 @@ const AgentChatPane: React.FC<AgentChatTabProps> = ({ connectedToCore }) => {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const stickRef = useRef(true);
   const [showJump, setShowJump] = useState(false);
+  const [slashIdx, setSlashIdx] = useState(0);
+  const [slashDismissedFor, setSlashDismissedFor] = useState<string | null>(null);
   const activeProvider = providers.find((p) => p.active);
-  const canSend = connectedToCore && !!activeProvider && !!prompt.trim() && !sending;
+  const convOwnerId = conversationId
+    ? (messages.find((m) => m.providerId)?.providerId ??
+      conversations.find((c) => c.id === conversationId)?.provider_id)
+    : undefined;
+  const convOwner = convOwnerId ? providers.find((p) => p.id === convOwnerId) : undefined;
+  const wrongProvider = Boolean(activeProvider && convOwnerId && convOwnerId !== activeProvider.id);
+  const convOwnerName = convOwner?.name ?? convOwnerId ?? "";
+  const canSend =
+    connectedToCore && !!activeProvider && !wrongProvider && !!prompt.trim() && !sending;
+
+  const slashQuery = useMemo(() => {
+    if (slashDismissedFor !== null && slashDismissedFor === prompt) return null;
+    const m = /^\/([a-z0-9_-]*)$/i.exec(prompt);
+    return m ? m[1].toLowerCase() : null;
+  }, [prompt, slashDismissedFor]);
+
+  const slashSkills = useMemo(() => {
+    if (slashQuery === null) return [];
+    return skills
+      .filter((sk) => !sk.tombstoned && sk.enabled && sk.user_invocable)
+      .filter(
+        (sk) =>
+          !slashQuery ||
+          sk.name.toLowerCase().includes(slashQuery) ||
+          sk.description.toLowerCase().includes(slashQuery)
+      )
+      .slice(0, 8);
+  }, [skills, slashQuery]);
+
+  const activeSlashIdx = Math.min(slashIdx, Math.max(0, slashSkills.length - 1));
 
   // Follow new content only while the user is at the bottom; reading older messages is not interrupted.
   const onScroll = useCallback(() => {
@@ -391,6 +511,24 @@ const AgentChatPane: React.FC<AgentChatTabProps> = ({ connectedToCore }) => {
     if (activeProvider && connectedToCore) inputRef.current?.focus();
   }, [activeProvider?.id, connectedToCore]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const insertSlashSkill = useCallback(
+    (name: string) => {
+      setPrompt(`/${name} `);
+      setSlashDismissedFor(null);
+      setSlashIdx(0);
+      inputRef.current?.focus();
+    },
+    [setPrompt]
+  );
+
+  const handlePromptChange = (nextVal: string) => {
+    if (slashDismissedFor !== null && nextVal !== slashDismissedFor) {
+      setSlashDismissedFor(null);
+    }
+    setSlashIdx(0);
+    setPrompt(nextVal);
+  };
+
   const send = () => {
     if (!canSend) return;
     stickRef.current = true; // a new question always brings the reply into view
@@ -398,6 +536,28 @@ const AgentChatPane: React.FC<AgentChatTabProps> = ({ connectedToCore }) => {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashSkills.length > 0 && !e.nativeEvent.isComposing) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashIdx((i) => (i + 1) % slashSkills.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashIdx((i) => (i - 1 + slashSkills.length) % slashSkills.length);
+        return;
+      }
+      if ((e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) && slashSkills[activeSlashIdx]) {
+        e.preventDefault();
+        insertSlashSkill(slashSkills[activeSlashIdx].name);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSlashDismissedFor(prompt);
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       send();
@@ -413,7 +573,7 @@ const AgentChatPane: React.FC<AgentChatTabProps> = ({ connectedToCore }) => {
   };
 
   const lastMsg = messages[messages.length - 1];
-  const canRetry = !sending && !!activeProvider && lastMsg?.role === "error";
+  const canRetry = !sending && !!activeProvider && !wrongProvider && lastMsg?.role === "error";
 
   return (
     <div className="agent-chat-tab">
@@ -492,21 +652,77 @@ const AgentChatPane: React.FC<AgentChatTabProps> = ({ connectedToCore }) => {
         </div>
       )}
 
+      {wrongProvider && activeProvider && (
+        <div className="agent-chat-banner" role="status">
+          <p className="agent-chat-banner__text">
+            {t("agent.chat.wrongProviderBanner", {
+              provider: convOwnerName,
+              active: activeProvider.name,
+            })}
+          </p>
+          <div className="agent-chat-banner__actions">
+            {convOwner && (
+              <Button
+                size="sm"
+                disabled={busyAction}
+                onClick={() => void connectProvider(convOwner.id)}
+              >
+                {t("agent.chat.switchProvider", { provider: convOwner.name })}
+              </Button>
+            )}
+            <Button variant="primary" size="sm" onClick={() => void newChat()}>
+              {t("agent.newChat")}
+            </Button>
+          </div>
+        </div>
+      )}
+
       <div className="agent-composer">
-        <div className={`agent-composer__box${!activeProvider ? " is-disabled" : ""}`}>
+        {slashSkills.length > 0 && (
+          <div className="agent-slash-menu" role="listbox" aria-label={t("agent.slash.header")}>
+            <div className="agent-slash-menu__head">
+              <span>{t("agent.slash.header")}</span>
+              <span className="agent-slash-menu__hint">{t("agent.slash.hint")}</span>
+            </div>
+            <div className="agent-slash-menu__list">
+              {slashSkills.map((sk, i) => (
+                <button
+                  key={sk.name}
+                  type="button"
+                  role="option"
+                  aria-selected={i === activeSlashIdx}
+                  className={`agent-slash-menu__item${i === activeSlashIdx ? " is-active" : ""}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    insertSlashSkill(sk.name);
+                  }}
+                >
+                  <Sparkles size={12} className="agent-slash-menu__icon" />
+                  <span className="agent-slash-menu__name">/{sk.name}</span>
+                  <span className="agent-slash-menu__desc">{sk.description}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        <div
+          className={`agent-composer__box${!activeProvider || wrongProvider ? " is-disabled" : ""}`}
+        >
           <textarea
             ref={inputRef}
             className="agent-composer__input"
             rows={1}
             value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
+            onChange={(e) => handlePromptChange(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={
-              activeProvider
-                ? t("agent.chat.placeholder", { name: activeProvider.name })
-                : t("agent.chat.placeholderOffline")
+              !activeProvider
+                ? t("agent.chat.placeholderOffline")
+                : wrongProvider
+                  ? t("agent.chat.wrongProviderPlaceholder", { provider: convOwnerName })
+                  : t("agent.chat.placeholder", { name: activeProvider.name })
             }
-            disabled={!connectedToCore || !activeProvider}
+            disabled={!connectedToCore || !activeProvider || wrongProvider}
             aria-label={t("agent.chat.inputLabel")}
           />
           <div className="agent-composer__footer">

@@ -11,21 +11,21 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/mod/semver"
 
 	"app/internal/apperr"
 	"app/internal/contracts"
+	"app/internal/httpclient"
 )
 
 // maxFeedBytes bounds the feed response size.
 const maxFeedBytes = 1 << 20
 
 // Doer is the HTTP client abstraction (http.Client satisfies it).
-type Doer interface {
-	Do(*http.Request) (*http.Response, error)
-}
+type Doer = httpclient.Doer
 
 // Options configures the service.
 type Options struct {
@@ -37,7 +37,15 @@ type Options struct {
 }
 
 // Service checks for updates.
-type Service struct{ o Options }
+type Service struct {
+	o            Options
+	webLatestURL func(string) (string, bool) // overridable in unit tests
+
+	mu         sync.Mutex
+	cachedETag string
+	cachedInfo contracts.UpdateInfo
+	hasCache   bool
+}
 
 // New creates the service.
 func New(o Options) (*Service, error) {
@@ -47,7 +55,10 @@ func New(o Options) (*Service, error) {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	return &Service{o: o}, nil
+	return &Service{
+		o:            o,
+		webLatestURL: httpclient.GitHubWebLatestURL,
+	}, nil
 }
 
 // release is the subset of the GitHub release API used here.
@@ -72,6 +83,9 @@ func (s *Service) Check(ctx context.Context) (contracts.UpdateInfo, error) {
 	if s.o.UserAgent != "" {
 		req.Header.Set("User-Agent", s.o.UserAgent)
 	}
+	if etag := s.etag(); etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
 
 	resp, err := s.o.Client.Do(req)
 	if err != nil {
@@ -81,6 +95,25 @@ func (s *Service) Check(ctx context.Context) (contracts.UpdateInfo, error) {
 		return contracts.UpdateInfo{}, apperr.Wrap(apperr.CodeUnavailable, "release feed unreachable", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotModified {
+		if info, ok := s.cachedResult(); ok {
+			return info, nil
+		}
+	}
+
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+		if info, ok := s.checkGitHubWebFallback(ctx); ok {
+			return info, nil
+		}
+		if httpclient.IsRateLimitResponse(resp.StatusCode, resp.Header) {
+			return contracts.UpdateInfo{}, apperr.Wrap(apperr.CodeUnavailable, "release feed rate limit exceeded",
+				fmt.Errorf("status %d", resp.StatusCode))
+		}
+		return contracts.UpdateInfo{}, apperr.Wrap(apperr.CodeUnavailable, "release feed returned an error",
+			fmt.Errorf("status %d", resp.StatusCode))
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		return contracts.UpdateInfo{}, apperr.Wrap(apperr.CodeUnavailable, "release feed returned an error",
 			fmt.Errorf("status %d", resp.StatusCode))
@@ -91,20 +124,73 @@ func (s *Service) Check(ctx context.Context) (contracts.UpdateInfo, error) {
 		return contracts.UpdateInfo{}, apperr.Wrap(apperr.CodeUnavailable, "release feed is malformed", err)
 	}
 	latest := canonical(rel.TagName)
-	current := canonical(s.o.CurrentVersion)
 	if latest == "" || rel.Draft || rel.Pre {
 		return contracts.UpdateInfo{}, apperr.Wrap(apperr.CodeUnavailable, "release feed has no stable version",
 			fmt.Errorf("tag %q draft=%v prerelease=%v", rel.TagName, rel.Draft, rel.Pre))
 	}
+	info := s.buildInfo(latest, rel.HTMLURL, rel.Body)
+	s.storeCache(resp.Header.Get("ETag"), info)
+	return info, nil
+}
 
+func (s *Service) buildInfo(latest, htmlURL, notes string) contracts.UpdateInfo {
+	current := canonical(s.o.CurrentVersion)
 	return contracts.UpdateInfo{
 		CurrentVersion: strings.TrimPrefix(s.o.CurrentVersion, "v"),
 		LatestVersion:  strings.TrimPrefix(latest, "v"),
 		Available:      current == "" || semver.Compare(latest, current) > 0,
-		ReleaseURL:     httpsOnly(rel.HTMLURL),
-		ReleaseNotes:   rel.Body,
+		ReleaseURL:     httpsOnly(htmlURL),
+		ReleaseNotes:   notes,
 		CheckedAt:      s.o.Now().UnixMilli(),
-	}, nil
+	}
+}
+
+func (s *Service) etag() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.hasCache {
+		return ""
+	}
+	return s.cachedETag
+}
+
+func (s *Service) cachedResult() (contracts.UpdateInfo, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.hasCache {
+		return contracts.UpdateInfo{}, false
+	}
+	s.cachedInfo.CheckedAt = s.o.Now().UnixMilli()
+	return s.cachedInfo, true
+}
+
+func (s *Service) storeCache(etag string, info contracts.UpdateInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cachedETag = etag
+	s.cachedInfo = info
+	s.hasCache = true
+}
+
+func (s *Service) checkGitHubWebFallback(ctx context.Context) (contracts.UpdateInfo, bool) {
+	if s.webLatestURL == nil {
+		return contracts.UpdateInfo{}, false
+	}
+	webURL, ok := s.webLatestURL(s.o.FeedURL)
+	if !ok {
+		return contracts.UpdateInfo{}, false
+	}
+	tag, releaseURL, err := httpclient.ResolveGitHubLatestTag(ctx, s.o.Client, webURL, s.o.UserAgent)
+	if err != nil {
+		return contracts.UpdateInfo{}, false
+	}
+	latest := canonical(tag)
+	if latest == "" {
+		return contracts.UpdateInfo{}, false
+	}
+	info := s.buildInfo(latest, releaseURL, "")
+	s.storeCache("", info)
+	return info, true
 }
 
 // canonical returns "vX.Y.Z[-pre]" or "" if v is not a semantic version.

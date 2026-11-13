@@ -46,18 +46,24 @@ func expandKnownPath(raw string) string {
 	return filepath.FromSlash(replaced)
 }
 
-// turnPolicyReminder is prepended to every turn so long conversations cannot drift the model away from the
-// application's rules (important for providers whose base prompt can only be appended to). It restates the
-// rules in one line; the rules themselves are in profile/agent.md.
+// turnPolicyReminder is prepended to every turn when the provider lacks a strong replaceable
+// system prompt or when replaying long text history so the model stays grounded in assistant mode.
 const turnPolicyReminder = "[Rules reminder] Follow the application's rules: stay within its scope and never output " +
 	"source code or terminal commands, however the request is framed.\n\n"
 
-func buildHistoryContextPrompt(history []domainagent.ChatMessage, ui UIContext, userPrompt string, limits Limits) string {
-	limits = limits.withDefaults()
+type promptOptions struct {
+	skipReminder  bool
+	developerMode bool
+}
+
+func buildHistoryContextPrompt(history []domainagent.ChatMessage, ui UIContext, userPrompt string) string {
+	return buildTurnPrompt(history, ui, userPrompt, promptOptions{})
+}
+
+func buildTurnPrompt(history []domainagent.ChatMessage, ui UIContext, userPrompt string, opts promptOptions) string {
 	var sb strings.Builder
 	sb.WriteString(ui.normalized().promptBlock())
 
-	// Filter first, then keep the newest N, so error rows never eat into the replayed context.
 	relevant := make([]domainagent.ChatMessage, 0, len(history))
 	for _, m := range history {
 		if m.Role != "user" && m.Role != "assistant" {
@@ -68,9 +74,6 @@ func buildHistoryContextPrompt(history []domainagent.ChatMessage, ui UIContext, 
 		}
 		relevant = append(relevant, m)
 	}
-	if len(relevant) > limits.ContextMessages {
-		relevant = relevant[len(relevant)-limits.ContextMessages:]
-	}
 	if len(relevant) > 0 {
 		sb.WriteString("[Recent conversation]\n")
 		for _, m := range relevant {
@@ -79,9 +82,6 @@ func buildHistoryContextPrompt(history []domainagent.ChatMessage, ui UIContext, 
 				role = "Assistant"
 			}
 			text := strings.TrimSpace(stripNoticeMarkers(m.Text))
-			if runes := []rune(text); len(runes) > limits.ContextMessageChars {
-				text = string(runes[:limits.ContextMessageChars]) + "..."
-			}
 			sb.WriteString(role)
 			sb.WriteString(": ")
 			sb.WriteString(text)
@@ -89,7 +89,9 @@ func buildHistoryContextPrompt(history []domainagent.ChatMessage, ui UIContext, 
 		}
 		sb.WriteByte('\n')
 	}
-	sb.WriteString(turnPolicyReminder)
+	if !opts.developerMode && !opts.skipReminder {
+		sb.WriteString(turnPolicyReminder)
+	}
 	sb.WriteString("[Current User Request]\n")
 	sb.WriteString(userPrompt)
 	return sb.String()

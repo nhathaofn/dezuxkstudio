@@ -92,13 +92,18 @@ func AllSources() []Source {
 type ChatEventType string
 
 const (
-	ChatEventDelta      ChatEventType = "delta"
-	ChatEventThought    ChatEventType = "thought"
-	ChatEventToolCall   ChatEventType = "tool_call"
-	ChatEventToolResult ChatEventType = "tool_result"
-	ChatEventDone       ChatEventType = "done"
-	ChatEventError      ChatEventType = "error"
-	ChatEventSystem     ChatEventType = "system"
+	ChatEventDelta              ChatEventType = "delta"
+	ChatEventThought            ChatEventType = "thought"
+	ChatEventToolCall           ChatEventType = "tool_call"
+	ChatEventToolResult         ChatEventType = "tool_result"
+	ChatEventSubagentStart      ChatEventType = "subagent_start"
+	ChatEventSubagentDelta      ChatEventType = "subagent_delta"
+	ChatEventSubagentToolCall   ChatEventType = "subagent_tool_call"
+	ChatEventSubagentToolResult ChatEventType = "subagent_tool_result"
+	ChatEventSubagentDone       ChatEventType = "subagent_done"
+	ChatEventDone               ChatEventType = "done"
+	ChatEventError              ChatEventType = "error"
+	ChatEventSystem             ChatEventType = "system"
 )
 
 // AllChatEventTypes returns every valid ChatEventType.
@@ -108,6 +113,11 @@ func AllChatEventTypes() []ChatEventType {
 		ChatEventThought,
 		ChatEventToolCall,
 		ChatEventToolResult,
+		ChatEventSubagentStart,
+		ChatEventSubagentDelta,
+		ChatEventSubagentToolCall,
+		ChatEventSubagentToolResult,
+		ChatEventSubagentDone,
 		ChatEventDone,
 		ChatEventError,
 		ChatEventSystem,
@@ -286,12 +296,15 @@ type ProviderInfo struct {
 
 // ChatEvent is broadcast when an active agent streams text, thoughts, tool calls, or completion updates.
 type ChatEvent struct {
-	Type       ChatEventType `json:"type"`
-	ProviderID ProviderID    `json:"provider_id"`
-	MessageID  string        `json:"message_id"`
-	Text       string        `json:"text"`
-	Tool       string        `json:"tool,omitempty"`
-	Error      string        `json:"error"`
+	Type             ChatEventType `json:"type"`
+	ProviderID       ProviderID    `json:"provider_id"`
+	MessageID        string        `json:"message_id"`
+	Text             string        `json:"text"`
+	Tool             string        `json:"tool,omitempty"`
+	SubagentID       string        `json:"subagent_id,omitempty"`
+	SubagentName     string        `json:"subagent_name,omitempty"`
+	SubagentProvider ProviderID    `json:"subagent_provider,omitempty"`
+	Error            string        `json:"error"`
 	// ErrorKey/ErrorParams localize Error in the UI (frontend i18n key and placeholder values).
 	ErrorKey    string            `json:"error_key,omitempty"`
 	ErrorParams map[string]string `json:"error_params,omitempty"`
@@ -299,13 +312,14 @@ type ChatEvent struct {
 
 // ChatMessage stores one persisted message in DezuxkStudio's own SQLite history.
 type ChatMessage struct {
-	ID         string     `json:"id"`
-	ProviderID ProviderID `json:"provider_id"`
-	Role       string     `json:"role"`
-	Text       string     `json:"text"`
-	Thought    string     `json:"thought,omitempty"`
-	Tool       string     `json:"tool,omitempty"`
-	CreatedAt  int64      `json:"created_at"`
+	ID         string               `json:"id"`
+	ProviderID ProviderID           `json:"provider_id"`
+	Role       string               `json:"role"`
+	Text       string               `json:"text"`
+	Thought    string               `json:"thought,omitempty"`
+	Tool       string               `json:"tool,omitempty"`
+	Subagents  []SubagentInvocation `json:"subagents,omitempty"`
+	CreatedAt  int64                `json:"created_at"`
 	// ConversationID groups messages into one chat; empty only for rows written before conversations.
 	ConversationID string `json:"conversation_id,omitempty"`
 }
@@ -353,6 +367,8 @@ type Repository interface {
 	SaveConversation(ctx context.Context, c Conversation) error
 	ListConversations(ctx context.Context, limit int) ([]Conversation, error)
 	ListConversationMessages(ctx context.Context, conversationID string, limit int) ([]ChatMessage, error)
+	GetConversationSessions(ctx context.Context, conversationID string) (map[ProviderID]string, error)
+	SetConversationSession(ctx context.Context, conversationID string, providerID ProviderID, sessionID string) error
 	DeleteConversation(ctx context.Context, conversationID string) error
 	ListAllowedDirs(ctx context.Context) ([]string, error)
 	AddAllowedDir(ctx context.Context, dir string) error

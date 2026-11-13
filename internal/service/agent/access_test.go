@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -33,7 +34,7 @@ func mustWrite(t *testing.T, path, content string) {
 }
 
 // newAccessFixture builds a Service whose OS-protected dirs are replaced by a fake "system" folder, because
-// t.TempDir() itself lives under %LOCALAPPDATA% on Windows (which the real policy protects).
+// creating test files under C:\Windows is not possible.
 func newAccessFixture(t *testing.T) *accessFixture {
 	t.Helper()
 	base := t.TempDir()
@@ -97,27 +98,44 @@ func (f *accessFixture) call(t *testing.T, tool string, args map[string]any) (ma
 	return payload, res.IsError
 }
 
-func TestAccessPolicyOpenByDefaultBlocksSensitive(t *testing.T) {
+func TestAccessPolicyScopedToRootsAndBlocksSensitive(t *testing.T) {
 	f := newAccessFixture(t)
 	p := f.svc.policy
 
+	// Outside workspace/media/trusted folders, access is denied by default.
+	for _, outside := range []string{
+		filepath.Join(f.user, "story.md"),
+		filepath.Join(f.user, "a.png"),
+	} {
+		if _, err := p.ValidateRead(outside); err == nil {
+			t.Errorf("expected read denied outside project roots for %s", outside)
+		}
+		if _, err := p.ValidateWrite(filepath.Join(f.user, "kich-ban.md")); err == nil {
+			t.Errorf("expected write denied outside project roots")
+		}
+	}
+	if _, err := p.ValidateDir(f.user); err == nil {
+		t.Errorf("expected dir listing denied outside project roots")
+	}
+
+	// Inside workspace and media roots, allowed content & media files work while code/secrets stay denied.
 	allowedRead := []string{
-		filepath.Join(f.user, "story.md"), filepath.Join(f.user, "sub.srt"), filepath.Join(f.user, "a.png"),
-		filepath.Join(f.user, "clip.mp4"), filepath.Join(f.ws, "notes.txt"), filepath.Join(f.media, "x.webp"),
+		filepath.Join(f.ws, "story.md"), filepath.Join(f.ws, "sub.srt"), filepath.Join(f.ws, "notes.txt"),
+		filepath.Join(f.media, "a.png"), filepath.Join(f.media, "clip.mp4"), filepath.Join(f.media, "x.webp"),
 	}
 	for _, path := range allowedRead {
 		if _, err := p.ValidateRead(path); err != nil {
-			t.Errorf("expected read allowed for %s: %v", path, err)
+			t.Errorf("expected read allowed inside project roots for %s: %v", path, err)
 		}
 	}
 	deniedRead := []string{
-		filepath.Join(f.user, "main.py"), filepath.Join(f.user, "app.ts"), filepath.Join(f.user, "run.ps1"),
-		filepath.Join(f.user, "tool.exe"), filepath.Join(f.user, "page.html"), filepath.Join(f.user, ".env"),
-		filepath.Join(f.user, "id_rsa"), filepath.Join(f.user, "cert.pem"), filepath.Join(f.user, "package.json"),
-		filepath.Join(f.user, ".ssh", "config.txt"), filepath.Join(f.user, "repo", ".git", "notes.txt"),
-		filepath.Join(f.user, "node_modules", "readme.md"), filepath.Join(f.system, "notes.txt"),
+		filepath.Join(f.ws, "main.py"), filepath.Join(f.ws, "app.ts"), filepath.Join(f.ws, "run.ps1"),
+		filepath.Join(f.ws, "tool.exe"), filepath.Join(f.ws, "page.html"), filepath.Join(f.ws, ".env"),
+		filepath.Join(f.ws, "id_rsa"), filepath.Join(f.ws, "cert.pem"), filepath.Join(f.ws, "package.json"),
+		filepath.Join(f.ws, ".ssh", "config.txt"), filepath.Join(f.ws, "repo", ".git", "notes.txt"),
+		filepath.Join(f.ws, "node_modules", "readme.md"), filepath.Join(f.system, "notes.txt"),
 		filepath.Join(f.profiles, "codex", "notes.txt"), filepath.Join(f.base, "data", "app.db"),
-		filepath.Join(f.user, "report.pdf"), // documents can be organized but not opened
+		filepath.Join(f.ws, "report.pdf"), // documents use workspace_read_document instead
 	}
 	for _, path := range deniedRead {
 		if _, err := p.ValidateRead(path); err == nil {
@@ -125,11 +143,11 @@ func TestAccessPolicyOpenByDefaultBlocksSensitive(t *testing.T) {
 		}
 	}
 
-	if _, err := p.ValidateWrite(filepath.Join(f.user, "kich-ban.md")); err != nil {
-		t.Errorf("expected writing a script anywhere on the machine to be allowed: %v", err)
+	if _, err := p.ValidateWrite(filepath.Join(f.ws, "kich-ban.md")); err != nil {
+		t.Errorf("expected writing a script in workspace to be allowed: %v", err)
 	}
 	for _, bad := range []string{"index.html", "a.bat", "settings.yaml", "tsconfig.json", "requirements.txt"} {
-		if _, err := p.ValidateWrite(filepath.Join(f.user, bad)); err == nil {
+		if _, err := p.ValidateWrite(filepath.Join(f.ws, bad)); err == nil {
 			t.Errorf("expected write of %s to be denied", bad)
 		}
 	}
@@ -148,7 +166,7 @@ func TestAccessPolicyOpenByDefaultBlocksSensitive(t *testing.T) {
 		{"main.py", "main.txt", false},
 	}
 	for _, m := range moves {
-		_, _, err := p.ValidateMove(filepath.Join(f.user, m.src), filepath.Join(f.user, m.dst))
+		_, _, err := p.ValidateMove(filepath.Join(f.ws, m.src), filepath.Join(f.ws, m.dst))
 		if (err == nil) != m.ok {
 			t.Errorf("move %s → %s: ok=%v err=%v", m.src, m.dst, m.ok, err)
 		}
@@ -160,20 +178,38 @@ func TestAccessPolicyOpenByDefaultBlocksSensitive(t *testing.T) {
 	if _, err := p.ValidateAllowedDirCandidate(filepath.VolumeName(f.base) + string(filepath.Separator)); err == nil {
 		t.Error("expected a whole drive to be rejected as trusted folder")
 	}
+	if _, err := p.ValidateAllowedDirCandidate(f.system); err == nil {
+		t.Error("expected a protected system folder to be rejected as trusted folder")
+	}
+
+	// Adding f.user as a Trusted Folder unlocks content/media inside it while still blocking secrets & code.
 	if _, err := p.ValidateAllowedDirCandidate(f.user); err != nil {
-		t.Errorf("expected a normal user folder to be grantable: %v", err)
+		t.Errorf("expected user folder to be valid as a trusted folder: %v", err)
+	}
+	p.SetAllowedDirs([]string{f.user})
+	if _, err := p.ValidateRead(filepath.Join(f.user, "story.md")); err != nil {
+		t.Errorf("expected read allowed inside added trusted folder: %v", err)
+	}
+	if _, err := p.ValidateWrite(filepath.Join(f.user, "kich-ban.md")); err != nil {
+		t.Errorf("expected write allowed inside added trusted folder: %v", err)
+	}
+	if _, err := p.ValidateRead(filepath.Join(f.user, ".env")); err == nil {
+		t.Error("expected .env to remain blocked inside trusted folder")
+	}
+	if _, err := p.ValidateRead(filepath.Join(f.user, "main.py")); err == nil {
+		t.Error("expected .py to remain blocked inside trusted folder")
 	}
 }
 
 func TestWorkflowRunNodeExpandsFoldersAndAppliesUIDefaults(t *testing.T) {
 	f := newAccessFixture(t)
 	for _, name := range []string{"b.jpg", "a.png", "notes.txt", "clip.mp4", "sub/c.webp", ".git/x.png"} {
-		mustWrite(t, filepath.Join(f.user, name), "x")
+		mustWrite(t, filepath.Join(f.media, name), "x")
 	}
 
 	payload, isErr := f.call(t, "workflow_run_node", map[string]any{
 		"type":  watermark.NodeType,
-		"input": map[string]any{"images": f.user},
+		"input": map[string]any{"images": f.media},
 	})
 	if isErr {
 		t.Fatalf("expected run to succeed, got %v", payload)
@@ -191,7 +227,7 @@ func TestWorkflowRunNodeExpandsFoldersAndAppliesUIDefaults(t *testing.T) {
 	}
 
 	if _, isErr := f.call(t, "workflow_run_node", map[string]any{
-		"type": watermark.NodeType, "input": map[string]any{"images": []any{f.user}}, "recursive": true,
+		"type": watermark.NodeType, "input": map[string]any{"images": []any{f.media}}, "recursive": true,
 	}); isErr {
 		t.Fatal("recursive run failed")
 	}
@@ -203,23 +239,24 @@ func TestWorkflowRunNodeExpandsFoldersAndAppliesUIDefaults(t *testing.T) {
 
 func TestWorkflowRunNodeRejectsInventedInput(t *testing.T) {
 	f := newAccessFixture(t)
-	mustWrite(t, filepath.Join(f.user, "a.png"), "x")
-	mustWrite(t, filepath.Join(f.user, "empty", "readme.txt"), "x")
-	img := filepath.Join(f.user, "a.png")
+	mustWrite(t, filepath.Join(f.media, "a.png"), "x")
+	mustWrite(t, filepath.Join(f.media, "empty", "readme.txt"), "x")
+	mustWrite(t, filepath.Join(f.user, "outside.png"), "x")
+	img := filepath.Join(f.media, "a.png")
 
 	cases := map[string]map[string]any{
-		"unknown node":    {"type": "tool.magic_eraser", "input": map[string]any{"images": img}},
-		"invented param":  {"type": watermark.NodeType, "input": map[string]any{"images": img, "strength": 5}},
-		"hidden param":    {"type": watermark.NodeType, "input": map[string]any{"images": img, "min_score": 0.1}},
-		"invalid option":  {"type": watermark.NodeType, "input": map[string]any{"images": img, "corner": "center"}},
-		"out of range":    {"type": watermark.NodeType, "input": map[string]any{"images": img, "workers": 500}},
-		"missing file":    {"type": watermark.NodeType, "input": map[string]any{"images": filepath.Join(f.user, "nope.png")}},
-		"wrong file type": {"type": watermark.NodeType, "input": map[string]any{"images": filepath.Join(f.user, "empty", "readme.txt")}},
-		"empty folder":    {"type": watermark.NodeType, "input": map[string]any{"images": filepath.Join(f.user, "empty")}},
-		"no input":        {"type": watermark.NodeType, "input": map[string]any{}},
-		"folder in single port": {"type": watermark.NodeType, "input": map[string]any{
-			"image": []any{img, img + "x"}}},
-		"protected path": {"type": watermark.NodeType, "input": map[string]any{"images": f.system}},
+		"unknown node":     {"type": "tool.magic_eraser", "input": map[string]any{"images": img}},
+		"invented param":   {"type": watermark.NodeType, "input": map[string]any{"images": img, "strength": 5}},
+		"hidden param":     {"type": watermark.NodeType, "input": map[string]any{"images": img, "min_score": 0.1}},
+		"invalid option":   {"type": watermark.NodeType, "input": map[string]any{"images": img, "corner": "center"}},
+		"out of range":     {"type": watermark.NodeType, "input": map[string]any{"images": img, "workers": 500}},
+		"missing file":     {"type": watermark.NodeType, "input": map[string]any{"images": filepath.Join(f.media, "nope.png")}},
+		"wrong file type":  {"type": watermark.NodeType, "input": map[string]any{"images": filepath.Join(f.media, "empty", "readme.txt")}},
+		"empty folder":     {"type": watermark.NodeType, "input": map[string]any{"images": filepath.Join(f.media, "empty")}},
+		"no input":         {"type": watermark.NodeType, "input": map[string]any{}},
+		"folder in single": {"type": watermark.NodeType, "input": map[string]any{"image": []any{img, img + "x"}}},
+		"protected path":   {"type": watermark.NodeType, "input": map[string]any{"images": f.system}},
+		"untrusted path":   {"type": watermark.NodeType, "input": map[string]any{"images": filepath.Join(f.user, "outside.png")}},
 	}
 	for name, args := range cases {
 		f.wf.lastInput = nil
@@ -233,12 +270,12 @@ func TestWorkflowRunNodeRejectsInventedInput(t *testing.T) {
 	}
 }
 
-func TestDestructiveAndOutsideActionsNeedApproval(t *testing.T) {
+func TestDestructiveAndOutsideActionsRequireTrustOrApproval(t *testing.T) {
 	f := newAccessFixture(t)
-	mustWrite(t, filepath.Join(f.user, "a.png"), "x")
+	mustWrite(t, filepath.Join(f.media, "a.png"), "x")
 
 	payload, isErr := f.call(t, "workflow_run_node", map[string]any{
-		"type": watermark.NodeType, "input": map[string]any{"images": f.user, "inplace": true},
+		"type": watermark.NodeType, "input": map[string]any{"images": f.media, "inplace": true},
 	})
 	if isErr || payload["status"] != "needs_approval" || f.wf.lastInput != nil {
 		t.Fatalf("expected in-place run to wait for approval, got %v (ran=%v)", payload, f.wf.lastInput != nil)
@@ -247,39 +284,58 @@ func TestDestructiveAndOutsideActionsNeedApproval(t *testing.T) {
 		t.Fatalf("expected approval summary to describe the files, got %v", payload["summary"])
 	}
 
+	// Paths outside workspace/media/trusted folders are denied outright rather than prompted.
 	userFile := filepath.Join(f.user, "old.txt")
 	mustWrite(t, userFile, "keep")
-	payload, _ = f.call(t, "workspace_delete_file", map[string]any{"path": userFile})
-	if payload["status"] != "needs_approval" {
-		t.Fatalf("expected delete outside trusted roots to need approval, got %v", payload)
+	for _, tc := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{"workspace_delete_file", map[string]any{"path": userFile}},
+		{"workspace_write_file", map[string]any{"path": userFile, "content": "new"}},
+		{"workspace_write_file", map[string]any{"path": filepath.Join(f.user, "Scripts", "kich-ban.md"), "content": "# Cảnh 1"}},
+		{"workspace_edit_file", map[string]any{"path": userFile, "mode": "append", "content": "more"}},
+		{"workspace_read_file", map[string]any{"path": userFile}},
+		{"workspace_list_files", map[string]any{"dir": f.user}},
+	} {
+		if _, isErr := f.call(t, tc.tool, tc.args); !isErr {
+			t.Fatalf("%s on untrusted path must fail", tc.tool)
+		}
 	}
-	if _, err := os.Stat(userFile); err != nil {
-		t.Fatal("file must not be deleted before approval")
-	}
-	payload, _ = f.call(t, "workspace_write_file", map[string]any{"path": userFile, "content": "new"})
-	if payload["status"] != "needs_approval" {
-		t.Fatalf("expected overwrite outside trusted roots to need approval, got %v", payload)
+	if raw, err := os.ReadFile(userFile); err != nil || string(raw) != "keep" {
+		t.Fatalf("untrusted file must remain untouched, got %q err=%v", string(raw), err)
 	}
 
+	// Inside workspace, normal file operations succeed directly and overwriting via move needs approval.
 	wsFile := filepath.Join(f.ws, "tmp.txt")
 	mustWrite(t, wsFile, "x")
 	if payload, isErr := f.call(t, "workspace_delete_file", map[string]any{"path": wsFile}); isErr || payload["ok"] != true {
 		t.Fatalf("expected direct delete inside workspace, got %v", payload)
 	}
-	newFile := filepath.Join(f.user, "Scripts", "kich-ban.md")
-	if payload, isErr := f.call(t, "workspace_write_file", map[string]any{"path": newFile, "content": "# Cảnh 1"}); isErr || payload["ok"] != true {
-		t.Fatalf("expected creating a new script in a user folder to work, got %v", payload)
+	moveSrc := filepath.Join(f.ws, "src.txt")
+	moveDst := filepath.Join(f.ws, "dst.txt")
+	mustWrite(t, moveSrc, "new")
+	mustWrite(t, moveDst, "existing")
+	payload, _ = f.call(t, "workspace_move_file", map[string]any{
+		"source": moveSrc, "destination": moveDst, "overwrite": true,
+	})
+	if payload["status"] != "needs_approval" {
+		t.Fatalf("expected overwriting move to require approval, got %v", payload)
 	}
 }
 
-func TestListFilesAnywhereHidesSensitive(t *testing.T) {
+func TestListFilesTrustedHidesSensitive(t *testing.T) {
 	f := newAccessFixture(t)
 	for _, name := range []string{"a.png", "story.md", "main.py", "id_rsa", ".env", "clip.mp4", ".git/x", "Album/b.jpg"} {
 		mustWrite(t, filepath.Join(f.user, name), "x")
 	}
+	if _, isErr := f.call(t, "workspace_list_files", map[string]any{"dir": f.user}); !isErr {
+		t.Error("expected untrusted folder listing to be denied")
+	}
+	f.svc.policy.SetAllowedDirs([]string{f.user})
 	payload, isErr := f.call(t, "workspace_list_files", map[string]any{"dir": f.user})
 	if isErr {
-		t.Fatalf("list failed: %v", payload)
+		t.Fatalf("list failed on trusted folder: %v", payload)
 	}
 	var names []string
 	for _, e := range payload["entries"].([]any) {
@@ -323,6 +379,148 @@ func TestCheckTrustedFile(t *testing.T) {
 	for _, bad := range []string{filepath.Join(outside, "c.png"), filepath.Join(media, "..", "elsewhere", "d.png")} {
 		if err := p.CheckTrustedFile(bad, false); err == nil {
 			t.Errorf("%s should be denied", bad)
+		}
+	}
+}
+
+func TestLargeScriptToolsAndDocumentRead(t *testing.T) {
+	f := newAccessFixture(t)
+
+	// 1. Large script (> 64 KiB) read in line chunks + search + surgical edit + append.
+	var big strings.Builder
+	for i := 1; i <= 2500; i++ {
+		fmt.Fprintf(&big, "Cảnh %04d: Nội dung lời thoại dài để kiểm tra phân trang kịch bản %s.\n", i, strings.Repeat("x", 24))
+	}
+	scriptPath := filepath.Join(f.ws, "big_script.md")
+	mustWrite(t, scriptPath, big.String())
+
+	// Whole-file read fails safely with chunk hint; start_line/end_line succeeds.
+	if _, isErr := f.call(t, "workspace_read_file", map[string]any{"path": scriptPath}); !isErr {
+		t.Fatal("expected unpaged >64KiB read to fail")
+	}
+	payload, isErr := f.call(t, "workspace_read_file", map[string]any{
+		"path": scriptPath, "start_line": 2495, "end_line": 2500,
+	})
+	if isErr {
+		t.Fatalf("paged read failed: %v", payload)
+	}
+	if !strings.Contains(payload["content"].(string), "Cảnh 2500") || payload["start_line"].(float64) != 2495 {
+		t.Fatalf("unexpected paged read payload: %v", payload)
+	}
+
+	// Recursive listing picks up subfolder files cleanly.
+	mustWrite(t, filepath.Join(f.ws, "ep1", "scene1.txt"), "Nhân vật Minh xuất hiện.")
+	payload, isErr = f.call(t, "workspace_list_files", map[string]any{"dir": f.ws, "recursive": true})
+	if isErr || !strings.Contains(fmt.Sprint(payload["entries"]), "ep1/scene1.txt") {
+		t.Fatalf("recursive list missed nested file: isErr=%v payload=%v", isErr, payload)
+	}
+
+	// Search locates line inside nested script while ignoring forbidden code extensions.
+	mustWrite(t, filepath.Join(f.ws, "hidden.go"), "package main\n// Nhân vật Minh\n")
+	payload, isErr = f.call(t, "workspace_search_text", map[string]any{"dir": f.ws, "query": "Nhân vật Minh"})
+	if isErr {
+		t.Fatalf("search failed: %v", payload)
+	}
+	matches := payload["matches"].([]any)
+	if len(matches) != 1 || matches[0].(map[string]any)["rel_path"] != "ep1/scene1.txt" {
+		t.Fatalf("unexpected search matches: %v", matches)
+	}
+
+	// Surgical edit in trusted workspace works directly, including prompt parameters with '=', ':', and brackets.
+	payload, isErr = f.call(t, "workspace_edit_file", map[string]any{
+		"path": scriptPath, "mode": "replace", "old_text": "Cảnh 2500", "content": "Cảnh Cuối",
+	})
+	if isErr || payload["ok"] != true {
+		t.Fatalf("replace edit failed: %v", payload)
+	}
+	payload, isErr = f.call(t, "workspace_edit_file", map[string]any{
+		"path": scriptPath, "mode": "append", "content": "Shot params: width=1920, ratio=16:9 (end).\n",
+	})
+	if isErr || payload["ok"] != true {
+		t.Fatalf("append edit failed: %v", payload)
+	}
+	editedBytes, _ := os.ReadFile(scriptPath)
+	if !strings.Contains(string(editedBytes), "Cảnh Cuối") || !strings.HasSuffix(string(editedBytes), "Shot params: width=1920, ratio=16:9 (end).\n") {
+		t.Fatalf("edits did not land cleanly in file")
+	}
+
+	// Code files and untrusted outside paths remain blocked.
+	if _, isErr := f.call(t, "workspace_edit_file", map[string]any{
+		"path": filepath.Join(f.ws, "bad.py"), "mode": "append", "content": "print(1)\n",
+	}); !isErr {
+		t.Fatal("editing .py must be denied by extension policy")
+	}
+	outsideFile := filepath.Join(f.user, "note.txt")
+	mustWrite(t, outsideFile, "Dòng 1\nDòng 2\n")
+	if _, isErr := f.call(t, "workspace_edit_file", map[string]any{
+		"path": outsideFile, "mode": "append", "content": "Dòng 3\n",
+	}); !isErr {
+		t.Fatal("expected edit outside trusted folders to be denied")
+	}
+
+	// 2. Document reading works inside trusted roots with pagination and rejects untrusted documents.
+	untrustedDoc := filepath.Join(f.user, "outside.docx")
+	docXML := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+		`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+		`<w:p><w:r><w:t>Kịch bản gốc rất hay.</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+	writeZipFixture(t, untrustedDoc, map[string]string{"word/document.xml": docXML})
+	if _, isErr := f.call(t, "workspace_read_document", map[string]any{"path": untrustedDoc}); !isErr {
+		t.Fatal("expected workspace_read_document to reject untrusted outside document")
+	}
+
+	docPath := filepath.Join(f.ws, "brief.docx")
+	writeZipFixture(t, docPath, map[string]string{"word/document.xml": docXML})
+	payload, isErr = f.call(t, "workspace_read_document", map[string]any{
+		"path": docPath, "offset_chars": 0, "limit_chars": 8,
+	})
+	if isErr || payload["has_more"] != true || payload["content"] != "Kịch bản" {
+		t.Fatalf("unexpected paged document response: isErr=%v payload=%v", isErr, payload)
+	}
+	payload2, isErr2 := f.call(t, "workspace_read_document", map[string]any{
+		"path": docPath, "offset_chars": int(payload["next_offset"].(float64)), "limit_chars": 50,
+	})
+	if isErr2 || payload2["has_more"] != false || payload2["source_truncated"] != false || !strings.Contains(payload2["content"].(string), "rất hay.") {
+		t.Fatalf("unexpected second page document response: isErr=%v payload=%v", isErr2, payload2)
+	}
+	payload3, isErr3 := f.call(t, "workspace_read_document", map[string]any{
+		"path": docPath, "limit_chars": 60000,
+	})
+	if isErr3 || payload3["limit_chars"].(float64) != 60000 || payload3["source_truncated"] != false {
+		t.Fatalf("expected 60000 limit_chars without 32k clamp: isErr=%v payload=%v", isErr3, payload3)
+	}
+}
+
+func TestDeveloperModePolicyAllowsCodeOutsideSecrets(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "repo")
+	profiles := filepath.Join(root, "profiles")
+	for _, d := range []string{ws, profiles} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := NewAccessPolicy(root, ws, filepath.Join(root, "media"), profiles, nil)
+	p.SetDeveloperMode(true)
+
+	for _, allowed := range []string{
+		filepath.Join(ws, "main.go"),
+		filepath.Join(ws, "package.json"),
+		filepath.Join(ws, "Makefile"),
+		filepath.Join(ws, ".git", "HEAD"),
+	} {
+		if _, err := p.ValidateRead(allowed); err != nil {
+			t.Errorf("developer mode should allow reading %s: %v", allowed, err)
+		}
+	}
+	for _, denied := range []string{
+		filepath.Join(ws, ".env"),
+		filepath.Join(ws, "id_rsa"),
+		filepath.Join(ws, "app.exe"),
+		filepath.Join(profiles, "claude", "secret.json"),
+	} {
+		if _, err := p.ValidateRead(denied); err == nil {
+			t.Errorf("developer mode must still deny secret/binary/profile path %s", denied)
 		}
 	}
 }

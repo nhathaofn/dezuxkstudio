@@ -19,6 +19,7 @@ import (
 	"app/internal/apperr"
 	domainagent "app/internal/domain/agent"
 	"app/internal/fsutil"
+	"app/internal/httpclient"
 )
 
 // versionPattern bounds what a remote server may name a version, because it becomes a folder name.
@@ -40,14 +41,15 @@ type Options struct {
 
 // Manager downloads, verifies and switches the app's private CLI copies.
 type Manager struct {
-	dir    string
-	client *http.Client
-	log    *slog.Logger
-	ua     string
-	keep   int
-	specs  map[domainagent.ProviderID]domainagent.InstallSpec
-	goos   string
-	goarch string
+	dir          string
+	client       *http.Client
+	log          *slog.Logger
+	ua           string
+	keep         int
+	specs        map[domainagent.ProviderID]domainagent.InstallSpec
+	goos         string
+	goarch       string
+	webLatestURL func(string) (string, bool) // overridable in unit tests
 
 	mu    sync.Mutex
 	locks map[domainagent.ProviderID]*sync.Mutex // one install per provider at a time
@@ -67,7 +69,8 @@ func New(o Options) *Manager {
 	m := &Manager{
 		dir: o.Dir, client: o.Client, log: o.Logger, ua: o.UserAgent, keep: o.Keep,
 		specs: map[domainagent.ProviderID]domainagent.InstallSpec{}, goos: o.GOOS, goarch: o.GOARCH,
-		locks: map[domainagent.ProviderID]*sync.Mutex{},
+		webLatestURL: httpclient.GitHubWebLatestURL,
+		locks:        map[domainagent.ProviderID]*sync.Mutex{},
 	}
 	if m.client == nil {
 		m.client = &http.Client{}

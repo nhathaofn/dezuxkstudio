@@ -7,10 +7,8 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	domainagent "app/internal/domain/agent"
 	domainbinaries "app/internal/domain/binaries"
@@ -70,16 +68,43 @@ type preferencesUpdateToolInput struct {
 }
 
 type listFilesToolInput struct {
-	Dir string `json:"dir,omitempty" jsonschema:"Absolute folder path; default: agent workspace"`
+	Dir        string `json:"dir,omitempty" jsonschema:"Absolute folder path; default: agent workspace"`
+	Recursive  bool   `json:"recursive,omitempty" jsonschema:"Include files in subfolders"`
+	MaxEntries int    `json:"max_entries,omitempty" jsonschema:"Maximum entries to return (default 300, max 1000)"`
 }
 
 type readFileToolInput struct {
-	Path string `json:"path" jsonschema:"Text, image, video or audio file path"`
+	Path      string `json:"path" jsonschema:"Text, image, video or audio file path"`
+	StartLine int    `json:"start_line,omitempty" jsonschema:"1-based starting line for large files (enables chunked reading past 64 KiB)"`
+	EndLine   int    `json:"end_line,omitempty" jsonschema:"1-based inclusive ending line (optional)"`
 }
 
 type writeFileToolInput struct {
 	Path    string `json:"path" jsonschema:"Text file path (.txt .md .json .srt .vtt .csv .xml); relative = agent workspace"`
 	Content string `json:"content"`
+}
+
+type editFileToolInput struct {
+	Path       string `json:"path" jsonschema:"Text file path; relative = agent workspace"`
+	Mode       string `json:"mode,omitempty" jsonschema:"replace (default) or append"`
+	Content    string `json:"content" jsonschema:"Replacement text or text to append"`
+	OldText    string `json:"old_text,omitempty" jsonschema:"Exact text block to replace (when mode=replace)"`
+	ReplaceAll bool   `json:"replace_all,omitempty" jsonschema:"Replace every occurrence of old_text"`
+	StartLine  int    `json:"start_line,omitempty" jsonschema:"1-based starting line to replace if old_text is omitted"`
+	EndLine    int    `json:"end_line,omitempty" jsonschema:"1-based inclusive ending line to replace"`
+}
+
+type searchTextToolInput struct {
+	Dir           string `json:"dir,omitempty" jsonschema:"Folder to search; default: agent workspace"`
+	Query         string `json:"query" jsonschema:"Text query to search across readable text files"`
+	CaseSensitive bool   `json:"case_sensitive,omitempty" jsonschema:"Case-sensitive search (default false)"`
+	MaxResults    int    `json:"max_results,omitempty" jsonschema:"Max matching lines (default 50, max 200)"`
+}
+
+type readDocumentToolInput struct {
+	Path        string `json:"path" jsonschema:"Document path (.docx, .odt, .rtf, .pdf)"`
+	OffsetChars int    `json:"offset_chars,omitempty" jsonschema:"0-based character offset to start reading"`
+	LimitChars  int    `json:"limit_chars,omitempty" jsonschema:"Max characters per chunk (default 32000, max 100000)"`
 }
 
 type moveFileToolInput struct {
@@ -111,6 +136,17 @@ type deleteFileToolInput struct {
 	Path string `json:"path" jsonschema:"File to delete"`
 }
 
+type skillReadToolInput struct {
+	Name     string `json:"name" jsonschema:"Skill slug listed in <skills>"`
+	Resource string `json:"resource,omitempty" jsonschema:"Optional companion file inside the skill directory; defaults to SKILL.md"`
+}
+
+type subagentRunToolInput struct {
+	Name    string `json:"name" jsonschema:"Subagent slug listed in <subagents>"`
+	Task    string `json:"task" jsonschema:"Focused task brief for the subagent to execute in its isolated context"`
+	Context string `json:"context,omitempty" jsonschema:"Optional background context or constraints to pass to the subagent"`
+}
+
 // mcpServerInstructions is the short MCP-level reminder (the full rules are the provider's system prompt).
 const mcpServerInstructions = "DezuxkStudio's own tools. Follow the DezuxkStudio Assistant rules from your system prompt; " +
 	"call workflow_list_specs before running a feature."
@@ -138,9 +174,13 @@ type toolDoc struct{ Name, Description string }
 type mcpToolset struct {
 	server *mcp.Server
 	docs   []toolDoc
+	filter func(string) bool
 }
 
 func addMCPTool[I any](ts *mcpToolset, name, description string, fn func(context.Context, I) (*mcp.CallToolResult, any, error)) {
+	if ts.filter != nil && !ts.filter(name) {
+		return
+	}
 	ts.docs = append(ts.docs, toolDoc{Name: name, Description: description})
 	mcp.AddTool(ts.server, &mcp.Tool{Name: name, Description: description},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in I) (*mcp.CallToolResult, any, error) {
@@ -149,7 +189,17 @@ func addMCPTool[I any](ts *mcpToolset, name, description string, fn func(context
 }
 
 // needsApproval queues an action for the user's decision and returns the standard tool response.
-func (s *Service) needsApproval(tool, title, summary string, exec func(context.Context) (any, error)) (*mcp.CallToolResult, any, error) {
+// Inside a subagent, actions requiring interactive user approval are blocked rather than queued.
+func (s *Service) needsApproval(ctx context.Context, tool, title, summary string, exec func(context.Context) (any, error)) (*mcp.CallToolResult, any, error) {
+	if marker, isSub := subagentFromContext(ctx); isSub {
+		return mcpJSON(map[string]any{
+			"status":   "approval_blocked_in_subagent",
+			"tool":     tool,
+			"subagent": marker.Name,
+			"summary":  summary,
+			"message":  "This action requires user approval and cannot be executed or queued inside a subagent. Report this recommendation and parameters back to the root agent so it can propose approval to the user.",
+		})
+	}
 	req, err := s.queueApproval(tool, title, summary, exec)
 	if err != nil {
 		return mcpError(err.Error())
@@ -168,16 +218,44 @@ func (s *Service) toolDocs() []toolDoc {
 	return s.docs
 }
 
+func (s *Service) mcpInstructions() string {
+	if s.developerMode {
+		return "DezuxkStudio tools (developer mode active); call workflow_list_specs before running an app feature."
+	}
+	return mcpServerInstructions
+}
+
 // buildMCPServer returns a new MCP server with every DezuxkStudio tool registered.
 func (s *Service) buildMCPServer() *mcp.Server { return s.buildToolset().server }
 
+// buildMCPServerForTools returns a scoped MCP server restricted to allowedTools (never includes subagent_run).
+func (s *Service) buildMCPServerForTools(allowedTools []string) *mcp.Server {
+	allow := make(map[string]bool, len(allowedTools))
+	for _, name := range allowedTools {
+		name = strings.TrimSpace(name)
+		if name != "" && name != "subagent_run" {
+			allow[name] = true
+		}
+	}
+	return s.buildToolsetFiltered(func(name string) bool {
+		return name != "subagent_run" && allow[name]
+	}).server
+}
+
 func (s *Service) buildToolset() *mcpToolset {
+	return s.buildToolsetFiltered(nil)
+}
+
+func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 	// Every provider already receives the full profile as its system prompt. MCP clients may copy server
 	// instructions into each tool's description (Codex does: 16 tools × ~9k characters ≈ 38k tokens), so
 	// the server only states a one-line reminder.
-	server := &mcpToolset{server: mcp.NewServer(&mcp.Implementation{Name: mcpServerName, Version: s.appVersion}, &mcp.ServerOptions{
-		Instructions: mcpServerInstructions,
-	})}
+	server := &mcpToolset{
+		server: mcp.NewServer(&mcp.Implementation{Name: mcpServerName, Version: s.appVersion}, &mcp.ServerOptions{
+			Instructions: s.mcpInstructions(),
+		}),
+		filter: filter,
+	}
 
 	addMCPTool(server, "studio_list_capabilities",
 		"App features, managed tools, preferences, current screen and trusted folders.",
@@ -218,7 +296,7 @@ func (s *Service) buildToolset() *mcpToolset {
 				return s.workflow.RunNode(execCtx, nodeType, raw)
 			}
 			if len(prep.Destructive) > 0 {
-				return s.needsApproval("workflow_run_node", "Run "+spec.Label, prep.summary(spec), run)
+				return s.needsApproval(ctx, "workflow_run_node", "Run "+spec.Label, prep.summary(spec), run)
 			}
 			res, err := run(ctx)
 			if err != nil {
@@ -256,7 +334,7 @@ func (s *Service) buildToolset() *mcpToolset {
 				return s.workflow.RunGraph(execCtx, g)
 			}
 			if destructive {
-				return s.needsApproval("workflow_run_graph", "Run workflow", summary, run)
+				return s.needsApproval(ctx, "workflow_run_graph", "Run workflow", summary, run)
 			}
 			res, err := run(ctx)
 			if err != nil {
@@ -280,7 +358,7 @@ func (s *Service) buildToolset() *mcpToolset {
 
 	addMCPTool(server, "binaries_download",
 		"Propose downloading a managed tool (needs user approval).",
-		func(_ context.Context, in binaryIDToolInput) (*mcp.CallToolResult, any, error) {
+		func(ctx context.Context, in binaryIDToolInput) (*mcp.CallToolResult, any, error) {
 			if s.binaries == nil {
 				return mcpError("binaries service is unavailable")
 			}
@@ -288,7 +366,7 @@ func (s *Service) buildToolset() *mcpToolset {
 			if err := domainbinaries.ValidateID(id); err != nil {
 				return mcpError(err.Error())
 			}
-			return s.needsApproval("binaries_download",
+			return s.needsApproval(ctx, "binaries_download",
 				fmt.Sprintf("Download binary %s", id),
 				fmt.Sprintf("Download and install official binary %q into DezuxkStudio tools directory.", id),
 				func(execCtx context.Context) (any, error) { return s.binaries.Download(execCtx, id) })
@@ -330,56 +408,13 @@ func (s *Service) buildToolset() *mcpToolset {
 		})
 
 	addMCPTool(server, "workspace_list_files",
-		"List a folder (system, credential and code files are hidden).",
+		"List a folder or subfolder tree (supports recursive=true; protected files are hidden).",
 		func(_ context.Context, in listFilesToolInput) (*mcp.CallToolResult, any, error) {
-			target, err := s.policy.ValidateDir(in.Dir)
-			if err != nil {
-				return mcpError(err.Error())
-			}
-			entries, err := os.ReadDir(target)
-			if err != nil {
-				return mcpError(err.Error())
-			}
-			type item struct {
-				Name  string    `json:"name"`
-				Path  string    `json:"path"`
-				IsDir bool      `json:"is_dir"`
-				Class FileClass `json:"class,omitempty"`
-				Size  int64     `json:"size,omitempty"`
-			}
-			out := make([]item, 0, len(entries))
-			counts := map[FileClass]int{}
-			truncated := false
-			for _, e := range entries {
-				full := filepath.Join(target, e.Name())
-				if !s.policy.VisibleInListing(full, e.IsDir()) {
-					continue
-				}
-				it := item{Name: e.Name(), Path: full, IsDir: e.IsDir()}
-				if !e.IsDir() {
-					it.Class = ClassifyFile(full)
-					counts[it.Class]++
-					if info, statErr := e.Info(); statErr == nil {
-						it.Size = info.Size()
-					}
-				}
-				if len(out) >= maxListEntries {
-					truncated = true
-					continue
-				}
-				out = append(out, it)
-			}
-			sort.Slice(out, func(i, j int) bool {
-				if out[i].IsDir != out[j].IsDir {
-					return out[i].IsDir
-				}
-				return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
-			})
-			return mcpJSON(map[string]any{"dir": target, "trusted": s.policy.IsTrusted(target), "counts": counts, "truncated": truncated, "entries": out})
+			return s.handleWorkspaceListFiles(in)
 		})
 
 	addMCPTool(server, "workspace_read_file",
-		"Open a text file (content), image (view) or video/audio (metadata).",
+		"Open a text file (supports start_line/end_line chunked reads past 64 KiB), image, or media metadata.",
 		func(_ context.Context, in readFileToolInput) (*mcp.CallToolResult, any, error) {
 			target, err := s.policy.ValidateRead(in.Path)
 			if err != nil {
@@ -392,7 +427,7 @@ func (s *Service) buildToolset() *mcpToolset {
 			if info.IsDir() {
 				return mcpError("target path is a folder; use workspace_list_files")
 			}
-			switch class := ClassifyFile(target); class {
+			switch class := s.policy.Classify(target); class {
 			case FileClassImage:
 				if info.Size() > maxImageReadBytes {
 					return mcpJSON(map[string]any{"path": target, "class": class, "size": info.Size(), "note": "image too large to display; metadata only"})
@@ -410,33 +445,30 @@ func (s *Service) buildToolset() *mcpToolset {
 			case FileClassVideo, FileClassAudio:
 				return mcpJSON(map[string]any{"path": target, "class": class, "size": info.Size(), "modified": info.ModTime()})
 			}
-			if info.Size() > maxWorkspaceReadBytes {
-				return mcpError(fmt.Sprintf("file exceeds maximum readable size (%d bytes)", maxWorkspaceReadBytes))
-			}
-			b, err := os.ReadFile(target)
-			if err != nil {
-				return mcpError(err.Error())
-			}
-			if !utf8.Valid(b) || strings.ContainsRune(string(b), 0) {
-				return mcpError("file is not a UTF-8 text file")
-			}
-			content := string(b)
-			if ContainsSourceCode(content) {
-				return mcpError("refused: this file contains source code or terminal commands, which DezuxkStudio Assistant does not work with")
-			}
-			return mcpJSON(map[string]any{"path": target, "size": len(b), "content": content})
+			return s.handleWorkspaceReadTextSlice(target, info, in.StartLine, in.EndLine)
+		})
+
+	addMCPTool(server, "workspace_read_document",
+		"Extract paged plain text from .docx, .odt, .rtf, or .pdf documents (offset_chars/limit_chars).",
+		func(_ context.Context, in readDocumentToolInput) (*mcp.CallToolResult, any, error) {
+			return s.handleWorkspaceReadDocument(in)
+		})
+
+	addMCPTool(server, "workspace_search_text",
+		"Search for text across readable files in a folder and its subfolders.",
+		func(_ context.Context, in searchTextToolInput) (*mcp.CallToolResult, any, error) {
+			return s.handleWorkspaceSearchText(in)
 		})
 
 	addMCPTool(server, "workspace_write_file",
-		"Create or update a text file. Overwriting outside trusted folders needs approval.",
-		func(_ context.Context, in writeFileToolInput) (*mcp.CallToolResult, any, error) {
+		"Create or replace a text file inside DezuxkStudio's workspace, media, or trusted folders.",
+		func(ctx context.Context, in writeFileToolInput) (*mcp.CallToolResult, any, error) {
 			target, err := s.policy.ValidateWrite(in.Path)
 			if err != nil {
 				return mcpError(err.Error())
 			}
-			if ContainsSourceCode(in.Content) {
-				s.log.Warn("agent: blocked workspace_write_file containing source code", "path", target)
-				return mcpError("refused: content contains source code or terminal commands; DezuxkStudio Assistant only writes non-code content (scripts for videos, prompts, subtitles, notes, data)")
+			if errMsg := validateJSONWrite(target, in.Content); errMsg != "" {
+				return mcpError(errMsg)
 			}
 			content := in.Content
 			write := func(context.Context) (any, error) {
@@ -449,7 +481,7 @@ func (s *Service) buildToolset() *mcpToolset {
 				return map[string]any{"ok": true, "path": target, "bytes": len(content)}, nil
 			}
 			if _, statErr := os.Stat(target); statErr == nil && !s.policy.IsTrusted(target) {
-				return s.needsApproval("workspace_write_file", "Overwrite "+filepath.Base(target),
+				return s.needsApproval(ctx, "workspace_write_file", "Overwrite "+filepath.Base(target),
 					fmt.Sprintf("Replace the existing file %s (%d bytes of new content).", target, len(content)), write)
 			}
 			res, err := write(context.Background())
@@ -459,9 +491,15 @@ func (s *Service) buildToolset() *mcpToolset {
 			return mcpJSON(res)
 		})
 
+	addMCPTool(server, "workspace_edit_file",
+		"Append to or replace a section (old_text or start_line/end_line) in a text file without rewriting the whole file.",
+		func(ctx context.Context, in editFileToolInput) (*mcp.CallToolResult, any, error) {
+			return s.handleWorkspaceEditFile(ctx, in)
+		})
+
 	addMCPTool(server, "workspace_move_file",
 		"Move or rename a file, keeping its type. Replacing a file needs approval.",
-		func(_ context.Context, in moveFileToolInput) (*mcp.CallToolResult, any, error) {
+		func(ctx context.Context, in moveFileToolInput) (*mcp.CallToolResult, any, error) {
 			src, dst, err := s.policy.ValidateMove(in.Source, in.Destination)
 			if err != nil {
 				return mcpError(err.Error())
@@ -486,7 +524,7 @@ func (s *Service) buildToolset() *mcpToolset {
 				if !in.Overwrite {
 					return mcpError(fmt.Sprintf("destination %q already exists (set overwrite=true to replace it)", dst))
 				}
-				return s.needsApproval("workspace_move_file", "Replace "+filepath.Base(dst),
+				return s.needsApproval(ctx, "workspace_move_file", "Replace "+filepath.Base(dst),
 					fmt.Sprintf("Move %s to %s, replacing the existing file.", src, dst), move)
 			}
 			res, err := move(context.Background())
@@ -497,8 +535,8 @@ func (s *Service) buildToolset() *mcpToolset {
 		})
 
 	addMCPTool(server, "workspace_delete_file",
-		"Delete a file. Outside trusted folders this needs approval.",
-		func(_ context.Context, in deleteFileToolInput) (*mcp.CallToolResult, any, error) {
+		"Delete a file inside DezuxkStudio's workspace, media, or trusted folders.",
+		func(ctx context.Context, in deleteFileToolInput) (*mcp.CallToolResult, any, error) {
 			target, err := s.policy.ValidateDelete(in.Path)
 			if err != nil {
 				return mcpError(err.Error())
@@ -517,10 +555,41 @@ func (s *Service) buildToolset() *mcpToolset {
 				return map[string]any{"ok": true, "deleted": target}, nil
 			}
 			if !s.policy.IsTrusted(target) {
-				return s.needsApproval("workspace_delete_file", "Delete "+filepath.Base(target),
+				return s.needsApproval(ctx, "workspace_delete_file", "Delete "+filepath.Base(target),
 					fmt.Sprintf("Permanently delete %s (%d bytes).", target, info.Size()), del)
 			}
 			res, err := del(context.Background())
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "skill_read",
+		"Load a skill's full markdown instructions (SKILL.md) or companion resource on demand.",
+		func(_ context.Context, in skillReadToolInput) (*mcp.CallToolResult, any, error) {
+			if s.customizations == nil {
+				return mcpError("customizations storage is unavailable")
+			}
+			sk, content, err := s.customizations.ReadSkill(strings.TrimSpace(strings.ToLower(in.Name)), in.Resource)
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(map[string]any{
+				"name":        sk.Name,
+				"description": sk.Description,
+				"resources":   sk.Resources,
+				"content":     content,
+			})
+		})
+
+	addMCPTool(server, "subagent_run",
+		"Delegate a focused sub-task to a specialized isolated subagent worker (supports parallel calls).",
+		func(ctx context.Context, in subagentRunToolInput) (*mcp.CallToolResult, any, error) {
+			if _, isSub := subagentFromContext(ctx); isSub {
+				return mcpError("subagent_run cannot be invoked from inside a subagent")
+			}
+			res, err := s.runSubagentTool(ctx, in)
 			if err != nil {
 				return mcpError(err.Error())
 			}
@@ -595,13 +664,14 @@ func (s *Service) buildCapabilitiesSnapshot(ctx context.Context) map[string]any 
 			"Translate text and subtitles between human languages",
 			"Write and refine prompts for image, video and AI generation",
 			"Analyze documents, images, subtitles and media metadata",
-			"Organize files: list, read, create text files, move/rename, delete (with approval outside trusted folders)",
+			"Organize files inside DezuxkStudio's workspace, media, and trusted folders: list, read, create text files, move/rename, delete",
 		},
 	}
 
 	return map[string]any{
 		"app":                   clientName,
 		"version":               s.appVersion,
+		"developer_mode":        s.developerMode,
 		"current_screen":        ui,
 		"dezuxkstudio_features": appFeatures,
 		"assistant_extras":      assistantExtras,

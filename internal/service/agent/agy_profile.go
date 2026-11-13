@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,11 +101,19 @@ func (ps profileSecrets) clearAgyAuth(profileRoot string) {
 // It injects ONLY DezuxkStudio's authenticated MCP server and denies built-in coding/shell tools,
 // never touching the user's real ~/.gemini or %APPDATA%\antigravity-cli directories.
 func (ps profileSecrets) prepareAgyProfile(profileRoot, mcpURL, mcpToken string) (string, map[string]string, error) {
+	return ps.prepareAgyProfileMode(profileRoot, mcpURL, mcpToken, false)
+}
+
+func (ps profileSecrets) prepareAgyProfileMode(profileRoot, mcpURL, mcpToken string, devMode bool) (string, map[string]string, error) {
 	useOAuth := ps.loadAgyAPIKey(profileRoot) == "" && loadAgyOAuthLabel(profileRoot) != ""
-	return ps.prepareAgyProfileWithMode(profileRoot, mcpURL, mcpToken, useOAuth)
+	return ps.prepareAgyProfileWithOptions(profileRoot, mcpURL, mcpToken, useOAuth, devMode)
 }
 
 func (ps profileSecrets) prepareAgyProfileWithMode(profileRoot, mcpURL, mcpToken string, useOAuth bool) (string, map[string]string, error) {
+	return ps.prepareAgyProfileWithOptions(profileRoot, mcpURL, mcpToken, useOAuth, false)
+}
+
+func (ps profileSecrets) prepareAgyProfileWithOptions(profileRoot, mcpURL, mcpToken string, useOAuth, devMode bool) (string, map[string]string, error) {
 	if profileRoot == "" {
 		return "", nil, fmt.Errorf("agent: antigravity profile root is required")
 	}
@@ -145,11 +155,15 @@ func (ps profileSecrets) prepareAgyProfileWithMode(profileRoot, mcpURL, mcpToken
 	}
 
 	// Unless user explicitly signed in via Google OAuth, force modelProvider="gemini" so agy never reads
-	// Windows OS Credential Manager keyring behind the user's back; always deny built-in coding/shell tools.
+	// Windows OS Credential Manager keyring behind the user's back. In assistant mode, deny built-in coding tools.
 	settingsCfg := map[string]any{
 		"enableTelemetry": false,
 		"toolPermission":  "request-review",
-		"permissions": map[string]any{
+	}
+	if devMode {
+		settingsCfg["toolPermission"] = "auto"
+	} else {
+		settingsCfg["permissions"] = map[string]any{
 			"deny": []string{
 				"command(*)",
 				"run_command(*)",
@@ -169,7 +183,7 @@ func (ps profileSecrets) prepareAgyProfileWithMode(profileRoot, mcpURL, mcpToken
 				"write_file(*)",
 				"edit_file(*)",
 			},
-		},
+		}
 	}
 	if !useOAuth {
 		settingsCfg["modelProvider"] = "gemini"
@@ -249,5 +263,81 @@ func (s *Service) loginAgyOAuth(ctx context.Context, spec domainagent.ProviderSp
 	if err != nil {
 		return fmt.Errorf("agy Google sign-in failed: %w", err)
 	}
-	return s.secrets.saveAgyOAuth(profileRoot, tierName)
+	if err := s.secrets.saveAgyOAuth(profileRoot, tierName); err != nil {
+		return err
+	}
+	return nil
+}
+
+// prepareAgySubProfile prepares an isolated, disposable home directory for a single Antigravity subagent run,
+// preserving parent OAuth files or API key while scoping mcp_config.json to the subagent's scoped token.
+func (ps profileSecrets) prepareAgySubProfile(parentProfileRoot, subProfileRoot, mcpURL, mcpToken string) (map[string]string, func(), error) {
+	if parentProfileRoot == "" || subProfileRoot == "" {
+		return nil, func() {}, fmt.Errorf("agent: antigravity parent and subagent profile roots are required")
+	}
+	useOAuth := ps.loadAgyAPIKey(parentProfileRoot) == "" && loadAgyOAuthLabel(parentProfileRoot) != ""
+	_, envOverrides, err := ps.prepareAgyProfileWithOptions(subProfileRoot, mcpURL, mcpToken, useOAuth, false)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	cleanup := func() { _ = os.RemoveAll(subProfileRoot) }
+
+	if useOAuth {
+		parentGemini := filepath.Join(parentProfileRoot, "home", ".gemini")
+		subGemini := filepath.Join(subProfileRoot, "home", ".gemini")
+		skip := map[string]bool{
+			"config/mcp_config.json":        true,
+			"antigravity-cli/settings.json": true,
+		}
+		if copyErr := copyDirSkipping(parentGemini, subGemini, skip); copyErr != nil {
+			cleanup()
+			return nil, func() {}, fmt.Errorf("agent: copy antigravity oauth state: %w", copyErr)
+		}
+	} else if apiKey := ps.loadAgyAPIKey(parentProfileRoot); apiKey != "" {
+		envOverrides["GEMINI_API_KEY"] = apiKey
+	}
+	return envOverrides, cleanup, nil
+}
+
+func copyDirSkipping(srcRoot, dstRoot string, skipRel map[string]bool) error {
+	if _, err := os.Stat(srcRoot); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return filepath.WalkDir(srcRoot, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, relErr := filepath.Rel(srcRoot, p)
+		if relErr != nil || rel == "." {
+			return relErr
+		}
+		slash := filepath.ToSlash(rel)
+		if skipRel[slash] || d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		target := filepath.Join(dstRoot, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o700)
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return err
+		}
+		in, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = in.Close() }()
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(out, in); err != nil {
+			_ = out.Close()
+			return err
+		}
+		return out.Close()
+	})
 }

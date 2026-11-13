@@ -26,7 +26,7 @@ import (
 // app-server (older versions, protocol changes). The app-server protocol is marked experimental by Codex.
 
 const (
-	codexAppServerMaxLine = 16 << 20 // largest JSON-RPC line accepted from the app-server
+	codexAppServerMaxLine = 32 << 20 // largest JSON-RPC line accepted from the app-server
 )
 
 // errCodexAppServerUnavailable means the app-server could not be started or initialized; the caller
@@ -301,7 +301,7 @@ func (s *Service) ensureCodexAppServer(ctx context.Context, executable, profileR
 	if err != nil {
 		return nil, err
 	}
-	args := append([]string{"app-server"}, codexPolicyArgs(mcpURL, baseFile, s.limits.MCPToolTimeout)...)
+	args := append([]string{"app-server"}, codexPolicyArgsForMode(mcpURL, baseFile, s.limits.MCPToolTimeout, s.developerMode)...)
 	srv, err = s.spawnCodexAppServer(key, executable, args, providerEnv(domainagent.ProviderCodex, envMap), workspaceDir)
 	if err != nil {
 		return nil, fmt.Errorf("%w: start: %v", errCodexAppServerUnavailable, err)
@@ -643,9 +643,13 @@ func (s *Service) runCodexAppServerTurn(ctx context.Context, srv *codexAppServer
 func (s *Service) codexThread(ctx context.Context, srv *codexAppServer, workspaceDir string) (string, error) {
 	// The profile is already the base instructions (model_instructions_file); it is not repeated as
 	// developer instructions, which would cost ~2k extra tokens on every model call.
+	sandbox := "read-only"
+	if s.developerMode {
+		sandbox = "workspace-write"
+	}
 	settings := map[string]any{
 		"cwd":            workspaceDir,
-		"sandbox":        "read-only",
+		"sandbox":        sandbox,
 		"approvalPolicy": "never",
 	}
 	if saved := s.cliSessionFor(domainagent.ProviderCodex); saved != "" {

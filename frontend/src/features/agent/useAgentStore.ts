@@ -3,18 +3,24 @@ import { create } from "zustand";
 import {
   Actions,
   type AgentApprovalRequest,
-  type AgentLoginPrompt,
   type AgentChatEvent,
   type AgentConversation,
+  type AgentCustomizationsResult,
   type AgentHistoryResult,
+  type AgentLoginPrompt,
   type AgentProviderID,
   type AgentProviderInfo,
+  type AgentSaveSkillPayload,
+  type AgentSaveSubagentPayload,
   type AgentUIContextPayload,
+  type SkillInfo,
+  type SubagentInfo,
+  type SubagentInvocation,
 } from "../../contracts/generated";
 import { rtClient, toActionError, type ActionError } from "../../lib/rtClient";
 import { safeStorage } from "../../lib/storage";
 
-export type AgentDrawerTab = "chat" | "connections";
+export type AgentDrawerTab = "chat" | "connections" | "customizations";
 /** What the chat tab shows: the current chat or the list of earlier chats. */
 export type AgentChatView = "chat" | "history";
 
@@ -29,6 +35,7 @@ export interface AgentChatMessage {
   text: string;
   thought?: string;
   tools?: AgentToolCallItem[];
+  subagents?: SubagentInvocation[];
   providerId?: AgentProviderID;
   streaming?: boolean;
   /** i18n key + params for a server error, translated when rendered. */
@@ -58,6 +65,7 @@ function historyState(res: AgentHistoryResult): Pick<AgentState, "messages" | "c
       tools: m.tool
         ? m.tool.split(", ").map((name) => ({ name, status: "done" as const }))
         : undefined,
+      subagents: m.subagents?.length ? m.subagents : undefined,
       providerId: m.provider_id,
       streaming: false,
     })),
@@ -83,6 +91,7 @@ interface AgentState {
   panelWidth: number;
   activeTab: AgentDrawerTab;
   providers: AgentProviderInfo[];
+  developerMode: boolean;
   approvals: AgentApprovalRequest[];
   allowedDirs: string[];
   loadingProviders: boolean;
@@ -98,6 +107,11 @@ interface AgentState {
   chatView: AgentChatView;
   conversations: AgentConversation[];
   loadingConversations: boolean;
+  customizationsDir: string;
+  skills: SkillInfo[];
+  subagents: SubagentInfo[];
+  availableSubagentTools: string[];
+  loadingCustomizations: boolean;
 
   openPanel: () => void;
   closePanel: () => void;
@@ -111,6 +125,14 @@ interface AgentState {
   fetchHistory: () => Promise<void>;
   fetchApprovals: () => Promise<void>;
   fetchAllowedDirs: () => Promise<void>;
+  fetchCustomizations: () => Promise<void>;
+  reloadCustomizations: () => Promise<void>;
+  saveSkill: (payload: AgentSaveSkillPayload) => Promise<boolean>;
+  deleteSkill: (name: string) => Promise<void>;
+  restoreSkill: (name: string) => Promise<void>;
+  saveSubagent: (payload: AgentSaveSubagentPayload) => Promise<boolean>;
+  deleteSubagent: (name: string) => Promise<void>;
+  restoreSubagent: (name: string) => Promise<void>;
   probeProvider: (id: AgentProviderID) => Promise<void>;
   setCustomPath: (id: AgentProviderID, customPath: string) => Promise<void>;
   setModel: (id: AgentProviderID, model: string, effort: string) => Promise<void>;
@@ -139,6 +161,7 @@ interface AgentState {
   receiveStatus: (info: AgentProviderInfo) => void;
   receiveChatEvent: (evt: AgentChatEvent) => void;
   receiveApprovals: (approvals: AgentApprovalRequest[]) => void;
+  receiveCustomizations: (snap: AgentCustomizationsResult) => void;
 }
 
 /**
@@ -153,7 +176,7 @@ export function newerInfo(
 }
 
 /** Marks every still-running tool of a finished reply with status (done or error). */
-export function finishRunningTools<T extends { status: "running" | "done" | "error" }>(
+export function finishRunningTools<T extends { status: string }>(
   tools: T[] | undefined,
   status: "done" | "error"
 ): T[] | undefined {
@@ -166,6 +189,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   panelWidth: readSavedWidth(),
   activeTab: "chat",
   providers: [],
+  developerMode: false,
   approvals: [],
   allowedDirs: [],
   loadingProviders: false,
@@ -179,6 +203,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   chatView: "chat",
   conversations: [],
   loadingConversations: false,
+  customizationsDir: "",
+  skills: [],
+  subagents: [],
+  availableSubagentTools: [],
+  loadingCustomizations: false,
 
   openPanel: () => set({ panelOpen: true }),
   closePanel: () => set({ panelOpen: false }),
@@ -212,13 +241,19 @@ export const useAgentStore = create<AgentState>((set, get) => ({
               next
             )
           ),
+          developerMode: Boolean(res.developer_mode),
           loadingProviders: false,
           ...(turnOver
             ? {
                 sending: false,
                 messages: s.messages.map((m) =>
                   m.streaming
-                    ? { ...m, streaming: false, tools: finishRunningTools(m.tools, "done") }
+                    ? {
+                        ...m,
+                        streaming: false,
+                        tools: finishRunningTools(m.tools, "done"),
+                        subagents: finishRunningTools(m.subagents, "done"),
+                      }
                     : m
                 ),
               }
@@ -341,7 +376,18 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     try {
       const updated = await rtClient.request(Actions.AGENT_CONNECT, { id });
       get().receiveStatus(updated);
-      set({ busyAction: false, activeTab: "chat" });
+      const { conversationId, messages, conversations } = get();
+      const convOwner =
+        messages.find((m) => m.providerId)?.providerId ??
+        conversations.find((c) => c.id === conversationId)?.provider_id;
+      const shouldClearChat = Boolean(conversationId && convOwner && convOwner !== id);
+      set({
+        busyAction: false,
+        activeTab: "chat",
+        ...(shouldClearChat
+          ? { conversationId: "", messages: [], approvals: [], chatView: "chat" as const }
+          : {}),
+      });
     } catch (err) {
       set({ error: toActionError(err), busyAction: false });
       void get().fetchProviders();
@@ -521,6 +567,103 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
+  fetchCustomizations: async () => {
+    set({ loadingCustomizations: true });
+    try {
+      const res = await rtClient.request(Actions.AGENT_LIST_CUSTOMIZATIONS, {});
+      get().receiveCustomizations(res);
+    } catch (err) {
+      set({ error: toActionError(err) });
+    } finally {
+      set({ loadingCustomizations: false });
+    }
+  },
+
+  reloadCustomizations: async () => {
+    set({ loadingCustomizations: true, error: null });
+    try {
+      const res = await rtClient.request(Actions.AGENT_RELOAD_CUSTOMIZATIONS, {});
+      get().receiveCustomizations(res);
+    } catch (err) {
+      set({ error: toActionError(err) });
+    } finally {
+      set({ loadingCustomizations: false });
+    }
+  },
+
+  saveSkill: async (payload) => {
+    set({ error: null });
+    try {
+      const res = await rtClient.request(Actions.AGENT_SAVE_SKILL, payload);
+      get().receiveCustomizations(res);
+      return true;
+    } catch (err) {
+      set({ error: toActionError(err) });
+      return false;
+    }
+  },
+
+  deleteSkill: async (name) => {
+    set({ error: null });
+    try {
+      const res = await rtClient.request(Actions.AGENT_DELETE_SKILL, { name });
+      get().receiveCustomizations(res);
+    } catch (err) {
+      set({ error: toActionError(err) });
+    }
+  },
+
+  restoreSkill: async (name) => {
+    set({ error: null });
+    try {
+      const res = await rtClient.request(Actions.AGENT_RESTORE_SKILL, { name });
+      get().receiveCustomizations(res);
+    } catch (err) {
+      set({ error: toActionError(err) });
+    }
+  },
+
+  saveSubagent: async (payload) => {
+    set({ error: null });
+    try {
+      const res = await rtClient.request(Actions.AGENT_SAVE_SUBAGENT, payload);
+      get().receiveCustomizations(res);
+      return true;
+    } catch (err) {
+      set({ error: toActionError(err) });
+      return false;
+    }
+  },
+
+  deleteSubagent: async (name) => {
+    set({ error: null });
+    try {
+      const res = await rtClient.request(Actions.AGENT_DELETE_SUBAGENT, { name });
+      get().receiveCustomizations(res);
+    } catch (err) {
+      set({ error: toActionError(err) });
+    }
+  },
+
+  restoreSubagent: async (name) => {
+    set({ error: null });
+    try {
+      const res = await rtClient.request(Actions.AGENT_RESTORE_SUBAGENT, { name });
+      get().receiveCustomizations(res);
+    } catch (err) {
+      set({ error: toActionError(err) });
+    }
+  },
+
+  receiveCustomizations: (snap) => {
+    set({
+      customizationsDir: snap.dir ?? "",
+      skills: snap.skills ?? [],
+      subagents: snap.subagents ?? [],
+      availableSubagentTools: snap.available_tools ?? [],
+    });
+  },
+
   setUIContext: async (ctx) => {
     try {
       await rtClient.request(Actions.AGENT_SET_UI_CONTEXT, ctx);
@@ -569,6 +712,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         (evt.type === "delta" ||
           evt.type === "thought" ||
           evt.type === "tool_call" ||
+          evt.type === "subagent_start" ||
           evt.type === "error")
       ) {
         msgs.push({
@@ -577,6 +721,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           text: "",
           thought: "",
           tools: [],
+          subagents: [],
           providerId: evt.provider_id,
           streaming: evt.type !== "error",
         });
@@ -591,6 +736,22 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       if (evt.message_id) {
         target.id = evt.message_id;
       }
+
+      const findSubagentIdx = (list: NonNullable<AgentChatMessage["subagents"]>) => {
+        if (evt.subagent_id) {
+          const byId = list.findIndex((sa) => sa.id === evt.subagent_id);
+          if (byId >= 0) return byId;
+        }
+        if (evt.subagent_name) {
+          for (let i = list.length - 1; i >= 0; i--) {
+            if (list[i].status === "running" && list[i].name === evt.subagent_name) return i;
+          }
+        }
+        for (let i = list.length - 1; i >= 0; i--) {
+          if (list[i].status === "running") return i;
+        }
+        return -1;
+      };
 
       switch (evt.type) {
         case "delta":
@@ -628,15 +789,131 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           msgs[idx] = target;
           return { messages: msgs };
         }
+        case "subagent_start": {
+          const prevSubs = [...(target.subagents ?? [])];
+          const subId = evt.subagent_id || evt.subagent_name || `sub-${prevSubs.length + 1}`;
+          const subName = evt.subagent_name || evt.text || subId;
+          const existingIdx = prevSubs.findIndex((sa) => sa.id === subId);
+          if (existingIdx >= 0) {
+            prevSubs[existingIdx] = {
+              ...prevSubs[existingIdx],
+              name: subName,
+              provider: evt.subagent_provider ?? prevSubs[existingIdx].provider,
+              status: "running",
+            };
+          } else {
+            prevSubs.push({
+              id: subId,
+              name: subName,
+              provider: evt.subagent_provider,
+              status: "running",
+              text: "",
+              tools: [],
+            });
+          }
+          target.subagents = prevSubs;
+          msgs[idx] = target;
+          return { messages: msgs };
+        }
+        case "subagent_delta": {
+          const prevSubs = [...(target.subagents ?? [])];
+          const subIdx = findSubagentIdx(prevSubs);
+          if (subIdx >= 0) {
+            const cur = prevSubs[subIdx];
+            prevSubs[subIdx] = { ...cur, text: `${cur.text ?? ""}${evt.text}` };
+          } else {
+            const subId = evt.subagent_id || evt.subagent_name || `sub-${prevSubs.length + 1}`;
+            prevSubs.push({
+              id: subId,
+              name: evt.subagent_name || subId,
+              provider: evt.subagent_provider,
+              status: "running",
+              text: evt.text,
+              tools: [],
+            });
+          }
+          target.subagents = prevSubs;
+          msgs[idx] = target;
+          return { messages: msgs };
+        }
+        case "subagent_tool_call": {
+          const prevSubs = [...(target.subagents ?? [])];
+          const toolName = evt.tool || evt.text;
+          const subIdx = findSubagentIdx(prevSubs);
+          if (subIdx >= 0) {
+            const cur = prevSubs[subIdx];
+            const nextTools = toolName ? [...(cur.tools ?? []), toolName] : (cur.tools ?? []);
+            prevSubs[subIdx] = { ...cur, tools: nextTools };
+          } else {
+            const subId = evt.subagent_id || evt.subagent_name || `sub-${prevSubs.length + 1}`;
+            prevSubs.push({
+              id: subId,
+              name: evt.subagent_name || subId,
+              provider: evt.subagent_provider,
+              status: "running",
+              text: "",
+              tools: toolName ? [toolName] : [],
+            });
+          }
+          target.subagents = prevSubs;
+          msgs[idx] = target;
+          return { messages: msgs };
+        }
+        case "subagent_tool_result": {
+          const prevSubs = [...(target.subagents ?? [])];
+          const toolName = evt.tool || evt.text;
+          const subIdx = findSubagentIdx(prevSubs);
+          if (subIdx >= 0 && toolName) {
+            const cur = prevSubs[subIdx];
+            const curTools = cur.tools ?? [];
+            if (!curTools.includes(toolName)) {
+              prevSubs[subIdx] = { ...cur, tools: [...curTools, toolName] };
+              target.subagents = prevSubs;
+              msgs[idx] = target;
+              return { messages: msgs };
+            }
+          }
+          return s;
+        }
+        case "subagent_done": {
+          const prevSubs = [...(target.subagents ?? [])];
+          const subIdx = findSubagentIdx(prevSubs);
+          const nextStatus = evt.error ? "error" : "done";
+          if (subIdx >= 0) {
+            const cur = prevSubs[subIdx];
+            prevSubs[subIdx] = {
+              ...cur,
+              status: nextStatus,
+              error: evt.error || cur.error,
+              text: cur.text || evt.text || undefined,
+            };
+          } else {
+            const subId = evt.subagent_id || evt.subagent_name || `sub-${prevSubs.length + 1}`;
+            prevSubs.push({
+              id: subId,
+              name: evt.subagent_name || subId,
+              provider: evt.subagent_provider,
+              status: nextStatus,
+              text: evt.text || undefined,
+              tools: [],
+              error: evt.error || undefined,
+            });
+          }
+          target.subagents = prevSubs;
+          msgs[idx] = target;
+          return { messages: msgs };
+        }
         case "done":
           target.streaming = false;
           // The turn is over, so no tool can still be running (a lost or unmatched result event).
           target.tools = finishRunningTools(target.tools, "done");
+          target.subagents = finishRunningTools(target.subagents, "done");
           msgs[idx] = target;
           return { messages: msgs, sending: false };
         case "error":
           target.streaming = false;
           target.tools = finishRunningTools(target.tools, "error");
+          target.subagents = finishRunningTools(target.subagents, "error");
           target.errorKey = evt.error_key;
           target.errorParams = evt.error_params;
           if (!target.text) {

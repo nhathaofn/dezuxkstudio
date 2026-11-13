@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"sync"
-	"time"
 
 	domainagent "app/internal/domain/agent"
 	"app/internal/lookup"
@@ -34,24 +33,14 @@ func (s *Service) managedFinder(id domainagent.ProviderID) lookup.Finder {
 	}
 }
 
-// ProvisionCLIs installs the agent CLIs the app is missing and keeps the ones it has on the newest
-// official release. It runs until ctx ends, looking again every Limits.CLIUpdateInterval. A failure
-// (offline, server down) only skips that round; the CLI that works stays in use.
+// ProvisionCLIs installs the agent CLIs the app is missing and (when autoUpdate is enabled) checks
+// for newer official releases once at startup. Nothing updates periodically while the app is open;
+// a failure (offline, server down) is skipped so the working CLI stays in use.
 func (s *Service) ProvisionCLIs(ctx context.Context) {
 	if s.managed == nil || (!s.autoInstall && !s.autoUpdate) {
 		return
 	}
-	for {
-		s.provisionRound(ctx)
-		if !s.autoUpdate {
-			return // nothing to look for later: a missing CLI was tried once
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(s.limits.CLIUpdateInterval):
-		}
-	}
+	s.provisionRound(ctx)
 }
 
 func (s *Service) provisionRound(ctx context.Context) {

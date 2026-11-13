@@ -163,7 +163,7 @@ func (d agyDriver) logout(context.Context, string) error {
 	return nil
 }
 func (d agyDriver) sessionEnv(mcpURL, mcpToken string) ([]string, error) {
-	_, env, err := d.s.secrets.prepareAgyProfile(d.profile(), mcpURL, mcpToken)
+	_, env, err := d.s.secrets.prepareAgyProfileMode(d.profile(), mcpURL, mcpToken, d.s.developerMode)
 	if err != nil {
 		return nil, err
 	}

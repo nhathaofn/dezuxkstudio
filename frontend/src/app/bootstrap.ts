@@ -32,6 +32,9 @@ export function bootstrap(): void {
   rtClient.on(Events.AGENT_APPROVALS, (p) =>
     useAgentStore.getState().receiveApprovals(p.approvals)
   );
+  rtClient.on(Events.AGENT_CUSTOMIZATIONS_CHANGED, (p) =>
+    useAgentStore.getState().receiveCustomizations(p)
+  );
   rtClient.on(Events.ACTION_PROGRESS, (p) => {
     // Heartbeats only keep a request alive; logging them would flood the live log buffer.
     if (!p.heartbeat) uiLog.info(`progress ${Math.round(p.percent)}% ${p.message}`);
@@ -52,6 +55,7 @@ export function bootstrap(): void {
     void useAgentStore.getState().fetchHistory();
     void useAgentStore.getState().fetchApprovals();
     void useAgentStore.getState().fetchAllowedDirs();
+    void useAgentStore.getState().fetchCustomizations();
     if (firstConnect && useConnectionStore.getState().endpoint?.checkUpdatesOnStartup) {
       void useSystemStore.getState().checkUpdate();
     }

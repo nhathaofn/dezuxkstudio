@@ -344,6 +344,62 @@ describe("conversations", () => {
     expect(s.conversationId).toBe("");
     expect(s.messages).toEqual([]);
   });
+
+  it("clears an active conversation when connecting a different provider", async () => {
+    useAgentStore.setState({
+      providers: mockProviders,
+      activeTab: "connections",
+      conversationId: "c-codex",
+      messages: [{ id: "m1", role: "user", text: "codex prompt", providerId: "codex" }],
+      approvals: [
+        {
+          id: "ap-1",
+          provider_id: "codex",
+          tool: "workspace_write_file",
+          title: "Write",
+          summary: "Write file",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+    const connectedClaude = {
+      ...mockProviders[0],
+      id: "claude" as const,
+      name: "Claude Code",
+      state: "connected" as const,
+      active: true,
+    };
+    vi.spyOn(rtClient, "request").mockResolvedValueOnce(connectedClaude);
+
+    await useAgentStore.getState().connectProvider("claude");
+    const s = useAgentStore.getState();
+    expect(s.activeTab).toBe("chat");
+    expect(s.conversationId).toBe("");
+    expect(s.messages).toEqual([]);
+    expect(s.approvals).toEqual([]);
+  });
+
+  it("preserves the open conversation when reconnecting its own provider", async () => {
+    useAgentStore.setState({
+      providers: mockProviders,
+      activeTab: "connections",
+      conversationId: "c-codex",
+      messages: [{ id: "m1", role: "user", text: "codex prompt", providerId: "codex" }],
+    });
+    const connectedCodex = {
+      ...mockProviders[0],
+      id: "codex" as const,
+      name: "Codex CLI",
+      state: "connected" as const,
+      active: true,
+    };
+    vi.spyOn(rtClient, "request").mockResolvedValueOnce(connectedCodex);
+
+    await useAgentStore.getState().connectProvider("codex");
+    const s = useAgentStore.getState();
+    expect(s.conversationId).toBe("c-codex");
+    expect(s.messages.map((m) => m.id)).toEqual(["m1"]);
+  });
 });
 
 describe("tool spinners", () => {
@@ -445,5 +501,246 @@ describe("provider status snapshots", () => {
     expect(useAgentStore.getState().providers.find((p) => p.id === "codex")?.models).toHaveLength(
       1
     );
+  });
+
+  it("tracks developer_mode returned by agent:list", async () => {
+    useAgentStore.setState({ developerMode: false });
+    vi.spyOn(rtClient, "request").mockResolvedValueOnce({
+      providers: [connectedWithModels],
+      developer_mode: true,
+    });
+    await useAgentStore.getState().fetchProviders();
+    expect(useAgentStore.getState().developerMode).toBe(true);
+  });
+});
+
+describe("subagent events and customizations", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("aggregates subagent lifecycle events into the streaming assistant message", () => {
+    useAgentStore.setState({
+      messages: [
+        {
+          id: "pending-1",
+          role: "assistant",
+          text: "",
+          thought: "",
+          tools: [],
+          subagents: [],
+          streaming: true,
+        },
+      ],
+      sending: true,
+    });
+
+    const s = useAgentStore.getState();
+    s.receiveChatEvent({
+      message_id: "msg-10",
+      provider_id: "antigravity",
+      type: "subagent_start",
+      text: "",
+      error: "",
+      subagent_id: "sub-1",
+      subagent_name: "workspace-reviewer",
+      subagent_provider: "claude",
+    });
+    s.receiveChatEvent({
+      message_id: "msg-10",
+      provider_id: "antigravity",
+      type: "subagent_tool_call",
+      text: "workspace_read_file",
+      error: "",
+      tool: "workspace_read_file",
+      subagent_id: "sub-1",
+      subagent_name: "workspace-reviewer",
+    });
+    s.receiveChatEvent({
+      message_id: "msg-10",
+      provider_id: "antigravity",
+      type: "subagent_tool_result",
+      text: "ok",
+      error: "",
+      tool: "workspace_read_file",
+      subagent_id: "sub-1",
+      subagent_name: "workspace-reviewer",
+    });
+    s.receiveChatEvent({
+      message_id: "msg-10",
+      provider_id: "antigravity",
+      type: "subagent_delta",
+      text: "Reviewed ",
+      error: "",
+      subagent_id: "sub-1",
+    });
+    s.receiveChatEvent({
+      message_id: "msg-10",
+      provider_id: "antigravity",
+      type: "subagent_delta",
+      text: "cleanly.",
+      error: "",
+      subagent_id: "sub-1",
+    });
+    s.receiveChatEvent({
+      message_id: "msg-10",
+      provider_id: "antigravity",
+      type: "subagent_done",
+      text: "",
+      error: "",
+      subagent_id: "sub-1",
+    });
+    s.receiveChatEvent({
+      message_id: "msg-10",
+      provider_id: "antigravity",
+      type: "done",
+      text: "",
+      error: "",
+    });
+
+    const msg = useAgentStore.getState().messages[0];
+    expect(msg.id).toBe("msg-10");
+    expect(msg.streaming).toBe(false);
+    expect(msg.subagents).toEqual([
+      {
+        id: "sub-1",
+        name: "workspace-reviewer",
+        provider: "claude",
+        status: "done",
+        text: "Reviewed cleanly.",
+        tools: ["workspace_read_file"],
+      },
+    ]);
+  });
+
+  it("finalizes still-running subagents on error and restores history subagents", async () => {
+    useAgentStore.setState({ messages: [], sending: true });
+    const s = useAgentStore.getState();
+    s.receiveChatEvent({
+      message_id: "msg-11",
+      provider_id: "codex",
+      type: "subagent_start",
+      text: "",
+      error: "",
+      subagent_id: "sub-2",
+      subagent_name: "content-drafter",
+      subagent_provider: "codex",
+    });
+    s.receiveChatEvent({
+      message_id: "msg-11",
+      provider_id: "codex",
+      type: "error",
+      text: "",
+      error: "turn aborted",
+    });
+    expect(useAgentStore.getState().messages[0].subagents?.[0].status).toBe("error");
+
+    vi.spyOn(rtClient, "request").mockResolvedValueOnce({
+      conversation_id: "c-sub",
+      messages: [
+        {
+          id: "m-sub",
+          provider_id: "claude",
+          role: "assistant",
+          text: "Summary",
+          created_at: 2,
+          subagents: [
+            {
+              id: "sub-h1",
+              name: "workspace-reviewer",
+              provider: "claude",
+              status: "done",
+              text: "All good",
+              tools: ["workspace_list_dir"],
+            },
+          ],
+        },
+      ],
+    } as never);
+    await useAgentStore.getState().openConversation("c-sub");
+    expect(useAgentStore.getState().messages[0].subagents?.[0].name).toBe("workspace-reviewer");
+    expect(useAgentStore.getState().messages[0].subagents?.[0].tools).toEqual([
+      "workspace_list_dir",
+    ]);
+  });
+
+  it("manages skills and subagents via customization store actions", async () => {
+    const snap = {
+      dir: "C:/data/agent-customizations",
+      skills: [
+        {
+          name: "brief-structuring",
+          description: "Structure briefs",
+          user_invocable: true,
+          enabled: true,
+          source_state: "managed" as const,
+          built_in: true,
+          tombstoned: false,
+          body: "## Steps",
+        },
+      ],
+      subagents: [
+        {
+          name: "workspace-reviewer",
+          description: "Review workspace",
+          skills: ["review-checklist"],
+          tools: ["workspace_read_file"],
+          enabled: true,
+          source_state: "managed" as const,
+          built_in: true,
+          tombstoned: false,
+          body: "Review carefully",
+        },
+      ],
+      available_tools: ["workspace_read_file", "workspace_list_dir"],
+    };
+
+    const reqSpy = vi.spyOn(rtClient, "request").mockResolvedValue(snap as never);
+    await useAgentStore.getState().fetchCustomizations();
+    expect(reqSpy).toHaveBeenCalledWith(Actions.AGENT_LIST_CUSTOMIZATIONS, {});
+    expect(useAgentStore.getState().customizationsDir).toBe(snap.dir);
+    expect(useAgentStore.getState().skills).toHaveLength(1);
+    expect(useAgentStore.getState().subagents).toHaveLength(1);
+    expect(useAgentStore.getState().availableSubagentTools).toEqual([
+      "workspace_read_file",
+      "workspace_list_dir",
+    ]);
+
+    const okSkill = await useAgentStore.getState().saveSkill({
+      name: "custom-skill",
+      description: "Custom",
+      user_invocable: true,
+      enabled: true,
+      body: "Body",
+    });
+    expect(okSkill).toBe(true);
+    expect(reqSpy).toHaveBeenCalledWith(Actions.AGENT_SAVE_SKILL, {
+      name: "custom-skill",
+      description: "Custom",
+      user_invocable: true,
+      enabled: true,
+      body: "Body",
+    });
+
+    await useAgentStore.getState().deleteSkill("custom-skill");
+    expect(reqSpy).toHaveBeenCalledWith(Actions.AGENT_DELETE_SKILL, { name: "custom-skill" });
+    await useAgentStore.getState().restoreSkill("brief-structuring");
+    expect(reqSpy).toHaveBeenCalledWith(Actions.AGENT_RESTORE_SKILL, {
+      name: "brief-structuring",
+    });
+
+    const okSub = await useAgentStore.getState().saveSubagent({
+      name: "custom-sub",
+      description: "Sub",
+      skills: [],
+      tools: ["workspace_read_file"],
+      enabled: true,
+      body: "Sub body",
+    });
+    expect(okSub).toBe(true);
+    await useAgentStore.getState().deleteSubagent("custom-sub");
+    expect(reqSpy).toHaveBeenCalledWith(Actions.AGENT_DELETE_SUBAGENT, { name: "custom-sub" });
+    await useAgentStore.getState().restoreSubagent("workspace-reviewer");
+    expect(reqSpy).toHaveBeenCalledWith(Actions.AGENT_RESTORE_SUBAGENT, {
+      name: "workspace-reviewer",
+    });
   });
 });

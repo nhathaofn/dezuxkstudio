@@ -7,6 +7,7 @@ import {
   RefreshCw,
   History,
   Plus,
+  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -17,6 +18,7 @@ import { getBridge, isDesktop } from "../../lib/bridge";
 import { useT } from "../../lib/i18n";
 import { useConnectionStore } from "../connection/useConnectionStore";
 import { AgentChatTab } from "./AgentChatTab";
+import { AgentCustomizationsTab } from "./AgentCustomizationsTab";
 import { AgentProviderCard } from "./AgentProviderCard";
 import { useSystemStore } from "../system/useSystemStore";
 import { useAgentStore } from "./useAgentStore";
@@ -29,6 +31,7 @@ export const AgentDrawer: React.FC = () => {
   const panelWidth = useAgentStore((s) => s.panelWidth);
   const activeTab = useAgentStore((s) => s.activeTab);
   const providers = useAgentStore((s) => s.providers);
+  const developerMode = useAgentStore((s) => s.developerMode);
   const allowedDirs = useAgentStore((s) => s.allowedDirs);
   const loadingProviders = useAgentStore((s) => s.loadingProviders);
   const error = useAgentStore((s) => s.error);
@@ -111,6 +114,7 @@ export const AgentDrawer: React.FC = () => {
           <Badge className={activeProvider ? "agent-badge-online" : ""}>
             {activeProvider ? activeProvider.name : t("agent.status.disconnected")}
           </Badge>
+          {developerMode && <Badge className="agent-badge-dev">{t("agent.mode.developer")}</Badge>}
         </div>
 
         <div className="agent-drawer__actions">
@@ -168,6 +172,16 @@ export const AgentDrawer: React.FC = () => {
         <button
           type="button"
           role="tab"
+          aria-selected={activeTab === "customizations"}
+          className={`agent-drawer__tab${activeTab === "customizations" ? " is-active" : ""}`}
+          onClick={() => setActiveTab("customizations")}
+        >
+          <Sparkles size={13} />
+          <span>{t("agent.tabs.customizations")}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
           aria-selected={activeTab === "connections"}
           className={`agent-drawer__tab${activeTab === "connections" ? " is-active" : ""}`}
           onClick={() => setActiveTab("connections")}
@@ -194,6 +208,8 @@ export const AgentDrawer: React.FC = () => {
 
       {activeTab === "chat" ? (
         <AgentChatTab connectedToCore={coreConnected} />
+      ) : activeTab === "customizations" ? (
+        <AgentCustomizationsTab coreConnected={coreConnected} canEdit={canEditFolders} />
       ) : (
         <div className="agent-connections-tab scrollable-pane">
           <div className="agent-connections-tab__bar">

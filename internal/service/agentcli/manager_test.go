@@ -278,3 +278,30 @@ func TestChecksumLineParsing(t *testing.T) {
 		t.Fatal("unknown asset must have no checksum")
 	}
 }
+
+func TestReleasePackageFallsBackToGitHubWebRedirectOnRateLimit(t *testing.T) {
+	ch := &channel{version: "1.5.0"}
+	baseSrv := newServer(t, ch)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/codex/latest":
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message":"API rate limit exceeded"}`))
+		case "/codex/web/latest":
+			w.Header().Set("Location", "https://github.com/openai/codex/releases/tag/rust-v1.5.0")
+			w.WriteHeader(http.StatusFound)
+		default:
+			baseSrv.Config.Handler.ServeHTTP(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	m := newManager(t, srv)
+	m.webLatestURL = func(string) (string, bool) { return srv.URL + "/codex/web/latest", true }
+
+	cur, changed, err := m.Install(context.Background(), domainagent.ProviderCodex)
+	if err != nil || !changed || cur.Version != "1.5.0" {
+		t.Fatalf("expected Codex fallback install to succeed: cur=%+v changed=%v err=%v", cur, changed, err)
+	}
+}

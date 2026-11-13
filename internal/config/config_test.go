@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"app/internal/buildinfo"
 )
 
 func env(m map[string]string) func(string) (string, bool) {
@@ -217,5 +219,52 @@ func TestEnvPrefixAndHelpers(t *testing.T) {
 	Usage(&sb, ModeServer, "P_")
 	if !strings.Contains(sb.String(), "--server-port") || !strings.Contains(sb.String(), "P_SERVER_PORT") {
 		t.Error("usage misses derived names")
+	}
+}
+
+func TestAgentModeValidation(t *testing.T) {
+	c := Default(ModeDesktop)
+	if c.DeveloperMode() {
+		t.Fatal("default desktop mode must not enable developer mode")
+	}
+	c.Agent.Mode = "developer"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("desktop developer mode should validate, got %v", err)
+	}
+	if !c.DeveloperMode() {
+		t.Fatal("expected DeveloperMode() == true when Agent.Mode is developer on desktop")
+	}
+
+	srv := Default(ModeServer)
+	srv.Server.AuthToken = "tok"
+	srv.Agent.Mode = "developer"
+	if err := srv.Validate(); err == nil {
+		t.Fatal("developer mode must be rejected in headless server mode")
+	}
+
+	bad := Default(ModeDesktop)
+	bad.Agent.Mode = "unsafe"
+	if err := bad.Validate(); err == nil {
+		t.Fatal("unknown agent.mode must be rejected")
+	}
+}
+
+func TestUpdateDefaultsFollowBuildKind(t *testing.T) {
+	orig := buildinfo.Version
+	t.Cleanup(func() { buildinfo.Version = orig })
+
+	buildinfo.Version = "0.0.0-dev"
+	devCfg := Default(ModeDesktop)
+	if devCfg.Update.CheckOnStartup || devCfg.Agent.AutoUpdateCLI {
+		t.Fatalf("dev build must disable startup auto-updates: update=%v cli=%v",
+			devCfg.Update.CheckOnStartup, devCfg.Agent.AutoUpdateCLI)
+	}
+
+	buildinfo.Version = "1.0.0"
+	relCfg := Default(ModeDesktop)
+	want := !buildinfo.IsDev()
+	if relCfg.Update.CheckOnStartup != want || relCfg.Agent.AutoUpdateCLI != want {
+		t.Fatalf("release build startup auto-updates mismatch: got update=%v cli=%v want=%v",
+			relCfg.Update.CheckOnStartup, relCfg.Agent.AutoUpdateCLI, want)
 	}
 }
