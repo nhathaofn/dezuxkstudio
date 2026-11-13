@@ -64,7 +64,7 @@ func (s *Service) systemPrompt(ctx context.Context, id domainagent.ProviderID) s
 func (s *Service) toolsBlock(hint string) string {
 	var sb strings.Builder
 	sb.WriteString("<tools>\nThe application's tools. " + hint + "\n")
-	for _, d := range s.registeredToolDocs() {
+	for _, d := range s.toolDocs() {
 		fmt.Fprintf(&sb, "- %s: %s\n", d.Name, d.Description)
 	}
 	sb.WriteString("</tools>")
@@ -103,10 +103,13 @@ func (s *Service) featuresBlock(ctx context.Context) string {
 		strings.Join(lines, "\n") + "\n</features>"
 }
 
+// maxFeatureLine bounds one feature description in the system prompt (runes).
+const maxFeatureLine = 200
+
 func oneLine(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
-	if r := []rune(s); len(r) > 200 {
-		s = string(r[:200]) + "…"
+	if r := []rune(s); len(r) > maxFeatureLine {
+		s = string(r[:maxFeatureLine]) + "…"
 	}
 	return s
 }

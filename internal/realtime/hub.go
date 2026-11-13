@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -162,14 +163,14 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		Subprotocols:   []string{contracts.ProtocolVersion},
+		Subprotocols:   contracts.SupportedProtocolVersions(),
 		OriginPatterns: h.opts.AllowedOrigins,
 	})
 	if err != nil {
 		h.log.Warn("realtime: upgrade failed", "remote_addr", r.RemoteAddr, "error", err)
 		return
 	}
-	if conn.Subprotocol() != contracts.ProtocolVersion {
+	if !slices.Contains(contracts.SupportedProtocolVersions(), conn.Subprotocol()) {
 		_ = conn.Close(websocket.StatusPolicyViolation, "unsupported protocol version")
 		return
 	}

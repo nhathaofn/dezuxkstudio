@@ -162,6 +162,7 @@ type AgentConfig struct {
 	CLIUpdateInterval   time.Duration // how often to look for a newer agent CLI release
 	ApprovalTTL         time.Duration // pending approvals expire after this long
 	HistoryLimit        int           // messages returned to the chat UI
+	MaxPendingApprovals int           // agent actions waiting for approval at most
 	ContextMessages     int           // past user/assistant messages replayed into a new session
 	ContextMessageChars int           // per-message cap (runes) when replaying history
 }
@@ -259,6 +260,7 @@ func Default(mode Mode) *Config {
 			CLIUpdateInterval:   6 * time.Hour,
 			ApprovalTTL:         30 * time.Minute,
 			HistoryLimit:        200,
+			MaxPendingApprovals: 20,
 			ContextMessages:     10,
 			ContextMessageChars: 1200,
 		},

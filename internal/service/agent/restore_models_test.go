@@ -99,7 +99,7 @@ func newRestoreEnv(t *testing.T, id domainagent.ProviderID) *restoreEnv {
 			t.Fatal(err)
 		}
 		e.repo.paths[id] = stub
-		if err := saveAgyAPIKey(svc.profileDirFor(id), "AIza-test"); err != nil {
+		if err := svc.secrets.saveAgyAPIKey(svc.profileDirFor(id), "AIza-test"); err != nil {
 			t.Fatal(err)
 		}
 	case domainagent.ProviderCodex:

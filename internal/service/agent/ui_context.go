@@ -138,3 +138,10 @@ func (ui UIContext) promptBlock() string {
 	sb.WriteByte('\n')
 	return sb.String()
 }
+
+// SetUIContext updates the active UI screen context visible to the agent via MCP.
+func (s *Service) SetUIContext(ui UIContext) {
+	s.mu.Lock()
+	s.uiContext = ui
+	s.mu.Unlock()
+}

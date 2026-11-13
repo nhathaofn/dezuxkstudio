@@ -9,21 +9,15 @@ import (
 )
 
 // providerDriver holds everything that differs between providers, so Service's lifecycle code (probe,
-// login, logout, connect, turns) has no per-provider switch statements. Adding a provider means adding a
-// Registry entry and a driver.
+// login, logout, connect, turns) has no per-provider branches. A provider is either a turnDriver (each
+// chat turn is its own CLI run) or a sessionDriver (turns run over one long-lived ACP connection).
+// Adding a provider means a Registry entry plus a driver in newDrivers.
 type providerDriver interface {
-	// perTurn reports whether every chat turn runs as its own CLI invocation (Codex, Claude) instead of
-	// over a long-lived ACP connection (Antigravity).
-	perTurn() bool
 	// cheapAuthProbe reports whether probeAuth only reads local files (no status cache needed).
 	cheapAuthProbe() bool
 	probeAuth(ctx context.Context, executable string) (domainagent.AuthState, string)
 	login(ctx context.Context, executable, apiKey string) error
 	logout(ctx context.Context, executable string) error
-	// prepare readies the isolated profile before a per-turn provider is marked connected.
-	prepare() error
-	// runTurn executes one per-turn chat turn.
-	runTurn(ctx context.Context, executable, workDir, mcpURL, mcpToken, messageID, prompt string) error
 	// release frees long-lived resources (processes, tokens) after disconnect, sign-in or sign-out.
 	release()
 	// toolCallHint returns how the model reaches the app's tools when they are NOT listed to it natively
@@ -32,24 +26,53 @@ type providerDriver interface {
 	toolCallHint() string
 }
 
+// turnDriver runs every chat turn as its own CLI invocation (Codex, Claude).
+type turnDriver interface {
+	providerDriver
+	// prepare readies the isolated profile before the provider is marked connected.
+	prepare() error
+	// loadModels reads the models the CLI offers to the signed-in account.
+	loadModels(ctx context.Context, executable string) ([]domainagent.ModelOption, error)
+	runTurn(ctx context.Context, executable, workDir, mcpURL, mcpToken, messageID, prompt string) error
+}
+
+// sessionDriver runs turns over a long-lived ACP connection (Antigravity).
+type sessionDriver interface {
+	providerDriver
+	// sessionEnv prepares the isolated profile wired to DezuxkStudio's MCP server and returns the
+	// environment of the ACP process.
+	sessionEnv(mcpURL, mcpToken string) ([]string, error)
+}
+
+func newDrivers(s *Service) map[domainagent.ProviderID]providerDriver {
+	return map[domainagent.ProviderID]providerDriver{
+		domainagent.ProviderCodex:       codexDriver{s},
+		domainagent.ProviderClaude:      claudeDriver{s},
+		domainagent.ProviderAntigravity: agyDriver{s},
+	}
+}
+
 func (s *Service) driver(id domainagent.ProviderID) providerDriver {
-	switch id {
-	case domainagent.ProviderCodex:
-		return codexDriver{s}
-	case domainagent.ProviderClaude:
-		return claudeDriver{s}
-	case domainagent.ProviderAntigravity:
-		return agyDriver{s}
+	if d, ok := s.drivers[id]; ok {
+		return d
 	}
 	return unsupportedDriver{id}
 }
 
-func (s *Service) isPerTurn(id domainagent.ProviderID) bool { return s.driver(id).perTurn() }
+// turnDriverFor returns id's driver when it runs turns as CLI invocations.
+func (s *Service) turnDriverFor(id domainagent.ProviderID) (turnDriver, bool) {
+	d, ok := s.driver(id).(turnDriver)
+	return d, ok
+}
+
+func (s *Service) isPerTurn(id domainagent.ProviderID) bool {
+	_, ok := s.turnDriverFor(id)
+	return ok
+}
 
 type codexDriver struct{ s *Service }
 
 func (d codexDriver) profile() string    { return d.s.profileDirFor(domainagent.ProviderCodex) }
-func (codexDriver) perTurn() bool        { return true }
 func (codexDriver) cheapAuthProbe() bool { return false }
 func (d codexDriver) release()           { d.s.closeCodexAppServer() }
 
@@ -64,6 +87,9 @@ func (d codexDriver) toolCallHint() string {
 		return "Call them from the code runner as " + call + "."
 	}
 	return "If they are not in your tool list, call them from the code runner as " + call + "."
+}
+func (d codexDriver) loadModels(ctx context.Context, exe string) ([]domainagent.ModelOption, error) {
+	return d.s.loadCodexModels(ctx, exe)
 }
 func (d codexDriver) prepare() error { _, err := prepareCodexProfile(d.profile()); return err }
 func (d codexDriver) login(ctx context.Context, exe, apiKey string) error {
@@ -88,16 +114,21 @@ func (d codexDriver) runTurn(ctx context.Context, exe, workDir, mcpURL, mcpToken
 type claudeDriver struct{ s *Service }
 
 func (d claudeDriver) profile() string    { return d.s.profileDirFor(domainagent.ProviderClaude) }
-func (claudeDriver) perTurn() bool        { return true }
 func (claudeDriver) cheapAuthProbe() bool { return false }
 func (claudeDriver) release()             {}
 func (claudeDriver) toolCallHint() string { return "" }
-func (d claudeDriver) prepare() error     { _, err := prepareClaudeProfile(d.profile()); return err }
+func (d claudeDriver) prepare() error {
+	_, err := d.s.secrets.prepareClaudeProfile(d.profile())
+	return err
+}
+func (claudeDriver) loadModels(ctx context.Context, exe string) ([]domainagent.ModelOption, error) {
+	return loadClaudeModels(ctx, exe)
+}
 func (d claudeDriver) login(ctx context.Context, exe, apiKey string) error {
 	if strings.TrimSpace(apiKey) == "" {
 		return d.s.loginClaudeInteractive(ctx, exe, d.profile())
 	}
-	return loginClaude(ctx, exe, d.profile(), apiKey)
+	return d.s.secrets.loginClaude(ctx, exe, d.profile(), apiKey)
 }
 func (d claudeDriver) probeAuth(ctx context.Context, exe string) (domainagent.AuthState, string) {
 	return d.s.probeClaude(ctx, exe, d.profile())
@@ -105,7 +136,7 @@ func (d claudeDriver) probeAuth(ctx context.Context, exe string) (domainagent.Au
 
 // logout always runs: it also removes the isolated API key, which needs no executable.
 func (d claudeDriver) logout(ctx context.Context, exe string) error {
-	return logoutClaude(ctx, exe, d.profile())
+	return d.s.secrets.logoutClaude(ctx, exe, d.profile())
 }
 func (d claudeDriver) runTurn(ctx context.Context, exe, workDir, mcpURL, mcpToken, messageID, prompt string) error {
 	return d.s.runClaude(ctx, exe, d.profile(), workDir, mcpURL, mcpToken, messageID, prompt)
@@ -114,36 +145,36 @@ func (d claudeDriver) runTurn(ctx context.Context, exe, workDir, mcpURL, mcpToke
 type agyDriver struct{ s *Service }
 
 func (d agyDriver) profile() string    { return d.s.profileDirFor(domainagent.ProviderAntigravity) }
-func (agyDriver) perTurn() bool        { return false }
 func (agyDriver) cheapAuthProbe() bool { return true }
 func (d agyDriver) release()           { cleanupAgyProfileToken(d.profile()) }
 func (agyDriver) toolCallHint() string { return "" }
-func (agyDriver) prepare() error       { return nil }
 func (d agyDriver) probeAuth(context.Context, string) (domainagent.AuthState, string) {
-	return probeAgyAuth(d.profile())
+	return d.s.secrets.probeAgyAuth(d.profile())
 }
 func (d agyDriver) login(ctx context.Context, exe, apiKey string) error {
 	if strings.TrimSpace(apiKey) != "" {
-		return saveAgyAPIKey(d.profile(), apiKey)
+		return d.s.secrets.saveAgyAPIKey(d.profile(), apiKey)
 	}
 	return d.s.loginAgyOAuth(ctx, domainagent.Registry[domainagent.ProviderAntigravity], exe)
 }
 func (d agyDriver) logout(context.Context, string) error {
-	clearAgyAuth(d.profile())
+	d.s.secrets.clearAgyAuth(d.profile())
 	cleanupAgyProfileToken(d.profile())
 	return nil
 }
-func (agyDriver) runTurn(context.Context, string, string, string, string, string, string) error {
-	return fmt.Errorf("antigravity turns run over the ACP connection")
+func (d agyDriver) sessionEnv(mcpURL, mcpToken string) ([]string, error) {
+	_, env, err := d.s.secrets.prepareAgyProfile(d.profile(), mcpURL, mcpToken)
+	if err != nil {
+		return nil, err
+	}
+	return providerEnv(domainagent.ProviderAntigravity, env), nil
 }
 
 type unsupportedDriver struct{ id domainagent.ProviderID }
 
-func (unsupportedDriver) perTurn() bool        { return false }
 func (unsupportedDriver) cheapAuthProbe() bool { return true }
 func (unsupportedDriver) release()             {}
 func (unsupportedDriver) toolCallHint() string { return "" }
-func (unsupportedDriver) prepare() error       { return nil }
 func (unsupportedDriver) probeAuth(context.Context, string) (domainagent.AuthState, string) {
 	return domainagent.AuthUnknown, ""
 }
@@ -151,6 +182,3 @@ func (d unsupportedDriver) login(context.Context, string, string) error {
 	return fmt.Errorf("unsupported provider %s", d.id)
 }
 func (unsupportedDriver) logout(context.Context, string) error { return nil }
-func (d unsupportedDriver) runTurn(context.Context, string, string, string, string, string, string) error {
-	return fmt.Errorf("unsupported per-turn provider %s", d.id)
-}

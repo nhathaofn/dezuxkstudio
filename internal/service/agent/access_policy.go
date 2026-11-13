@@ -535,3 +535,16 @@ func normalizeAbsPath(p string) string {
 func pathKey(p string) string {
 	return strings.ToLower(filepath.Clean(p))
 }
+
+// CheckTrustedFile is an engine.FileGuard for clients that must stay inside the trusted roots (workspace,
+// media, user-granted folders): the path must pass the policy and lie inside one of those roots.
+func (p *AccessPolicy) CheckTrustedFile(path string, _ bool) error {
+	resolved, err := p.Resolve(path)
+	if err != nil {
+		return err
+	}
+	if !p.IsTrusted(resolved) {
+		return fmt.Errorf("access denied: %q is outside DezuxkStudio's media, workspace and trusted folders", path)
+	}
+	return nil
+}

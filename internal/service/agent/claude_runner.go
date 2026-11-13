@@ -27,14 +27,14 @@ func claudeAPIKeyPath(profileRoot string) string {
 	return filepath.Join(profileRoot, "anthropic_api_key")
 }
 
-func loadClaudeAPIKey(profileRoot string) string {
+func (ps profileSecrets) loadClaudeAPIKey(profileRoot string) string {
 	if profileRoot == "" {
 		return ""
 	}
-	return readProfileSecret(claudeAPIKeyPath(profileRoot)) // OS credential store
+	return ps.read(claudeAPIKeyPath(profileRoot)) // OS credential store
 }
 
-func prepareClaudeProfile(profileRoot string) (map[string]string, error) {
+func (ps profileSecrets) prepareClaudeProfile(profileRoot string) (map[string]string, error) {
 	if profileRoot == "" {
 		return nil, fmt.Errorf("agent: claude profile root is required")
 	}
@@ -46,14 +46,14 @@ func prepareClaudeProfile(profileRoot string) (map[string]string, error) {
 	envMap := map[string]string{
 		"CLAUDE_CONFIG_DIR": profileRoot,
 	}
-	if apiKey := loadClaudeAPIKey(profileRoot); apiKey != "" {
+	if apiKey := ps.loadClaudeAPIKey(profileRoot); apiKey != "" {
 		envMap["ANTHROPIC_API_KEY"] = apiKey
 	}
 	return envMap, nil
 }
 
-func claudeIsolatedEnv(profileRoot string) ([]string, error) {
-	envMap, err := prepareClaudeProfile(profileRoot)
+func (ps profileSecrets) claudeIsolatedEnv(profileRoot string) ([]string, error) {
+	envMap, err := ps.prepareClaudeProfile(profileRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -86,17 +86,20 @@ func formatClaudeAccountInfo(st claudeAuthStatusJSON) string {
 	return "Signed in"
 }
 
-func probeClaudeAuth(ctx context.Context, executable, profileRoot string) (domainagent.AuthState, string) {
+func (ps profileSecrets) probeClaudeAuth(ctx context.Context, executable, profileRoot string) (domainagent.AuthState, string) {
 	if executable == "" || profileRoot == "" {
 		return domainagent.AuthUnknown, ""
 	}
-	env, err := claudeIsolatedEnv(profileRoot)
+	env, err := ps.claudeIsolatedEnv(profileRoot)
 	if err != nil {
 		return domainagent.AuthUnknown, ""
 	}
 	cmd := proc.Command(ctx, executable, "auth", "status", "--json") // the caller bounds ctx
 	cmd.Env = env
 	out, cmdErr := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return domainagent.AuthUnknown, "" // a slow probe says nothing about the sign-in
+	}
 
 	var parsed claudeAuthStatusJSON
 	if jsonErr := json.Unmarshal(out, &parsed); jsonErr == nil {
@@ -113,17 +116,17 @@ func probeClaudeAuth(ctx context.Context, executable, profileRoot string) (domai
 	return domainagent.AuthUnauthenticated, ""
 }
 
-func loginClaude(ctx context.Context, executable, profileRoot, apiKey string) error {
-	if _, err := prepareClaudeProfile(profileRoot); err != nil {
+func (ps profileSecrets) loginClaude(ctx context.Context, executable, profileRoot, apiKey string) error {
+	if _, err := ps.prepareClaudeProfile(profileRoot); err != nil {
 		return err
 	}
 	trimmedKey := strings.TrimSpace(apiKey)
 	if trimmedKey != "" {
-		if err := writeProfileSecret(claudeAPIKeyPath(profileRoot), trimmedKey); err != nil {
+		if err := ps.write(claudeAPIKeyPath(profileRoot), trimmedKey); err != nil {
 			return fmt.Errorf("claude: save isolated api key: %w", err)
 		}
-		if state, _ := probeClaudeAuth(ctx, executable, profileRoot); state != domainagent.AuthAuthenticated {
-			removeProfileSecret(claudeAPIKeyPath(profileRoot))
+		if state, _ := ps.probeClaudeAuth(ctx, executable, profileRoot); state != domainagent.AuthAuthenticated {
+			ps.remove(claudeAPIKeyPath(profileRoot))
 			return fmt.Errorf("claude api key login check failed")
 		}
 		return nil
@@ -135,11 +138,11 @@ func loginClaude(ctx context.Context, executable, profileRoot, apiKey string) er
 // loginClaudeInteractive signs the isolated CLAUDE_CONFIG_DIR in through the browser: the CLI opens the
 // page and waits for the code it shows, which the user pastes in the app.
 func (s *Service) loginClaudeInteractive(ctx context.Context, executable, profileRoot string) error {
-	if _, err := prepareClaudeProfile(profileRoot); err != nil {
+	if _, err := s.secrets.prepareClaudeProfile(profileRoot); err != nil {
 		return err
 	}
-	removeProfileSecret(claudeAPIKeyPath(profileRoot))
-	env, err := claudeIsolatedEnv(profileRoot)
+	s.secrets.remove(claudeAPIKeyPath(profileRoot))
+	env, err := s.secrets.claudeIsolatedEnv(profileRoot)
 	if err != nil {
 		return err
 	}
@@ -152,15 +155,15 @@ func (s *Service) loginClaudeInteractive(ctx context.Context, executable, profil
 	return nil
 }
 
-func logoutClaude(ctx context.Context, executable, profileRoot string) error {
+func (ps profileSecrets) logoutClaude(ctx context.Context, executable, profileRoot string) error {
 	if profileRoot == "" {
 		return nil
 	}
-	removeProfileSecret(claudeAPIKeyPath(profileRoot))
+	ps.remove(claudeAPIKeyPath(profileRoot))
 	if executable == "" {
 		return nil
 	}
-	env, err := claudeIsolatedEnv(profileRoot)
+	env, err := ps.claudeIsolatedEnv(profileRoot)
 	if err != nil {
 		return err
 	}
@@ -519,7 +522,7 @@ func extractClaudeAnyText(content any) string {
 }
 
 func (s *Service) runClaudeTurn(ctx context.Context, executable, profileRoot, workspaceDir, mcpURL, mcpToken, messageID, prompt string) error {
-	env, err := claudeIsolatedEnv(profileRoot)
+	env, err := s.secrets.claudeIsolatedEnv(profileRoot)
 	if err != nil {
 		return err
 	}
@@ -546,16 +549,14 @@ func (s *Service) runClaudeTurn(ctx context.Context, executable, profileRoot, wo
 		messageID:  messageID,
 		emit:       s.emitChat,
 	}
-	err = s.runStreamJSONCommand(
+	err = runStreamJSONCommand(
 		ctx,
-		domainagent.ProviderClaude,
 		"claude",
 		executable,
 		args,
 		workspaceDir,
 		env,
 		prompt,
-		messageID,
 		"check isolated Claude login",
 		acc,
 	)

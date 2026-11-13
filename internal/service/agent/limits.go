@@ -34,6 +34,7 @@ type Limits struct {
 	InterruptWait       time.Duration // how long a cancelled Codex turn waits for turn/completed
 	StatusCacheTTL      time.Duration
 	ApprovalTTL         time.Duration
+	MaxPendingApprovals int
 	CLIUpdateInterval   time.Duration // how often the app looks for newer agent CLIs
 	HistoryLimit        int
 	ContextMessages     int
@@ -57,6 +58,7 @@ func LimitsFrom(c *config.Config) Limits {
 		InterruptWait:       a.InterruptWait,
 		StatusCacheTTL:      a.StatusCacheTTL,
 		ApprovalTTL:         a.ApprovalTTL,
+		MaxPendingApprovals: a.MaxPendingApprovals,
 		CLIUpdateInterval:   a.CLIUpdateInterval,
 		HistoryLimit:        a.HistoryLimit,
 		ContextMessages:     a.ContextMessages,
@@ -92,6 +94,7 @@ func (l Limits) withDefaults() Limits {
 		{&l.HistoryLimit, &d.HistoryLimit},
 		{&l.ContextMessages, &d.ContextMessages},
 		{&l.ContextMessageChars, &d.ContextMessageChars},
+		{&l.MaxPendingApprovals, &d.MaxPendingApprovals},
 	}
 	for _, f := range ints {
 		if *f.v <= 0 {

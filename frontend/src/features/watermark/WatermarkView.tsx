@@ -5,7 +5,7 @@ import { Badge } from "../../components/ui/Badge";
 import { ErrorText } from "../../components/ui/ErrorText";
 import { useT } from "../../lib/i18n";
 import { useAgentScreenContext } from "../agent/screenContext";
-import { useWatermarkStore, type WatermarkNodeResult } from "./useWatermarkStore";
+import { WATERMARK_NODE, useWatermarkStore, type WatermarkNodeResult } from "./useWatermarkStore";
 import { WatermarkConfigCard } from "./WatermarkConfigCard";
 import { WatermarkResultsCard } from "./WatermarkResultsCard";
 
@@ -20,11 +20,12 @@ export const WatermarkView: React.FC = () => {
 
   // Let the agent see this screen: loaded images, current settings (keyed by the node's param names), last run.
   useAgentScreenContext({
-    feature: "tool.watermark_remover",
+    feature: WATERMARK_NODE,
     selected_files: inputPaths.length > 0 ? inputPaths : inputPath ? [inputPath] : [],
+    // Only what the user changed; unset settings fall back to the node's defaults.
     settings: {
-      corner,
-      workers: String(workers),
+      ...(corner !== null ? { corner } : {}),
+      ...(workers !== null ? { workers: String(workers) } : {}),
       inplace: String(inPlace),
       output_dir: outputDir,
     },

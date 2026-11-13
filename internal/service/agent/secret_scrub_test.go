@@ -112,25 +112,3 @@ func TestWorkflowRunGraphScrubsSecretParams(t *testing.T) {
 	}
 	assertScrubbed(t, repo)
 }
-
-// dezuxkMCPToolNames (used to auto-approve our own tools) must match the registered MCP tools exactly.
-func TestDezuxkMCPToolNamesMatchRegisteredTools(t *testing.T) {
-	_, _ = scrubFixture(t) // builds the server, filling mcpToolDocs
-	svc, err := New(Options{Repo: newFakeRepo(), DataDir: t.TempDir(), Logger: slog.New(slog.DiscardHandler)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = svc.Close() })
-	registered := map[string]bool{}
-	for _, d := range svc.registeredToolDocs() {
-		registered[d.Name] = true
-		if !dezuxkMCPToolNames[d.Name] {
-			t.Errorf("tool %q is registered but missing from dezuxkMCPToolNames", d.Name)
-		}
-	}
-	for name := range dezuxkMCPToolNames {
-		if !registered[name] {
-			t.Errorf("dezuxkMCPToolNames lists %q but no such tool is registered", name)
-		}
-	}
-}

@@ -11,10 +11,12 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"app/internal/engine"
 	"app/internal/fsutil"
 	"app/internal/progress"
+	"app/internal/safego"
 	"app/pkg/watermark"
 )
 
@@ -28,12 +30,12 @@ type Options struct {
 	Templates []watermark.Template
 }
 
-// FlexibleImagePort accepts either an engine.MediaRef object or a plain string path.
-type FlexibleImagePort struct {
+// RemoverImage accepts either an engine.MediaRef object or a plain string path.
+type RemoverImage struct {
 	engine.MediaRef
 }
 
-func (f *FlexibleImagePort) UnmarshalJSON(data []byte) error {
+func (f *RemoverImage) UnmarshalJSON(data []byte) error {
 	if len(data) == 0 || string(data) == "null" {
 		return nil
 	}
@@ -47,10 +49,10 @@ func (f *FlexibleImagePort) UnmarshalJSON(data []byte) error {
 	return json.Unmarshal(data, &f.MediaRef)
 }
 
-// FlexibleImagesPort accepts a string, []string, MediaRef, or []MediaRef.
-type FlexibleImagesPort []engine.MediaRef
+// RemoverImages accepts a string, []string, MediaRef, or []MediaRef.
+type RemoverImages []engine.MediaRef
 
-func (f *FlexibleImagesPort) UnmarshalJSON(data []byte) error {
+func (f *RemoverImages) UnmarshalJSON(data []byte) error {
 	if len(data) == 0 || string(data) == "null" {
 		return nil
 	}
@@ -94,21 +96,21 @@ func (f *FlexibleImagesPort) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("cannot decode image list: %s", string(data))
 }
 
-// NodeInput is the input payload for the watermark remover node.
-type NodeInput struct {
-	Image     FlexibleImagePort  `json:"image,omitempty"`
-	Images    FlexibleImagesPort `json:"images,omitempty"`
-	InPlace   bool               `json:"inplace,omitempty"`
-	OutputDir string             `json:"output_dir,omitempty"`
-	Workers   int                `json:"workers,omitempty"`
-	Corner    string             `json:"corner,omitempty"`
-	MinScore  float64            `json:"min_score,omitempty"`
-	MinGain   float64            `json:"min_gain,omitempty"`
-	MaxGain   float64            `json:"max_gain,omitempty"`
+// RemoverInput is the input payload for the watermark remover node.
+type RemoverInput struct {
+	Image     RemoverImage  `json:"image,omitempty"`
+	Images    RemoverImages `json:"images,omitempty"`
+	InPlace   bool          `json:"inplace,omitempty"`
+	OutputDir string        `json:"output_dir,omitempty"`
+	Workers   int           `json:"workers,omitempty"`
+	Corner    string        `json:"corner,omitempty"`
+	MinScore  float64       `json:"min_score,omitempty"`
+	MinGain   float64       `json:"min_gain,omitempty"`
+	MaxGain   float64       `json:"max_gain,omitempty"`
 }
 
-// ItemResult provides execution details for each processed image.
-type ItemResult struct {
+// RemoverItem provides execution details for each processed image.
+type RemoverItem struct {
 	Path     string  `json:"path"`
 	OutPath  string  `json:"out_path"`
 	Detected bool    `json:"detected"`
@@ -117,14 +119,14 @@ type ItemResult struct {
 	Error    string  `json:"error,omitempty"`
 }
 
-// NodeOutput is the output payload produced by the watermark remover node.
-type NodeOutput struct {
+// RemoverOutput is the output payload produced by the watermark remover node.
+type RemoverOutput struct {
 	Image         engine.MediaRef   `json:"image"`
 	Images        []engine.MediaRef `json:"images"`
 	Detected      bool              `json:"detected"`
 	TotalCount    int               `json:"total_count"`
 	DetectedCount int               `json:"detected_count"`
-	Results       []ItemResult      `json:"results,omitempty"`
+	Results       []RemoverItem     `json:"results,omitempty"`
 }
 
 // NewNode builds an engine.Node for watermark detection and reconstruction with multi-threading.
@@ -157,7 +159,7 @@ func NewNode(opts Options) engine.Node {
 		},
 	}
 
-	return engine.Typed(spec, func(ctx context.Context, in NodeInput) (NodeOutput, error) {
+	return engine.Typed(spec, func(ctx context.Context, in RemoverInput) (RemoverOutput, error) {
 		var rawPaths []string
 		for _, ref := range in.Images {
 			if ref.LocalURL != "" && !slices.Contains(rawPaths, ref.LocalURL) {
@@ -169,7 +171,7 @@ func NewNode(opts Options) engine.Node {
 		}
 
 		if len(rawPaths) == 0 {
-			return NodeOutput{}, engine.Invalid("Watermark Remover input port 'image' or 'images' received no file path")
+			return RemoverOutput{}, engine.Invalid("Watermark Remover input port 'image' or 'images' received no file path")
 		}
 
 		cfg := watermark.Config{
@@ -183,191 +185,195 @@ func NewNode(opts Options) engine.Node {
 		eng := watermark.New(cfg)
 
 		if ctx.Err() != nil {
-			return NodeOutput{}, ctx.Err()
+			return RemoverOutput{}, ctx.Err()
 		}
-
-		resolvedPaths := make([]string, len(rawPaths))
-		items := make([]watermark.BatchItem, 0, len(rawPaths))
-		itemIdxMap := make(map[string]int)
-		readErrors := make([]error, len(rawPaths))
-
-		for i, p := range rawPaths {
-			if ctx.Err() != nil {
-				return NodeOutput{}, ctx.Err()
-			}
-			resPath := resolveFilePath(p, opts.MediaDir)
-			resolvedPaths[i] = resPath
-			data, err := os.ReadFile(resPath)
-			if err != nil {
-				readErrors[i] = err
-				continue
-			}
-			itemID := strconv.Itoa(i)
-			items = append(items, watermark.BatchItem{ID: itemID, Data: data})
-			itemIdxMap[itemID] = i
-		}
-
-		batchResults := eng.ProcessBatchProgress(ctx, items, in.Workers, func(done, total int) {
-			progress.Report(ctx, progress.Update{
-				Percent: float64(done) * 100 / float64(total),
-				Message: fmt.Sprintf("Processed %d / %d images", done, total),
-				Key:     "workflow.progress.items",
-				Params:  map[string]string{"done": strconv.Itoa(done), "total": strconv.Itoa(total)},
-			})
-		})
-		if ctx.Err() != nil {
-			return NodeOutput{}, ctx.Err()
-		}
-		batchResultMap := make(map[int]watermark.BatchResult, len(batchResults))
-		for _, br := range batchResults {
-			if idx, ok := itemIdxMap[br.ID]; ok {
-				batchResultMap[idx] = br
-			}
-		}
-
-		itemResults := make([]ItemResult, len(rawPaths))
-		outMediaRefs := make([]engine.MediaRef, 0, len(rawPaths))
-		detectedCount := 0
-		failedCount := 0
-		var firstErr string
 
 		targetDir := in.OutputDir
 		if targetDir == "" {
 			targetDir = opts.OutputDir
 		}
-
-		for i, rawPath := range rawPaths {
-			resPath := resolvedPaths[i]
-			outPath := resPath
-
-			if readErr := readErrors[i]; readErr != nil {
-				failedCount++
-				if firstErr == "" {
-					firstErr = fmt.Sprintf("failed to read %s: %v", rawPath, readErr)
-				}
-				itemResults[i] = ItemResult{
-					Path:  rawPath,
-					Error: fmt.Sprintf("failed to read file: %v", readErr),
-				}
-				continue
+		if targetDir != "" {
+			// Anchor a relative folder exactly like the input paths, so the file guard checks the
+			// same folder the node then creates and writes (never the server's working directory).
+			resolved := resolveFilePath(targetDir, opts.MediaDir)
+			if resolved == "" || !filepath.IsAbs(resolved) {
+				return RemoverOutput{}, engine.Invalid(fmt.Sprintf("output_dir %q must be an absolute path or a folder inside the media folder", targetDir))
 			}
+			targetDir = resolved
+		}
 
-			br := batchResultMap[i]
-			if br.Err != nil {
-				failedCount++
-				if firstErr == "" {
-					firstErr = fmt.Sprintf("processing %s: %v", rawPath, br.Err)
-				}
-				itemResults[i] = ItemResult{
-					Path:  rawPath,
-					Error: fmt.Sprintf("processing failed: %v", br.Err),
-				}
-				continue
-			}
+		total := len(rawPaths)
+		resolvedPaths := make([]string, total)
+		itemResults := make([]RemoverItem, total)
+		outPaths := make([]string, total) // "" = no output (failed item)
 
-			if br.Detected {
-				detectedCount++
-				ext := filepath.Ext(resPath)
-				base := strings.TrimSuffix(filepath.Base(resPath), ext)
-
-				// Determine output extension according to output format:
-				// WebP converted to standard PNG must use .png extension.
-				outExt := ext
-				if br.OutputFormat == watermark.FormatPNG && (strings.EqualFold(ext, ".webp") || strings.EqualFold(ext, "")) {
-					outExt = ".png"
-				} else if br.OutputFormat == watermark.FormatJPEG && !strings.EqualFold(ext, ".jpg") && !strings.EqualFold(ext, ".jpeg") {
-					outExt = ".jpg"
-				}
-
-				if in.InPlace {
-					if outExt != ext {
-						outPath = filepath.Join(filepath.Dir(resPath), base+outExt)
-					} else {
-						outPath = resPath
+		// Stream the batch: a reader feeds files one at a time into a bounded channel and every
+		// result is written to disk as soon as it arrives, so memory holds only ~workers images
+		// at once instead of the whole batch (inputs + outputs) until the end.
+		streamCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		itemsCh := make(chan watermark.BatchItem)
+		var (
+			doneMu sync.Mutex
+			done   int
+		)
+		reportDone := func() {
+			doneMu.Lock()
+			done++
+			d := done
+			doneMu.Unlock()
+			progress.Report(ctx, progress.Update{
+				Percent: float64(d) * 100 / float64(total),
+				Message: fmt.Sprintf("Processed %d / %d images", d, total),
+				Key:     "workflow.progress.items",
+				Params:  map[string]string{"done": strconv.Itoa(d), "total": strconv.Itoa(total)},
+			})
+		}
+		safego.Go("watermark.node.reader", func() {
+			defer close(itemsCh)
+			for i, p := range rawPaths {
+				resPath, data, err := readInput(streamCtx, p, opts.MediaDir)
+				resolvedPaths[i] = resPath
+				if err != nil {
+					if streamCtx.Err() != nil {
+						return
 					}
-				} else {
-					destDir := targetDir
-					if destDir == "" {
-						destDir = filepath.Dir(resPath)
-					}
-					if err := os.MkdirAll(destDir, 0o755); err != nil {
-						failedCount++
-						if firstErr == "" {
-							firstErr = fmt.Sprintf("failed to create directory %q: %v", destDir, err)
-						}
-						itemResults[i] = ItemResult{
-							Path:     rawPath,
-							Detected: true,
-							Score:    br.Score,
-							Size:     br.Info.Size,
-							Error:    fmt.Sprintf("failed to create directory %q: %v", destDir, err),
-						}
-						continue
-					}
-					outPath = filepath.Join(destDir, base+"_nowm"+outExt)
-				}
-
-				perm := os.FileMode(0o644)
-				if in.InPlace {
-					if fi, err := os.Stat(resPath); err == nil {
-						perm = fi.Mode().Perm()
-					}
-				}
-
-				if err := fsutil.WriteFileAtomic(outPath, br.Output, perm); err != nil {
-					failedCount++
-					if firstErr == "" {
-						firstErr = fmt.Sprintf("failed to write file %q: %v", outPath, err)
-					}
-					itemResults[i] = ItemResult{
-						Path:     rawPath,
-						Detected: true,
-						Score:    br.Score,
-						Size:     br.Info.Size,
-						Error:    fmt.Sprintf("failed to write file %q: %v", outPath, err),
-					}
+					itemResults[i] = RemoverItem{Path: p, Error: err.Error()}
+					reportDone()
 					continue
 				}
-				if in.InPlace && outPath != resPath {
-					_ = os.Remove(resPath)
+				select {
+				case <-streamCtx.Done():
+					return
+				case itemsCh <- watermark.BatchItem{ID: strconv.Itoa(i), Data: data}:
 				}
 			}
+		})
 
-			itemResults[i] = ItemResult{
-				Path:     rawPath,
-				OutPath:  outPath,
-				Detected: br.Detected,
-				Score:    br.Score,
-				Size:     br.Info.Size,
+		for br := range eng.ProcessStream(streamCtx, itemsCh, in.Workers) {
+			i, err := strconv.Atoi(br.ID)
+			if err != nil || i < 0 || i >= total {
+				continue
 			}
-			outMediaRefs = append(outMediaRefs, engine.RefFor(outPath, engine.MediaImage))
+			itemResults[i], outPaths[i] = finishItem(ctx, in, targetDir, rawPaths[i], resolvedPaths[i], br)
+			reportDone()
+		}
+		if ctx.Err() != nil {
+			return RemoverOutput{}, ctx.Err()
+		}
+
+		outMediaRefs := make([]engine.MediaRef, 0, total)
+		detectedCount, failedCount := 0, 0
+		var firstErr string
+		for i, r := range itemResults {
+			if r.Detected {
+				detectedCount++
+			}
+			if r.Error != "" || outPaths[i] == "" {
+				failedCount++
+				if firstErr == "" {
+					firstErr = fmt.Sprintf("%s: %s", rawPaths[i], r.Error)
+				}
+				continue
+			}
+			outMediaRefs = append(outMediaRefs, engine.RefFor(outPaths[i], engine.MediaImage))
 		}
 
 		var primaryRef engine.MediaRef
 		if len(outMediaRefs) > 0 {
 			primaryRef = outMediaRefs[0]
 		}
-
-		if failedCount == len(rawPaths) && len(rawPaths) > 0 {
-			return NodeOutput{
-				Image:         primaryRef,
-				Images:        outMediaRefs,
-				Detected:      detectedCount > 0,
-				TotalCount:    len(rawPaths),
-				DetectedCount: detectedCount,
-				Results:       itemResults,
-			}, fmt.Errorf("watermark removal failed for all %d images: %s", len(rawPaths), firstErr)
-		}
-
-		return NodeOutput{
+		out := RemoverOutput{
 			Image:         primaryRef,
 			Images:        outMediaRefs,
 			Detected:      detectedCount > 0,
-			TotalCount:    len(rawPaths),
+			TotalCount:    total,
 			DetectedCount: detectedCount,
 			Results:       itemResults,
-		}, nil
+		}
+		if failedCount == total {
+			return out, fmt.Errorf("watermark removal failed for all %d images: %s", total, firstErr)
+		}
+		return out, nil
 	})
+}
+
+// readInput resolves one input path, asks the caller's file guard for read access and loads it.
+func readInput(ctx context.Context, raw, mediaDir string) (string, []byte, error) {
+	resPath := resolveFilePath(raw, mediaDir)
+	if resPath == "" {
+		return "", nil, fmt.Errorf("failed to read file: path %q is outside the media folder", raw)
+	}
+	if err := engine.CheckFile(ctx, resPath, false); err != nil {
+		return resPath, nil, fmt.Errorf("failed to read file: %w", err)
+	}
+	data, err := os.ReadFile(resPath)
+	if err != nil {
+		return resPath, nil, fmt.Errorf("failed to read file: %w", err)
+	}
+	return resPath, data, nil
+}
+
+// finishItem writes one processed image (when a watermark was found) and returns its result and
+// output path ("" when the item failed).
+func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPath string, br watermark.BatchResult) (RemoverItem, string) {
+	if br.Err != nil {
+		return RemoverItem{Path: rawPath, Error: fmt.Sprintf("processing failed: %v", br.Err)}, ""
+	}
+	res := RemoverItem{Path: rawPath, Detected: br.Detected, Score: br.Score, Size: br.Info.Size}
+	if !br.Detected {
+		res.OutPath = resPath
+		return res, resPath
+	}
+
+	ext := filepath.Ext(resPath)
+	base := strings.TrimSuffix(filepath.Base(resPath), ext)
+	// WebP re-encoded as PNG must use .png; anything re-encoded as JPEG must use .jpg.
+	outExt := ext
+	if br.OutputFormat == watermark.FormatPNG && (strings.EqualFold(ext, ".webp") || ext == "") {
+		outExt = ".png"
+	} else if br.OutputFormat == watermark.FormatJPEG && !strings.EqualFold(ext, ".jpg") && !strings.EqualFold(ext, ".jpeg") {
+		outExt = ".jpg"
+	}
+
+	var outPath string
+	if in.InPlace {
+		outPath = filepath.Join(filepath.Dir(resPath), base+outExt)
+	} else {
+		destDir := targetDir
+		if destDir == "" {
+			destDir = filepath.Dir(resPath)
+		}
+		if err := engine.CheckFile(ctx, destDir, true); err != nil {
+			res.Error = fmt.Sprintf("failed to create directory %q: %v", destDir, err)
+			return res, ""
+		}
+		if err := os.MkdirAll(destDir, 0o755); err != nil {
+			res.Error = fmt.Sprintf("failed to create directory %q: %v", destDir, err)
+			return res, ""
+		}
+		outPath = filepath.Join(destDir, base+"_nowm"+outExt)
+	}
+	if err := engine.CheckFile(ctx, outPath, true); err != nil {
+		res.Error = fmt.Sprintf("failed to write file %q: %v", outPath, err)
+		return res, ""
+	}
+
+	perm := os.FileMode(0o644)
+	if in.InPlace {
+		if fi, err := os.Stat(resPath); err == nil {
+			perm = fi.Mode().Perm()
+		}
+	}
+	if err := fsutil.WriteFileAtomic(outPath, br.Output, perm); err != nil {
+		res.Error = fmt.Sprintf("failed to write file %q: %v", outPath, err)
+		return res, ""
+	}
+	if in.InPlace && outPath != resPath {
+		_ = os.Remove(resPath)
+	}
+	res.OutPath = outPath
+	return res, outPath
 }
 
 func resolveFilePath(p, mediaDir string) string {

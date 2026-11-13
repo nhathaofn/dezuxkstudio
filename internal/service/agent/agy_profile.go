@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -19,11 +20,11 @@ func agyOAuthPath(profileRoot string) string {
 	return filepath.Join(profileRoot, "oauth_account")
 }
 
-func loadAgyAPIKey(profileRoot string) string {
+func (ps profileSecrets) loadAgyAPIKey(profileRoot string) string {
 	if profileRoot == "" {
 		return ""
 	}
-	return readProfileSecret(agyAPIKeyPath(profileRoot)) // OS credential store
+	return ps.read(agyAPIKeyPath(profileRoot)) // OS credential store
 }
 
 func loadAgyOAuthLabel(profileRoot string) string {
@@ -37,11 +38,11 @@ func loadAgyOAuthLabel(profileRoot string) string {
 	return strings.TrimSpace(string(raw))
 }
 
-func probeAgyAuth(profileRoot string) (domainagent.AuthState, string) {
+func (ps profileSecrets) probeAgyAuth(profileRoot string) (domainagent.AuthState, string) {
 	if profileRoot == "" {
 		return domainagent.AuthUnknown, ""
 	}
-	if loadAgyAPIKey(profileRoot) != "" {
+	if ps.loadAgyAPIKey(profileRoot) != "" {
 		return domainagent.AuthAuthenticated, "Isolated Gemini API key"
 	}
 	if label := loadAgyOAuthLabel(profileRoot); label != "" {
@@ -50,7 +51,7 @@ func probeAgyAuth(profileRoot string) (domainagent.AuthState, string) {
 	return domainagent.AuthUnauthenticated, ""
 }
 
-func saveAgyAPIKey(profileRoot, apiKey string) error {
+func (ps profileSecrets) saveAgyAPIKey(profileRoot, apiKey string) error {
 	if profileRoot == "" {
 		return fmt.Errorf("agent: antigravity profile root is required")
 	}
@@ -62,20 +63,20 @@ func saveAgyAPIKey(profileRoot, apiKey string) error {
 		return fmt.Errorf("agent: create antigravity profile dir: %w", err)
 	}
 	_ = os.Remove(agyOAuthPath(profileRoot))
-	if err := writeProfileSecret(agyAPIKeyPath(profileRoot), trimmed); err != nil {
+	if err := ps.write(agyAPIKeyPath(profileRoot), trimmed); err != nil {
 		return fmt.Errorf("agent: store isolated gemini api key: %w", err)
 	}
 	return nil
 }
 
-func saveAgyOAuth(profileRoot, tierName string) error {
+func (ps profileSecrets) saveAgyOAuth(profileRoot, tierName string) error {
 	if profileRoot == "" {
 		return fmt.Errorf("agent: antigravity profile root is required")
 	}
 	if err := os.MkdirAll(profileRoot, 0o700); err != nil {
 		return fmt.Errorf("agent: create antigravity profile dir: %w", err)
 	}
-	removeProfileSecret(agyAPIKeyPath(profileRoot))
+	ps.remove(agyAPIKeyPath(profileRoot))
 	label := "Google OAuth (OS keyring)"
 	if trimmedTier := strings.TrimSpace(tierName); trimmedTier != "" {
 		label = "Google OAuth · " + trimmedTier + " (OS keyring)"
@@ -86,23 +87,23 @@ func saveAgyOAuth(profileRoot, tierName string) error {
 	return nil
 }
 
-func clearAgyAuth(profileRoot string) {
+func (ps profileSecrets) clearAgyAuth(profileRoot string) {
 	if profileRoot == "" {
 		return
 	}
-	removeProfileSecret(agyAPIKeyPath(profileRoot))
+	ps.remove(agyAPIKeyPath(profileRoot))
 	_ = os.Remove(agyOAuthPath(profileRoot))
 }
 
 // prepareAgyProfile configures an isolated Antigravity home directory under DezuxkStudio's DataDir.
 // It injects ONLY DezuxkStudio's authenticated MCP server and denies built-in coding/shell tools,
 // never touching the user's real ~/.gemini or %APPDATA%\antigravity-cli directories.
-func prepareAgyProfile(profileRoot, mcpURL, mcpToken string) (string, map[string]string, error) {
-	useOAuth := loadAgyAPIKey(profileRoot) == "" && loadAgyOAuthLabel(profileRoot) != ""
-	return prepareAgyProfileWithMode(profileRoot, mcpURL, mcpToken, useOAuth)
+func (ps profileSecrets) prepareAgyProfile(profileRoot, mcpURL, mcpToken string) (string, map[string]string, error) {
+	useOAuth := ps.loadAgyAPIKey(profileRoot) == "" && loadAgyOAuthLabel(profileRoot) != ""
+	return ps.prepareAgyProfileWithMode(profileRoot, mcpURL, mcpToken, useOAuth)
 }
 
-func prepareAgyProfileWithMode(profileRoot, mcpURL, mcpToken string, useOAuth bool) (string, map[string]string, error) {
+func (ps profileSecrets) prepareAgyProfileWithMode(profileRoot, mcpURL, mcpToken string, useOAuth bool) (string, map[string]string, error) {
 	if profileRoot == "" {
 		return "", nil, fmt.Errorf("agent: antigravity profile root is required")
 	}
@@ -196,7 +197,7 @@ func prepareAgyProfileWithMode(profileRoot, mcpURL, mcpToken string, useOAuth bo
 		envOverrides["HOMEPATH"] = homePath
 	}
 	if !useOAuth {
-		if apiKey := loadAgyAPIKey(profileRoot); apiKey != "" {
+		if apiKey := ps.loadAgyAPIKey(profileRoot); apiKey != "" {
 			envOverrides["GEMINI_API_KEY"] = apiKey
 		}
 	}
@@ -211,4 +212,42 @@ func cleanupAgyProfileToken(profileRoot string) {
 	if _, err := os.Stat(mcpFile); err == nil {
 		_ = fsutil.WriteFileAtomic(mcpFile, []byte("{\"mcpServers\":{}}\n"), 0o600)
 	}
+}
+
+// loginAgyOAuth signs the isolated profile in with Google through the agent's own ACP authenticate flow.
+func (s *Service) loginAgyOAuth(ctx context.Context, spec domainagent.ProviderSpec, executable string) error {
+	workDir, err := s.ensureWorkspaceDir()
+	if err != nil {
+		return err
+	}
+	profileRoot := s.profileDirFor(domainagent.ProviderAntigravity)
+	_, agyEnvMap, err := s.secrets.prepareAgyProfileWithMode(profileRoot, "", "", true)
+	if err != nil {
+		return err
+	}
+	procEnv := providerEnv(domainagent.ProviderAntigravity, agyEnvMap)
+
+	// ctx is already bounded by Login (Limits.LoginTimeout).
+	transport, err := s.spawnTransport(ctx, executable, spec.ACPArgs, workDir, procEnv, nil, nil)
+	if err != nil {
+		return fmt.Errorf("agy login failed: %w", err)
+	}
+	defer func() { _ = transport.Close() }()
+
+	initCtx, initCancel := context.WithTimeout(ctx, s.limits.InitializeTimeout)
+	defer initCancel()
+	initRes, err := transport.Initialize(initCtx, clientName, s.appVersion)
+	if err != nil {
+		return fmt.Errorf("agy login initialize failed: %w", err)
+	}
+	methodID, err := pickAuthMethod(spec, initRes)
+	if err != nil {
+		return err
+	}
+
+	tierName, err := transport.Authenticate(ctx, methodID)
+	if err != nil {
+		return fmt.Errorf("agy Google sign-in failed: %w", err)
+	}
+	return s.secrets.saveAgyOAuth(profileRoot, tierName)
 }

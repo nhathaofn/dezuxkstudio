@@ -8,6 +8,7 @@ import (
 
 	domainagent "app/internal/domain/agent"
 
+	"app/internal/apperr"
 	"github.com/google/uuid"
 )
 
@@ -23,17 +24,19 @@ type pendingApproval struct {
 type approvalStore struct {
 	mu    sync.Mutex
 	ttl   time.Duration
+	max   int // pending requests kept at most, so a looping agent cannot flood the panel
 	now   func() time.Time
 	items map[string]pendingApproval
 }
 
-func newApprovalStore(ttl time.Duration) *approvalStore {
-	return &approvalStore{ttl: ttl, now: time.Now, items: make(map[string]pendingApproval)}
+func newApprovalStore(ttl time.Duration, max int) *approvalStore {
+	return &approvalStore{ttl: ttl, max: max, now: time.Now, items: make(map[string]pendingApproval)}
 }
 
-func (a *approvalStore) queue(providerID domainagent.ProviderID, tool, title, summary string, exec func(context.Context) (any, error)) domainagent.ApprovalRequest {
+// queue adds a request; ok is false (nothing queued) when max requests are already pending.
+func (a *approvalStore) queue(providerID domainagent.ProviderID, tool, title, summary string, exec func(context.Context) (any, error)) (req domainagent.ApprovalRequest, ok bool) {
 	now := a.now()
-	req := domainagent.ApprovalRequest{
+	req = domainagent.ApprovalRequest{
 		ID:         uuid.NewString(),
 		ProviderID: providerID,
 		Tool:       tool,
@@ -42,10 +45,13 @@ func (a *approvalStore) queue(providerID domainagent.ProviderID, tool, title, su
 		CreatedAt:  now.UTC().Format(time.RFC3339),
 	}
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.pruneLocked(now)
+	if a.max > 0 && len(a.items) >= a.max {
+		return req, false
+	}
 	a.items[req.ID] = pendingApproval{request: req, exec: exec, expiresAt: now.Add(a.ttl)}
-	a.mu.Unlock()
-	return req
+	return req, true
 }
 
 func (a *approvalStore) pruneLocked(now time.Time) {
@@ -104,4 +110,32 @@ func (a *approvalStore) clearProvider(providerID domainagent.ProviderID) bool {
 		}
 	}
 	return removed
+}
+
+// ListApprovals returns pending high-impact actions waiting for user approval in the desktop UI.
+func (s *Service) ListApprovals() []domainagent.ApprovalRequest {
+	return s.approvals.list()
+}
+
+// ResolveApproval approves or rejects a pending action proposed by an agent MCP tool call.
+func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) (any, error) {
+	item, ok := s.approvals.consume(id)
+	s.emitApprovals()
+	if !ok {
+		return nil, userError(apperr.CodeNotFound, msgApprovalGone, "approval request is no longer pending", nil)
+	}
+	if !approve {
+		return map[string]any{"approved": false}, nil
+	}
+	res, err := item.exec(ctx)
+	if err != nil {
+		return nil, apperr.Unavailable(err.Error())
+	}
+	return res, nil
+}
+
+func (s *Service) emitApprovals() {
+	if s.onApprovalsChanged != nil {
+		s.onApprovalsChanged(s.approvals.list())
+	}
 }

@@ -17,6 +17,16 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// HTTP limits of the local MCP server. Clients are the agent CLIs on this machine: headers arrive at once,
+// connections are reused between tool calls of a turn, and a request is one JSON-RPC call.
+const (
+	mcpReadHeaderTimeout = 5 * time.Second
+	mcpIdleTimeout       = 30 * time.Second
+	mcpMaxRequestBytes   = 4 << 20
+	// mcpHeartbeatsPerTurnTimeout: a running tool re-arms the turn this many times per agent.turn_timeout.
+	mcpHeartbeatsPerTurnTimeout = 4
+)
+
 type localMCPServer struct {
 	http            *http.Server
 	shutdownTimeout time.Duration
@@ -48,8 +58,8 @@ func startLocalMCPServer(s *Service, log *slog.Logger) (*localMCPServer, error) 
 		shutdownTimeout: s.limits.MCPShutdownTimeout,
 	}
 	srv.http = &http.Server{
-		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       30 * time.Second,
+		ReadHeaderTimeout: mcpReadHeaderTimeout,
+		IdleTimeout:       mcpIdleTimeout,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Host != addr || r.URL.Path != "/mcp" {
 				http.Error(w, "Forbidden", http.StatusForbidden)
@@ -63,7 +73,7 @@ func startLocalMCPServer(s *Service, log *slog.Logger) (*localMCPServer, error) 
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
-			r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+			r.Body = http.MaxBytesReader(w, r.Body, mcpMaxRequestBytes)
 			// A tool call is activity of the running chat turn, and so is any progress the tool
 			// reports while it runs (e.g. a workflow): both re-arm the turn's idle timeout.
 			s.touchTurn("")
@@ -71,7 +81,7 @@ func startLocalMCPServer(s *Service, log *slog.Logger) (*localMCPServer, error) 
 			r = r.WithContext(progress.With(r.Context(), progress.Sink{
 				Report:   func(progress.Update) { touch() },
 				Beat:     touch,
-				Interval: s.limits.TurnTimeout / 4,
+				Interval: s.limits.TurnTimeout / mcpHeartbeatsPerTurnTimeout,
 			}))
 			handler.ServeHTTP(w, r)
 		}),

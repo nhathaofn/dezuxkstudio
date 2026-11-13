@@ -25,6 +25,7 @@ import { useScreenContextStore } from "./screenContext";
 import { toolLabel } from "./toolLabels";
 import { useFlash } from "../../lib/hooks/useFlash";
 import { COPY_FEEDBACK_MS, useAgentStore, type AgentChatMessage } from "./useAgentStore";
+import { appConfig } from "../../config/appConfig";
 
 export interface AgentChatTabProps {
   connectedToCore: boolean;
@@ -33,7 +34,7 @@ export interface AgentChatTabProps {
 /** Distance from the bottom (px) within which the list keeps following new content. */
 const STICK_TO_BOTTOM_PX = 80;
 /** The composer grows with its content up to this height (px), then scrolls. */
-const COMPOSER_MAX_HEIGHT = 200;
+const COMPOSER_MAX_HEIGHT = appConfig.ui.composerMaxHeight;
 
 /** Summary chip for a reply's tool calls; the list opens in the detail panel below the chips. */
 const ToolsChip: React.FC<{

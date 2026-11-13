@@ -127,14 +127,15 @@ func TestCodexAppServerStreamsDeltasAndReusesThread(t *testing.T) {
 		f.notify("item/reasoning/summaryTextDelta", scope(map[string]any{"itemId": "r1", "delta": "Thinking"}))
 		f.notify("item/started", scope(map[string]any{"item": map[string]any{"type": "mcpToolCall", "id": "c1", "tool": "studio_list_capabilities"}}))
 		f.notify("item/completed", scope(map[string]any{"item": map[string]any{"type": "mcpToolCall", "id": "c1", "tool": "studio_list_capabilities", "status": "completed"}}))
-		f.notify("item/agentMessage/delta", scope(map[string]any{"itemId": "m1", "delta": "Xin "}))
+		f.notify("item/agentMessage/delta", scope(map[string]any{"itemId": "m1", "delta": "Xin chào bạn "}))
 		<-release // the first delta must reach the UI before the turn completes
-		f.notify("item/agentMessage/delta", scope(map[string]any{"itemId": "m1", "delta": "chào"}))
-		f.notify("item/completed", scope(map[string]any{"item": map[string]any{"type": "agentMessage", "id": "m1", "text": "Xin chào"}}))
+		f.notify("item/agentMessage/delta", scope(map[string]any{"itemId": "m1", "delta": "nhé"}))
+		f.notify("item/completed", scope(map[string]any{"item": map[string]any{"type": "agentMessage", "id": "m1", "text": "Xin chào bạn nhé"}}))
 		f.notify("turn/completed", map[string]any{"threadId": threadID, "turn": map[string]any{"id": turnID, "status": "completed"}})
 	})
 
 	profile, ws := t.TempDir(), t.TempDir()
+	tr := startTestTurn(svc, "msg-1")
 	done := make(chan error, 1)
 	go func() {
 		done <- svc.runCodexTurn(context.Background(), fakeCodexExe, profile, ws, "http://127.0.0.1:1/mcp", "tok", "msg-1", "hello")
@@ -142,7 +143,7 @@ func TestCodexAppServerStreamsDeltasAndReusesThread(t *testing.T) {
 	deadline := time.After(5 * time.Second)
 	for {
 		mu.Lock()
-		got := len(*events) > 0 && (*events)[len(*events)-1].Text == "Xin "
+		got := len(*events) > 0 && (*events)[len(*events)-1].Text == "Xin chào bạn "
 		mu.Unlock()
 		if got {
 			break
@@ -157,6 +158,7 @@ func TestCodexAppServerStreamsDeltasAndReusesThread(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("turn failed: %v", err)
 	}
+	svc.endTurn(tr, nil)
 
 	mu.Lock()
 	var kinds []string
@@ -164,12 +166,13 @@ func TestCodexAppServerStreamsDeltasAndReusesThread(t *testing.T) {
 		kinds = append(kinds, string(e.Type)+":"+e.Text)
 	}
 	mu.Unlock()
-	want := []string{"thought:Thinking", "tool_call:studio_list_capabilities", "tool_result:completed", "delta:Xin ", "delta:chào"}
+	// The guard holds an unfinished one-word thought until the turn ends.
+	want := []string{"tool_call:studio_list_capabilities", "tool_result:completed", "delta:Xin chào bạn ", "delta:nhé", "thought:Thinking", "done:"}
 	if strings.Join(kinds, "|") != strings.Join(want, "|") {
 		t.Fatalf("events = %v, want %v (retried errors and the completed message must not be re-emitted)", kinds, want)
 	}
 	msgs, _ := repo.ListChatMessages(context.Background(), 10)
-	if len(msgs) != 1 || msgs[0].Text != "Xin chào" || msgs[0].Thought != "Thinking" {
+	if len(msgs) != 1 || msgs[0].Text != "Xin chào bạn nhé" || msgs[0].Thought != "Thinking" {
 		t.Fatalf("persisted = %+v", msgs)
 	}
 	if got := svc.cliSessionFor(domainagent.ProviderCodex); got != "thread-1" {
@@ -177,6 +180,7 @@ func TestCodexAppServerStreamsDeltasAndReusesThread(t *testing.T) {
 	}
 
 	// A second turn reuses the loaded thread and the same process.
+	startTestTurn(svc, "msg-2")
 	if err := svc.runCodexTurn(context.Background(), fakeCodexExe, profile, ws, "http://127.0.0.1:1/mcp", "tok", "msg-2", "again"); err != nil {
 		t.Fatal(err)
 	}
@@ -192,6 +196,7 @@ func TestCodexAppServerCancelInterruptsTurn(t *testing.T) {
 		f.notify("turn/completed", map[string]any{"threadId": threadID, "turn": map[string]any{"id": turnID, "status": "interrupted"}})
 	})
 	ctx, cancel := context.WithCancel(context.Background())
+	tr := startTestTurn(svc, "msg-1")
 	done := make(chan error, 1)
 	go func() {
 		done <- svc.runCodexTurn(ctx, fakeCodexExe, t.TempDir(), t.TempDir(), "http://127.0.0.1:1/mcp", "tok", "msg-1", "hello")
@@ -209,6 +214,7 @@ func TestCodexAppServerCancelInterruptsTurn(t *testing.T) {
 	if !strings.Contains(strings.Join(fake.seen(), ","), "turn/interrupt") {
 		t.Fatal("cancel must send turn/interrupt")
 	}
+	svc.endTurn(tr, errTurnCancelled)
 	if msgs, _ := repo.ListChatMessages(context.Background(), 10); len(msgs) != 1 || msgs[0].Text != "partial" {
 		t.Fatalf("partial reply must be kept, got %+v", msgs)
 	}
@@ -247,4 +253,13 @@ func TestCodexAppServerUnavailableFallsBackToExec(t *testing.T) {
 	if spawns != 1 {
 		t.Fatalf("a broken app-server must be tried once per executable, spawned %d times", spawns)
 	}
+}
+
+// startTestTurn makes id the running turn, as SendPrompt does, so a runner called directly streams into it.
+func startTestTurn(svc *Service, id string) *turn {
+	tr := newTurn(id, "", domainagent.ProviderCodex, svc.connSeq.Load(), nil, func() {})
+	svc.mu.Lock()
+	svc.turn = tr
+	svc.mu.Unlock()
+	return tr
 }

@@ -3,8 +3,9 @@ import { Sparkles, UploadCloud, Crosshair, Cpu, FolderOpen } from "lucide-react"
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { getBridge, isDesktop, onFileDrop } from "../../lib/bridge";
-import { useT } from "../../lib/i18n";
-import { useWatermarkStore } from "./useWatermarkStore";
+import { isMessageKey, useT } from "../../lib/i18n";
+import { findParam, integerChoices, useNodeSpec } from "../workflow/useNodeSpecs";
+import { WATERMARK_NODE, useWatermarkStore } from "./useWatermarkStore";
 
 export const WatermarkConfigCard: React.FC = () => {
   const t = useT();
@@ -26,6 +27,18 @@ export const WatermarkConfigCard: React.FC = () => {
     setWorkers,
     setCorner,
   } = useWatermarkStore();
+
+  // Choices, limits and defaults come from the node's spec, never from the UI.
+  const spec = useNodeSpec(WATERMARK_NODE);
+  const cornerParam = findParam(spec, "corner");
+  const workersParam = findParam(spec, "workers");
+  const cornerValue = corner ?? cornerParam?.default ?? "";
+  const workersValue = workers ?? Number(workersParam?.default ?? 0);
+  const workerChoices = integerChoices(workersParam);
+  const cornerLabel = (option: string) => {
+    const key = `watermark.corner.${option.replace(/-/g, "_")}`;
+    return isMessageKey(key) ? t(key) : option;
+  };
 
   useEffect(() => {
     const isImageFile = (p: string) => /\.(png|jpe?g|webp)$/i.test(p);
@@ -192,15 +205,16 @@ export const WatermarkConfigCard: React.FC = () => {
               {t("watermark.corner")}
             </label>
             <select
-              value={corner}
+              value={cornerValue}
               onChange={(e) => setCorner(e.target.value)}
               className="input-control"
+              disabled={!cornerParam}
             >
-              <option value="bottom-right">{t("watermark.corner.bottom_right")}</option>
-              <option value="bottom-left">{t("watermark.corner.bottom_left")}</option>
-              <option value="top-right">{t("watermark.corner.top_right")}</option>
-              <option value="top-left">{t("watermark.corner.top_left")}</option>
-              <option value="any">{t("watermark.corner.any")}</option>
+              {(cornerParam?.options ?? []).map((opt) => (
+                <option key={opt} value={opt}>
+                  {cornerLabel(opt)}
+                </option>
+              ))}
             </select>
           </div>
 
@@ -211,15 +225,18 @@ export const WatermarkConfigCard: React.FC = () => {
               {t("watermark.workers")}
             </label>
             <select
-              value={workers}
+              value={workersValue}
               onChange={(e) => setWorkers(Number(e.target.value))}
               className="input-control"
+              disabled={!workersParam}
             >
-              <option value={0}>{t("watermark.workers.auto")}</option>
-              <option value={2}>{t("watermark.workers.count", { count: 2 })}</option>
-              <option value={4}>{t("watermark.workers.count", { count: 4 })}</option>
-              <option value={8}>{t("watermark.workers.count", { count: 8 })}</option>
-              <option value={16}>{t("watermark.workers.count", { count: 16 })}</option>
+              {workerChoices.map((n) => (
+                <option key={n} value={n}>
+                  {n === 0
+                    ? t("watermark.workers.auto")
+                    : t("watermark.workers.count", { count: n })}
+                </option>
+              ))}
             </select>
           </div>
 

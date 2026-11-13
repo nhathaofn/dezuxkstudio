@@ -155,7 +155,7 @@ func TestAdversarial_Node_InPlace_MixedBatchStress(t *testing.T) {
 	}
 
 	outBytes, _ := json.Marshal(outRaw)
-	var out watermark.NodeOutput
+	var out watermark.RemoverOutput
 	if err := json.Unmarshal(outBytes, &out); err != nil {
 		t.Fatalf("failed to unmarshal output: %v", err)
 	}

@@ -5,14 +5,14 @@ import { Layers, FileImage, Loader2, CheckCircle2, Check, AlertCircle, Copy } fr
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
-import { useT } from "../../lib/i18n";
+import { translateServerMessage, useT } from "../../lib/i18n";
 import { useWatermarkStore } from "./useWatermarkStore";
 
 export const WatermarkResultsCard: React.FC = () => {
   const t = useT();
   const [copiedPath, flashCopiedPath] = useFlash<string>(appConfig.ui.copyFeedbackMs);
 
-  const { inputPath, inputPaths, loading, result } = useWatermarkStore();
+  const { inputPath, inputPaths, loading, progress, result } = useWatermarkStore();
 
   const handleCopy = (text: string) => {
     void navigator.clipboard.writeText(text);
@@ -71,7 +71,22 @@ export const WatermarkResultsCard: React.FC = () => {
       {loading && (
         <div className="empty-state">
           <Loader2 size={28} className="animate-spin" style={{ color: "var(--accent)" }} />
-          <div className="empty-state__title">{t("watermark.processing")}</div>
+          <div className="empty-state__title">
+            {(progress && translateServerMessage(t, progress.msg_key, progress.msg_params)) ||
+              progress?.message ||
+              t("watermark.processing")}
+          </div>
+          {progress && (
+            <div
+              className="progress watermark-progress"
+              role="progressbar"
+              aria-valuenow={Math.round(progress.percent)}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <div className="progress__bar" style={{ width: `${progress.percent}%` }} />
+            </div>
+          )}
         </div>
       )}
 

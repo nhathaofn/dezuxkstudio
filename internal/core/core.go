@@ -20,6 +20,7 @@ import (
 	domainagent "app/internal/domain/agent"
 	domainprefs "app/internal/domain/preferences"
 	domainprovider "app/internal/domain/provider"
+	"app/internal/engine"
 	"app/internal/httpclient"
 	"app/internal/paths"
 	"app/internal/realtime"
@@ -293,10 +294,20 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		modules.Preferences{Service: prefSvc},
 		modules.Diagnostics{Service: diagSvc},
 		modules.Binaries{Service: binSvc},
-		modules.Workflow{Service: wfSvc},
-		modules.Agent{Service: agentSvc},
+		modules.Workflow{Service: wfSvc, FileGuard: workflowFileGuard(cfg.Mode, agentSvc)},
+		modules.Agent{Service: agentSvc, LockTrustedFolders: cfg.Mode == config.ModeServer},
 		modules.Providers{Service: provSvc},
 	}, nil
+}
+
+// workflowFileGuard limits which local files nodes run over WebSocket may touch. The desktop app runs
+// for the person sitting at the machine, so it needs no guard; a headless server serves remote clients,
+// so their node runs may only touch the app's media/workspace and the folders the user trusted.
+func workflowFileGuard(mode config.Mode, agent *agentsvc.Service) engine.FileGuard {
+	if mode != config.ModeServer {
+		return nil
+	}
+	return agent.CheckTrustedFile
 }
 
 // background runs start-up work tied to the core lifetime: Close cancels it and waits (bounded).

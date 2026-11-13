@@ -1,41 +1,24 @@
 import { create } from "zustand";
-import { Actions } from "../../contracts/generated";
+import { Actions, NodeTypes, type ActionProgress, type NodeMap } from "../../contracts/generated";
 import { rtClient, toActionError, type ActionError } from "../../lib/rtClient";
 
-export interface WatermarkItemResult {
-  path: string;
-  out_path: string;
-  detected: boolean;
-  score: number;
-  size?: number;
-  error?: string;
-}
-
-export interface WatermarkNodeResult {
-  image: {
-    localUrl: string;
-    kind: string;
-    mimeType?: string;
-  };
-  images?: Array<{
-    localUrl: string;
-    kind: string;
-    mimeType?: string;
-  }>;
-  detected: boolean;
-  total_count?: number;
-  detected_count?: number;
-  results?: WatermarkItemResult[];
-}
+export const WATERMARK_NODE = NodeTypes.WATERMARK_REMOVER;
+export type WatermarkInput = NodeMap[typeof WATERMARK_NODE]["input"];
+export type WatermarkNodeResult = NodeMap[typeof WATERMARK_NODE]["output"];
+export type WatermarkItemResult = NonNullable<WatermarkNodeResult["results"]>[number];
 
 interface WatermarkState {
   inputPath: string;
   inputPaths: string[];
   inPlace: boolean;
   outputDir: string;
-  workers: number;
-  corner: string;
+  /** null = the node's default (from workflow:specs). */
+  workers: number | null;
+  /** null = the node's default (from workflow:specs). */
+  corner: string | null;
   loading: boolean;
+  /** Live per-image progress of the running batch (null when idle). */
+  progress: ActionProgress | null;
   result: WatermarkNodeResult | null;
   error: ActionError | null;
 
@@ -54,9 +37,10 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
   inputPaths: [],
   inPlace: false,
   outputDir: "",
-  workers: 0,
-  corner: "bottom-right",
+  workers: null,
+  corner: null,
   loading: false,
+  progress: null,
   result: null,
   error: null,
 
@@ -94,22 +78,25 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
 
     if (targets.length === 0) return;
 
-    set({ loading: true, error: null, result: null });
+    const { inPlace, outputDir, workers, corner } = get();
+    const input: WatermarkInput = {
+      images: targets.map((p) => ({ localUrl: p, kind: "image" })),
+      inplace: inPlace,
+      output_dir: outputDir,
+      ...(workers !== null ? { workers } : {}),
+      ...(corner !== null ? { corner } : {}),
+    };
+
+    set({ loading: true, progress: null, error: null, result: null });
     try {
-      const res = await rtClient.request(Actions.WORKFLOW_RUN_NODE, {
-        type: "tool.watermark_remover",
-        input: {
-          image: targets.length === 1 ? targets[0] : undefined,
-          images: targets,
-          inplace: get().inPlace,
-          output_dir: get().outputDir,
-          workers: get().workers,
-          corner: get().corner,
-        },
-      });
-      set({ result: res.output as WatermarkNodeResult, loading: false });
+      const res = await rtClient.request(
+        Actions.WORKFLOW_RUN_NODE,
+        { type: WATERMARK_NODE, input },
+        { onProgress: (p) => !p.heartbeat && set({ progress: p }) }
+      );
+      set({ result: res.output as WatermarkNodeResult, loading: false, progress: null });
     } catch (err) {
-      set({ error: toActionError(err), loading: false });
+      set({ error: toActionError(err), loading: false, progress: null });
     }
   },
 
@@ -120,5 +107,6 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
       result: null,
       error: null,
       loading: false,
+      progress: null,
     }),
 }));

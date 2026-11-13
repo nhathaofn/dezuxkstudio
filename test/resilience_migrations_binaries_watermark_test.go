@@ -780,9 +780,9 @@ func TestAdversarial_Scenario4_WatermarkMIME_And_TranscodeIntegrity(t *testing.T
 			t.Fatalf("watermark node run failed: %v", err)
 		}
 
-		outNode, ok := res.(toolswatermark.NodeOutput)
+		outNode, ok := res.(toolswatermark.RemoverOutput)
 		if !ok {
-			t.Fatalf("expected toolswatermark.NodeOutput, got %T", res)
+			t.Fatalf("expected toolswatermark.RemoverOutput, got %T", res)
 		}
 
 		if len(outNode.Images) == 0 {
@@ -839,7 +839,7 @@ func TestAdversarial_Scenario4_WatermarkMIME_And_TranscodeIntegrity(t *testing.T
 			t.Fatalf("watermark node in-place run failed: %v", err)
 		}
 
-		outNode, ok := res.(toolswatermark.NodeOutput)
+		outNode, ok := res.(toolswatermark.RemoverOutput)
 		if !ok || len(outNode.Images) == 0 {
 			t.Fatalf("expected valid node output with images")
 		}

@@ -74,7 +74,7 @@ DezuxkStudio includes a high-performance Watermark Removal subsystem consisting 
 - `frontend/src/features/watermark/WatermarkConfigCard.tsx` — Left config card and dropzone (F8)
 - `frontend/src/features/watermark/WatermarkResultsCard.tsx` — Right results card, queue list, metrics (F9)
 - `frontend/src/features/watermark/WatermarkView.tsx` — Page wrapper and action bar (F10)
-- `frontend/src/features/watermark/useWatermarkStore.ts` — Existing Zustand store (untouched)
+- `frontend/src/features/watermark/useWatermarkStore.ts` — Zustand store; types come from `NodeMap` in `contracts/generated.ts`, settings from `workflow:specs` (M6)
 
 ---
 
@@ -103,9 +103,47 @@ and merge duplicated mechanisms into shared packages. Rules are in `.agents/rule
 | F26 | Race detector job in CI (Windows, blocking); fixed the WaitGroup race it found in `runner` | `.github/workflows/ci.yml`, `internal/runner` | DONE |
 
 ## Known gaps
-- `fetchHistory` / `fetchApprovals` / `fetchAllowedDirs` swallow errors.
-- No client-side detection of a half-open WebSocket.
 - Portable `tools/` next to the executable is still searched (violates the paths rule; kept for portable builds).
 - Startup update check reports an error when the feed has no release.
-- Watermark node reads every input image into memory before processing (violates rules §14); switch it to `ProcessStream`.
-- Protocol rule §13 (accept the previous subprotocol during a rollout) is not implemented yet: the hub accepts only `dezuxk.v1`.
+- `--mode server` trust boundary covers files touched by nodes and the trusted-folder list only. Admin actions such as `binaries:set_path` and `system:open_folder` still trust any client holding the token; fine for an owner-run server, must be locked before serving untrusted clients.
+- `go test -race` runs only in CI (no cgo toolchain on the dev machine); the watermark streaming node relies on it.
+- Gaps closed in M6 (see below): swallowed agent bootstrap errors, half-open WebSocket detection, watermark whole-batch memory, protocol rule §13.
+
+---
+
+# Milestone M6a: Providers & Agent CLIs (branch `feat/providers`, PR #5, #6)
+
+## Goal
+Manage API providers (built-in and custom) as workflow nodes, and let the app own self-updating copies of the agent CLIs.
+
+## Feature Inventory
+| # | Feature | Where | Status |
+|---|---------|-------|--------|
+| F27 | Providers managed through workflow nodes; registry-driven probes; key health checked at start-up and on save | `internal/service/provider`, `internal/tools/provider` | DONE |
+| F28 | Shared model list, per-provider limits, default model per purpose; translated provider errors (`msg_key`) | `domain/provider`, `features/providers` | DONE |
+| F29 | Master-detail Providers screen | `frontend/src/features/providers` | DONE |
+| F30 | `providers_*` MCP tools so the agent can set up keys from chat (pasted keys redacted) | `internal/service/agent` | DONE |
+| F31 | App-owned, self-updating copies of claude / codex / agy; in-app sign-in; connection restored after restart | `internal/service/agentcli`, `internal/service/agent` | DONE |
+
+---
+
+# Milestone M6b: Agent Turn Lifecycle & Hardening (branch `refactor/agent-turn-lifecycle`)
+
+## Goal
+Make the agent package maintainable (drivers, one turn object, no global state) and close the known gaps
+and rule violations found in the 2026-11 audit.
+
+## Feature Inventory
+| # | Feature | Where | Status |
+|---|---------|-------|--------|
+| F32 | One `*turn` with a single end path; turn/session drivers; no provider-ID branches; no package-level state | `internal/service/agent` (`turn.go`, `drivers.go`) | DONE |
+| F33 | `service.go` split by responsibility (1 656 → ~330 lines): `provider_status.go`, `connection.go`, `conversation.go`, `turn_run.go`, `access.go` | `internal/service/agent` | DONE |
+| F34 | Watermark node streams the batch (`ProcessStream`): one reader, `workers` encoders, each result written as it arrives; per-image progress | `internal/tools/watermark/node.go` | DONE |
+| F35 | `engine.FileGuard`: nodes ask before reading/writing a path; headless `--mode server` attaches `AccessPolicy.CheckTrustedFile` to WebSocket node runs (media, workspace, trusted folders only) | `internal/engine/fileguard.go`, `core.go`, `realtime/modules/workflow.go` | DONE |
+| F36 | Node catalogue generated to TS (`NodeTypes`, `NodeMap`); watermark UI reads options/limits/defaults from `workflow:specs` and shows live progress | `contracts/nodes.go`, `cmd/contractgen`, `features/workflow`, `features/watermark` | DONE |
+| F37 | Agent store surfaces history/approvals/allowed-dir load errors instead of swallowing them | `features/agent/useAgentStore.ts` | DONE |
+| F38 | Client detects a half-open WebSocket (ping after `liveness.idleMs` of silence, reconnect after `liveness.timeoutMs`) | `lib/rtClient/connection.ts`, `appConfig.liveness` | DONE |
+| F39 | Hub accepts every version in `contracts.SupportedProtocolVersions()` (rule §13) | `internal/contracts/protocol.go`, `internal/realtime/hub.go` | DONE |
+| F40 | Test files renamed by domain; test docs refreshed | `test/`, `TEST_READY.md`, `TEST_INFRA.md` | DONE |
+| F41 | Review fixes: node specs reload on every connect (latest load wins); `output_dir` anchored to media before guard + write; trusted folders locked in server mode; agent error banner dismissible; liveness ping send guarded | `bootstrap.ts`, `useNodeSpecs.ts`, `tools/watermark/node.go`, `modules/agent.go`, `AgentDrawer.tsx`, `connection.ts` | DONE |
+| F42 | Agent drawer shows trusted folders read-only unless the desktop app runs on its own (non-server) core | `features/agent/AgentDrawer.tsx` | DONE |

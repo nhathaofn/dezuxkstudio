@@ -9,6 +9,7 @@ import { navRoutes, settingsRoute } from "./navigation";
 import { useConnectionStore } from "../features/connection/useConnectionStore";
 import { AppHeader } from "./AppHeader";
 import { StatusBanner } from "./StatusBanner";
+import { appConfig } from "../config/appConfig";
 
 export const MainLayout: React.FC = () => {
   const { pathname } = useLocation();
@@ -28,7 +29,7 @@ export const MainLayout: React.FC = () => {
         screen: route ? t(route.label) : undefined,
         ...(screenContext ?? {}),
       });
-    }, 300);
+    }, appConfig.ui.screenContextDebounceMs);
     return () => window.clearTimeout(handle);
   }, [pathname, connected, screenContext, t]);
 

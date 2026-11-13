@@ -44,6 +44,7 @@ func slowCLI(t *testing.T) string {
 func TestModelCatalogRefreshDoesNotBlock(t *testing.T) {
 	limits := DefaultLimits()
 	svc := &Service{models: newModelState(), repo: newFakeRepo(), log: slog.New(slog.DiscardHandler), limits: limits}
+	svc.drivers = newDrivers(svc)
 	exe := slowCLI(t)
 
 	start := time.Now()
@@ -146,8 +147,7 @@ func TestMCPToolActivityKeepsTurnAlive(t *testing.T) {
 
 	var touches atomic.Int32
 	svc.mu.Lock()
-	svc.activeTurnID = "msg-1"
-	svc.activeTurnTouch = func() { touches.Add(1) }
+	svc.turn = newTurn("msg-1", "", "", 0, func() { touches.Add(1) }, func() {})
 	svc.mu.Unlock()
 
 	srv, err := svc.ensureMCPServer()
@@ -175,8 +175,7 @@ func TestMCPToolActivityKeepsTurnAlive(t *testing.T) {
 func TestChatEventsTouchOnlyTheActiveTurn(t *testing.T) {
 	svc := &Service{models: newModelState(), log: slog.New(slog.DiscardHandler)}
 	var touches atomic.Int32
-	svc.activeTurnID = "msg-1"
-	svc.activeTurnTouch = func() { touches.Add(1) }
+	svc.turn = newTurn("msg-1", "", "", 0, func() { touches.Add(1) }, func() {})
 	svc.emitChatRaw(domainagent.ChatEvent{MessageID: "msg-1", Type: domainagent.ChatEventDelta, Text: "hi"})
 	svc.emitChatRaw(domainagent.ChatEvent{MessageID: "msg-0", Type: domainagent.ChatEventDelta, Text: "old"})
 	if touches.Load() != 1 {

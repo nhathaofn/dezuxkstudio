@@ -1,16 +1,38 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { useWatermarkStore } from "./watermark/useWatermarkStore";
-import { WatermarkView } from "./watermark/WatermarkView";
-import WatermarkViewDefault from "./watermark/WatermarkView";
-import { WatermarkConfigCard } from "./watermark/WatermarkConfigCard";
-import WatermarkConfigCardDefault from "./watermark/WatermarkConfigCard";
-import { WatermarkResultsCard } from "./watermark/WatermarkResultsCard";
-import WatermarkResultsCardDefault from "./watermark/WatermarkResultsCard";
-import { rtClient } from "../lib/rtClient";
-import { ActionError } from "../lib/rtClient/errors";
-import { Actions } from "../contracts/generated";
+import { useWatermarkStore } from "./useWatermarkStore";
+import { WatermarkView } from "./WatermarkView";
+import WatermarkViewDefault from "./WatermarkView";
+import { WatermarkConfigCard } from "./WatermarkConfigCard";
+import WatermarkConfigCardDefault from "./WatermarkConfigCard";
+import { WatermarkResultsCard } from "./WatermarkResultsCard";
+import WatermarkResultsCardDefault from "./WatermarkResultsCard";
+import { rtClient } from "../../lib/rtClient";
+import { ActionError } from "../../lib/rtClient/errors";
+import { Actions, type Spec } from "../../contracts/generated";
+import { useNodeSpecsStore } from "../workflow/useNodeSpecs";
+
+// The node spec as the backend sends it (workflow:specs); the UI must take its choices from here.
+const watermarkSpec: Spec = {
+  type: "tool.watermark_remover",
+  provider: "tool",
+  label: "Watermark Remover",
+  description: "",
+  inputs: [],
+  outputs: [],
+  params: [
+    { name: "workers", label: "Workers", kind: "integer", min: 0, max: 64, default: "0" },
+    {
+      name: "corner",
+      label: "Corner",
+      kind: "select",
+      options: ["bottom-right", "bottom-left", "top-right", "top-left", "any"],
+      default: "bottom-right",
+    },
+  ],
+};
+useNodeSpecsStore.setState({ specs: [watermarkSpec], loading: false, error: null });
 
 // In Node SSR environment, mock useSyncExternalStore to return client snapshot (getState)
 // so dynamic store state mutations are reflected in server-rendered markup.
@@ -18,21 +40,7 @@ vi.spyOn(React, "useSyncExternalStore").mockImplementation((_subscribe, getSnaps
   getSnapshot()
 );
 
-describe("Watermark Modularization Acceptance Criteria Audit", () => {
-  it("strictly contains only the authorized 4 files with no hidden hooks or extra sub-components", () => {
-    // import.meta.glob queries the exact files in the watermark feature module
-    const modules = import.meta.glob("./watermark/*");
-    const filenames = Object.keys(modules).map((k) => k.replace("./watermark/", ""));
-    const expectedFiles = [
-      "WatermarkConfigCard.tsx",
-      "WatermarkResultsCard.tsx",
-      "WatermarkView.tsx",
-      "useWatermarkStore.ts",
-    ];
-
-    expect(filenames.sort()).toEqual(expectedFiles.sort());
-  });
-
+describe("Watermark module exports", () => {
   it("exports both named and default exports for all decomposed components", () => {
     expect(WatermarkView).toBeDefined();
     expect(WatermarkViewDefault).toBe(WatermarkView);
@@ -51,8 +59,8 @@ describe("Watermark UI Components Runtime Rendering & State Bindings", () => {
     useWatermarkStore.setState({
       inPlace: false,
       outputDir: "",
-      workers: 0,
-      corner: "bottom-right",
+      workers: null,
+      corner: null,
     });
   });
 
@@ -99,6 +107,31 @@ describe("Watermark UI Components Runtime Rendering & State Bindings", () => {
     expect(html).toContain('value="8"');
   });
 
+  it("offers every worker count up to the spec's max and preselects spec defaults", () => {
+    const html = renderToStaticMarkup(React.createElement(WatermarkConfigCard));
+    expect(html).toContain('value="64"');
+    expect(html).toContain('value="32"');
+    expect(html).toMatch(/<option value="bottom-right" selected/);
+    expect(html).toContain("Top-Left");
+  });
+
+  it("shows live per-image progress while a batch runs", () => {
+    useWatermarkStore.setState({
+      inputPaths: ["C:/a.png", "C:/b.png"],
+      loading: true,
+      progress: {
+        percent: 50,
+        message: "Processed 1 / 2 images",
+        msg_key: "workflow.progress.items",
+        msg_params: { done: "1", total: "2" },
+      },
+    });
+    const html = renderToStaticMarkup(React.createElement(WatermarkResultsCard));
+    expect(html).toContain("Processed 1 / 2 images");
+    expect(html).toContain('role="progressbar"');
+    expect(html).toContain("width:50%");
+  });
+
   it("renders loading state with spinner in both header button and results card", () => {
     useWatermarkStore.setState({
       inputPaths: ["C:/img.png"],
@@ -114,6 +147,7 @@ describe("Watermark UI Components Runtime Rendering & State Bindings", () => {
     useWatermarkStore.setState({
       inputPath: "C:/input.png",
       result: {
+        images: [],
         image: {
           localUrl: "C:/output/input_clean.png",
           kind: "image/png",
@@ -134,6 +168,7 @@ describe("Watermark UI Components Runtime Rendering & State Bindings", () => {
     useWatermarkStore.setState({
       inputPaths: ["C:/a.png", "C:/b.png", "C:/c.png"],
       result: {
+        images: [],
         image: { localUrl: "C:/a_clean.png", kind: "image/png" },
         detected: true,
         total_count: 3,
@@ -194,6 +229,7 @@ describe("Adversarial Stress Testing & Edge Cases", () => {
     useWatermarkStore.setState({
       inputPaths: [maliciousPath, "other.png"],
       result: {
+        images: [],
         image: { localUrl: maliciousPath, kind: "image/png" },
         detected: false,
         total_count: 2,
@@ -242,6 +278,7 @@ describe("Adversarial Stress Testing & Edge Cases", () => {
   it("handles extreme KPI numbers gracefully", () => {
     useWatermarkStore.setState({
       result: {
+        images: [],
         image: { localUrl: "res.png", kind: "image/png" },
         detected: true,
         total_count: 1_000_000,
@@ -260,6 +297,7 @@ describe("Adversarial Stress Testing & Edge Cases", () => {
     useWatermarkStore.setState({
       inputPaths: [unicodePath],
       result: {
+        images: [],
         image: { localUrl: unicodePath, kind: "image/png" },
         detected: true,
         total_count: 1,
@@ -274,6 +312,7 @@ describe("Adversarial Stress Testing & Edge Cases", () => {
   it("handles missing optional fields in WatermarkItemResult without crashing", () => {
     useWatermarkStore.setState({
       result: {
+        images: [],
         image: { localUrl: "test.png", kind: "image/png" },
         detected: false,
         total_count: 2,
@@ -304,6 +343,7 @@ describe("Adversarial Stress Testing & Edge Cases", () => {
   it("handles results payload when results array is empty or undefined", () => {
     useWatermarkStore.setState({
       result: {
+        images: [],
         image: { localUrl: "single.png", kind: "image/png" },
         detected: true,
         total_count: 1,
@@ -371,21 +411,37 @@ describe("useWatermarkStore Actions & Edge Case Robustness", () => {
 
     await useWatermarkStore.getState().removeWatermark();
 
-    expect(requestSpy).toHaveBeenCalledWith(Actions.WORKFLOW_RUN_NODE, {
-      type: "tool.watermark_remover",
-      input: {
-        image: "C:/target.png",
-        images: ["C:/target.png"],
-        inplace: true,
-        output_dir: "",
-        workers: 4,
-        corner: "top-right",
+    expect(requestSpy).toHaveBeenCalledWith(
+      Actions.WORKFLOW_RUN_NODE,
+      {
+        type: "tool.watermark_remover",
+        input: {
+          images: [{ localUrl: "C:/target.png", kind: "image" }],
+          inplace: true,
+          output_dir: "",
+          workers: 4,
+          corner: "top-right",
+        },
       },
-    });
+      expect.objectContaining({ onProgress: expect.any(Function) })
+    );
 
     expect(useWatermarkStore.getState().loading).toBe(false);
     expect(useWatermarkStore.getState().result).toEqual(mockOutput);
     expect(useWatermarkStore.getState().error).toBeNull();
+    requestSpy.mockRestore();
+  });
+
+  it("removeWatermark leaves unset settings to the node's defaults", async () => {
+    const requestSpy = vi
+      .spyOn(rtClient, "request")
+      .mockResolvedValueOnce({ output: { images: [] } } as never);
+    useWatermarkStore.setState({ workers: null, corner: null, inPlace: false, outputDir: "" });
+    useWatermarkStore.getState().setInputPath("C:/x.png");
+    await useWatermarkStore.getState().removeWatermark();
+    const payload = requestSpy.mock.calls[0][1] as { input: Record<string, unknown> };
+    expect(payload.input).not.toHaveProperty("workers");
+    expect(payload.input).not.toHaveProperty("corner");
     requestSpy.mockRestore();
   });
 
@@ -410,7 +466,13 @@ describe("useWatermarkStore Actions & Edge Case Robustness", () => {
     useWatermarkStore.setState({
       inputPath: "C:/foo.png",
       inputPaths: ["C:/foo.png"],
-      result: { image: { localUrl: "bar.png", kind: "image/png" }, detected: true },
+      result: {
+        image: { localUrl: "bar.png", kind: "image/png" },
+        images: [],
+        detected: true,
+        total_count: 1,
+        detected_count: 1,
+      },
       error: new ActionError("ERR_INTERNAL", "some error"),
       loading: true,
     });

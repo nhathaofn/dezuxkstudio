@@ -85,6 +85,7 @@ func (c *Config) Validate() error {
 			"network.max_idle_conns":          c.Network.MaxIdleConns,
 			"network.max_idle_conns_per_host": c.Network.MaxIdleConnsPerHost,
 			"agent.history_limit":             c.Agent.HistoryLimit,
+			"agent.max_pending_approvals":     c.Agent.MaxPendingApprovals,
 			"agent.context_messages":          c.Agent.ContextMessages,
 			"agent.context_message_chars":     c.Agent.ContextMessageChars,
 		})

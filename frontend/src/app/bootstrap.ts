@@ -6,6 +6,7 @@ import { useConnectionStore } from "../features/connection/useConnectionStore";
 import { uiLog } from "../features/logs/useLogStore";
 import { usePreferencesStore } from "../features/preferences/usePreferencesStore";
 import { useSystemStore } from "../features/system/useSystemStore";
+import { useNodeSpecsStore } from "../features/workflow/useNodeSpecs";
 import { onNativeEvent } from "../lib/bridge";
 import { ActionError, rtClient } from "../lib/rtClient";
 
@@ -42,6 +43,8 @@ export function bootstrap(): void {
     if (status !== "connected") return;
     void usePreferencesStore.getState().load();
     void useSystemStore.getState().loadInfo();
+    // A screen opened before the socket was up (or on a different server) gets fresh node specs.
+    void useNodeSpecsStore.getState().load(true);
     void useBinariesStore.getState().fetchBinaries();
     void useProvidersStore.getState().list();
     void useProvidersStore.getState().fetchDefaults();

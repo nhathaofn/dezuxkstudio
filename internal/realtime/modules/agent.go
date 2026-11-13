@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"app/internal/apperr"
 	"context"
 
 	"app/internal/contracts"
@@ -12,6 +13,17 @@ import (
 // Agent exposes agent:* actions over realtime WebSocket.
 type Agent struct {
 	Service *agentsvc.Service
+	// LockTrustedFolders refuses agent:add_allowed_dir / agent:remove_allowed_dir. Set in headless
+	// server mode: trusted folders also bound what remote clients may touch (the workflow file guard),
+	// so a remote client must not be able to widen its own boundary.
+	LockTrustedFolders bool
+}
+
+func (m Agent) trustedFoldersLocked() error {
+	if m.LockTrustedFolders {
+		return apperr.Unavailable("trusted folders can only be changed in the desktop app on this machine")
+	}
+	return nil
 }
 
 func (Agent) Name() string { return "agent" }
@@ -185,6 +197,9 @@ func (m Agent) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionAgentAddAllowedDir,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentAllowedDirPayload) (contracts.AgentAllowedDirsResult, error) {
+			if err := m.trustedFoldersLocked(); err != nil {
+				return contracts.AgentAllowedDirsResult{}, err
+			}
 			dirs, err := m.Service.AddAllowedDir(ctx, p.Dir)
 			if err != nil {
 				return contracts.AgentAllowedDirsResult{}, err
@@ -194,6 +209,9 @@ func (m Agent) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionAgentRemoveAllowedDir,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentAllowedDirPayload) (contracts.AgentAllowedDirsResult, error) {
+			if err := m.trustedFoldersLocked(); err != nil {
+				return contracts.AgentAllowedDirsResult{}, err
+			}
 			dirs, err := m.Service.RemoveAllowedDir(ctx, p.Dir)
 			if err != nil {
 				return contracts.AgentAllowedDirsResult{}, err

@@ -302,3 +302,27 @@ func TestListFilesAnywhereHidesSensitive(t *testing.T) {
 		t.Error("expected system folder listing to be denied")
 	}
 }
+
+func TestCheckTrustedFile(t *testing.T) {
+	root := t.TempDir()
+	media := filepath.Join(root, "media")
+	trusted := filepath.Join(root, "granted")
+	outside := filepath.Join(root, "elsewhere")
+	for _, d := range []string{media, trusted, outside} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := NewAccessPolicy(filepath.Join(root, "data"), filepath.Join(root, "ws"), media, "", []string{trusted})
+
+	for _, ok := range []string{filepath.Join(media, "a.png"), filepath.Join(trusted, "sub", "b.png")} {
+		if err := p.CheckTrustedFile(ok, true); err != nil {
+			t.Errorf("%s should be allowed: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{filepath.Join(outside, "c.png"), filepath.Join(media, "..", "elsewhere", "d.png")} {
+		if err := p.CheckTrustedFile(bad, false); err == nil {
+			t.Errorf("%s should be denied", bad)
+		}
+	}
+}

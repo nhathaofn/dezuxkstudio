@@ -23,6 +23,8 @@ const (
 	msgApprovalGone       = "agent.err.approvalGone"
 	msgModelChangeBusy    = "agent.err.modelChangeBusy"
 	msgProcessExited      = "agent.err.processExited" // {detail}
+	msgConnectionClosed   = "agent.err.connectionClosed"
+	msgTooManyApprovals   = "agent.err.tooManyApprovals" // {max}
 	msgSuperseded         = "agent.err.superseded"
 	msgSignInFailed       = "agent.err.signInFailed" // {detail}
 	msgConversationGone   = "agent.err.conversationGone"

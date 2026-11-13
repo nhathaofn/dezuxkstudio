@@ -10,7 +10,7 @@ import { usePreferencesStore } from "../../features/preferences/usePreferencesSt
 const VI_DIACRITICS_REGEX =
   /[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]/i;
 
-describe("Adversarial Challenge 1: Dictionary Lookups & Interpolation Robustness", () => {
+describe("Dictionary Lookups & Interpolation Robustness", () => {
   describe("1.1 Uncataloged Key Behavior", () => {
     it("reports undefined when an uncataloged key is requested without vars", () => {
       // TypeScript prevents this at compile time, but at runtime dynamic keys may be passed.
@@ -180,7 +180,7 @@ describe("Adversarial Challenge 1: Dictionary Lookups & Interpolation Robustness
   });
 });
 
-describe("Adversarial Challenge 2: Language Switching & Catalog Integrity", () => {
+describe("Language Switching & Catalog Integrity", () => {
   it("enforces key parity between en.ts and vi.ts", () => {
     const enKeys = Object.keys(en);
     const viKeys = Object.keys(vi);
@@ -266,7 +266,7 @@ describe("Adversarial Challenge 2: Language Switching & Catalog Integrity", () =
   });
 });
 
-describe("Adversarial Challenge 3: JSX Components Interpolation & Key Validation", () => {
+describe("JSX Components Interpolation & Key Validation", () => {
   it("verifies all newly added keys in M3 exist and interpolate cleanly", () => {
     const m3Keys: Record<string, Record<string, string | number> | undefined> = {
       "header.nav.ariaLabel": undefined,

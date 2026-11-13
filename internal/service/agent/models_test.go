@@ -97,7 +97,7 @@ func TestAgyModelSelectionAppliedAndValidated(t *testing.T) {
 	if _, err := svc.SetCustomPath(ctx, domainagent.ProviderAntigravity, agy); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveAgyAPIKey(svc.profileDirFor(domainagent.ProviderAntigravity), "AIza-test"); err != nil {
+	if err := svc.secrets.saveAgyAPIKey(svc.profileDirFor(domainagent.ProviderAntigravity), "AIza-test"); err != nil {
 		t.Fatal(err)
 	}
 

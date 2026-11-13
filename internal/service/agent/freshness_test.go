@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	domainagent "app/internal/domain/agent"
 	"app/internal/engine"
 	providernodes "app/internal/tools/provider"
 )
@@ -140,20 +141,13 @@ func TestPolicyRequiresRecheckOfChangeableState(t *testing.T) {
 }
 
 func TestRepliesRecordWhichToolsTheyUsed(t *testing.T) {
-	svc := newSnapshotService(t, &providerWorkflow{})
-	svc.noteTool("m1", "tool.provider_list")
-	svc.noteTool("m1", "studio_list_capabilities")
-	svc.noteTool("m1", "tool.provider_list") // repeated call: listed once
-	svc.noteTool("", "ignored")
-	svc.noteTool("m2", "workflow_run_node")
-	if got := svc.takeTools("m1"); got != "tool.provider_list, studio_list_capabilities" {
-		t.Fatalf("m1 tools = %q", got)
-	}
-	if got := svc.takeTools("m1"); got != "" {
-		t.Fatalf("tools must be forgotten once taken, got %q", got)
-	}
-	if got := svc.takeTools("m2"); got != "workflow_run_node" {
-		t.Fatalf("m2 tools = %q", got)
+	tr := newTurn("m1", "", "", 0, nil, func() {})
+	tr.noteTool("tool.provider_list")
+	tr.noteTool("studio_list_capabilities")
+	tr.noteTool("tool.provider_list") // repeated call: listed once
+	tr.noteTool("")
+	if got := tr.toolList(); got != "tool.provider_list, studio_list_capabilities" {
+		t.Fatalf("tools = %q", got)
 	}
 }
 
@@ -164,11 +158,17 @@ func TestPersistedReplyStoresToolsUsed(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = svc.Close() })
-	svc.noteTool("msg-1", "tool.provider_list")
-	svc.persistAssistantMessage("claude", "msg-1", "Có hai provider.", "")
+	tr := newTurn("msg-1", "conv-1", "claude", 0, nil, func() {})
+	svc.turn = tr
+	svc.emitChat(domainagent.ChatEvent{Type: domainagent.ChatEventToolCall, MessageID: "msg-1", Tool: "tool.provider_list"})
+	svc.emitChat(domainagent.ChatEvent{Type: domainagent.ChatEventDelta, MessageID: "msg-1", Text: "Có hai provider."})
+	svc.endTurn(tr, nil)
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
-	if len(repo.messages) != 1 || repo.messages[0].Tool != "tool.provider_list" {
+	if len(repo.messages) != 1 || repo.messages[0].Tool != "tool.provider_list" || repo.messages[0].Text != "Có hai provider." {
 		t.Fatalf("stored messages = %+v", repo.messages)
+	}
+	if svc.turn != nil {
+		t.Fatal("an ended turn must leave the service idle")
 	}
 }
