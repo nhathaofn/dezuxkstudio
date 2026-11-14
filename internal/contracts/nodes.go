@@ -1,11 +1,6 @@
 package contracts
 
-import (
-	"reflect"
-
-	mediagennodes "app/internal/tools/mediagen"
-	"app/internal/tools/watermark"
-)
+import "reflect"
 
 // NodeSpec names a built-in workflow node whose input/output shapes the frontend uses directly
 // (a feature screen that runs one node). Its settings (options, min/max, defaults) are NOT
@@ -20,9 +15,9 @@ type NodeSpec struct {
 // Nodes is the node catalogue emitted into generated.ts.
 func Nodes() []NodeSpec {
 	return []NodeSpec{
-		{"WATERMARK_REMOVER", watermark.NodeType, t[watermark.RemoverInput](), t[watermark.RemoverOutput]()},
-		{"IMAGE_GENERATE", mediagennodes.NodeTypeImage, t[mediagennodes.ImageGenerateInput](), t[mediagennodes.ImageGenerateOutput]()},
-		{"VIDEO_GENERATE", mediagennodes.NodeTypeVideo, t[mediagennodes.VideoGenerateInput](), t[mediagennodes.VideoGenerateOutput]()},
-		{"TTS_GENERATE", mediagennodes.NodeTypeTTS, t[mediagennodes.TTSGenerateInput](), t[mediagennodes.TTSGenerateOutput]()},
+		{"WATERMARK_REMOVER", NodeTypeWatermarkRemover, t[RemoverInput](), t[RemoverOutput]()},
+		{"IMAGE_GENERATE", NodeTypeImageGenerate, t[ImageGenerateInput](), t[ImageGenerateOutput]()},
+		{"VIDEO_GENERATE", NodeTypeVideoGenerate, t[VideoGenerateInput](), t[VideoGenerateOutput]()},
+		{"TTS_GENERATE", NodeTypeTTSGenerate, t[TTSGenerateInput](), t[TTSGenerateOutput]()},
 	}
 }

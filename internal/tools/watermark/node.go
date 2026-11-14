@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"app/internal/apperr"
+	"app/internal/contracts"
 	"app/internal/engine"
 	"app/internal/fsutil"
 	"app/internal/progress"
@@ -21,7 +22,7 @@ import (
 )
 
 // NodeType is the unique identifier for the watermark remover node.
-const NodeType = "tool.watermark_remover"
+const NodeType = contracts.NodeTypeWatermarkRemover
 
 // Options configures default directories for the node.
 type Options struct {
@@ -31,45 +32,19 @@ type Options struct {
 }
 
 // RemoverImage accepts either an engine.MediaRef object or a plain string path.
-type RemoverImage struct {
-	engine.ImageInputRef
-}
+type RemoverImage = engine.ImageInputRef
 
 // RemoverImages accepts a string, []string, MediaRef, or []MediaRef.
 type RemoverImages = engine.ImageInputRefs
 
 // RemoverInput is the input payload for the watermark remover node.
-type RemoverInput struct {
-	Image     RemoverImage  `json:"image,omitempty"`
-	Images    RemoverImages `json:"images,omitempty"`
-	InPlace   bool          `json:"inplace,omitempty"`
-	OutputDir string        `json:"output_dir,omitempty"`
-	Workers   int           `json:"workers,omitempty"`
-	Corner    string        `json:"corner,omitempty"`
-	MinScore  float64       `json:"min_score,omitempty"`
-	MinGain   float64       `json:"min_gain,omitempty"`
-	MaxGain   float64       `json:"max_gain,omitempty"`
-}
+type RemoverInput = contracts.RemoverInput
 
 // RemoverItem provides execution details for each processed image.
-type RemoverItem struct {
-	Path     string  `json:"path"`
-	OutPath  string  `json:"out_path"`
-	Detected bool    `json:"detected"`
-	Score    float64 `json:"score"`
-	Size     int     `json:"size,omitempty"`
-	Error    string  `json:"error,omitempty"`
-}
+type RemoverItem = contracts.RemoverItem
 
 // RemoverOutput is the output payload produced by the watermark remover node.
-type RemoverOutput struct {
-	Image         engine.MediaRef   `json:"image"`
-	Images        []engine.MediaRef `json:"images"`
-	Detected      bool              `json:"detected"`
-	TotalCount    int               `json:"total_count"`
-	DetectedCount int               `json:"detected_count"`
-	Results       []RemoverItem     `json:"results,omitempty"`
-}
+type RemoverOutput = contracts.RemoverOutput
 
 // NewNode builds an engine.Node for watermark detection and reconstruction with multi-threading.
 func NewNode(opts Options) engine.Node {

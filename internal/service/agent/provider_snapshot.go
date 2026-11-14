@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
-	providernodes "app/internal/tools/provider"
+	"app/internal/contracts"
 )
 
 // providerSnapshot is the live provider state placed in studio_list_capabilities, so the agent's
@@ -16,7 +16,7 @@ func (s *Service) providerSnapshot(ctx context.Context) map[string]any {
 	if s.workflow == nil {
 		return nil
 	}
-	raw, err := s.workflow.RunNode(ctx, providernodes.NodeList, json.RawMessage(`{}`))
+	raw, err := s.workflow.RunNode(ctx, contracts.NodeTypeProviderList, json.RawMessage(`{}`))
 	if err != nil {
 		return nil
 	}

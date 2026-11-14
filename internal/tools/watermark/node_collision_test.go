@@ -61,9 +61,7 @@ func TestFinishItem_InPlaceExtensionChangeRefusesExistingTarget(t *testing.T) {
 func TestRemoverInput_JSONMarshalUnmarshal(t *testing.T) {
 	in := RemoverInput{
 		Image: RemoverImage{
-			ImageInputRef: engine.ImageInputRef{
-				MediaRef: engine.MediaRef{LocalURL: "one.png", Kind: engine.MediaImage, MimeType: "image/png"},
-			},
+			MediaRef: engine.MediaRef{LocalURL: "one.png", Kind: engine.MediaImage, MimeType: "image/png"},
 		},
 		Images: RemoverImages{
 			{LocalURL: "two.jpg", Kind: engine.MediaImage},
