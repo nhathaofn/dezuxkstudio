@@ -1,7 +1,7 @@
 # Test Suite Readiness Report (`TEST_READY.md`)
 
-**Date**: 2026-11-14 (synced across Phases 1–5 on `refactor/phase-5-db-cleanup-docs`; final post-merge Go counts refreshed by `@eng-lead` after Wave 5A `T5.1` lands)  
-**Status**: **PASSING (GREEN)**  
+**Date**: 2026-11-14 (counts refreshed on branch `refactor/phase-5-db-cleanup-docs` after Wave 5A merge)  
+**Status**: **ALL AUTOMATED TESTS PASSING (GREEN)**  
 **Milestone**: Phases 1–5 Hardening, Boundary Decoupling & Cleanup
 
 ---
@@ -10,7 +10,7 @@
 
 | Test Track | Scope | Passed | Failed | Skipped |
 |:---|:---|:---:|:---:|:---:|
-| **Go — full repo** (`task test` / `go test ./...`) | 50 packages (49 under `internal/`, `pkg/`, `test/`, `cmd/` + root `app` package; exact post-`T5.1` count refreshed after merge) | — | 0 | Live CLI tests skip unless opt-in env vars / signed-in profiles are present |
+| **Go — full repo** (`task test` / `go test -count=1 ./...`) | 50 packages (46 with test suites + 4 `[no test files]`), 566 top-level tests | 558 | 0 | 8 (7 live CLI/agent tests + `TestRealGoogleFlowLiveImage`) |
 | **Go — cross-package suite** (`go test -count=1 ./test/...`) | 7 `*_test.go` files, 31 top-level tests | 31 | 0 | 0 |
 | **Frontend Vitest** (`npm.cmd --prefix frontend run test:run`) | 27 test files | 227 | 0 | 0 |
 | **Frontend typecheck, lint & build** | `tsc --noEmit`, `tsc -p tsconfig.node.json`, `eslint`, `check-styles.mjs`, `prettier --check`, `vite build` | clean | 0 | — |
@@ -77,10 +77,11 @@ Package tests live next to the code (`internal/**/_test.go`, `pkg/**/_test.go`).
 
 ### R4. Automated Verification & Project Health
 - [x] `go test -count=1 ./test/...` passes (`31/31` top-level tests).
+- [x] `go test -count=1 ./...` passes across all 50 Go packages (`558` top-level tests passed, `8` opt-in live tests skipped, `0` failures).
 - [x] `npm.cmd --prefix frontend run test:run` passes (`27` files, `227/227` tests).
 - [x] `npm.cmd --prefix frontend run typecheck` passes with `0` errors.
 - [x] `npm.cmd --prefix frontend run lint` and `format:check` pass with `0` warnings/errors.
-- [x] Full `task check` (Go vet/gofmt/tidy/contractgen/full 50-package `go test ./...`/audit) & `task test:race` refreshed on integration branch after Wave 5A merge.
+- [x] Full `task check` (`lint` + `test` + `audit`) and `task test:race` pass on integration branch `refactor/phase-5-db-cleanup-docs`.
 
 ---
 
