@@ -16,10 +16,9 @@ var clientName = buildinfo.ProductName
 // Names shared by every provider integration. They identify DezuxkStudio's MCP server and handshake
 // to the external CLIs, so they live in one place instead of being repeated per runner.
 const (
-	mcpServerName                = "dezuxk" // MCP server key in every provider's config
-	mcpToolPrefix                = "mcp__" + mcpServerName + "__"
-	mcpTokenEnvVar               = "DEZUXK_AGENT_TOKEN" // env var carrying the per-process MCP bearer token
-	defaultMaxConcurrentSubagent = 4                    // max parallel subagent_run invocations per turn
+	mcpServerName  = "dezuxk" // MCP server key in every provider's config
+	mcpToolPrefix  = "mcp__" + mcpServerName + "__"
+	mcpTokenEnvVar = "DEZUXK_AGENT_TOKEN" // env var carrying the per-process MCP bearer token
 )
 
 // Limits tunes timeouts, caches and chat context size. Zero fields fall back to DefaultLimits.
@@ -59,7 +58,7 @@ func LimitsFrom(c *config.Config) Limits {
 		ApprovalTTL:            a.ApprovalTTL,
 		MaxPendingApprovals:    a.MaxPendingApprovals,
 		HistoryLimit:           a.HistoryLimit,
-		MaxConcurrentSubagents: defaultMaxConcurrentSubagent,
+		MaxConcurrentSubagents: a.MaxConcurrentSubagents,
 	}
 }
 

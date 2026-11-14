@@ -11,6 +11,15 @@ import (
 	"app/internal/domain/agent"
 )
 
+const (
+	// defaultChatMessageListLimit bounds ListChatMessages when callers pass limit <= 0
+	// so legacy flat-history queries cannot read an unbounded table into memory.
+	defaultChatMessageListLimit = 200
+	// defaultConversationListLimit bounds ListConversations when callers pass limit <= 0
+	// so sidebar conversation lists stay bounded without an explicit page size.
+	defaultConversationListLimit = 100
+)
+
 // AgentRepository implements agent.Repository using SQLite.
 type AgentRepository struct{ db *DB }
 
@@ -130,7 +139,7 @@ func (r *AgentRepository) RedactChatMessages(ctx context.Context, secret, replac
 // ListChatMessages returns the most recent chat messages in chronological order.
 func (r *AgentRepository) ListChatMessages(ctx context.Context, limit int) ([]agent.ChatMessage, error) {
 	if limit <= 0 {
-		limit = 200
+		limit = defaultChatMessageListLimit
 	}
 	rows, err := r.db.read().QueryContext(ctx, `
 		SELECT id, provider_id, role, text, thought, tool, created_at, metadata
@@ -182,7 +191,7 @@ func (r *AgentRepository) SaveConversation(ctx context.Context, c agent.Conversa
 // ListConversations returns conversations, most recently active first.
 func (r *AgentRepository) ListConversations(ctx context.Context, limit int) ([]agent.Conversation, error) {
 	if limit <= 0 {
-		limit = 100
+		limit = defaultConversationListLimit
 	}
 	rows, err := r.db.read().QueryContext(ctx, `
 		SELECT c.id, c.title, c.provider_id, c.created_at, c.updated_at,

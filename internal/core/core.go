@@ -160,7 +160,8 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 				LongAction:   cfg.Realtime.LongActionTimeout,
 				PingInterval: cfg.Realtime.PingInterval,
 			},
-			MediaDir: o.Paths.Media(),
+			MediaDir:       o.Paths.Media(),
+			MaxUploadBytes: cfg.Server.MaxMediaUploadBytes,
 		}),
 	})
 	if err != nil {
@@ -168,7 +169,7 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 	}
 	if mediaDir := o.Paths.Media(); mediaDir != "" {
 		c.background("media-staging-cleanup", func(ctx context.Context) {
-			handlers.RunStagingCleanup(ctx, mediaDir, o.Logger)
+			handlers.RunStagingCleanup(ctx, mediaDir, cfg.Server.MediaStagingTTL, cfg.Server.MediaStagingCleanupInterval, o.Logger)
 		})
 	}
 	return c, nil

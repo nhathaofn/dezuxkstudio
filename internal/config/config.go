@@ -61,17 +61,20 @@ type Config struct {
 
 // ServerConfig configures the HTTP/WebSocket core server.
 type ServerConfig struct {
-	Host                  string
-	Port                  int
-	AuthToken             string
-	AuthTokenFile         string
-	AllowedOrigins        []string
-	ReadHeaderTimeout     time.Duration
-	IdleTimeout           time.Duration
-	ShutdownTimeout       time.Duration
-	EnableBroadcast       bool
-	MaxBroadcastBodyBytes int64
-	AllowHostAdmin        bool // allow remote clients in server mode to mutate host binary/CLI paths or open host folders
+	Host                        string
+	Port                        int
+	AuthToken                   string
+	AuthTokenFile               string
+	AllowedOrigins              []string
+	ReadHeaderTimeout           time.Duration
+	IdleTimeout                 time.Duration
+	ShutdownTimeout             time.Duration
+	EnableBroadcast             bool
+	MaxBroadcastBodyBytes       int64
+	MaxMediaUploadBytes         int64         // max body size of POST /api/media/upload in bytes
+	MediaStagingTTL             time.Duration // retention period before expired staging directories are pruned
+	MediaStagingCleanupInterval time.Duration // how often expired staging directories are checked
+	AllowHostAdmin              bool          // allow remote clients in server mode to mutate host binary/CLI paths or open host folders
 }
 
 // ClientConfig configures client mode (GUI connected to a remote server).
@@ -159,22 +162,23 @@ type UpdateConfig struct {
 
 // AgentConfig tunes the external AI agent integration (timeouts, caches, workspace mode).
 type AgentConfig struct {
-	RestoreConnection   bool          // reconnect the agent left connected when the app last ran
-	TurnTimeout         time.Duration // max silence (no streamed output or tool activity) in one chat turn
-	InitializeTimeout   time.Duration // max wait for an ACP agent handshake
-	VersionProbeTimeout time.Duration // max duration of `<cli> --version`
-	AuthProbeTimeout    time.Duration // max duration of a CLI auth status check
-	LoginTimeout        time.Duration // max duration of an interactive sign-in (browser OAuth)
-	ModelCatalogTimeout time.Duration // max duration of reading a CLI's model catalog
-	InterruptWait       time.Duration // how long a cancelled turn waits for the CLI to report what it produced
-	StatusCacheTTL      time.Duration // how long CLI auth/version probe results are reused
-	AutoInstallCLI      bool          // download the agent CLIs into the app's own folder when they are missing
-	AutoUpdateCLI       bool          // check once at startup to keep the app's own agent CLIs on the newest official release
-	ApprovalTTL         time.Duration // pending approvals expire after this long
-	HistoryLimit        int           // messages returned to the chat UI
-	MaxPendingApprovals int           // agent actions waiting for approval at most
-	Mode                string        // "assistant" (default, restricted) or "developer" (opt-in coding/tools)
-	WorkspaceDir        string        // optional directory override for the agent workspace
+	RestoreConnection      bool          // reconnect the agent left connected when the app last ran
+	TurnTimeout            time.Duration // max silence (no streamed output or tool activity) in one chat turn
+	InitializeTimeout      time.Duration // max wait for an ACP agent handshake
+	VersionProbeTimeout    time.Duration // max duration of `<cli> --version`
+	AuthProbeTimeout       time.Duration // max duration of a CLI auth status check
+	LoginTimeout           time.Duration // max duration of an interactive sign-in (browser OAuth)
+	ModelCatalogTimeout    time.Duration // max duration of reading a CLI's model catalog
+	InterruptWait          time.Duration // how long a cancelled turn waits for the CLI to report what it produced
+	StatusCacheTTL         time.Duration // how long CLI auth/version probe results are reused
+	AutoInstallCLI         bool          // download the agent CLIs into the app's own folder when they are missing
+	AutoUpdateCLI          bool          // check once at startup to keep the app's own agent CLIs on the newest official release
+	ApprovalTTL            time.Duration // pending approvals expire after this long
+	HistoryLimit           int           // messages returned to the chat UI
+	MaxPendingApprovals    int           // agent actions waiting for approval at most
+	MaxConcurrentSubagents int           // max parallel subagent_run invocations per turn
+	Mode                   string        // "assistant" (default, restricted) or "developer" (opt-in coding/tools)
+	WorkspaceDir           string        // optional directory override for the agent workspace
 }
 
 // DeveloperMode reports whether the agent runs in opt-in developer mode (not remote server mode).
@@ -219,15 +223,18 @@ func Default(mode Mode) *Config {
 	return &Config{
 		Mode: mode,
 		Server: ServerConfig{
-			Host:                  "127.0.0.1",
-			Port:                  0, // OS-assigned free port
-			AllowedOrigins:        origins,
-			ReadHeaderTimeout:     10 * time.Second,
-			IdleTimeout:           120 * time.Second,
-			ShutdownTimeout:       5 * time.Second,
-			EnableBroadcast:       false,
-			MaxBroadcastBodyBytes: 1 << 20,
-			AllowHostAdmin:        false,
+			Host:                        "127.0.0.1",
+			Port:                        0, // OS-assigned free port
+			AllowedOrigins:              origins,
+			ReadHeaderTimeout:           10 * time.Second,
+			IdleTimeout:                 120 * time.Second,
+			ShutdownTimeout:             5 * time.Second,
+			EnableBroadcast:             false,
+			MaxBroadcastBodyBytes:       1 << 20,
+			MaxMediaUploadBytes:         64 << 20, // 64 MiB
+			MediaStagingTTL:             24 * time.Hour,
+			MediaStagingCleanupInterval: 30 * time.Minute,
+			AllowHostAdmin:              false,
 		},
 		Realtime: RealtimeConfig{
 			MaxConcurrentActions: 64,
@@ -270,21 +277,22 @@ func Default(mode Mode) *Config {
 			CheckOnStartup: releaseBuild,
 		},
 		Agent: AgentConfig{
-			RestoreConnection:   true,
-			TurnTimeout:         10 * time.Minute,
-			InitializeTimeout:   15 * time.Second,
-			VersionProbeTimeout: 5 * time.Second, // Node-based CLI shims cold-start slowly on Windows
-			AuthProbeTimeout:    10 * time.Second,
-			LoginTimeout:        3 * time.Minute,
-			ModelCatalogTimeout: 30 * time.Second,
-			InterruptWait:       5 * time.Second,
-			StatusCacheTTL:      5 * time.Minute,
-			AutoInstallCLI:      true,
-			AutoUpdateCLI:       releaseBuild,
-			ApprovalTTL:         30 * time.Minute,
-			HistoryLimit:        200,
-			MaxPendingApprovals: 20,
-			Mode:                "assistant",
+			RestoreConnection:      true,
+			TurnTimeout:            10 * time.Minute,
+			InitializeTimeout:      15 * time.Second,
+			VersionProbeTimeout:    5 * time.Second, // Node-based CLI shims cold-start slowly on Windows
+			AuthProbeTimeout:       10 * time.Second,
+			LoginTimeout:           3 * time.Minute,
+			ModelCatalogTimeout:    30 * time.Second,
+			InterruptWait:          5 * time.Second,
+			StatusCacheTTL:         5 * time.Minute,
+			AutoInstallCLI:         true,
+			AutoUpdateCLI:          releaseBuild,
+			ApprovalTTL:            30 * time.Minute,
+			HistoryLimit:           200,
+			MaxPendingApprovals:    20,
+			MaxConcurrentSubagents: 4,
+			Mode:                   "assistant",
 		},
 		Desktop: DesktopConfig{
 			Width:        0, // 0 = auto (80% of primary screen)
