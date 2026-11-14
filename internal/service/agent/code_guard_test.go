@@ -249,7 +249,10 @@ func TestServiceGuardsProviderOutput(t *testing.T) {
 	if !strings.Contains(ui.String(), noticeMarker(noticeCodeBlocked)) {
 		t.Fatalf("expected block notice in UI stream, got %q", ui.String())
 	}
-	history, _ := repo.ListChatMessages(ctx, 10)
+	history, _ := repo.ListConversationMessages(ctx, svc.CurrentConversationID(), 10)
+	if len(history) == 0 {
+		t.Fatal("expected persisted chat history")
+	}
 	for _, m := range history {
 		if strings.Contains(m.Text, "os.system") || strings.Contains(m.Thought, "os.system") {
 			t.Fatalf("code persisted to chat history: %+v", m)

@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
+	"app/internal/apperr"
 	"app/internal/engine"
 	"app/internal/progress"
 	"app/internal/tools/watermark"
@@ -163,5 +165,57 @@ func TestWatermarkRemoverNode_RelativeOutputDirWithoutMediaRejected(t *testing.T
 		fmt.Sprintf(`{"image": %q, "output_dir": "out"}`, filepath.ToSlash(img)))
 	if err == nil || !strings.Contains(err.Error(), "output_dir") {
 		t.Fatalf("expected output_dir validation error, got %v", err)
+	}
+}
+
+func TestWatermarkRemoverNode_FileGuardReadErrorSanitizesDirAndReturnsUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	img := createWatermarkedPNG(t, dir, "secret.png")
+
+	guard := func(p string, write bool) error {
+		return fmt.Errorf("access denied: %q is outside DezuxkStudio's media, workspace and trusted folders", p)
+	}
+	ctx := engine.WithFileGuard(context.Background(), guard)
+	out, err := runNode(t, ctx, watermark.Options{}, fmt.Sprintf(`{"image": %q}`, filepath.ToSlash(img)))
+	if !apperr.IsCode(err, apperr.CodeUnavailable) {
+		t.Fatalf("expected ERR_UNAVAILABLE, got %v", err)
+	}
+	if len(out.Results) != 1 || !strings.Contains(out.Results[0].Error, "access denied") || !strings.Contains(out.Results[0].Error, "secret.png") {
+		t.Fatalf("expected sanitized access denied with basename, got %+v", out.Results)
+	}
+	escapedDir := strings.TrimSuffix(strings.TrimPrefix(strconv.Quote(dir), `"`), `"`)
+	for _, leak := range []string{dir, filepath.ToSlash(dir), escapedDir} {
+		if strings.Contains(out.Results[0].Error, leak) || strings.Contains(err.Error(), leak) {
+			t.Fatalf("guard read error leaked directory %q: itemErr=%q runErr=%q", leak, out.Results[0].Error, err.Error())
+		}
+	}
+}
+
+func TestWatermarkRemoverNode_FileGuardWriteErrorSanitizesDirAndReturnsUnavailable(t *testing.T) {
+	src := t.TempDir()
+	outParent := t.TempDir()
+	outDir := filepath.Join(outParent, "forbidden")
+	img := createWatermarkedPNG(t, src, "a.png")
+
+	guard := func(p string, write bool) error {
+		if write {
+			return fmt.Errorf("access denied: %q in %s is outside trusted folders", p, filepath.Dir(p))
+		}
+		return nil
+	}
+	ctx := engine.WithFileGuard(context.Background(), guard)
+	out, err := runNode(t, ctx, watermark.Options{},
+		fmt.Sprintf(`{"image": %q, "output_dir": %q}`, filepath.ToSlash(img), filepath.ToSlash(outDir)))
+	if !apperr.IsCode(err, apperr.CodeUnavailable) {
+		t.Fatalf("expected ERR_UNAVAILABLE, got %v", err)
+	}
+	if len(out.Results) != 1 || !strings.Contains(out.Results[0].Error, "access denied") || !strings.Contains(out.Results[0].Error, "forbidden") {
+		t.Fatalf("expected sanitized write denial with leaf folder, got %+v", out.Results)
+	}
+	escapedParent := strings.TrimSuffix(strings.TrimPrefix(strconv.Quote(outParent), `"`), `"`)
+	for _, leak := range []string{outParent, filepath.ToSlash(outParent), escapedParent} {
+		if strings.Contains(out.Results[0].Error, leak) || strings.Contains(err.Error(), leak) {
+			t.Fatalf("guard write error leaked parent directory %q: itemErr=%q runErr=%q", leak, out.Results[0].Error, err.Error())
+		}
 	}
 }

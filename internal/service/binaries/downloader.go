@@ -52,14 +52,14 @@ func (s *Service) Download(ctx context.Context, id domainbinaries.BinaryID) (dom
 	}
 
 	if err := os.MkdirAll(s.toolsDir, 0755); err != nil {
-		return domainbinaries.BinaryInfo{}, fmt.Errorf("binaries: create tools dir: %w", err)
+		return domainbinaries.BinaryInfo{}, apperr.Wrap(apperr.CodeUnavailable, "could not prepare tools directory", err)
 	}
 
 	report(0, domainbinaries.ProgressConnecting, map[string]string{"name": spec.Name}, fmt.Sprintf("Connecting to download %s...", spec.Name))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, dlSpec.URL, nil)
 	if err != nil {
-		return domainbinaries.BinaryInfo{}, fmt.Errorf("binaries: request download: %w", err)
+		return domainbinaries.BinaryInfo{}, apperr.Wrap(apperr.CodeUnavailable, "could not create download request", err)
 	}
 	// Add user-agent header
 	req.Header.Set("User-Agent", fmt.Sprintf("%s-Downloader/%s", buildinfo.ProductName, buildinfo.Version))
@@ -117,7 +117,7 @@ func (s *Service) Download(ctx context.Context, id domainbinaries.BinaryID) (dom
 		hasher := sha256.New()
 		zipFile, err := os.Create(tempZip)
 		if err != nil {
-			return domainbinaries.BinaryInfo{}, fmt.Errorf("binaries: create temp zip: %w", err)
+			return domainbinaries.BinaryInfo{}, apperr.Wrap(apperr.CodeUnavailable, "could not create temporary download file", err)
 		}
 		if _, err := io.Copy(io.MultiWriter(zipFile, hasher), progressReader); err != nil {
 			zipFile.Close()
@@ -157,7 +157,7 @@ func (s *Service) Download(ctx context.Context, id domainbinaries.BinaryID) (dom
 		}
 
 	default:
-		return domainbinaries.BinaryInfo{}, fmt.Errorf("binaries: unsupported archive format %q", dlSpec.ArchiveFormat)
+		return domainbinaries.BinaryInfo{}, apperr.New(apperr.CodeBadRequest, fmt.Sprintf("unsupported archive format %q", dlSpec.ArchiveFormat))
 	}
 
 	// Ensure executable permissions

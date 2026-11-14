@@ -10,7 +10,6 @@ import (
 	domainmedia "app/internal/domain/mediagen"
 	domainprovider "app/internal/domain/provider"
 	"app/internal/progress"
-	providersvc "app/internal/service/provider"
 )
 
 // GenerateTTS synthesizes speech audio through whichever built-in or custom provider ModelRef
@@ -83,7 +82,7 @@ func defaultVoice(requested, fallback string) string {
 }
 
 func (s *Service) genOpenAITTS(ctx context.Context, t targetSpec, req domainmedia.TTSRequest) ([]byte, string, error) {
-	base := providersvc.EnsureOpenAIBase(t.baseURL)
+	base := domainprovider.EnsureOpenAIBase(t.baseURL)
 	headers := map[string]string{"Authorization": "Bearer " + t.apiKey}
 	voice := defaultVoice(req.Voice, "alloy")
 

@@ -43,11 +43,6 @@ func VideoResolutions() []string {
 	return []string{"480p", "720p", "1080p"}
 }
 
-// VideoDurations returns common video duration presets (in seconds).
-func VideoDurations() []int {
-	return []int{4, 5, 6, 8, 10, 12}
-}
-
 // TTSFormats returns supported speech audio container/encoding formats.
 func TTSFormats() []string {
 	return []string{"wav", "mp3", "opus", "aac", "flac", "pcm"}

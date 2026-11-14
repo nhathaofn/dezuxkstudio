@@ -2,7 +2,7 @@ import React, { Suspense, useEffect } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { LoadingSkeleton } from "../components/ui/LoadingSkeleton";
 import { AgentDrawer } from "../features/agent/AgentDrawer";
-import { useAgentStore } from "../features/agent/useAgentStore";
+import { useAgentDrawerStore } from "../features/agent/useAgentDrawerStore";
 import { useScreenContextStore } from "../features/agent/screenContext";
 import { useT } from "../lib/i18n";
 import { navRoutes, settingsRoute } from "./navigation";
@@ -23,7 +23,7 @@ export const MainLayout: React.FC = () => {
     if (!connected) return;
     const route = [...navRoutes, settingsRoute].find((r) => r.path === pathname);
     const handle = window.setTimeout(() => {
-      void useAgentStore.getState().setUIContext({
+      void useAgentDrawerStore.getState().setUIContext({
         route: pathname,
         note: "",
         screen: route ? t(route.label) : undefined,

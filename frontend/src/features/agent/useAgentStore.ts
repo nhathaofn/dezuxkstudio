@@ -5,24 +5,14 @@ import {
   type AgentApprovalRequest,
   type AgentChatEvent,
   type AgentConversation,
-  type AgentCustomizationsResult,
   type AgentHistoryResult,
   type AgentLoginPrompt,
   type AgentProviderID,
   type AgentProviderInfo,
-  type AgentSaveSkillPayload,
-  type AgentSaveSubagentPayload,
-  type AgentUIContextPayload,
-  type SkillInfo,
-  type SubagentInfo,
   type SubagentInvocation,
 } from "../../contracts/generated";
 import { rtClient, toActionError, type ActionError } from "../../lib/rtClient";
-import { safeStorage } from "../../lib/storage";
-
-export type AgentDrawerTab = "chat" | "connections" | "customizations";
-/** What the chat tab shows: the current chat or the list of earlier chats. */
-export type AgentChatView = "chat" | "history";
+import { useAgentDrawerStore } from "./useAgentDrawerStore";
 
 export interface AgentToolCallItem {
   name: string;
@@ -42,13 +32,6 @@ export interface AgentChatMessage {
   errorKey?: string;
   errorParams?: Record<string, string>;
 }
-
-const WIDTH_STORAGE_KEY = appConfig.storageKeys.agentDrawerWidth;
-const {
-  defaultWidth: DEFAULT_WIDTH,
-  minWidth: MIN_WIDTH,
-  maxWidth: MAX_WIDTH,
-} = appConfig.ui.agentDrawer;
 
 /** How long "Copied" feedback stays visible after a clipboard copy in the agent panel. */
 export const COPY_FEEDBACK_MS = appConfig.ui.copyFeedbackMs;
@@ -72,24 +55,9 @@ function historyState(res: AgentHistoryResult): Pick<AgentState, "messages" | "c
   };
 }
 
-export function clampDrawerWidth(width: number): number {
-  if (!Number.isFinite(width)) return DEFAULT_WIDTH;
-  return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Math.round(width)));
-}
-
-function readSavedWidth(): number {
-  if (typeof window === "undefined") return DEFAULT_WIDTH;
-  const raw = safeStorage.get(WIDTH_STORAGE_KEY);
-  if (!raw) return DEFAULT_WIDTH;
-  return clampDrawerWidth(Number(raw));
-}
-
 let localMsgSeq = 0;
 
 interface AgentState {
-  panelOpen: boolean;
-  panelWidth: number;
-  activeTab: AgentDrawerTab;
   providers: AgentProviderInfo[];
   developerMode: boolean;
   approvals: AgentApprovalRequest[];
@@ -104,20 +72,9 @@ interface AgentState {
   messages: AgentChatMessage[];
   /** Current chat ("" = a new chat that has no messages yet). */
   conversationId: string;
-  chatView: AgentChatView;
   conversations: AgentConversation[];
   loadingConversations: boolean;
-  customizationsDir: string;
-  skills: SkillInfo[];
-  subagents: SubagentInfo[];
-  availableSubagentTools: string[];
-  loadingCustomizations: boolean;
 
-  openPanel: () => void;
-  closePanel: () => void;
-  togglePanel: () => void;
-  setPanelWidth: (width: number, persist?: boolean) => void;
-  setActiveTab: (tab: AgentDrawerTab) => void;
   setPrompt: (prompt: string) => void;
   clearError: () => void;
 
@@ -125,14 +82,6 @@ interface AgentState {
   fetchHistory: () => Promise<void>;
   fetchApprovals: () => Promise<void>;
   fetchAllowedDirs: () => Promise<void>;
-  fetchCustomizations: () => Promise<void>;
-  reloadCustomizations: () => Promise<void>;
-  saveSkill: (payload: AgentSaveSkillPayload) => Promise<boolean>;
-  deleteSkill: (name: string) => Promise<void>;
-  restoreSkill: (name: string) => Promise<void>;
-  saveSubagent: (payload: AgentSaveSubagentPayload) => Promise<boolean>;
-  deleteSubagent: (name: string) => Promise<void>;
-  restoreSubagent: (name: string) => Promise<void>;
   probeProvider: (id: AgentProviderID) => Promise<void>;
   setCustomPath: (id: AgentProviderID, customPath: string) => Promise<void>;
   setModel: (id: AgentProviderID, model: string, effort: string) => Promise<void>;
@@ -147,7 +96,6 @@ interface AgentState {
   cancelPrompt: () => Promise<void>;
   /** Starts a new chat; the previous one stays in history. */
   newChat: () => Promise<void>;
-  setChatView: (view: AgentChatView) => void;
   fetchConversations: () => Promise<void>;
   openConversation: (id: string) => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
@@ -156,12 +104,10 @@ interface AgentState {
   resolveApproval: (id: string, approve: boolean) => Promise<void>;
   addAllowedDir: (dir: string) => Promise<void>;
   removeAllowedDir: (dir: string) => Promise<void>;
-  setUIContext: (ctx: AgentUIContextPayload) => Promise<void>;
 
   receiveStatus: (info: AgentProviderInfo) => void;
   receiveChatEvent: (evt: AgentChatEvent) => void;
   receiveApprovals: (approvals: AgentApprovalRequest[]) => void;
-  receiveCustomizations: (snap: AgentCustomizationsResult) => void;
 }
 
 /**
@@ -185,9 +131,6 @@ export function finishRunningTools<T extends { status: string }>(
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
-  panelOpen: true,
-  panelWidth: readSavedWidth(),
-  activeTab: "chat",
   providers: [],
   developerMode: false,
   approvals: [],
@@ -200,28 +143,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   prompt: "",
   messages: [],
   conversationId: "",
-  chatView: "chat",
   conversations: [],
   loadingConversations: false,
-  customizationsDir: "",
-  skills: [],
-  subagents: [],
-  availableSubagentTools: [],
-  loadingCustomizations: false,
 
-  openPanel: () => set({ panelOpen: true }),
-  closePanel: () => set({ panelOpen: false }),
-  togglePanel: () => set((s) => ({ panelOpen: !s.panelOpen })),
-
-  setPanelWidth: (width, persist = false) => {
-    const next = clampDrawerWidth(width);
-    if (persist) {
-      safeStorage.set(WIDTH_STORAGE_KEY, String(next));
-    }
-    set({ panelWidth: next });
-  },
-
-  setActiveTab: (activeTab) => set({ activeTab }),
   setPrompt: (prompt) => set({ prompt }),
   clearError: () => set({ error: null }),
 
@@ -383,11 +307,13 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       const shouldClearChat = Boolean(conversationId && convOwner && convOwner !== id);
       set({
         busyAction: false,
-        activeTab: "chat",
-        ...(shouldClearChat
-          ? { conversationId: "", messages: [], approvals: [], chatView: "chat" as const }
-          : {}),
+        ...(shouldClearChat ? { conversationId: "", messages: [], approvals: [] } : {}),
       });
+      const drawer = useAgentDrawerStore.getState();
+      drawer.setActiveTab("chat");
+      if (shouldClearChat) {
+        drawer.setChatView("chat");
+      }
     } catch (err) {
       set({ error: toActionError(err), busyAction: false });
       void get().fetchProviders();
@@ -474,15 +400,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     // stay in sync with the server's current one.
     try {
       await rtClient.request(Actions.AGENT_NEW_CONVERSATION, {});
-      set({ messages: [], approvals: [], error: null, conversationId: "", chatView: "chat" });
+      set({ messages: [], approvals: [], error: null, conversationId: "" });
+      useAgentDrawerStore.getState().setChatView("chat");
     } catch (err) {
       set({ error: toActionError(err) });
     }
-  },
-
-  setChatView: (chatView) => {
-    set({ chatView });
-    if (chatView === "history") void get().fetchConversations();
   },
 
   fetchConversations: async () => {
@@ -501,7 +423,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     set({ error: null });
     try {
       const res = await rtClient.request(Actions.AGENT_OPEN_CONVERSATION, { id });
-      set({ ...historyState(res), approvals: [], chatView: "chat" });
+      set({ ...historyState(res), approvals: [] });
+      useAgentDrawerStore.getState().setChatView("chat");
     } catch (err) {
       set({ error: toActionError(err) });
     }
@@ -564,111 +487,6 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       set({ allowedDirs: res.dirs ?? [] });
     } catch (err) {
       set({ error: toActionError(err) });
-    }
-  },
-
-  fetchCustomizations: async () => {
-    set({ loadingCustomizations: true });
-    try {
-      const res = await rtClient.request(Actions.AGENT_LIST_CUSTOMIZATIONS, {});
-      get().receiveCustomizations(res);
-    } catch (err) {
-      set({ error: toActionError(err) });
-    } finally {
-      set({ loadingCustomizations: false });
-    }
-  },
-
-  reloadCustomizations: async () => {
-    set({ loadingCustomizations: true, error: null });
-    try {
-      const res = await rtClient.request(Actions.AGENT_RELOAD_CUSTOMIZATIONS, {});
-      get().receiveCustomizations(res);
-    } catch (err) {
-      set({ error: toActionError(err) });
-    } finally {
-      set({ loadingCustomizations: false });
-    }
-  },
-
-  saveSkill: async (payload) => {
-    set({ error: null });
-    try {
-      const res = await rtClient.request(Actions.AGENT_SAVE_SKILL, payload);
-      get().receiveCustomizations(res);
-      return true;
-    } catch (err) {
-      set({ error: toActionError(err) });
-      return false;
-    }
-  },
-
-  deleteSkill: async (name) => {
-    set({ error: null });
-    try {
-      const res = await rtClient.request(Actions.AGENT_DELETE_SKILL, { name });
-      get().receiveCustomizations(res);
-    } catch (err) {
-      set({ error: toActionError(err) });
-    }
-  },
-
-  restoreSkill: async (name) => {
-    set({ error: null });
-    try {
-      const res = await rtClient.request(Actions.AGENT_RESTORE_SKILL, { name });
-      get().receiveCustomizations(res);
-    } catch (err) {
-      set({ error: toActionError(err) });
-    }
-  },
-
-  saveSubagent: async (payload) => {
-    set({ error: null });
-    try {
-      const res = await rtClient.request(Actions.AGENT_SAVE_SUBAGENT, payload);
-      get().receiveCustomizations(res);
-      return true;
-    } catch (err) {
-      set({ error: toActionError(err) });
-      return false;
-    }
-  },
-
-  deleteSubagent: async (name) => {
-    set({ error: null });
-    try {
-      const res = await rtClient.request(Actions.AGENT_DELETE_SUBAGENT, { name });
-      get().receiveCustomizations(res);
-    } catch (err) {
-      set({ error: toActionError(err) });
-    }
-  },
-
-  restoreSubagent: async (name) => {
-    set({ error: null });
-    try {
-      const res = await rtClient.request(Actions.AGENT_RESTORE_SUBAGENT, { name });
-      get().receiveCustomizations(res);
-    } catch (err) {
-      set({ error: toActionError(err) });
-    }
-  },
-
-  receiveCustomizations: (snap) => {
-    set({
-      customizationsDir: snap.dir ?? "",
-      skills: snap.skills ?? [],
-      subagents: snap.subagents ?? [],
-      availableSubagentTools: snap.available_tools ?? [],
-    });
-  },
-
-  setUIContext: async (ctx) => {
-    try {
-      await rtClient.request(Actions.AGENT_SET_UI_CONTEXT, ctx);
-    } catch {
-      // Ignore UI context sync failures when disconnected
     }
   },
 

@@ -21,12 +21,13 @@ const fakeCodexExe = "dezuxk-test-no-such-codex"
 
 // fakeCodexAppServer emulates `codex app-server` over in-memory pipes.
 type fakeCodexAppServer struct {
-	t          *testing.T
-	in         *bufio.Scanner // client → server
-	out        io.Writer      // server → client
-	mu         sync.Mutex
-	methods    []string
-	turnStarts []map[string]any
+	t            *testing.T
+	in           *bufio.Scanner // client → server
+	out          io.Writer      // server → client
+	mu           sync.Mutex
+	methods      []string
+	turnStarts   []map[string]any
+	onInitialize func()
 	// onTurn streams the notifications of one turn; it may block (e.g. until interrupted).
 	onTurn    func(f *fakeCodexAppServer, threadID, turnID string)
 	interrupt chan struct{}
@@ -64,6 +65,9 @@ func (f *fakeCodexAppServer) serve() {
 		reply := func(result any) { f.send(map[string]any{"id": req.ID, "result": result}) }
 		switch req.Method {
 		case "initialize":
+			if f.onInitialize != nil {
+				f.onInitialize()
+			}
 			reply(map[string]any{"userAgent": "fake"})
 		case "thread/start":
 			reply(map[string]any{"thread": map[string]any{"id": "thread-1"}})
@@ -85,7 +89,7 @@ func (f *fakeCodexAppServer) serve() {
 	}
 }
 
-func newFakeCodexService(t *testing.T, onTurn func(f *fakeCodexAppServer, threadID, turnID string)) (*Service, *fakeCodexAppServer, *[]domainagent.ChatEvent, *sync.Mutex, *fakeRepo) {
+func newTestCodexService(t *testing.T) (*Service, *[]domainagent.ChatEvent, *sync.Mutex, *fakeRepo) {
 	t.Helper()
 	dir := t.TempDir()
 	repo := newFakeRepo()
@@ -106,21 +110,81 @@ func newFakeCodexService(t *testing.T, onTurn func(f *fakeCodexAppServer, thread
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = svc.Close() })
+	return svc, &events, &mu, repo
+}
 
+func assertFakeCodexArgsAndEnv(t *testing.T, args, env []string) {
+	t.Helper()
+	if args[0] != "app-server" || !strings.Contains(strings.Join(args, " "), `sandbox_mode="read-only"`) {
+		t.Errorf("app-server must run with the read-only policy, got %v", args)
+	}
+	if !strings.Contains(strings.Join(env, "\n"), mcpTokenEnvVar+"=tok") {
+		t.Errorf("app-server env must carry the MCP token")
+	}
+}
+
+func startFakeCodexServer(t *testing.T, onInitialize func(), onTurn func(f *fakeCodexAppServer, threadID, turnID string)) (*fakeCodexAppServer, func(key string) *codexAppServer) {
 	clientR, clientW := io.Pipe() // client → server
 	serverR, serverW := io.Pipe() // server → client
-	fake := &fakeCodexAppServer{t: t, in: bufio.NewScanner(clientR), out: serverW, onTurn: onTurn, interrupt: make(chan struct{})}
-	go fake.serve()
-	svc.spawnCodexAppServer = func(key, _ string, args, env []string, _ string) (*codexAppServer, error) {
-		if args[0] != "app-server" || !strings.Contains(strings.Join(args, " "), `sandbox_mode="read-only"`) {
-			t.Errorf("app-server must run with the read-only policy, got %v", args)
-		}
-		if !strings.Contains(strings.Join(env, "\n"), mcpTokenEnvVar+"=tok") {
-			t.Errorf("app-server env must carry the MCP token")
-		}
-		return newCodexAppServerConn(key, clientW, serverR, nil, func() { _ = serverW.Close() }), nil
+	fake := &fakeCodexAppServer{
+		t:            t,
+		in:           bufio.NewScanner(clientR),
+		out:          serverW,
+		onInitialize: onInitialize,
+		onTurn:       onTurn,
+		interrupt:    make(chan struct{}),
 	}
-	return svc, fake, &events, &mu, repo
+	go fake.serve()
+	return fake, func(key string) *codexAppServer {
+		return newCodexAppServerConn(key, clientW, serverR, nil, func() { _ = serverW.Close() })
+	}
+}
+
+func newFakeCodexService(t *testing.T, onTurn func(f *fakeCodexAppServer, threadID, turnID string)) (*Service, *fakeCodexAppServer, *[]domainagent.ChatEvent, *sync.Mutex, *fakeRepo) {
+	t.Helper()
+	svc, events, mu, repo := newTestCodexService(t)
+	fake, connect := startFakeCodexServer(t, nil, onTurn)
+	svc.spawnCodexAppServer = func(key, _ string, args, env []string, _ string) (*codexAppServer, error) {
+		assertFakeCodexArgsAndEnv(t, args, env)
+		return connect(key), nil
+	}
+	return svc, fake, events, mu, repo
+}
+
+func waitForChatEvent(t *testing.T, mu *sync.Mutex, events *[]domainagent.ChatEvent, eventType domainagent.ChatEventType, text, failMsg string) {
+	t.Helper()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		mu.Lock()
+		for _, e := range *events {
+			if e.Type == eventType && e.Text == text {
+				mu.Unlock()
+				return
+			}
+		}
+		mu.Unlock()
+		select {
+		case <-timer.C:
+			t.Fatal(failMsg)
+		case <-ticker.C:
+		}
+	}
+}
+
+func awaitTurnError(t *testing.T, done <-chan error, failMsg string) error {
+	t.Helper()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		t.Fatal(failMsg)
+		return nil
+	}
 }
 
 func TestCodexAppServerStreamsDeltasAndReusesThread(t *testing.T) {
@@ -144,20 +208,7 @@ func TestCodexAppServerStreamsDeltasAndReusesThread(t *testing.T) {
 	go func() {
 		done <- svc.runCodexTurn(context.Background(), fakeCodexExe, profile, ws, "http://127.0.0.1:1/mcp", "tok", "msg-1", "hello")
 	}()
-	deadline := time.After(5 * time.Second)
-	for {
-		mu.Lock()
-		got := len(*events) > 0 && (*events)[len(*events)-1].Text == "Xin chào bạn "
-		mu.Unlock()
-		if got {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("first delta was not streamed before the turn finished")
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
+	waitForChatEvent(t, mu, events, domainagent.ChatEventDelta, "Xin chào bạn ", "first delta was not streamed before the turn finished")
 	close(release)
 	if err := <-done; err != nil {
 		t.Fatalf("turn failed: %v", err)
@@ -175,7 +226,7 @@ func TestCodexAppServerStreamsDeltasAndReusesThread(t *testing.T) {
 	if strings.Join(kinds, "|") != strings.Join(want, "|") {
 		t.Fatalf("events = %v, want %v (retried errors and the completed message must not be re-emitted)", kinds, want)
 	}
-	msgs, _ := repo.ListChatMessages(context.Background(), 10)
+	msgs, _ := repo.ListConversationMessages(context.Background(), svc.CurrentConversationID(), 10)
 	if len(msgs) != 1 || msgs[0].Text != "Xin chào bạn nhé" || msgs[0].Thought != "Thinking" {
 		t.Fatalf("persisted = %+v", msgs)
 	}
@@ -194,34 +245,132 @@ func TestCodexAppServerStreamsDeltasAndReusesThread(t *testing.T) {
 }
 
 func TestCodexAppServerCancelInterruptsTurn(t *testing.T) {
-	svc, fake, _, _, repo := newFakeCodexService(t, func(f *fakeCodexAppServer, threadID, turnID string) {
-		f.notify("item/agentMessage/delta", map[string]any{"threadId": threadID, "turnId": turnID, "itemId": "m1", "delta": "partial"})
-		<-f.interrupt
-		f.notify("turn/completed", map[string]any{"threadId": threadID, "turn": map[string]any{"id": turnID, "status": "interrupted"}})
-	})
-	ctx, cancel := context.WithCancel(context.Background())
-	tr := startTestTurn(svc, "msg-1")
-	done := make(chan error, 1)
-	go func() {
-		done <- svc.runCodexTurn(ctx, fakeCodexExe, t.TempDir(), t.TempDir(), "http://127.0.0.1:1/mcp", "tok", "msg-1", "hello")
-	}()
-	time.Sleep(100 * time.Millisecond)
-	cancel()
-	select {
-	case err := <-done:
+	t.Run("during_turn", func(t *testing.T) {
+		svc, fake, events, mu, repo := newFakeCodexService(t, func(f *fakeCodexAppServer, threadID, turnID string) {
+			f.notify("item/agentMessage/delta", map[string]any{"threadId": threadID, "turnId": turnID, "itemId": "m1", "delta": "partial"})
+			<-f.interrupt
+			f.notify("turn/completed", map[string]any{"threadId": threadID, "turn": map[string]any{"id": turnID, "status": "interrupted"}})
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tr := startTestTurn(svc, "msg-1")
+		done := make(chan error, 1)
+		go func() {
+			done <- svc.runCodexTurn(ctx, fakeCodexExe, t.TempDir(), t.TempDir(), "http://127.0.0.1:1/mcp", "tok", "msg-1", "hello")
+		}()
+		waitForChatEvent(t, mu, events, domainagent.ChatEventDelta, "partial", "partial delta was not streamed before cancel")
+		cancel()
+		err := awaitTurnError(t, done, "cancelled turn did not return")
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("cancelled turn must return context.Canceled, got %v", err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("cancelled turn did not return")
-	}
-	if !strings.Contains(strings.Join(fake.seen(), ","), "turn/interrupt") {
-		t.Fatal("cancel must send turn/interrupt")
-	}
-	svc.endTurn(tr, errTurnCancelled)
-	if msgs, _ := repo.ListChatMessages(context.Background(), 10); len(msgs) != 1 || msgs[0].Text != "partial" {
-		t.Fatalf("partial reply must be kept, got %+v", msgs)
-	}
+		if !strings.Contains(strings.Join(fake.seen(), ","), "turn/interrupt") {
+			t.Fatal("cancel must send turn/interrupt")
+		}
+		svc.endTurn(tr, errTurnCancelled)
+		if msgs, _ := repo.ListConversationMessages(context.Background(), svc.CurrentConversationID(), 10); len(msgs) != 1 || msgs[0].Text != "partial" {
+			t.Fatalf("partial reply must be kept, got %+v", msgs)
+		}
+	})
+
+	t.Run("during_initialize", func(t *testing.T) {
+		svc, events, mu, repo := newTestCodexService(t)
+		initStarted := make(chan struct{})
+		releaseInit := make(chan struct{})
+		var releaseOnce sync.Once
+		release := func() { releaseOnce.Do(func() { close(releaseInit) }) }
+		t.Cleanup(release)
+
+		var spawnsMu sync.Mutex
+		spawns := 0
+		svc.spawnCodexAppServer = func(key, _ string, args, env []string, _ string) (*codexAppServer, error) {
+			assertFakeCodexArgsAndEnv(t, args, env)
+			spawnsMu.Lock()
+			spawns++
+			n := spawns
+			spawnsMu.Unlock()
+			if n == 1 {
+				_, connect := startFakeCodexServer(t, func() {
+					close(initStarted)
+					<-releaseInit
+				}, nil)
+				return connect(key), nil
+			}
+			_, connect := startFakeCodexServer(t, nil, func(f *fakeCodexAppServer, threadID, turnID string) {
+				f.notify("item/agentMessage/delta", map[string]any{"threadId": threadID, "turnId": turnID, "itemId": "m2", "delta": "ok"})
+				f.notify("turn/completed", map[string]any{"threadId": threadID, "turn": map[string]any{"id": turnID, "status": "completed"}})
+			})
+			return connect(key), nil
+		}
+
+		profile, ws := t.TempDir(), t.TempDir()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tr1 := startTestTurn(svc, "msg-1")
+		done := make(chan error, 1)
+		go func() {
+			done <- svc.runCodexTurn(ctx, fakeCodexExe, profile, ws, "http://127.0.0.1:1/mcp", "tok", "msg-1", "hello")
+		}()
+
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-initStarted:
+		case <-timer.C:
+			t.Fatal("app-server did not reach initialize")
+		}
+		cancel()
+		err := awaitTurnError(t, done, "turn cancelled during initialize did not return")
+		release()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled initialize must return context.Canceled, got %v", err)
+		}
+		svc.endTurn(tr1, errTurnCancelled)
+
+		svc.mu.Lock()
+		broken := svc.codexAppServerBroken[fakeCodexExe]
+		svc.mu.Unlock()
+		if broken {
+			t.Fatal("cancel during initialize must not mark app-server broken")
+		}
+
+		tr2 := startTestTurn(svc, "msg-2")
+		if err := svc.runCodexTurn(context.Background(), fakeCodexExe, profile, ws, "http://127.0.0.1:1/mcp", "tok", "msg-2", "again"); err != nil {
+			t.Fatalf("subsequent turn after cancelled initialize failed: %v", err)
+		}
+		svc.endTurn(tr2, nil)
+
+		spawnsMu.Lock()
+		gotSpawns := spawns
+		spawnsMu.Unlock()
+		if gotSpawns != 2 {
+			t.Fatalf("subsequent turn must respawn app-server, got spawns = %d", gotSpawns)
+		}
+		waitForChatEvent(t, mu, events, domainagent.ChatEventDelta, "ok", "subsequent turn delta missing")
+		if msgs, _ := repo.ListConversationMessages(context.Background(), svc.CurrentConversationID(), 10); len(msgs) != 1 || msgs[0].Text != "ok" {
+			t.Fatalf("subsequent turn reply = %+v, want single 'ok' message", msgs)
+		}
+	})
+
+	t.Run("during_start", func(t *testing.T) {
+		svc, _, _, _ := newTestCodexService(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		svc.spawnCodexAppServer = func(string, string, []string, []string, string) (*codexAppServer, error) {
+			cancel()
+			return nil, errors.New("start failed")
+		}
+		err := svc.runCodexTurn(ctx, fakeCodexExe, t.TempDir(), t.TempDir(), "http://127.0.0.1:1/mcp", "tok", "msg-1", "hello")
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled start must return context.Canceled, got %v", err)
+		}
+		svc.mu.Lock()
+		broken := svc.codexAppServerBroken[fakeCodexExe]
+		svc.mu.Unlock()
+		if broken {
+			t.Fatal("cancel during start must not mark app-server broken")
+		}
+	})
 }
 
 func TestCodexAppServerFinalErrorIsClassified(t *testing.T) {

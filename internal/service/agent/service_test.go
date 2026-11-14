@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"app/internal/apperr"
 	"app/internal/contracts"
 	domainagent "app/internal/domain/agent"
 	domainbinaries "app/internal/domain/binaries"
@@ -80,19 +82,6 @@ func (r *fakeRepo) AppendChatMessage(_ context.Context, msg domainagent.ChatMess
 	defer r.mu.Unlock()
 	r.messages = append(r.messages, msg)
 	return nil
-}
-
-func (r *fakeRepo) ListChatMessages(_ context.Context, limit int) ([]domainagent.ChatMessage, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if limit <= 0 || len(r.messages) <= limit {
-		cp := make([]domainagent.ChatMessage, len(r.messages))
-		copy(cp, r.messages)
-		return cp, nil
-	}
-	cp := make([]domainagent.ChatMessage, limit)
-	copy(cp, r.messages[len(r.messages)-limit:])
-	return cp, nil
 }
 
 func (r *fakeRepo) RedactChatMessages(_ context.Context, secret, replacement string) error {
@@ -407,16 +396,131 @@ func TestMCPServerAuthAndTools(t *testing.T) {
 	}
 	approvalsMu.Unlock()
 
-	if _, err := svc.ResolveApproval(context.Background(), qReq.ID, true); err != nil {
+	if err := svc.ResolveApproval(context.Background(), qReq.ID, true); err != nil {
 		t.Fatalf("ResolveApproval failed: %v", err)
 	}
 	if wf.lastNode != "tool.watermark_remover" {
 		t.Fatalf("expected approved node to execute, got %q", wf.lastNode)
 	}
 	// Replay must fail (consumed once).
-	if _, err := svc.ResolveApproval(context.Background(), qReq.ID, true); err == nil {
-		t.Fatal("expected second ResolveApproval on consumed card to fail")
+	if err := svc.ResolveApproval(context.Background(), qReq.ID, true); !apperr.IsCode(err, apperr.CodeNotFound) {
+		t.Fatalf("expected second ResolveApproval on consumed card to return CodeNotFound, got %v", err)
 	}
+}
+
+func TestResolveApproval(t *testing.T) {
+	base := t.TempDir()
+	svc, err := New(Options{
+		Repo:        newFakeRepo(),
+		DataDir:     base,
+		ProfilesDir: filepath.Join(base, "profiles"),
+		Logger:      slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatalf("New service failed: %v", err)
+	}
+	defer svc.Close()
+
+	ctx := context.Background()
+
+	t.Run("reject returns nil and consumes without executing", func(t *testing.T) {
+		called := false
+		req, err := svc.queueApproval("workflow_run_node", "Run", "summary", func(context.Context) (any, error) {
+			called = true
+			return "ok", nil
+		})
+		if err != nil {
+			t.Fatalf("queueApproval failed: %v", err)
+		}
+		if err := svc.ResolveApproval(ctx, req.ID, false); err != nil {
+			t.Fatalf("expected nil on reject, got %v", err)
+		}
+		if called {
+			t.Fatal("rejected approval must not execute action")
+		}
+		if err := svc.ResolveApproval(ctx, req.ID, true); !apperr.IsCode(err, apperr.CodeNotFound) {
+			t.Fatalf("expected CodeNotFound after rejection consumed card, got %v", err)
+		}
+	})
+
+	t.Run("missing and consumed return CodeNotFound", func(t *testing.T) {
+		err := svc.ResolveApproval(ctx, "missing-id", true)
+		var ae *apperr.Error
+		if !errors.As(err, &ae) || ae.Code != apperr.CodeNotFound {
+			t.Fatalf("expected *apperr.Error with CodeNotFound, got %v", err)
+		}
+		if ae.Details["msg_key"] != msgApprovalGone {
+			t.Fatalf("expected msg_key %q, got %+v", msgApprovalGone, ae.Details)
+		}
+
+		req, qErr := svc.queueApproval("workflow_run_node", "Run", "summary", func(context.Context) (any, error) {
+			return nil, nil
+		})
+		if qErr != nil {
+			t.Fatalf("queueApproval failed: %v", qErr)
+		}
+		if err := svc.ResolveApproval(ctx, req.ID, true); err != nil {
+			t.Fatalf("first ResolveApproval failed: %v", err)
+		}
+		if err := svc.ResolveApproval(ctx, req.ID, true); !apperr.IsCode(err, apperr.CodeNotFound) {
+			t.Fatalf("expected CodeNotFound on already-consumed card, got %v", err)
+		}
+	})
+
+	t.Run("preserves existing apperr.Error", func(t *testing.T) {
+		directErr := apperr.Validation("invalid output folder").WithDetails(map[string]any{"field": "output_dir"})
+		reqDirect, err := svc.queueApproval("workflow_run_node", "Run", "direct", func(context.Context) (any, error) {
+			return nil, directErr
+		})
+		if err != nil {
+			t.Fatalf("queueApproval failed: %v", err)
+		}
+		gotDirect := svc.ResolveApproval(ctx, reqDirect.ID, true)
+		var ae *apperr.Error
+		if !errors.As(gotDirect, &ae) || ae != directErr {
+			t.Fatalf("expected preserved direct *apperr.Error (%v), got %v", directErr, gotDirect)
+		}
+
+		wrappedInner := apperr.New(apperr.CodeConflict, "target already exists").WithDetails(map[string]any{"msg_key": "conflict"})
+		reqWrapped, err := svc.queueApproval("workflow_run_node", "Run", "wrapped", func(context.Context) (any, error) {
+			return nil, fmt.Errorf("outer context: %w", wrappedInner)
+		})
+		if err != nil {
+			t.Fatalf("queueApproval failed: %v", err)
+		}
+		gotWrapped := svc.ResolveApproval(ctx, reqWrapped.ID, true)
+		ae = nil
+		if !errors.As(gotWrapped, &ae) || ae != wrappedInner {
+			t.Fatalf("expected preserved wrapped *apperr.Error (%v), got %v", wrappedInner, gotWrapped)
+		}
+	})
+
+	t.Run("wraps raw error as CodeUnavailable without leaking details", func(t *testing.T) {
+		rawErr := errors.New(`open C:\Users\alice\secret\video.mp4: permission denied`)
+		req, err := svc.queueApproval("workflow_run_node", "Run", "raw", func(context.Context) (any, error) {
+			return nil, rawErr
+		})
+		if err != nil {
+			t.Fatalf("queueApproval failed: %v", err)
+		}
+		got := svc.ResolveApproval(ctx, req.ID, true)
+		var ae *apperr.Error
+		if !errors.As(got, &ae) {
+			t.Fatalf("expected *apperr.Error, got %T: %v", got, got)
+		}
+		if ae.Code != apperr.CodeUnavailable {
+			t.Fatalf("expected CodeUnavailable, got %q", ae.Code)
+		}
+		if ae.Message != "approved action failed" {
+			t.Fatalf("expected sanitized message %q, got %q", "approved action failed", ae.Message)
+		}
+		if strings.Contains(ae.Message, "alice") || strings.Contains(ae.Message, "permission denied") {
+			t.Fatalf("user-facing message leaked internal details: %q", ae.Message)
+		}
+		if !errors.Is(got, rawErr) {
+			t.Fatalf("expected wrapped cause to remain accessible via errors.Is, got %v", got)
+		}
+	})
 }
 
 func TestACPClientProtocolOverPipes(t *testing.T) {

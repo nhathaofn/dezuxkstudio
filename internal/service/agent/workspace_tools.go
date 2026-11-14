@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"app/internal/docparse"
 	"app/internal/fsutil"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -469,7 +470,7 @@ func (s *Service) handleWorkspaceReadDocument(in readDocumentToolInput) (*mcp.Ca
 	if err != nil {
 		return mcpError(err.Error())
 	}
-	format, fullText, sourceTruncated, err := extractDocumentTextBounded(target, maxExtractedDocumentRunes)
+	format, fullText, sourceTruncated, err := docparse.ExtractTextBounded(target, docparse.MaxDocumentRunes)
 	if err != nil {
 		return mcpError(err.Error())
 	}

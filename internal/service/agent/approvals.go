@@ -2,13 +2,14 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"time"
 
+	"app/internal/apperr"
 	domainagent "app/internal/domain/agent"
 
-	"app/internal/apperr"
 	"github.com/google/uuid"
 )
 
@@ -118,20 +119,23 @@ func (s *Service) ListApprovals() []domainagent.ApprovalRequest {
 }
 
 // ResolveApproval approves or rejects a pending action proposed by an agent MCP tool call.
-func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) (any, error) {
+func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) error {
 	item, ok := s.approvals.consume(id)
 	s.emitApprovals()
 	if !ok {
-		return nil, userError(apperr.CodeNotFound, msgApprovalGone, "approval request is no longer pending", nil)
+		return userError(apperr.CodeNotFound, msgApprovalGone, "approval request is no longer pending", nil)
 	}
 	if !approve {
-		return map[string]any{"approved": false}, nil
+		return nil
 	}
-	res, err := item.exec(ctx)
-	if err != nil {
-		return nil, apperr.Unavailable(err.Error())
+	if _, err := item.exec(ctx); err != nil {
+		var ae *apperr.Error
+		if errors.As(err, &ae) {
+			return ae
+		}
+		return apperr.Wrap(apperr.CodeUnavailable, "approved action failed", err)
 	}
-	return res, nil
+	return nil
 }
 
 func (s *Service) emitApprovals() {

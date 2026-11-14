@@ -19,16 +19,15 @@ import (
 	"app/internal/config"
 	domainmedia "app/internal/domain/mediagen"
 	domainprovider "app/internal/domain/provider"
-	providersvc "app/internal/service/provider"
 )
 
 type fakeResolver struct {
-	resolveFn func(ctx context.Context, p domainprovider.Purpose, ref string) (providersvc.ResolvedModel, error)
+	resolveFn func(ctx context.Context, p domainprovider.Purpose, ref string) (domainprovider.ResolvedModel, error)
 	vertexFn  func(ctx context.Context, raw string) (string, string, time.Duration, error)
 	vertexHit atomic.Int32
 }
 
-func (f *fakeResolver) ResolveModel(ctx context.Context, p domainprovider.Purpose, ref string) (providersvc.ResolvedModel, error) {
+func (f *fakeResolver) ResolveModel(ctx context.Context, p domainprovider.Purpose, ref string) (domainprovider.ResolvedModel, error) {
 	return f.resolveFn(ctx, p, ref)
 }
 
@@ -204,123 +203,123 @@ func TestImageGenerationAllProtocols(t *testing.T) {
 
 	cases := []struct {
 		name     string
-		resolved providersvc.ResolvedModel
+		resolved domainprovider.ResolvedModel
 		req      domainmedia.ImageRequest
 	}{
 		{
 			name: "openai-t2i",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeImage,
 				Model:   domainprovider.Model{ModelID: "gpt-image-1", Capability: domainprovider.CapabilityImage},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDOpenAI, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDOpenAI, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
 			},
 			req: domainmedia.ImageRequest{Prompt: "sunshine"},
 		},
 		{
 			name: "openai-i2i",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeImage,
 				Model:   domainprovider.Model{ModelID: "gpt-image-1", Capability: domainprovider.CapabilityImage},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDOpenAI, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDOpenAI, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
 			},
 			req: domainmedia.ImageRequest{Prompt: "recolor", ReferenceImages: []string{refPath}},
 		},
 		{
 			name: "custom-chat-image",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeImage,
 				Model:   domainprovider.Model{ModelID: "gemini-img", Capability: domainprovider.CapabilityImage, Endpoint: domainprovider.EndpointOpenAIChatImage},
-				Custom:  &providersvc.ResolvedCustom{Provider: domainprovider.CustomProvider{ID: "c1", Name: "Proxy", BaseURL: srv.URL}, APIKey: "k"},
+				Custom:  &domainprovider.ResolvedCustom{Provider: domainprovider.CustomProvider{ID: "c1", Name: "Proxy", BaseURL: srv.URL}, APIKey: "k"},
 			},
 			req: domainmedia.ImageRequest{Prompt: "chat image"},
 		},
 		{
 			name: "custom-openrouter-images",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeImage,
 				Model:   domainprovider.Model{ModelID: "flux-2", Capability: domainprovider.CapabilityImage, Endpoint: domainprovider.EndpointOpenRouterImages},
-				Custom:  &providersvc.ResolvedCustom{Provider: domainprovider.CustomProvider{ID: "or", Name: "OR", BaseURL: srv.URL + "/api/v1"}, APIKey: "k"},
+				Custom:  &domainprovider.ResolvedCustom{Provider: domainprovider.CustomProvider{ID: "or", Name: "OR", BaseURL: srv.URL + "/api/v1"}, APIKey: "k"},
 			},
 			req: domainmedia.ImageRequest{Prompt: "or image", ReferenceImages: []string{refPath}},
 		},
 		{
 			name: "gemini-aistudio",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeImage,
 				Model:   domainprovider.Model{ModelID: "gemini-2.5-flash-image", Capability: domainprovider.CapabilityImage},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDGeminiAIStudio, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "gem-key"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDGeminiAIStudio, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "gem-key"}},
 			},
 			req: domainmedia.ImageRequest{Prompt: "gem", ReferenceImages: []string{refPath}},
 		},
 		{
 			name: "gemini-vertex-imagen-cached-token",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeImage,
 				Model:   domainprovider.Model{ModelID: "imagen-3", Capability: domainprovider.CapabilityImage},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDGeminiVertex, CredentialID: "v1", BaseURL: srv.URL, Secrets: map[string]string{domainprovider.FieldCredentialsFile: `{"project_id":"test-proj"}`}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDGeminiVertex, CredentialID: "v1", BaseURL: srv.URL, Secrets: map[string]string{domainprovider.FieldCredentialsFile: `{"project_id":"test-proj"}`}},
 			},
 			req: domainmedia.ImageRequest{Prompt: "imagen"},
 		},
 		{
 			name: "ark-agent-plan",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeImage,
 				Model:   domainprovider.Model{ModelID: "seedream-4", Capability: domainprovider.CapabilityImage},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDArkAgentPlan, BaseURL: srv.URL + "/api/plan/v3", Secrets: map[string]string{"api_key": "k"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDArkAgentPlan, BaseURL: srv.URL + "/api/plan/v3", Secrets: map[string]string{"api_key": "k"}},
 			},
 			req: domainmedia.ImageRequest{Prompt: "ark"},
 		},
 		{
 			name: "dashscope",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeImage,
 				Model:   domainprovider.Model{ModelID: "qwen-image", Capability: domainprovider.CapabilityImage},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDDashScope, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDDashScope, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
 			},
 			req: domainmedia.ImageRequest{Prompt: "dash"},
 		},
 		{
 			name: "minimax",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeImage,
 				Model:   domainprovider.Model{ModelID: "image-01", Capability: domainprovider.CapabilityImage},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDMiniMax, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDMiniMax, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
 			},
 			req: domainmedia.ImageRequest{Prompt: "mm"},
 		},
 		{
 			name: "kling-jwt",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeImage,
 				Model:   domainprovider.Model{ModelID: "kling-v2", Capability: domainprovider.CapabilityImage},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDKling, BaseURL: klingSrv.URL, Secrets: map[string]string{"access_key": "ak", "secret_key": "sk"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDKling, BaseURL: klingSrv.URL, Secrets: map[string]string{"access_key": "ak", "secret_key": "sk"}},
 			},
 			req: domainmedia.ImageRequest{Prompt: "kling"},
 		},
 		{
 			name: "vidu",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeImage,
 				Model:   domainprovider.Model{ModelID: "viduq2", Capability: domainprovider.CapabilityImage},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDVidu, BaseURL: srv.URL + "/ent/v2", Secrets: map[string]string{"api_key": "vidu-key"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDVidu, BaseURL: srv.URL + "/ent/v2", Secrets: map[string]string{"api_key": "vidu-key"}},
 			},
 			req: domainmedia.ImageRequest{Prompt: "vidu"},
 		},
 		{
 			name: "grok",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeImage,
 				Model:   domainprovider.Model{ModelID: "grok-image", Capability: domainprovider.CapabilityImage},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDGrok, BaseURL: srv.URL + "/v1", Secrets: map[string]string{"api_key": "k"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDGrok, BaseURL: srv.URL + "/v1", Secrets: map[string]string{"api_key": "k"}},
 			},
 			req: domainmedia.ImageRequest{Prompt: "grok"},
 		},
 		{
 			name: "agnes",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeImage,
 				Model:   domainprovider.Model{ModelID: "agnes-img", Capability: domainprovider.CapabilityImage},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDAgnes, BaseURL: srv.URL + "/v1", Secrets: map[string]string{"api_key": "k"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDAgnes, BaseURL: srv.URL + "/v1", Secrets: map[string]string{"api_key": "k"}},
 			},
 			req: domainmedia.ImageRequest{Prompt: "agnes"},
 		},
@@ -330,7 +329,7 @@ func TestImageGenerationAllProtocols(t *testing.T) {
 	svc, mediaDir := testService(t, resolver)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			resolver.resolveFn = func(context.Context, domainprovider.Purpose, string) (providersvc.ResolvedModel, error) {
+			resolver.resolveFn = func(context.Context, domainprovider.Purpose, string) (domainprovider.ResolvedModel, error) {
 				return tc.resolved, nil
 			}
 			res, err := svc.GenerateImage(context.Background(), tc.req)
@@ -457,106 +456,106 @@ func TestVideoGenerationAllProtocols(t *testing.T) {
 
 	cases := []struct {
 		name     string
-		resolved providersvc.ResolvedModel
+		resolved domainprovider.ResolvedModel
 		req      domainmedia.VideoRequest
 		wantDur  float64
 	}{
 		{
 			name: "openai-sora",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeVideo,
 				Model:   domainprovider.Model{ModelID: "sora-2", Capability: domainprovider.CapabilityVideo, Facts: domainprovider.ModelFacts{Durations: []int{4, 8}}},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDOpenAI, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDOpenAI, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
 			},
 			req:     domainmedia.VideoRequest{Prompt: "ocean wave", StartImage: refPath},
 			wantDur: 4, // snapped nearest to 5 among {4, 8}
 		},
 		{
 			name: "gemini-aistudio",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeVideo,
 				Model:   domainprovider.Model{ModelID: "veo-3", Capability: domainprovider.CapabilityVideo},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDGeminiAIStudio, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "gk"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDGeminiAIStudio, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "gk"}},
 			},
 			req:     domainmedia.VideoRequest{Prompt: "city flyover"},
 			wantDur: 5,
 		},
 		{
 			name: "gemini-vertex",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeVideo,
 				Model:   domainprovider.Model{ModelID: "veo-vertex", Capability: domainprovider.CapabilityVideo},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDGeminiVertex, BaseURL: srv.URL, Secrets: map[string]string{domainprovider.FieldCredentialsFile: `{"project_id":"test-proj"}`}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDGeminiVertex, BaseURL: srv.URL, Secrets: map[string]string{domainprovider.FieldCredentialsFile: `{"project_id":"test-proj"}`}},
 			},
 			req:     domainmedia.VideoRequest{Prompt: "forest"},
 			wantDur: 5,
 		},
 		{
 			name: "ark",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeVideo,
 				Model:   domainprovider.Model{ModelID: "seedance", Capability: domainprovider.CapabilityVideo},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDArk, BaseURL: srv.URL + "/api/v3", Secrets: map[string]string{"api_key": "k"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDArk, BaseURL: srv.URL + "/api/v3", Secrets: map[string]string{"api_key": "k"}},
 			},
 			req:     domainmedia.VideoRequest{Prompt: "seedance", StartImage: refPath, EndImage: refPath},
 			wantDur: 5,
 		},
 		{
 			name: "dashscope",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeVideo,
 				Model:   domainprovider.Model{ModelID: "wan2.6", Capability: domainprovider.CapabilityVideo},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDDashScope, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDDashScope, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
 			},
 			req:     domainmedia.VideoRequest{Prompt: "wan"},
 			wantDur: 5,
 		},
 		{
 			name: "minimax-v1",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeVideo,
 				Model:   domainprovider.Model{ModelID: "MiniMax-Hailuo-2.3", Capability: domainprovider.CapabilityVideo},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDMiniMax, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDMiniMax, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
 			},
 			req:     domainmedia.VideoRequest{Prompt: "hailuo"},
 			wantDur: 5,
 		},
 		{
 			name: "minimax-h3",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeVideo,
 				Model:   domainprovider.Model{ModelID: "MiniMax-H3", Capability: domainprovider.CapabilityVideo},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDMiniMax, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDMiniMax, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
 			},
 			req:     domainmedia.VideoRequest{Prompt: "h3"},
 			wantDur: 5,
 		},
 		{
 			name: "kling-i2v",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeVideo,
 				Model:   domainprovider.Model{ModelID: "kling-v2", Capability: domainprovider.CapabilityVideo},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDKling, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDKling, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
 			},
 			req:     domainmedia.VideoRequest{Prompt: "kling", StartImage: refPath},
 			wantDur: 5,
 		},
 		{
 			name: "vidu-start-end",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeVideo,
 				Model:   domainprovider.Model{ModelID: "viduq3", Capability: domainprovider.CapabilityVideo},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDVidu, BaseURL: srv.URL + "/ent/v2", Secrets: map[string]string{"api_key": "vk"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDVidu, BaseURL: srv.URL + "/ent/v2", Secrets: map[string]string{"api_key": "vk"}},
 			},
 			req:     domainmedia.VideoRequest{Prompt: "vidu", StartImage: refPath, EndImage: refPath},
 			wantDur: 5,
 		},
 		{
 			name: "grok",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeVideo,
 				Model:   domainprovider.Model{ModelID: "grok-imagine-video", Capability: domainprovider.CapabilityVideo},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDGrok, BaseURL: srv.URL + "/v1", Secrets: map[string]string{"api_key": "k"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDGrok, BaseURL: srv.URL + "/v1", Secrets: map[string]string{"api_key": "k"}},
 			},
 			req:     domainmedia.VideoRequest{Prompt: "grok"},
 			wantDur: 5,
@@ -565,7 +564,7 @@ func TestVideoGenerationAllProtocols(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			resolver.resolveFn = func(context.Context, domainprovider.Purpose, string) (providersvc.ResolvedModel, error) {
+			resolver.resolveFn = func(context.Context, domainprovider.Purpose, string) (domainprovider.ResolvedModel, error) {
 				return tc.resolved, nil
 			}
 			res, err := svc.GenerateVideo(context.Background(), tc.req)
@@ -613,17 +612,17 @@ func TestTTSGenerationAndPCMToWAV(t *testing.T) {
 
 	cases := []struct {
 		name     string
-		resolved providersvc.ResolvedModel
+		resolved domainprovider.ResolvedModel
 		req      domainmedia.TTSRequest
 		wantExt  string
 		wantHead string
 	}{
 		{
 			name: "openai-tts-mp3",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeTTS,
 				Model:   domainprovider.Model{ModelID: "gpt-4o-mini-tts", Capability: domainprovider.CapabilityTTS, Endpoint: domainprovider.EndpointOpenAITTS},
-				Custom:  &providersvc.ResolvedCustom{Provider: domainprovider.CustomProvider{ID: "c1", Name: "OAI", BaseURL: srv.URL}, APIKey: "k"},
+				Custom:  &domainprovider.ResolvedCustom{Provider: domainprovider.CustomProvider{ID: "c1", Name: "OAI", BaseURL: srv.URL}, APIKey: "k"},
 			},
 			req:      domainmedia.TTSRequest{Text: "hello", Format: "mp3"},
 			wantExt:  ".mp3",
@@ -631,10 +630,10 @@ func TestTTSGenerationAndPCMToWAV(t *testing.T) {
 		},
 		{
 			name: "gemini-tts-pcm-wrapped-wav",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeTTS,
 				Model:   domainprovider.Model{ModelID: "gemini-2.5-flash-tts", Capability: domainprovider.CapabilityTTS},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDGeminiAIStudio, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "gk"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDGeminiAIStudio, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "gk"}},
 			},
 			req:      domainmedia.TTSRequest{Text: "xin chào"},
 			wantExt:  ".wav",
@@ -642,10 +641,10 @@ func TestTTSGenerationAndPCMToWAV(t *testing.T) {
 		},
 		{
 			name: "dashscope-tts",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeTTS,
 				Model:   domainprovider.Model{ModelID: "qwen3-tts-flash", Capability: domainprovider.CapabilityTTS},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDDashScope, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDDashScope, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
 			},
 			req:      domainmedia.TTSRequest{Text: "hello"},
 			wantExt:  ".wav",
@@ -653,10 +652,10 @@ func TestTTSGenerationAndPCMToWAV(t *testing.T) {
 		},
 		{
 			name: "minimax-tts-hex",
-			resolved: providersvc.ResolvedModel{
+			resolved: domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeTTS,
 				Model:   domainprovider.Model{ModelID: "speech-2.8-hd", Capability: domainprovider.CapabilityTTS},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDMiniMax, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDMiniMax, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
 			},
 			req:      domainmedia.TTSRequest{Text: "hello", Format: "wav"},
 			wantExt:  ".wav",
@@ -666,7 +665,7 @@ func TestTTSGenerationAndPCMToWAV(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			resolver.resolveFn = func(context.Context, domainprovider.Purpose, string) (providersvc.ResolvedModel, error) {
+			resolver.resolveFn = func(context.Context, domainprovider.Purpose, string) (domainprovider.ResolvedModel, error) {
 				return tc.resolved, nil
 			}
 			res, err := svc.GenerateTTS(context.Background(), tc.req)
@@ -695,11 +694,11 @@ func TestSSRFMetadataBlockedAndSecurity(t *testing.T) {
 	defer srv.Close()
 
 	resolver := &fakeResolver{
-		resolveFn: func(context.Context, domainprovider.Purpose, string) (providersvc.ResolvedModel, error) {
-			return providersvc.ResolvedModel{
+		resolveFn: func(context.Context, domainprovider.Purpose, string) (domainprovider.ResolvedModel, error) {
+			return domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeImage,
 				Model:   domainprovider.Model{ModelID: "m", Capability: domainprovider.CapabilityImage},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDOpenAI, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "supersecret"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDOpenAI, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "supersecret"}},
 			}, nil
 		},
 	}
@@ -746,11 +745,11 @@ func TestVertexTokenCaching(t *testing.T) {
 	defer srv.Close()
 
 	resolver := &fakeResolver{
-		resolveFn: func(context.Context, domainprovider.Purpose, string) (providersvc.ResolvedModel, error) {
-			return providersvc.ResolvedModel{
+		resolveFn: func(context.Context, domainprovider.Purpose, string) (domainprovider.ResolvedModel, error) {
+			return domainprovider.ResolvedModel{
 				Purpose: domainprovider.PurposeImage,
 				Model:   domainprovider.Model{ModelID: "gemini-3-pro-image-preview", Capability: domainprovider.CapabilityImage},
-				Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDGeminiVertex, CredentialID: "cred-1", BaseURL: srv.URL, Secrets: map[string]string{domainprovider.FieldCredentialsFile: "{}"}},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDGeminiVertex, CredentialID: "cred-1", BaseURL: srv.URL, Secrets: map[string]string{domainprovider.FieldCredentialsFile: "{}"}},
 			}, nil
 		},
 	}
@@ -763,4 +762,132 @@ func TestVertexTokenCaching(t *testing.T) {
 	if resolver.vertexHit.Load() != 1 {
 		t.Fatalf("expected VertexToken to be cached (calls=%d, want 1)", resolver.vertexHit.Load())
 	}
+}
+
+func TestNewDerivesDefaultsFromConfig(t *testing.T) {
+	def := config.Default(config.ModeDesktop).MediaGen
+
+	svc := New(Options{})
+	if svc.cfg.RequestTimeout != def.RequestTimeout {
+		t.Fatalf("RequestTimeout = %v, want %v", svc.cfg.RequestTimeout, def.RequestTimeout)
+	}
+	if svc.cfg.VideoTimeout != def.VideoTimeout {
+		t.Fatalf("VideoTimeout = %v, want %v", svc.cfg.VideoTimeout, def.VideoTimeout)
+	}
+	if svc.cfg.VideoPollInterval != def.VideoPollInterval {
+		t.Fatalf("VideoPollInterval = %v, want %v", svc.cfg.VideoPollInterval, def.VideoPollInterval)
+	}
+	if svc.cfg.MaxOutputBytes != def.MaxOutputBytes {
+		t.Fatalf("MaxOutputBytes = %d, want %d", svc.cfg.MaxOutputBytes, def.MaxOutputBytes)
+	}
+	if svc.cfg.MaxReferenceBytes != def.MaxReferenceBytes {
+		t.Fatalf("MaxReferenceBytes = %d, want %d", svc.cfg.MaxReferenceBytes, def.MaxReferenceBytes)
+	}
+	if svc.httpClient == nil {
+		t.Fatal("expected default httpClient to be constructed")
+	}
+	if svc.httpClient.Timeout != 0 {
+		t.Fatalf("httpClient.Timeout = %v, want 0 (streaming client from httpclient.New)", svc.httpClient.Timeout)
+	}
+	if svc.httpClient.CheckRedirect == nil {
+		t.Fatal("expected CheckRedirect guard on default httpClient")
+	}
+
+	partial := New(Options{
+		Config: config.MediaGenConfig{
+			RequestTimeout: 45 * time.Second,
+			MaxOutputBytes: 128 << 20,
+		},
+	})
+	if partial.cfg.RequestTimeout != 45*time.Second {
+		t.Fatalf("partial RequestTimeout = %v, want 45s", partial.cfg.RequestTimeout)
+	}
+	if partial.cfg.MaxOutputBytes != 128<<20 {
+		t.Fatalf("partial MaxOutputBytes = %d, want %d", partial.cfg.MaxOutputBytes, 128<<20)
+	}
+	if partial.cfg.VideoTimeout != def.VideoTimeout ||
+		partial.cfg.VideoPollInterval != def.VideoPollInterval ||
+		partial.cfg.MaxReferenceBytes != def.MaxReferenceBytes {
+		t.Fatalf("partial config did not fall back to config.Default: %+v", partial.cfg)
+	}
+
+	baseClient := &http.Client{Timeout: 12 * time.Second}
+	withBase := New(Options{HTTPClient: baseClient})
+	if baseClient.CheckRedirect != nil {
+		t.Fatal("New must not mutate caller-supplied HTTPClient")
+	}
+	if withBase.httpClient.Timeout != 12*time.Second || withBase.httpClient.CheckRedirect == nil {
+		t.Fatalf("expected cloned client preserving timeout and adding CheckRedirect, got timeout=%v guard=%v",
+			withBase.httpClient.Timeout, withBase.httpClient.CheckRedirect != nil)
+	}
+}
+
+func TestMediaGenRedirectValidationAndHopCap(t *testing.T) {
+	var loopHits atomic.Int32
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/unsafe/v1/images/generations":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"url":"` + srv.URL + `/dl/meta-redir"}]}`))
+		case "/dl/meta-redir":
+			http.Redirect(w, r, "http://metadata.google.internal/computeMetadata/v1/", http.StatusFound)
+		case "/loop/v1/images/generations":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"url":"` + srv.URL + `/dl/loop"}]}`))
+		case "/dl/loop":
+			loopHits.Add(1)
+			http.Redirect(w, r, srv.URL+"/dl/loop", http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	t.Run("blocks unsafe redirect target", func(t *testing.T) {
+		resolver := &fakeResolver{
+			resolveFn: func(context.Context, domainprovider.Purpose, string) (domainprovider.ResolvedModel, error) {
+				return domainprovider.ResolvedModel{
+					Purpose: domainprovider.PurposeImage,
+					Model:   domainprovider.Model{ModelID: "m", Capability: domainprovider.CapabilityImage},
+					Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDOpenAI, BaseURL: srv.URL + "/unsafe", Secrets: map[string]string{"api_key": "supersecret"}},
+				}, nil
+			},
+		}
+		svc, _ := testService(t, resolver)
+		_, err := svc.GenerateImage(context.Background(), domainmedia.ImageRequest{Prompt: "test"})
+		if err == nil {
+			t.Fatal("expected unsafe metadata redirect to be blocked")
+		}
+		if !strings.Contains(err.Error(), "blocked redirect target") {
+			t.Fatalf("expected blocked redirect target error, got %v", err)
+		}
+		if strings.Contains(err.Error(), "supersecret") {
+			t.Fatalf("secret leaked in error message: %v", err)
+		}
+	})
+
+	t.Run("enforces 10 redirect hop cap", func(t *testing.T) {
+		loopHits.Store(0)
+		resolver := &fakeResolver{
+			resolveFn: func(context.Context, domainprovider.Purpose, string) (domainprovider.ResolvedModel, error) {
+				return domainprovider.ResolvedModel{
+					Purpose: domainprovider.PurposeImage,
+					Model:   domainprovider.Model{ModelID: "m", Capability: domainprovider.CapabilityImage},
+					Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDOpenAI, BaseURL: srv.URL + "/loop", Secrets: map[string]string{"api_key": "k"}},
+				}, nil
+			},
+		}
+		svc, _ := testService(t, resolver)
+		_, err := svc.GenerateImage(context.Background(), domainmedia.ImageRequest{Prompt: "test"})
+		if err == nil {
+			t.Fatal("expected redirect loop to stop after 10 redirects")
+		}
+		if !strings.Contains(err.Error(), "stopped after 10 redirects") {
+			t.Fatalf("expected 10-redirect cap error, got %v", err)
+		}
+		if loopHits.Load() != 10 {
+			t.Fatalf("loopHits = %d, want 10", loopHits.Load())
+		}
+	})
 }

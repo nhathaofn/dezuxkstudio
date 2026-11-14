@@ -160,7 +160,8 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 				LongAction:   cfg.Realtime.LongActionTimeout,
 				PingInterval: cfg.Realtime.PingInterval,
 			},
-			MediaDir: o.Paths.Media(),
+			MediaDir:       o.Paths.Media(),
+			MaxUploadBytes: cfg.Server.MaxMediaUploadBytes,
 		}),
 	})
 	if err != nil {
@@ -168,7 +169,7 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 	}
 	if mediaDir := o.Paths.Media(); mediaDir != "" {
 		c.background("media-staging-cleanup", func(ctx context.Context) {
-			handlers.RunStagingCleanup(ctx, mediaDir, o.Logger)
+			handlers.RunStagingCleanup(ctx, mediaDir, cfg.Server.MediaStagingTTL, cfg.Server.MediaStagingCleanupInterval, o.Logger)
 		})
 	}
 	return c, nil
@@ -321,13 +322,20 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		c.background("agent-restore-connection", agentSvc.RestoreConnection)
 	}
 
+	lockRemoteHost := cfg.Mode == config.ModeServer && !cfg.Server.AllowHostAdmin
+
 	return []realtime.Module{
-		modules.System{Info: sysSvc, Update: updSvc},
+		modules.System{Info: sysSvc, Update: updSvc, LockHostAdmin: lockRemoteHost},
 		modules.Preferences{Service: prefSvc},
 		modules.Diagnostics{Service: diagSvc},
-		modules.Binaries{Service: binSvc},
+		modules.Binaries{Service: binSvc, LockHostAdmin: lockRemoteHost},
 		modules.Workflow{Service: wfSvc, FileGuard: workflowFileGuard(cfg.Mode, agentSvc)},
-		modules.Agent{Service: agentSvc, LockTrustedFolders: cfg.Mode == config.ModeServer},
+		modules.Agent{
+			Service:            agentSvc,
+			LockTrustedFolders: cfg.Mode == config.ModeServer,
+			LockHostAdmin:      lockRemoteHost,
+			LockCustomizations: lockRemoteHost,
+		},
 		modules.Providers{Service: provSvc},
 	}, nil
 }

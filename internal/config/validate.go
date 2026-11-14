@@ -51,31 +51,33 @@ func (c *Config) Validate() error {
 			}
 		}
 		positiveDurations(add, map[string]time.Duration{
-			"server.read_header_timeout":   c.Server.ReadHeaderTimeout,
-			"server.idle_timeout":          c.Server.IdleTimeout,
-			"server.shutdown_timeout":      c.Server.ShutdownTimeout,
-			"realtime.action_timeout":      c.Realtime.ActionTimeout,
-			"realtime.long_action_timeout": c.Realtime.LongActionTimeout,
-			"realtime.queue_timeout":       c.Realtime.QueueTimeout,
-			"realtime.ping_interval":       c.Realtime.PingInterval,
-			"realtime.write_timeout":       c.Realtime.WriteTimeout,
-			"realtime.keepalive_interval":  c.Realtime.KeepAliveInterval,
-			"storage.busy_timeout":         c.Storage.BusyTimeout,
-			"binaries.probe_timeout":       c.Binaries.ProbeTimeout,
-			"providers.test_timeout":       c.Providers.TestTimeout,
-			"mediagen.request_timeout":     c.MediaGen.RequestTimeout,
-			"mediagen.video_timeout":       c.MediaGen.VideoTimeout,
-			"mediagen.video_poll_interval": c.MediaGen.VideoPollInterval,
-			"network.idle_conn_timeout":    c.Network.IdleConnTimeout,
-			"agent.turn_timeout":           c.Agent.TurnTimeout,
-			"agent.initialize_timeout":     c.Agent.InitializeTimeout,
-			"agent.version_probe_timeout":  c.Agent.VersionProbeTimeout,
-			"agent.auth_probe_timeout":     c.Agent.AuthProbeTimeout,
-			"agent.login_timeout":          c.Agent.LoginTimeout,
-			"agent.model_catalog_timeout":  c.Agent.ModelCatalogTimeout,
-			"agent.interrupt_wait":         c.Agent.InterruptWait,
-			"agent.status_cache_ttl":       c.Agent.StatusCacheTTL,
-			"agent.approval_ttl":           c.Agent.ApprovalTTL,
+			"server.read_header_timeout":            c.Server.ReadHeaderTimeout,
+			"server.idle_timeout":                   c.Server.IdleTimeout,
+			"server.shutdown_timeout":               c.Server.ShutdownTimeout,
+			"server.media_staging_ttl":              c.Server.MediaStagingTTL,
+			"server.media_staging_cleanup_interval": c.Server.MediaStagingCleanupInterval,
+			"realtime.action_timeout":               c.Realtime.ActionTimeout,
+			"realtime.long_action_timeout":          c.Realtime.LongActionTimeout,
+			"realtime.queue_timeout":                c.Realtime.QueueTimeout,
+			"realtime.ping_interval":                c.Realtime.PingInterval,
+			"realtime.write_timeout":                c.Realtime.WriteTimeout,
+			"realtime.keepalive_interval":           c.Realtime.KeepAliveInterval,
+			"storage.busy_timeout":                  c.Storage.BusyTimeout,
+			"binaries.probe_timeout":                c.Binaries.ProbeTimeout,
+			"providers.test_timeout":                c.Providers.TestTimeout,
+			"mediagen.request_timeout":              c.MediaGen.RequestTimeout,
+			"mediagen.video_timeout":                c.MediaGen.VideoTimeout,
+			"mediagen.video_poll_interval":          c.MediaGen.VideoPollInterval,
+			"network.idle_conn_timeout":             c.Network.IdleConnTimeout,
+			"agent.turn_timeout":                    c.Agent.TurnTimeout,
+			"agent.initialize_timeout":              c.Agent.InitializeTimeout,
+			"agent.version_probe_timeout":           c.Agent.VersionProbeTimeout,
+			"agent.auth_probe_timeout":              c.Agent.AuthProbeTimeout,
+			"agent.login_timeout":                   c.Agent.LoginTimeout,
+			"agent.model_catalog_timeout":           c.Agent.ModelCatalogTimeout,
+			"agent.interrupt_wait":                  c.Agent.InterruptWait,
+			"agent.status_cache_ttl":                c.Agent.StatusCacheTTL,
+			"agent.approval_ttl":                    c.Agent.ApprovalTTL,
 		})
 		positiveInts(add, map[string]int{
 			"providers.check_concurrency":     c.Providers.CheckConcurrency,
@@ -88,6 +90,7 @@ func (c *Config) Validate() error {
 			"network.max_idle_conns_per_host": c.Network.MaxIdleConnsPerHost,
 			"agent.history_limit":             c.Agent.HistoryLimit,
 			"agent.max_pending_approvals":     c.Agent.MaxPendingApprovals,
+			"agent.max_concurrent_subagents":  c.Agent.MaxConcurrentSubagents,
 		})
 		switch strings.ToLower(strings.TrimSpace(c.Agent.Mode)) {
 		case "", "assistant":
@@ -103,6 +106,9 @@ func (c *Config) Validate() error {
 		}
 		if c.Server.MaxBroadcastBodyBytes <= 0 {
 			add("server.max_broadcast_body_bytes must be > 0")
+		}
+		if c.Server.MaxMediaUploadBytes <= 0 {
+			add("server.max_media_upload_bytes must be > 0")
 		}
 		if c.Realtime.MaxMessageBytes < minMaxMessageBytes {
 			add("realtime.max_message_bytes must be >= %d", minMaxMessageBytes)
@@ -191,6 +197,9 @@ func (c *Config) warnings() []string {
 	}
 	if c.Mode == ModeServer && c.Server.AuthToken == "" {
 		w = append(w, "server mode runs without an auth token (loopback only)")
+	}
+	if c.Mode == ModeServer && c.Server.AllowHostAdmin {
+		w = append(w, "server.allow_host_admin is enabled; remote clients can mutate host paths, agent customizations, or open folders on the server")
 	}
 	return w
 }

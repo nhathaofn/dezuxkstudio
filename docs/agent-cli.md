@@ -31,6 +31,7 @@ scheme in `agentcli/release.go`.
 Config (`agent.*`): `auto_install_cli`, `auto_update_cli` (auto-update defaults on only for release builds).
 `Service.ProvisionCLIs` runs once in the background at start-up (never periodically while the app is open); progress reaches the UI
 as `ProviderInfo.Installing` / `InstallPercent`.
+In `--mode server`, `agent:set_path` is locked (`ERR_UNAVAILABLE`) unless `server.allow_host_admin` is `true`, so remote clients cannot redirect host CLI binaries.
 
 Live check against the real channels (network, several hundred MB):
 `AGENTCLI_LIVE=1 go test ./internal/service/agentcli -run Live -v`

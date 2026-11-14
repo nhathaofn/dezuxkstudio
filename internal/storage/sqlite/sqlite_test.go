@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -187,23 +188,33 @@ func TestAgentRepository(t *testing.T) {
 		t.Fatalf("expected cleared custom path, got %q, err: %v", p, err)
 	}
 
-	if err := repo.AppendChatMessage(ctx, agent.ChatMessage{
-		ID:         "m1",
+	if err := repo.SaveConversation(ctx, agent.Conversation{
+		ID:         "conv-repo",
+		Title:      "hello",
 		ProviderID: agent.ProviderCodex,
-		Role:       "user",
-		Text:       "hello",
 		CreatedAt:  1000,
+		UpdatedAt:  1000,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	msgs, err := repo.ListChatMessages(ctx, 50)
+	if err := repo.AppendChatMessage(ctx, agent.ChatMessage{
+		ID:             "m1",
+		ConversationID: "conv-repo",
+		ProviderID:     agent.ProviderCodex,
+		Role:           "user",
+		Text:           "hello",
+		CreatedAt:      1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := repo.ListConversationMessages(ctx, "conv-repo", 50)
 	if err != nil || len(msgs) != 1 || msgs[0].Text != "hello" {
 		t.Fatalf("unexpected chat messages: %+v, err=%v", msgs, err)
 	}
 	if err := repo.ClearChatMessages(ctx); err != nil {
 		t.Fatal(err)
 	}
-	msgs, err = repo.ListChatMessages(ctx, 50)
+	msgs, err = repo.ListConversationMessages(ctx, "conv-repo", 50)
 	if err != nil || len(msgs) != 0 {
 		t.Fatalf("expected cleared chat messages, got %+v, err=%v", msgs, err)
 	}
@@ -365,5 +376,90 @@ func TestWALConcurrentReadsWithWriter(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Fatal(err)
+	}
+}
+
+func TestAgentForeignKeyEnforcementAndCascade(t *testing.T) {
+	ctx := context.Background()
+	db := open(t, t.TempDir())
+	defer db.Close()
+	repo := NewAgentRepository(db)
+
+	// Orphan inserts must fail loudly instead of silently creating dummy parents.
+	for _, orphanConvID := range []string{"", "missing-conv"} {
+		err := repo.AppendChatMessage(ctx, agent.ChatMessage{
+			ID:             "orphan-msg-" + orphanConvID,
+			ConversationID: orphanConvID,
+			ProviderID:     agent.ProviderCodex,
+			Role:           "user",
+			Text:           "orphan",
+			CreatedAt:      100,
+		})
+		if err == nil || !strings.Contains(strings.ToUpper(err.Error()), "FOREIGN KEY") {
+			t.Fatalf("expected FOREIGN KEY error for orphan AppendChatMessage (conversation_id=%q), got %v", orphanConvID, err)
+		}
+	}
+
+	if err := repo.SetConversationSession(ctx, "missing-conv", agent.ProviderClaude, "sess-1"); err == nil || !strings.Contains(strings.ToUpper(err.Error()), "FOREIGN KEY") {
+		t.Fatalf("expected FOREIGN KEY error for orphan SetConversationSession, got %v", err)
+	}
+
+	// Valid parent allows messages and sessions; deleting the parent cascades to both child tables.
+	if err := repo.SaveConversation(ctx, agent.Conversation{
+		ID:         "conv-fk",
+		Title:      "FK test",
+		ProviderID: agent.ProviderClaude,
+		CreatedAt:  1000,
+		UpdatedAt:  1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for i, role := range []string{"user", "assistant"} {
+		if err := repo.AppendChatMessage(ctx, agent.ChatMessage{
+			ID:             fmt.Sprintf("fk-msg-%d", i),
+			ConversationID: "conv-fk",
+			ProviderID:     agent.ProviderClaude,
+			Role:           role,
+			Text:           "hi",
+			CreatedAt:      int64(1001 + i),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.SetConversationSession(ctx, "conv-fk", agent.ProviderClaude, "sess-claude"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetConversationSession(ctx, "conv-fk", agent.ProviderCodex, "sess-codex"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Direct DELETE on agent_conversations (bypassing repo.DeleteConversation) must cascade via SQLite FK.
+	if _, err := db.sql.ExecContext(ctx, "DELETE FROM agent_conversations WHERE id = ?", "conv-fk"); err != nil {
+		t.Fatalf("direct delete from agent_conversations failed: %v", err)
+	}
+
+	var msgCount, sessCount int
+	if err := db.read().QueryRowContext(ctx, "SELECT COUNT(*) FROM agent_chat_messages WHERE conversation_id = ?", "conv-fk").Scan(&msgCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.read().QueryRowContext(ctx, "SELECT COUNT(*) FROM agent_conversation_sessions WHERE conversation_id = ?", "conv-fk").Scan(&sessCount); err != nil {
+		t.Fatal(err)
+	}
+	if msgCount != 0 || sessCount != 0 {
+		t.Fatalf("expected ON DELETE CASCADE to clear children, got messages=%d sessions=%d", msgCount, sessCount)
+	}
+
+	// DeleteConversation remains idempotent even when parent was already deleted.
+	if err := repo.DeleteConversation(ctx, "conv-fk"); err != nil {
+		t.Fatalf("DeleteConversation must remain idempotent: %v", err)
+	}
+
+	rows, err := db.sql.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("expected PRAGMA foreign_key_check to return zero violations")
 	}
 }

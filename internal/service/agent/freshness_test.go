@@ -8,9 +8,9 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"app/internal/contracts"
 	domainagent "app/internal/domain/agent"
 	"app/internal/engine"
-	providernodes "app/internal/tools/provider"
 )
 
 // providerWorkflow answers tool.provider_list with a state that the test can change between calls,
@@ -21,7 +21,7 @@ type providerWorkflow struct {
 }
 
 func (w *providerWorkflow) RunNode(_ context.Context, nodeType string, _ json.RawMessage) (any, error) {
-	if nodeType != providernodes.NodeList {
+	if nodeType != contracts.NodeTypeProviderList {
 		return map[string]any{}, nil
 	}
 	var out any

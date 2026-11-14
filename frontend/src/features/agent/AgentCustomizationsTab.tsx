@@ -23,6 +23,7 @@ import {
 import { useT } from "../../lib/i18n";
 import { rtClient } from "../../lib/rtClient";
 import { toolLabel } from "./toolLabels";
+import { useAgentCustomizationsStore } from "./useAgentCustomizationsStore";
 import { useAgentStore } from "./useAgentStore";
 
 type FilterKind = "all" | "skills" | "subagents";
@@ -61,19 +62,19 @@ export const AgentCustomizationsTab: React.FC<AgentCustomizationsTabProps> = ({
   canEdit,
 }) => {
   const t = useT();
-  const skills = useAgentStore((s) => s.skills);
-  const subagents = useAgentStore((s) => s.subagents);
-  const availableTools = useAgentStore((s) => s.availableSubagentTools);
-  const loading = useAgentStore((s) => s.loadingCustomizations);
+  const skills = useAgentCustomizationsStore((s) => s.skills);
+  const subagents = useAgentCustomizationsStore((s) => s.subagents);
+  const availableTools = useAgentCustomizationsStore((s) => s.availableSubagentTools);
+  const loading = useAgentCustomizationsStore((s) => s.loadingCustomizations);
   const providers = useAgentStore((s) => s.providers);
 
-  const reloadCustomizations = useAgentStore((s) => s.reloadCustomizations);
-  const saveSkill = useAgentStore((s) => s.saveSkill);
-  const deleteSkill = useAgentStore((s) => s.deleteSkill);
-  const restoreSkill = useAgentStore((s) => s.restoreSkill);
-  const saveSubagent = useAgentStore((s) => s.saveSubagent);
-  const deleteSubagent = useAgentStore((s) => s.deleteSubagent);
-  const restoreSubagent = useAgentStore((s) => s.restoreSubagent);
+  const reloadCustomizations = useAgentCustomizationsStore((s) => s.reloadCustomizations);
+  const saveSkill = useAgentCustomizationsStore((s) => s.saveSkill);
+  const deleteSkill = useAgentCustomizationsStore((s) => s.deleteSkill);
+  const restoreSkill = useAgentCustomizationsStore((s) => s.restoreSkill);
+  const saveSubagent = useAgentCustomizationsStore((s) => s.saveSubagent);
+  const deleteSubagent = useAgentCustomizationsStore((s) => s.deleteSubagent);
+  const restoreSubagent = useAgentCustomizationsStore((s) => s.restoreSubagent);
 
   const [filter, setFilter] = useState<FilterKind>("all");
   const [editor, setEditor] = useState<EditorState>(null);

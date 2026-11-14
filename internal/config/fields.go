@@ -37,6 +37,10 @@ func fields(c *Config) []field {
 		{key: "server.shutdown_timeout", usage: "graceful shutdown deadline", val: durationValue{&c.Server.ShutdownTimeout}},
 		{key: "server.enable_broadcast", usage: "enable POST /api/events/broadcast (requires a token)", val: boolValue{&c.Server.EnableBroadcast}},
 		{key: "server.max_broadcast_body_bytes", usage: "max body size of the broadcast endpoint", val: int64Value{&c.Server.MaxBroadcastBodyBytes}},
+		{key: "server.max_media_upload_bytes", usage: "max body size of POST /api/media/upload in bytes", val: int64Value{&c.Server.MaxMediaUploadBytes}},
+		{key: "server.media_staging_ttl", usage: "retention period before expired media staging directories are pruned", val: durationValue{&c.Server.MediaStagingTTL}},
+		{key: "server.media_staging_cleanup_interval", usage: "how often expired media staging directories are checked", val: durationValue{&c.Server.MediaStagingCleanupInterval}},
+		{key: "server.allow_host_admin", usage: "allow remote clients in server mode to mutate host paths, customizations or open folders", val: boolValue{&c.Server.AllowHostAdmin}},
 
 		{key: "client.remote_url", usage: "client mode: remote server WebSocket URL (ws:// or wss://)", val: stringValue{&c.Client.RemoteURL}},
 		{key: "client.auth_token", usage: "client mode: remote token (default: OS credential store)", val: stringValue{&c.Client.AuthToken}, secret: true},
@@ -102,6 +106,7 @@ func fields(c *Config) []field {
 		{key: "agent.mode", usage: "agent runtime mode: assistant (default, restricted) or developer (opt-in coding/tools)", val: stringValue{&c.Agent.Mode}},
 		{key: "agent.workspace_dir", usage: "override directory used as the agent workspace (empty = app default)", val: stringValue{&c.Agent.WorkspaceDir}},
 		{key: "agent.max_pending_approvals", usage: "agent actions waiting for approval at most", val: intValue{&c.Agent.MaxPendingApprovals}},
+		{key: "agent.max_concurrent_subagents", usage: "max parallel subagent invocations per turn", val: intValue{&c.Agent.MaxConcurrentSubagents}},
 
 		{key: "desktop.width", usage: "initial window width (0 = 80% of primary screen)", val: intValue{&c.Desktop.Width}},
 		{key: "desktop.height", usage: "initial window height (0 = 80% of primary screen)", val: intValue{&c.Desktop.Height}},

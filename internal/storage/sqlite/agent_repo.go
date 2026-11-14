@@ -11,6 +11,10 @@ import (
 	"app/internal/domain/agent"
 )
 
+// defaultConversationListLimit bounds ListConversations when callers pass limit <= 0
+// so sidebar conversation lists stay bounded without an explicit page size.
+const defaultConversationListLimit = 100
+
 // AgentRepository implements agent.Repository using SQLite.
 type AgentRepository struct{ db *DB }
 
@@ -127,42 +131,6 @@ func (r *AgentRepository) RedactChatMessages(ctx context.Context, secret, replac
 	return nil
 }
 
-// ListChatMessages returns the most recent chat messages in chronological order.
-func (r *AgentRepository) ListChatMessages(ctx context.Context, limit int) ([]agent.ChatMessage, error) {
-	if limit <= 0 {
-		limit = 200
-	}
-	rows, err := r.db.read().QueryContext(ctx, `
-		SELECT id, provider_id, role, text, thought, tool, created_at, metadata
-		FROM (
-			SELECT id, provider_id, role, text, thought, tool, created_at, metadata
-			FROM agent_chat_messages
-			ORDER BY created_at DESC, id DESC
-			LIMIT ?
-		) sub
-		ORDER BY created_at ASC, id ASC;`, limit)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: list agent chat messages: %w", err)
-	}
-	defer rows.Close()
-
-	var out []agent.ChatMessage
-	for rows.Next() {
-		var m agent.ChatMessage
-		var pid, meta string
-		if err := rows.Scan(&m.ID, &pid, &m.Role, &m.Text, &m.Thought, &m.Tool, &m.CreatedAt, &meta); err != nil {
-			return nil, fmt.Errorf("sqlite: scan agent chat message: %w", err)
-		}
-		m.ProviderID = agent.ProviderID(pid)
-		decodeChatMetadata(meta, &m)
-		out = append(out, m)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("sqlite: iterate agent chat messages: %w", err)
-	}
-	return out, nil
-}
-
 // SaveConversation creates a conversation or refreshes its provider and updated_at.
 func (r *AgentRepository) SaveConversation(ctx context.Context, c agent.Conversation) error {
 	_, err := r.db.sql.ExecContext(ctx, `
@@ -182,7 +150,7 @@ func (r *AgentRepository) SaveConversation(ctx context.Context, c agent.Conversa
 // ListConversations returns conversations, most recently active first.
 func (r *AgentRepository) ListConversations(ctx context.Context, limit int) ([]agent.Conversation, error) {
 	if limit <= 0 {
-		limit = 100
+		limit = defaultConversationListLimit
 	}
 	rows, err := r.db.read().QueryContext(ctx, `
 		SELECT c.id, c.title, c.provider_id, c.created_at, c.updated_at,

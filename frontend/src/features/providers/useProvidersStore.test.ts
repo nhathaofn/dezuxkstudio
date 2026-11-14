@@ -8,6 +8,7 @@ import {
 } from "../../contracts/generated";
 import { ActionError, rtClient } from "../../lib/rtClient";
 import { useConnectionStore } from "../connection/useConnectionStore";
+import { useAgentCustomizationsStore } from "../agent/useAgentCustomizationsStore";
 import { useAgentStore } from "../agent/useAgentStore";
 import { useBinariesStore } from "../binaries/useBinariesStore";
 import { usePreferencesStore } from "../preferences/usePreferencesStore";
@@ -102,6 +103,7 @@ describe("useProvidersStore", () => {
     ] as const) {
       vi.spyOn(useAgentStore.getState(), action).mockResolvedValue();
     }
+    vi.spyOn(useAgentCustomizationsStore.getState(), "fetchCustomizations").mockResolvedValue();
     const list = vi.spyOn(useProvidersStore.getState(), "list").mockResolvedValue();
     const defaults = vi.spyOn(useProvidersStore.getState(), "fetchDefaults").mockResolvedValue();
     bootstrap();

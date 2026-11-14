@@ -21,36 +21,48 @@ import { AgentChatTab } from "./AgentChatTab";
 import { AgentCustomizationsTab } from "./AgentCustomizationsTab";
 import { AgentProviderCard } from "./AgentProviderCard";
 import { useSystemStore } from "../system/useSystemStore";
+import { useAgentCustomizationsStore } from "./useAgentCustomizationsStore";
+import { useAgentDrawerStore } from "./useAgentDrawerStore";
 import { useAgentStore } from "./useAgentStore";
 
 export const AgentDrawer: React.FC = () => {
   const t = useT();
   const coreConnected = useConnectionStore((s) => s.status === "connected");
 
-  const panelOpen = useAgentStore((s) => s.panelOpen);
-  const panelWidth = useAgentStore((s) => s.panelWidth);
-  const activeTab = useAgentStore((s) => s.activeTab);
+  const panelOpen = useAgentDrawerStore((s) => s.panelOpen);
+  const panelWidth = useAgentDrawerStore((s) => s.panelWidth);
+  const activeTab = useAgentDrawerStore((s) => s.activeTab);
+  const chatView = useAgentDrawerStore((s) => s.chatView);
+  const closePanel = useAgentDrawerStore((s) => s.closePanel);
+  const setPanelWidth = useAgentDrawerStore((s) => s.setPanelWidth);
+  const setActiveTab = useAgentDrawerStore((s) => s.setActiveTab);
+  const setChatView = useAgentDrawerStore((s) => s.setChatView);
+
   const providers = useAgentStore((s) => s.providers);
   const developerMode = useAgentStore((s) => s.developerMode);
   const allowedDirs = useAgentStore((s) => s.allowedDirs);
   const loadingProviders = useAgentStore((s) => s.loadingProviders);
-  const error = useAgentStore((s) => s.error);
-  const clearError = useAgentStore((s) => s.clearError);
+  const coreError = useAgentStore((s) => s.error);
+  const clearCoreError = useAgentStore((s) => s.clearError);
+  const customizationsError = useAgentCustomizationsStore((s) => s.error);
+  const clearCustomizationsError = useAgentCustomizationsStore((s) => s.clearError);
   // Trusted folders bound what remote clients may touch, so a headless server refuses changes to them
   // (agent:add/remove_allowed_dir). Only the desktop app on a non-server core can edit the list.
   const coreMode = useSystemStore((s) => s.info?.mode);
   const canEditFolders = isDesktop() && coreMode !== "server";
-  const closePanel = useAgentStore((s) => s.closePanel);
-  const setPanelWidth = useAgentStore((s) => s.setPanelWidth);
-  const setActiveTab = useAgentStore((s) => s.setActiveTab);
   const fetchProviders = useAgentStore((s) => s.fetchProviders);
+  const fetchConversations = useAgentStore((s) => s.fetchConversations);
   const newChat = useAgentStore((s) => s.newChat);
   const hasMessages = useAgentStore((s) => s.messages.length > 0);
   const sending = useAgentStore((s) => s.sending);
-  const chatView = useAgentStore((s) => s.chatView);
-  const setChatView = useAgentStore((s) => s.setChatView);
   const addAllowedDir = useAgentStore((s) => s.addAllowedDir);
   const removeAllowedDir = useAgentStore((s) => s.removeAllowedDir);
+
+  const error = coreError ?? customizationsError;
+  const clearError = () => {
+    clearCoreError();
+    clearCustomizationsError();
+  };
 
   const [resizing, setResizing] = useState(false);
   const historyOpen = activeTab === "chat" && chatView === "history";
@@ -137,8 +149,10 @@ export const AgentDrawer: React.FC = () => {
             iconOnly
             className={historyOpen ? "is-active" : ""}
             onClick={() => {
+              const nextView = historyOpen ? "chat" : "history";
               setActiveTab("chat");
-              setChatView(historyOpen ? "chat" : "history");
+              setChatView(nextView);
+              if (nextView === "history") void fetchConversations();
             }}
             aria-pressed={historyOpen}
             title={t("agent.history.title")}

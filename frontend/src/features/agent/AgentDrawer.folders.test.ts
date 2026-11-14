@@ -3,6 +3,8 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { SystemInfo } from "../../contracts/generated";
 import { useSystemStore } from "../system/useSystemStore";
+import { useAgentCustomizationsStore } from "./useAgentCustomizationsStore";
+import { useAgentDrawerStore } from "./useAgentDrawerStore";
 import { useAgentStore } from "./useAgentStore";
 
 const bridge = vi.hoisted(() => ({ desktop: false }));
@@ -24,12 +26,15 @@ function render(desktop: boolean, mode: SystemInfo["mode"]): string {
 // Trusted folders can only be changed where the core accepts it: the desktop app on a local core.
 describe("AgentDrawer trusted folders", () => {
   beforeEach(() => {
-    useAgentStore.setState({
+    useAgentDrawerStore.setState({
       panelOpen: true,
       activeTab: "connections",
+    });
+    useAgentStore.setState({
       allowedDirs: ["D:/Ảnh/Dự án tháng 11"],
       error: null,
     });
+    useAgentCustomizationsStore.setState({ error: null });
   });
 
   it("lists folders read-only in a browser", () => {

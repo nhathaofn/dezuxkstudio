@@ -1,176 +1,147 @@
 # DezuxkStudio
 
-Base ứng dụng desktop **Go + Wails v2 + React 18** (hiện tại **chỉ hỗ trợ Windows**, chưa hỗ trợ Linux hay macOS) kèm một **core server headless** dùng chung mã nguồn.
+A desktop application base built with **Go + Wails v2 + React 19** (currently **Windows-only**; Linux/macOS unsupported) paired with a shared-codebase **headless core server**.
 
-| Thành phần | Entry point | Lệnh build | Kết quả |
+| Component | Entry Point | Build Command | Output |
 | :--- | :--- | :--- | :--- |
-| Desktop (all-in-one) | `main.go` | `task build` | `build/bin/DezuxkStudio-<version>[.exe/.app]` |
-| Bộ cài Windows (NSIS, cần cài [NSIS](https://nsis.sourceforge.io)) | `main.go` | `task build:installer` | `build/bin/DezuxkStudio-setup-<version>.exe` |
-| Core server headless | `cmd/server` | `task build:server` | `bin/DezuxkStudio-server-<version>[.exe]` |
+| **Desktop Application** | `main.go` | `task build` | `build/bin/DezuxkStudio-<version>.exe` |
+| **Windows Installer** (NSIS) | `main.go` | `task build:installer` | `build/bin/DezuxkStudio-setup-<version>.exe` |
+| **Headless Core Server** | `cmd/server` | `task build:server` | `bin/DezuxkStudio-server-<version>.exe` |
 
-Ba chế độ chạy (`--mode`): `desktop` (GUI + core loopback nhúng), `client` (GUI nối tới core từ xa), `server` (core headless).
+Supported execution modes (`--mode`):
+- `desktop` (GUI + embedded loopback core)
+- `client` (GUI connecting to a remote core server)
+- `server` (Headless core server)
 
 ---
 
-## 1. Bắt đầu
+## 1. Quick Start
 
-Yêu cầu: Go (bản theo `toolchain` trong `go.mod`, tự tải), Node 22, [Task](https://taskfile.dev) `v3.53.1`, Wails CLI `v2.17.0`. Linux cần thêm `libgtk-3-dev libwebkit2gtk-4.1-dev`.
+**Prerequisites**: Go (toolchain managed in `go.mod`), Node.js 22, [Task](https://taskfile.dev) `v3.53.1`, Wails CLI `v2.17.0`.
 
 ```bash
 go install github.com/go-task/task/v3/cmd/task@v3.53.1
 go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
-task setup      # npm ci
-task dev        # wails dev -skipbindings -m (hot reload, build tag "dev"); nhanh hơn gọi `wails dev` trực tiếp
-task check      # lint + test + audit: đúng những gì CI chạy
+task setup      # Installs frontend dependencies (npm ci)
+task dev        # Launches Wails dev mode with hot reload
+task check      # Runs lint + tests + dependency audits (CI parity)
 ```
 
-Windows không cài Task: `powershell -ExecutionPolicy Bypass -File scripts/manage.ps1 <task>` (script tự `go run` bản Task đã ghim).
+On Windows without global Task:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/manage.ps1 <task>
+```
 
-Toàn bộ lệnh: `task --list`.
+View all available targets: `task --list`.
 
 ---
 
-## 2. Kiến trúc
+## 2. Architecture Overview
+
+For the detailed, authoritative blueprint including Mermaid diagrams, lifecycle graphs, and extension recipes, read **[docs/architecture.md](docs/architecture.md)**.
 
 ```
-main.go / cmd/server            entry points: nạp config → paths → logger → crash handler
-  └─ internal/desktop           Wails shell: cửa sổ, Bridge (binding), CSP động, vòng đời
-  └─ internal/core              composition root: storage → services → modules → HTTP server
-       ├─ internal/realtime     hub WebSocket: auth, registry typed, dispatcher, cancel, idle timeout
-       │    └─ modules/         adapter mỏng: payload → service → DTO (không có logic nghiệp vụ)
-       ├─ internal/service/*    use case (preferences, system, update, diagnostics, binaries,
-       │                        workflow, agent)
-       ├─ internal/domain/*     model + quy tắc nghiệp vụ + interface repository
-       ├─ internal/engine       runtime node/graph (DAG) cho workflow; internal/tools/* là các node
-       └─ internal/storage/*    triển khai repository (SQLite, migration có version)
-Gói dùng chung (tầng dưới, mọi service dùng được):
-  internal/progress             báo tiến độ + heartbeat qua ctx, idle context (mô hình timeout)
-  internal/proc                 tạo/kill tiến trình con (ẩn console, .cmd/.bat, kill cả cây)
-  internal/runner               chạy CLI, stream output, parse progress
-  internal/lookup               tìm file thực thi theo thứ tự ưu tiên
-  internal/httpclient           HTTP client outbound dùng chung (proxy, connection pool)
+main.go / cmd/server            Entry points: load config → paths → logger → crash handler
+  └─ internal/desktop           Wails shell: window lifecycle, Bridge bindings, dynamic CSP
+  └─ internal/core              Composition root: storage → services → modules → HTTP server
+       ├─ internal/realtime     WebSocket hub: auth, typed registry, dispatcher, cancellation
+       │    └─ modules/         Thin adapters: payload → service → DTO (zero business logic)
+       ├─ internal/service/*    Use cases (preferences, system, update, diagnostics, binaries,
+       │                        provider, mediagen, workflow, agent, agentcli)
+       ├─ internal/domain/*     Models, validation invariants, and repository interfaces
+       ├─ internal/engine       Node/DAG graph runtime, MediaRef/ResolveMediaPath/FileGuard
+       │    └─ internal/tools/* Implementation nodes (watermark, mediagen, provider)
+       └─ internal/storage/*    Repository implementations (SQLite, versioned migrations)
+
+Shared Foundation Packages:
+  internal/progress             Streaming progress & ctx heartbeat, idle timeouts
+  internal/proc                 Process spawning & termination (tree kill, hidden console)
+  internal/runner               CLI invocation, streaming output parser
+  internal/lookup               Executable resolution precedence
+  internal/httpclient           Shared outbound HTTP client (proxy, pool, SSRF guard, WithRedirectGuard)
+  internal/docparse             Bounded plain-text extraction (.docx, .odt, .rtf, .pdf)
   internal/fsutil, safego, paths, apperr, secrets, logger
-internal/contracts              NGUỒN DUY NHẤT của hợp đồng Go ↔ TS (action, event, DTO, bridge)
-cmd/contractgen                 sinh frontend/src/contracts/generated.ts từ internal/contracts
+
+Contracts & Protocol:
+  internal/contracts            SINGLE SOURCE OF TRUTH for Go ↔ TS boundary (actions, DTOs, bridge)
+  cmd/contractgen               Generates frontend/src/contracts/generated.ts from contracts
 frontend/src
-  ├─ contracts/generated.ts     (sinh tự động – không sửa tay)
-  ├─ lib/rtClient               client WebSocket typed: request/cancel/progress/timeout/reconnect
-  ├─ lib/bridge.ts, lib/i18n    binding desktop, đa ngôn ngữ (en, vi)
-  ├─ features/<tên>/            store + component của từng tính năng
-  └─ app/                       bootstrap, router, layout, màn hình lỗi fatal
+  ├─ contracts/generated.ts     (Auto-generated – DO NOT edit manually)
+  ├─ lib/rtClient               Typed WebSocket client: request/cancel/progress/reconnect
+  ├─ lib/bridge.ts, lib/i18n    Desktop bindings & 100% parity internationalization (en, vi)
+  ├─ features/<name>/           Stores & views (agent state split into useAgentStore, useAgentDrawerStore, useAgentCustomizationsStore)
+  └─ app/                       Bootstrap, routing, layout, and fatal error displays
 ```
 
-Hướng phụ thuộc một chiều: `modules → service → domain ← storage`; `contracts` chỉ phụ thuộc `domain`/`apperr`/`config`. Không package nào import ngược lên `core`/`desktop`.
-
-### Luồng khởi động desktop
-
-1. `main.go` nạp config. Nếu config lỗi, cửa sổ vẫn mở và hiện màn hình lỗi fatal với lý do cụ thể.
-2. `desktop.Run` mở cửa sổ. `OnStartup` khởi tạo core trong goroutine riêng, không chặn UI.
-3. Core sinh **token ngẫu nhiên cho từng phiên**, mở SQLite (backup → migrate), mount module, kiểm tra mọi action khai báo đều có handler, rồi lắng nghe trên `127.0.0.1:<port do OS cấp>`.
-4. Frontend gọi `Bridge.GetConnectionInfo()` để lấy URL + token, rồi kết nối WebSocket. Token đi qua subprotocol `auth.<token>`, không bao giờ nằm trong URL.
-5. Mọi lỗi khởi động được phát qua event `app:fatal` để frontend hiện màn hình fatal.
-
-### Giao thức realtime (`dezuxk.v1`)
-
-| Chiều | Frame |
-| :--- | :--- |
-| client → server | `{type:"action", id, action, payload}` · `{type:"cancel", id}` |
-| server → client | `{type:"response", id, success, data?, error?:{code,message,details?}}` · `{type:"event", event, ref_id?, data, timestamp}` |
-
-- **Timeout tính theo thời gian im lặng, không theo tổng thời gian chạy.** Mỗi lần báo tiến độ, timer được reset ở cả server lẫn client. Action thường dùng `realtime.action_timeout`; các action trong `contracts.LongActions()` (tải binary, workflow, diagnostics, duyệt agent) dùng `realtime.long_action_timeout`. Danh sách này sinh sang TS, không hardcode ở hai nơi.
-- Service báo tiến độ bằng `progress.Report(ctx, progress.Update{...})` → frame `action:progress` (`ref_id` = id của action), có thể kèm `msg_key`/`msg_params` để UI dịch. Chỗ chờ đã có giới hạn riêng (đăng nhập CLI, handshake) dùng `defer progress.KeepAlive(ctx)()`: gửi heartbeat (`heartbeat: true`), UI không hiển thị. Xem phần tải binary làm mẫu.
-- Số action chạy đồng thời bị giới hạn (`realtime.max_concurrent_actions`). Có panic recovery, và lỗi nội bộ không bao giờ lộ chi tiết ra frontend. Client hủy bằng `AbortSignal`; server hủy `ctx` tương ứng.
-- Mã lỗi (`ERR_*`) sinh từ `internal/apperr`. Frontend dịch theo mã (`lib/i18n`).
+**One-Way Dependency Rule**: `modules → service → domain ← storage`. `internal/contracts` depends only on domain/engine primitives and never imports implementation packages (`service`, `tools`).
 
 ---
 
-## 3. Cấu hình (zero hardcode)
+## 3. Configuration & Zero-Hardcode Guiding Rules
 
-Mỗi tùy chọn được khai báo **một lần** trong [internal/config/fields.go](internal/config/fields.go). Tên khóa file, biến môi trường và cờ CLI đều được suy ra từ khai báo đó:
+Every configurable parameter is declared **exactly once** in `internal/config/fields.go`. Environment variables and CLI flags are automatically derived:
 
-| Khóa | `config.json` | Biến môi trường | Cờ CLI |
+| Key | `config.json` | Environment Variable | CLI Flag |
 | :--- | :--- | :--- | :--- |
 | `server.port` | `{"server":{"port":0}}` | `DEZUXKSTUDIO_SERVER_PORT` | `--server-port` |
+| `server.allow_host_admin` | `{"server":{"allow_host_admin":false}}` | `DEZUXKSTUDIO_SERVER_ALLOW_HOST_ADMIN` | `--server-allow-host-admin` |
+| `server.max_media_upload_bytes` | `{"server":{"max_media_upload_bytes":67108864}}` | `DEZUXKSTUDIO_SERVER_MAX_MEDIA_UPLOAD_BYTES` | `--server-max-media-upload-bytes` |
+| `agent.max_concurrent_subagents` | `{"agent":{"max_concurrent_subagents":4}}` | `DEZUXKSTUDIO_AGENT_MAX_CONCURRENT_SUBAGENTS` | `--agent-max-concurrent-subagents` |
 
-Thứ tự ưu tiên: mặc định → `config.json` → môi trường → cờ CLI. Chạy `--help` để xem toàn bộ tùy chọn, giá trị mặc định và tên biến.
-
-- Giá trị mặc định **chỉ** nằm trong `config.Default()`; service lấy giới hạn từ config (`agent.LimitsFrom(cfg)`), không chép lại số.
-- File config được tìm theo thứ tự: `--config` / `DEZUXKSTUDIO_CONFIG` (bắt buộc phải tồn tại), rồi thư mục config của người dùng, rồi thư mục chứa exe (bản portable).
-- Khóa lạ, JSON sai hoặc giá trị sai kiểu đều làm app **dừng kèm lỗi rõ ràng**, không bị bỏ qua lặng lẽ.
-- `Validate()` kiểm tra toàn bộ ràng buộc theo từng chế độ, ví dụ: desktop chỉ được bind loopback; server bind ra ngoài phải có token; client phải dùng `ws(s)://`.
-- Thư mục lưu trữ theo chuẩn từng OS ([internal/paths](internal/paths/paths.go)): config ở `%APPDATA%`, data và log ở `%LOCALAPPDATA%` (Windows); `~/Library/...` (macOS); XDG (Linux). Không bao giờ ghi vào thư mục cài đặt hay thư mục temp.
-
----
-
-## 4. Bảo mật
-
-- Desktop: token 256-bit sinh mới mỗi phiên, so sánh constant-time, chỉ bind loopback. Allowed origins mặc định chỉ gồm origin của Wails.
-- Server: token lấy từ `server.auth_token_file` hoặc biến môi trường (nếu đặt token trong file config hoặc qua cờ CLI sẽ có cảnh báo).
-- Client: token của server từ xa được lưu trong **keychain của OS** (`internal/secrets`, qua `Bridge.SetRemoteToken`).
-- `POST /api/events/broadcast` tắt mặc định. Khi bật, bắt buộc có Bearer token, `Content-Type: application/json`, và event phải được khai báo trong contracts.
-- CSP được gửi qua HTTP header, `connect-src` tùy theo chế độ ([internal/desktop/csp.go](internal/desktop/csp.go)). Bản production không có `unsafe-inline` cho script.
-- Log tự che các khóa nhạy cảm (`token`, `password`, `authorization`…). Gói chẩn đoán chỉ chứa config đã được che.
-- `task audit` chạy `govulncheck` và `npm audit`.
+- **Resolution Precedence**: Default values $\rightarrow$ `config.json` $\rightarrow$ Environment variables $\rightarrow$ CLI flags.
+- Default values reside **strictly** in `config.Default()`; services read limits through typed config adapters (`agent.LimitsFrom(cfg)`).
+- OS directory standards ([internal/paths](internal/paths/paths.go)): Configuration in `%APPDATA%`, Data & Logs in `%LOCALAPPDATA%` (Windows). Never write into installation or system temp roots.
 
 ---
 
-## 5. Dữ liệu cục bộ
+## 4. Security & Server Isolation Boundaries
 
-- SQLite (WAL, một connection) đặt sau các interface repository trong `internal/domain`.
-- Migration nằm ở `internal/storage/sqlite/migrations/NNN_name.sql`: được nhúng vào binary, áp dụng theo version, mỗi migration trong một transaction. **Không sửa file đã phát hành**; thay đổi schema thì thêm file mới.
-- Trước khi migrate một DB đã có dữ liệu, app tự backup bằng `VACUUM INTO` vào `data/backups` (giữ `storage.backups_to_keep` bản). App **từ chối mở** DB có schema mới hơn chính nó (trường hợp người dùng hạ cấp app).
-- Ghi file luôn dùng atomic write (`internal/fsutil`).
-- Khi khởi động chậm (backup + migrate lâu), `desktop.ready_timeout` chỉ là một lượt chờ: UI tự hỏi lại, không báo lỗi fatal.
-
----
-
-## 6. Log và chẩn đoán
-
-- Log dùng `slog` (dạng `text` hoặc `json`), xoay vòng theo kích thước (`log.max_size_mb`, `log.max_backups`). Panic ở bất kỳ goroutine nào (qua `safego.Go`) đều được ghi crash dump `crash_*.log`.
-- Màn hình **Overview → Diagnostics bundle** xuất một file zip gồm log, crash dump, thông tin build và config đã che. Người dùng gửi file này kèm báo lỗi. Có thanh tiến độ và nút hủy.
+- **Desktop Mode**: Ephemeral 256-bit token generated per session, compared in constant-time, bound exclusively to loopback (`127.0.0.1`).
+- **Server Mode (`--mode server`)**:
+  - **Host Administration Guard**: `server.allow_host_admin` defaults to `false`. Remote clients are blocked with `ERR_UNAVAILABLE` from mutating host executable paths (`binaries:set_path`, `agent:set_path`), triggering OS folder openers (`system:open_folder`), or editing skills/subagents (`agent:save_skill`, `agent:delete_skill`).
+  - **Trusted Folders**: `agent:add_allowed_dir` and `agent:remove_allowed_dir` are permanently disabled in server mode. All node file operations are confined within validated roots via `engine.CheckFile`.
+  - **AI Generation**: Authorized remote clients with bearer tokens retain full access to AI model providers (`providers:*`) and prompt execution; credentials stay securely hosted on the server.
+- **Outbound HTTP Security**: Link-local, private, and multicast addresses are rejected to protect against SSRF; `WithRedirectGuard` restricts redirect chains to a maximum of 10 hops.
 
 ---
 
-## 7. Build và phát hành
+## 5. Local Data Storage & Migrations
 
-- Version lấy từ git tag `vX.Y.Z`. `task version:sync` chép version sang `wails.json` và `frontend/package.json`. Metadata (version, commit, ngày build, URL kiểm tra cập nhật) được nhúng qua `-ldflags` vào `internal/buildinfo`.
-- Build dev và prod tách nhau bằng build tag `dev` (`wails dev`). Tag `dev` nới CSP cho Vite HMR và cho phép origin localhost.
-- CI ([ci.yml](.github/workflows/ci.yml)): job Windows chạy lint, test, build desktop + bộ cài NSIS; job Windows thứ hai chạy race detector (lỗi race làm CI đỏ); job Ubuntu chạy audit dependency.
-- Release ([release.yml](.github/workflows/release.yml)) chạy khi có tag `v*`: build, ký mã Windows/macOS (bước ký tự bỏ qua nếu chưa có secret), notarize macOS, tính SHA-256, rồi đăng GitHub Release. Bản build tự trỏ tới feed `releases/latest` của repo; app chỉ **thông báo** có bản mới, không tự cài đè.
-
-Secret tùy chọn để ký mã: `WINDOWS_CERT_PFX_BASE64`, `WINDOWS_CERT_PASSWORD`, `MACOS_CERT_P12_BASE64`, `MACOS_CERT_PASSWORD`, `MACOS_SIGN_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`.
+- **SQLite Engine**: Running in WAL mode, single-connection, with `PRAGMA foreign_keys = ON` enforced.
+- **Append-Only Migrations**: Located in `internal/storage/sqlite/migrations/NNN_name.sql`, applied in discrete transactions. Migration `014_agent_foreign_keys.sql` guarantees `FOREIGN KEY ... ON DELETE CASCADE` on conversation messages and sessions, rescuing legacy orphan rows before rebuilding tables.
+- **Automated Backups**: Backups are created via `VACUUM INTO` prior to executing migrations on existing databases.
+- **Atomic File Operations**: All file modifications stream to disk atomically using `internal/fsutil`.
 
 ---
 
-## 8. Thêm một tính năng mới
+## 6. Extending Features
 
-**Bước 0: chọn dạng tính năng để agent tự dùng được, không cần viết code cho agent** (quy tắc §11 trong `.agents/rules/architecture.md`):
-
-- Tính năng **xử lý input → output** (ảnh, video, file, text): viết thành **node** trong `internal/tools/<tên>/` và thêm vào danh sách node trong `workflow.New`. UI, workflow và agent đều tự nhận qua `engine.Spec`. App từ chối khởi động nếu spec khai báo thiếu (`engine.ValidateSpec`). Xem [docs/agent-feature-integration.md](docs/agent-feature-integration.md).
-- Tính năng **khác** (cài đặt, project, điều hướng…): làm theo các bước bên dưới, rồi thêm **một MCP tool** gọi đúng service đó.
-
-Ví dụ thêm tính năng `projects` có action `projects:list`:
-
-1. **Domain**: `internal/domain/projects/` chứa model, `Validate()`, lỗi kiểu `apperr` và `Repository` interface.
-2. **Storage**: thêm migration `internal/storage/sqlite/migrations/002_projects.sql` và `projects_repo.go` (cài đặt interface).
-3. **Service**: `internal/service/projects/` chứa use case. Service chỉ phụ thuộc interface, nên test được bằng repo giả lập trong bộ nhớ.
-4. **Contracts**: trong `internal/contracts`, thêm hằng `ActionProjectsList`, DTO payload/result, và dòng tương ứng trong `Actions()`. Nếu có event mới thì thêm vào `Events()`.
-5. **Module**: `internal/realtime/modules/projects.go` dùng `realtime.Handle(r, contracts.ActionProjectsList, ...)`. Nếu tác vụ lâu: service gọi `progress.Report(ctx, ...)`; nếu một bước có thể im lặng lâu thì thêm action vào `contracts.LongActions()`.
-6. **Wiring**: thêm **một dòng** vào `modules()` trong [internal/core/core.go](internal/core/core.go).
-7. **Sinh hợp đồng TS**: `task generate`.
-8. **Frontend**: tạo `features/projects/` (store gọi `rtClient.request(Actions.PROJECTS_LIST, {...})`, kiểu dữ liệu lấy hoàn toàn từ file sinh tự động), thêm chuỗi i18n vào `en.ts` và `vi.ts`, và nếu cần màn hình riêng thì thêm 1 dòng vào `app/navigation.ts`.
-9. **Agent**: thêm MCP tool trong `internal/service/agent/mcp_tools.go` gọi service ở bước 3. Thao tác sửa/xoá dữ liệu người dùng phải qua `needsApproval`.
-10. **Test**: unit test cạnh package; nếu cần thì thêm case end-to-end vào `test/e2e_test.go`.
-
-Các rào chắn tự động:
-
-- Handler cho action chưa khai báo, handler bị đăng ký trùng, hoặc action đã khai báo mà thiếu handler đều làm **app không khởi động được**.
-- CI báo lỗi nếu `generated.ts` lệch với Go.
-- TypeScript báo lỗi nếu một ngôn ngữ thiếu chuỗi dịch.
+Refer to these dedicated guides when extending the codebase:
+- **[docs/architecture.md](docs/architecture.md)** – System blueprints, execution sequence diagrams, prompt assembly tiers, and developer recipes.
+- **[docs/agent-feature-integration.md](docs/agent-feature-integration.md)** – How to create `engine.Spec` nodes so the Assistant can use them immediately without agent-specific code.
+- **[docs/provider-integration.md](docs/provider-integration.md)** – Connecting LLM, Image, Video, and TTS API providers and configuring model defaults.
+- **[docs/agent-cli.md](docs/agent-cli.md)** – Management, isolation, and authentication for external agent CLIs (Codex, Claude, Antigravity).
+- **[docs/feature-prompt-template.md](docs/feature-prompt-template.md)** – Prompt templates for directing AI assistants to implement new features cleanly.
 
 ---
 
-## 9. Ghi chú
+## 7. Verification & CI Commands
 
-- Windows Smart App Control có thể chặn file test `.exe` vừa build trong `%TEMP%`. Taskfile đặt `GOTMPDIR=build/.gotmp` để giảm tình trạng này; nếu vẫn bị chặn, chạy lại lệnh.
-- Race detector cần CGO và trình biên dịch C (`task test:race`). Trên Windows: `winget install BrechtSanders.WinLibs.POSIX.UCRT` (mở terminal mới để nhận PATH). Chỉ dùng cho test; build và chạy app không cần gcc. CI chạy race trên Windows (runner có sẵn gcc).
+Always verify changes using the standardized test runner:
+
+```powershell
+# Set local temporary build directory on Windows (satisfies Smart App Control):
+$env:GOTMPDIR = "$PWD\build\.gotmp"
+
+# 1. Full CI suite (Lint + Test + Audit):
+task check
+
+# 2. Race detector (Requires GCC / MinGW-w64 on Windows):
+task test:race
+
+# 3. Frontend checks:
+npm.cmd --prefix frontend run typecheck
+npm.cmd --prefix frontend run lint
+npm.cmd --prefix frontend run format:check
+npm.cmd --prefix frontend run test:run
+```

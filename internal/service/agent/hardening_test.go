@@ -221,7 +221,10 @@ func TestStatusCacheAvoidsRepeatedCLIProbesAndCancelIsNotAnError(t *testing.T) {
 	if last.Type != domainagent.ChatEventDone {
 		t.Fatalf("cancel must end the turn as done, got %+v", last)
 	}
-	msgs, _ := repo.ListChatMessages(ctx, 50)
+	msgs, _ := repo.ListConversationMessages(ctx, svc.CurrentConversationID(), 50)
+	if len(msgs) == 0 {
+		t.Fatal("expected persisted user message")
+	}
 	for _, m := range msgs {
 		if m.Role == "error" {
 			t.Fatalf("cancel must not persist an error message: %+v", m)

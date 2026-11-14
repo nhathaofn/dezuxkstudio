@@ -87,87 +87,26 @@ func (b *Bridge) SetRemoteToken(token string) error {
 
 // BrowseExecutable opens a native file picker to select an executable file.
 func (b *Bridge) BrowseExecutable(title string) (string, error) {
-	b.mu.RLock()
-	ctx := b.wailsCtx
-	b.mu.RUnlock()
-	if ctx == nil {
-		return "", apperr.Unavailable("desktop window is not ready")
-	}
-	filters := []wailsruntime.FileFilter{
+	return b.browseFile(title, "Select Executable", []wailsruntime.FileFilter{
 		{DisplayName: "Executables (*.exe)", Pattern: "*.exe"},
 		{DisplayName: "All Files (*.*)", Pattern: "*.*"},
-	}
-	if runtime.GOOS != "windows" {
-		filters = []wailsruntime.FileFilter{
-			{DisplayName: "All Files (*)", Pattern: "*"},
-		}
-	}
-	if title == "" {
-		title = "Select Executable"
-	}
-	selected, err := wailsruntime.OpenFileDialog(ctx, wailsruntime.OpenDialogOptions{
-		Title:   title,
-		Filters: filters,
 	})
-	if err != nil {
-		return "", apperr.Wrap(apperr.CodeInternal, "failed to open file dialog", err)
-	}
-	return selected, nil
 }
 
 // BrowseImage opens a native file picker to select an image file.
 func (b *Bridge) BrowseImage(title string) (string, error) {
-	b.mu.RLock()
-	ctx := b.wailsCtx
-	b.mu.RUnlock()
-	if ctx == nil {
-		return "", apperr.Unavailable("desktop window is not ready")
-	}
-	filters := []wailsruntime.FileFilter{
-		{DisplayName: "Images (*.png;*.jpg;*.jpeg;*.webp)", Pattern: "*.png;*.jpg;*.jpeg;*.webp"},
-		{DisplayName: "All Files (*.*)", Pattern: "*.*"},
-	}
-	if runtime.GOOS != "windows" {
-		filters = []wailsruntime.FileFilter{
-			{DisplayName: "All Files (*)", Pattern: "*"},
-		}
-	}
-	if title == "" {
-		title = "Select Image"
-	}
-	selected, err := wailsruntime.OpenFileDialog(ctx, wailsruntime.OpenDialogOptions{
-		Title:   title,
-		Filters: filters,
-	})
-	if err != nil {
-		return "", apperr.Wrap(apperr.CodeInternal, "failed to open file dialog", err)
-	}
-	return selected, nil
+	return b.browseFile(title, "Select Image", imageWindowsFilters())
 }
 
 // BrowseImages opens a native file picker to select multiple image files.
 func (b *Bridge) BrowseImages(title string) ([]string, error) {
-	b.mu.RLock()
-	ctx := b.wailsCtx
-	b.mu.RUnlock()
-	if ctx == nil {
-		return nil, apperr.Unavailable("desktop window is not ready")
-	}
-	filters := []wailsruntime.FileFilter{
-		{DisplayName: "Images (*.png;*.jpg;*.jpeg;*.webp)", Pattern: "*.png;*.jpg;*.jpeg;*.webp"},
-		{DisplayName: "All Files (*.*)", Pattern: "*.*"},
-	}
-	if runtime.GOOS != "windows" {
-		filters = []wailsruntime.FileFilter{
-			{DisplayName: "All Files (*)", Pattern: "*"},
-		}
-	}
-	if title == "" {
-		title = "Select Images"
+	ctx, err := b.requireContext()
+	if err != nil {
+		return nil, err
 	}
 	selected, err := wailsruntime.OpenMultipleFilesDialog(ctx, wailsruntime.OpenDialogOptions{
-		Title:   title,
-		Filters: filters,
+		Title:   defaultPickerTitle(title, "Select Images"),
+		Filters: pickerFilters(imageWindowsFilters()),
 	})
 	if err != nil {
 		return nil, apperr.Wrap(apperr.CodeInternal, "failed to open multiple files dialog", err)
@@ -177,22 +116,65 @@ func (b *Bridge) BrowseImages(title string) ([]string, error) {
 
 // BrowseDirectory opens a native directory picker to select a folder.
 func (b *Bridge) BrowseDirectory(title string) (string, error) {
-	b.mu.RLock()
-	ctx := b.wailsCtx
-	b.mu.RUnlock()
-	if ctx == nil {
-		return "", apperr.Unavailable("desktop window is not ready")
-	}
-	if title == "" {
-		title = "Select Folder"
+	ctx, err := b.requireContext()
+	if err != nil {
+		return "", err
 	}
 	selected, err := wailsruntime.OpenDirectoryDialog(ctx, wailsruntime.OpenDialogOptions{
-		Title: title,
+		Title: defaultPickerTitle(title, "Select Folder"),
 	})
 	if err != nil {
 		return "", apperr.Wrap(apperr.CodeInternal, "failed to open directory dialog", err)
 	}
 	return selected, nil
+}
+
+func (b *Bridge) requireContext() (context.Context, error) {
+	b.mu.RLock()
+	ctx := b.wailsCtx
+	b.mu.RUnlock()
+	if ctx == nil {
+		return nil, apperr.Unavailable("desktop window is not ready")
+	}
+	return ctx, nil
+}
+
+func (b *Bridge) browseFile(title, defaultTitle string, windowsFilters []wailsruntime.FileFilter) (string, error) {
+	ctx, err := b.requireContext()
+	if err != nil {
+		return "", err
+	}
+	selected, err := wailsruntime.OpenFileDialog(ctx, wailsruntime.OpenDialogOptions{
+		Title:   defaultPickerTitle(title, defaultTitle),
+		Filters: pickerFilters(windowsFilters),
+	})
+	if err != nil {
+		return "", apperr.Wrap(apperr.CodeInternal, "failed to open file dialog", err)
+	}
+	return selected, nil
+}
+
+func defaultPickerTitle(title, fallback string) string {
+	if title == "" {
+		return fallback
+	}
+	return title
+}
+
+func pickerFilters(windowsFilters []wailsruntime.FileFilter) []wailsruntime.FileFilter {
+	if runtime.GOOS != "windows" {
+		return []wailsruntime.FileFilter{
+			{DisplayName: "All Files (*)", Pattern: "*"},
+		}
+	}
+	return windowsFilters
+}
+
+func imageWindowsFilters() []wailsruntime.FileFilter {
+	return []wailsruntime.FileFilter{
+		{DisplayName: "Images (*.png;*.jpg;*.jpeg;*.webp)", Pattern: "*.png;*.jpg;*.jpeg;*.webp"},
+		{DisplayName: "All Files (*.*)", Pattern: "*.*"},
+	}
 }
 
 func (b *Bridge) setWailsContext(ctx context.Context) {

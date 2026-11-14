@@ -109,30 +109,36 @@ func TestHelpAndUnknownFlags(t *testing.T) {
 
 func TestValidationRules(t *testing.T) {
 	cases := map[string]func(c *Config){
-		"desktop non-loopback":      func(c *Config) { c.Server.Host = "0.0.0.0" },
-		"server public no token":    func(c *Config) { c.Mode = ModeServer; c.Server.Host = "0.0.0.0" },
-		"broadcast without token":   func(c *Config) { c.Mode = ModeServer; c.Server.EnableBroadcast = true },
-		"client without remote":     func(c *Config) { c.Mode = ModeClient },
-		"client http remote":        func(c *Config) { c.Mode = ModeClient; c.Client.RemoteURL = "http://x" },
-		"client creds in url":       func(c *Config) { c.Mode = ModeClient; c.Client.RemoteURL = "ws://u:p@x/ws" },
-		"wildcard origin desktop":   func(c *Config) { c.Server.AllowedOrigins = []string{"*"} },
-		"window below minimum":      func(c *Config) { c.Desktop.Width = 100 },
-		"bad colour":                func(c *Config) { c.Desktop.Background = "red" },
-		"db file with path":         func(c *Config) { c.Storage.DBFile = "../x.db" },
-		"http update feed":          func(c *Config) { c.Update.FeedURL = "http://example.com/feed" },
-		"zero timeout":              func(c *Config) { c.Realtime.ActionTimeout = 0 },
-		"zero long action timeout":  func(c *Config) { c.Realtime.LongActionTimeout = 0 },
-		"unknown log level":         func(c *Config) { c.Log.Level = "loud" },
-		"port out of range":         func(c *Config) { c.Server.Port = 70000 },
-		"tiny max message":          func(c *Config) { c.Realtime.MaxMessageBytes = 10 },
-		"negative log backups":      func(c *Config) { c.Log.MaxBackups = -1 },
-		"zero backups to keep":      func(c *Config) { c.Storage.BackupsToKeep = 0 },
-		"zero diagnostics keep":     func(c *Config) { c.Diagnostics.Keep = 0 },
-		"zero ready timeout":        func(c *Config) { c.Desktop.ReadyTimeout = 0 },
-		"size smaller than minimum": func(c *Config) { c.Desktop.Width = c.Desktop.MinWidth - 1 },
-		"negative window width":     func(c *Config) { c.Desktop.Width = -1 },
-		"height below minimum":      func(c *Config) { c.Desktop.Height = 100 },
-		"height smaller than min":   func(c *Config) { c.Desktop.Height = c.Desktop.MinHeight - 1 },
+		"desktop non-loopback":              func(c *Config) { c.Server.Host = "0.0.0.0" },
+		"server public no token":            func(c *Config) { c.Mode = ModeServer; c.Server.Host = "0.0.0.0" },
+		"broadcast without token":           func(c *Config) { c.Mode = ModeServer; c.Server.EnableBroadcast = true },
+		"client without remote":             func(c *Config) { c.Mode = ModeClient },
+		"client http remote":                func(c *Config) { c.Mode = ModeClient; c.Client.RemoteURL = "http://x" },
+		"client creds in url":               func(c *Config) { c.Mode = ModeClient; c.Client.RemoteURL = "ws://u:p@x/ws" },
+		"wildcard origin desktop":           func(c *Config) { c.Server.AllowedOrigins = []string{"*"} },
+		"window below minimum":              func(c *Config) { c.Desktop.Width = 100 },
+		"bad colour":                        func(c *Config) { c.Desktop.Background = "red" },
+		"db file with path":                 func(c *Config) { c.Storage.DBFile = "../x.db" },
+		"http update feed":                  func(c *Config) { c.Update.FeedURL = "http://example.com/feed" },
+		"zero timeout":                      func(c *Config) { c.Realtime.ActionTimeout = 0 },
+		"zero long action timeout":          func(c *Config) { c.Realtime.LongActionTimeout = 0 },
+		"unknown log level":                 func(c *Config) { c.Log.Level = "loud" },
+		"port out of range":                 func(c *Config) { c.Server.Port = 70000 },
+		"tiny max message":                  func(c *Config) { c.Realtime.MaxMessageBytes = 10 },
+		"negative log backups":              func(c *Config) { c.Log.MaxBackups = -1 },
+		"zero backups to keep":              func(c *Config) { c.Storage.BackupsToKeep = 0 },
+		"zero diagnostics keep":             func(c *Config) { c.Diagnostics.Keep = 0 },
+		"zero ready timeout":                func(c *Config) { c.Desktop.ReadyTimeout = 0 },
+		"size smaller than minimum":         func(c *Config) { c.Desktop.Width = c.Desktop.MinWidth - 1 },
+		"negative window width":             func(c *Config) { c.Desktop.Width = -1 },
+		"height below minimum":              func(c *Config) { c.Desktop.Height = 100 },
+		"height smaller than min":           func(c *Config) { c.Desktop.Height = c.Desktop.MinHeight - 1 },
+		"zero max media upload bytes":       func(c *Config) { c.Server.MaxMediaUploadBytes = 0 },
+		"negative max media upload bytes":   func(c *Config) { c.Server.MaxMediaUploadBytes = -1 },
+		"zero media staging ttl":            func(c *Config) { c.Server.MediaStagingTTL = 0 },
+		"zero media staging clean interval": func(c *Config) { c.Server.MediaStagingCleanupInterval = 0 },
+		"zero max concurrent subagents":     func(c *Config) { c.Agent.MaxConcurrentSubagents = 0 },
+		"negative max concurrent subagents": func(c *Config) { c.Agent.MaxConcurrentSubagents = -1 },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -266,5 +272,175 @@ func TestUpdateDefaultsFollowBuildKind(t *testing.T) {
 	if relCfg.Update.CheckOnStartup != want || relCfg.Agent.AutoUpdateCLI != want {
 		t.Fatalf("release build startup auto-updates mismatch: got update=%v cli=%v want=%v",
 			relCfg.Update.CheckOnStartup, relCfg.Agent.AutoUpdateCLI, want)
+	}
+}
+
+func TestAllowHostAdminConfigAndWarnings(t *testing.T) {
+	for _, m := range Modes() {
+		if Default(m).Server.AllowHostAdmin {
+			t.Fatalf("mode %s: expected AllowHostAdmin default to be false", m)
+		}
+	}
+
+	// JSON file override to true in ModeServer emits warning and validates with token.
+	dir := t.TempDir()
+	writeFile(t, dir, FileName, `{"server":{"allow_host_admin":true}}`)
+	jsonRes, err := Load(Source{
+		Mode:      ModeServer,
+		ConfigDir: dir,
+		EnvPrefix: "T_",
+		LookupEnv: env(map[string]string{"T_SERVER_AUTH_TOKEN": "tok"}),
+	})
+	if err != nil {
+		t.Fatalf("json override Load failed: %v", err)
+	}
+	if !jsonRes.Config.Server.AllowHostAdmin {
+		t.Fatal("expected AllowHostAdmin == true from JSON config")
+	}
+	if !hasWarningContaining(jsonRes.Warnings, "server.allow_host_admin") {
+		t.Fatalf("expected ModeServer warning for server.allow_host_admin, got %v", jsonRes.Warnings)
+	}
+
+	// Env override beats JSON false; CLI flag overrides env.
+	writeFile(t, dir, FileName, `{"server":{"allow_host_admin":false}}`)
+	envRes, err := Load(Source{
+		Mode:      ModeServer,
+		ConfigDir: dir,
+		EnvPrefix: "T_",
+		LookupEnv: env(map[string]string{
+			"T_SERVER_AUTH_TOKEN":       "tok",
+			"T_SERVER_ALLOW_HOST_ADMIN": "true",
+		}),
+	})
+	if err != nil {
+		t.Fatalf("env override Load failed: %v", err)
+	}
+	if !envRes.Config.Server.AllowHostAdmin {
+		t.Fatal("expected AllowHostAdmin == true from env")
+	}
+	if !hasWarningContaining(envRes.Warnings, "server.allow_host_admin") {
+		t.Fatalf("expected ModeServer warning when enabled via env, got %v", envRes.Warnings)
+	}
+
+	cliRes, err := Load(Source{
+		Mode:      ModeServer,
+		EnvPrefix: "T_",
+		LookupEnv: env(map[string]string{"T_SERVER_AUTH_TOKEN": "tok"}),
+		Args:      []string{"--server-host=0.0.0.0", "--server-allow-host-admin"},
+	})
+	if err != nil {
+		t.Fatalf("cli override Load failed: %v", err)
+	}
+	if !cliRes.Config.Server.AllowHostAdmin {
+		t.Fatal("expected AllowHostAdmin == true from CLI flag")
+	}
+	if !hasWarningContaining(cliRes.Warnings, "server.allow_host_admin") {
+		t.Fatalf("expected ModeServer warning when enabled via CLI, got %v", cliRes.Warnings)
+	}
+
+	// CLI false overrides env true and suppresses the warning.
+	cliFalseRes, err := Load(Source{
+		Mode:      ModeServer,
+		EnvPrefix: "T_",
+		LookupEnv: env(map[string]string{
+			"T_SERVER_AUTH_TOKEN":       "tok",
+			"T_SERVER_ALLOW_HOST_ADMIN": "true",
+		}),
+		Args: []string{"--server-allow-host-admin=false"},
+	})
+	if err != nil {
+		t.Fatalf("cli false override Load failed: %v", err)
+	}
+	if cliFalseRes.Config.Server.AllowHostAdmin {
+		t.Fatal("expected CLI false to override env true")
+	}
+	if hasWarningContaining(cliFalseRes.Warnings, "server.allow_host_admin") {
+		t.Fatalf("unexpected server.allow_host_admin warning when disabled: %v", cliFalseRes.Warnings)
+	}
+
+	// Non-loopback ModeServer without auth_token still fails validation even if AllowHostAdmin is true.
+	noTok := Default(ModeServer)
+	noTok.Server.Host = "0.0.0.0"
+	noTok.Server.AllowHostAdmin = true
+	if err := noTok.Validate(); err == nil {
+		t.Fatal("expected non-loopback ModeServer without auth token to fail validation")
+	}
+
+	// ModeDesktop with AllowHostAdmin true validates without emitting the ModeServer warning.
+	deskRes, err := Load(Source{
+		Mode: ModeDesktop,
+		Args: []string{"--server-allow-host-admin"},
+	})
+	if err != nil {
+		t.Fatalf("ModeDesktop Load failed: %v", err)
+	}
+	if hasWarningContaining(deskRes.Warnings, "server.allow_host_admin") {
+		t.Fatalf("unexpected server.allow_host_admin warning in desktop mode: %v", deskRes.Warnings)
+	}
+}
+
+func hasWarningContaining(warnings []string, substr string) bool {
+	for _, w := range warnings {
+		if strings.Contains(w, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestMediaAndSubagentLimitConfig(t *testing.T) {
+	def := Default(ModeDesktop)
+	if def.Server.MaxMediaUploadBytes != 64<<20 {
+		t.Fatalf("MaxMediaUploadBytes = %d, want %d", def.Server.MaxMediaUploadBytes, 64<<20)
+	}
+	if def.Server.MediaStagingTTL != 24*time.Hour {
+		t.Fatalf("MediaStagingTTL = %v, want 24h", def.Server.MediaStagingTTL)
+	}
+	if def.Server.MediaStagingCleanupInterval != 30*time.Minute {
+		t.Fatalf("MediaStagingCleanupInterval = %v, want 30m", def.Server.MediaStagingCleanupInterval)
+	}
+	if def.Agent.MaxConcurrentSubagents != 4 {
+		t.Fatalf("MaxConcurrentSubagents = %d, want 4", def.Agent.MaxConcurrentSubagents)
+	}
+
+	dir := t.TempDir()
+	writeFile(t, dir, FileName, `{
+		"server": {
+			"max_media_upload_bytes": 1048576,
+			"media_staging_ttl": "12h",
+			"media_staging_cleanup_interval": "5m"
+		},
+		"agent": {
+			"max_concurrent_subagents": 6
+		}
+	}`)
+
+	// File overrides defaults; env overrides file; CLI flag overrides env.
+	res, err := Load(Source{
+		Mode:      ModeDesktop,
+		ConfigDir: dir,
+		EnvPrefix: "T_",
+		LookupEnv: env(map[string]string{
+			"T_SERVER_MEDIA_STAGING_TTL":              "6h",
+			"T_AGENT_MAX_CONCURRENT_SUBAGENTS":        "8",
+			"T_SERVER_MEDIA_STAGING_CLEANUP_INTERVAL": "2m",
+		}),
+		Args: []string{"--server-media-staging-cleanup-interval=90s"},
+	})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	c := res.Config
+	if c.Server.MaxMediaUploadBytes != 1048576 {
+		t.Errorf("MaxMediaUploadBytes = %d, want 1048576", c.Server.MaxMediaUploadBytes)
+	}
+	if c.Server.MediaStagingTTL != 6*time.Hour {
+		t.Errorf("MediaStagingTTL = %v, want 6h", c.Server.MediaStagingTTL)
+	}
+	if c.Server.MediaStagingCleanupInterval != 90*time.Second {
+		t.Errorf("MediaStagingCleanupInterval = %v, want 90s", c.Server.MediaStagingCleanupInterval)
+	}
+	if c.Agent.MaxConcurrentSubagents != 8 {
+		t.Errorf("MaxConcurrentSubagents = %d, want 8", c.Agent.MaxConcurrentSubagents)
 	}
 }

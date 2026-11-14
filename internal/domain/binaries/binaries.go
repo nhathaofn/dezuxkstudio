@@ -80,37 +80,42 @@ type BinarySpec struct {
 
 // ExecutableName returns the OS-specific file name (e.g. ffmpeg.exe on Windows).
 func (s BinarySpec) ExecutableName() string {
-	if runtime.GOOS == "windows" {
-		return s.ExecutableBase + ".exe"
-	}
-	return s.ExecutableBase
+	return executableName(s.ExecutableBase)
 }
 
 // CurrentDownloadSpec returns the download specification for the current OS and architecture, if any.
 func (s BinarySpec) CurrentDownloadSpec() (DownloadSpec, bool) {
-	key := fmt.Sprintf("%s_%s", runtime.GOOS, runtime.GOARCH)
-	spec, ok := s.Downloads[key]
-	return spec, ok
+	return currentDownloadSpec(s.Downloads)
 }
 
 // ExtractVersion extracts a version string from output using the spec's precompiled or compiled regex.
 func (s BinarySpec) ExtractVersion(output string) string {
-	if s.VersionRe != nil {
-		matches := s.VersionRe.FindStringSubmatch(output)
-		if len(matches) > 1 {
-			return matches[1]
-		}
-		if len(matches) == 1 {
-			return matches[0]
-		}
-		return ""
+	return extractVersion(s.VersionRe, s.VersionRegex, output)
+}
+
+func executableName(base string) string {
+	if runtime.GOOS == "windows" {
+		return base + ".exe"
 	}
-	if s.VersionRegex == "" {
-		return ""
-	}
-	re, err := regexp.Compile(s.VersionRegex)
-	if err != nil {
-		return ""
+	return base
+}
+
+func currentDownloadSpec(downloads map[string]DownloadSpec) (DownloadSpec, bool) {
+	key := fmt.Sprintf("%s_%s", runtime.GOOS, runtime.GOARCH)
+	spec, ok := downloads[key]
+	return spec, ok
+}
+
+func extractVersion(re *regexp.Regexp, rawRegex, output string) string {
+	if re == nil {
+		if rawRegex == "" {
+			return ""
+		}
+		compiled, err := regexp.Compile(rawRegex)
+		if err != nil {
+			return ""
+		}
+		re = compiled
 	}
 	matches := re.FindStringSubmatch(output)
 	if len(matches) > 1 {

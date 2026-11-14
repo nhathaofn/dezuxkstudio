@@ -6,6 +6,7 @@ import type { AgentConversation } from "../../contracts/generated";
 import { Button } from "../../components/ui/Button";
 import { useT } from "../../lib/i18n";
 import { usePreferencesStore } from "../preferences/usePreferencesStore";
+import { useAgentDrawerStore } from "./useAgentDrawerStore";
 import { useAgentStore } from "./useAgentStore";
 
 /** How long the "confirm delete" state of a history item stays armed. */
@@ -88,7 +89,7 @@ export const AgentHistoryList: React.FC = () => {
   const loading = useAgentStore((s) => s.loadingConversations);
   const conversationId = useAgentStore((s) => s.conversationId);
   const sending = useAgentStore((s) => s.sending);
-  const setChatView = useAgentStore((s) => s.setChatView);
+  const setChatView = useAgentDrawerStore((s) => s.setChatView);
 
   return (
     <div className="agent-history scrollable-pane">

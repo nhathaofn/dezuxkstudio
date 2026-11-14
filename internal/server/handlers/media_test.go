@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"image"
 	"image/color"
@@ -226,5 +227,107 @@ func TestCleanupStagingDirRespectsLatestFileModTime(t *testing.T) {
 	}
 	if _, err := os.Stat(freshOutput); err != nil {
 		t.Errorf("active staging dir with fresh file must be kept: %v", err)
+	}
+}
+
+func writeAgedStagingJob(t *testing.T, stagingRoot, jobName, fileName string, modTime time.Time) string {
+	t.Helper()
+	jobDir := filepath.Join(stagingRoot, jobName)
+	if err := os.MkdirAll(jobDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	filePath := filepath.Join(jobDir, fileName)
+	if err := os.WriteFile(filePath, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filePath, modTime, modTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(jobDir, modTime, modTime); err != nil {
+		t.Fatal(err)
+	}
+	return jobDir
+}
+
+func waitUntilRemoved(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("expected %s to be removed before deadline", path)
+}
+
+func TestMediaUploadFallbackForNonPositiveMaxBytes(t *testing.T) {
+	mediaDir := t.TempDir()
+	h := MediaUpload(mediaDir, -1)
+	req := multipartUploadRequest(t, "file", "sample.png", makeTestPNG(t))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload with negative maxBytes fallback: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRunStagingCleanupUsesConfiguredTTLAndInterval(t *testing.T) {
+	mediaDir := t.TempDir()
+	staging := filepath.Join(mediaDir, MediaStagingSubdir)
+	now := time.Now()
+	expired := writeAgedStagingJob(t, staging, "expired-job", "a.png", now.Add(-2*time.Hour))
+	fresh := writeAgedStagingJob(t, staging, "fresh-job", "b.png", now)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunStagingCleanup(ctx, mediaDir, time.Hour, 15*time.Millisecond, nil)
+	}()
+
+	waitUntilRemoved(t, expired)
+	if _, err := os.Stat(fresh); err != nil {
+		cancel()
+		<-done
+		t.Fatalf("fresh staging dir must remain: %v", err)
+	}
+
+	// Verify the periodic ticker sweeps newly expired entries at the configured interval.
+	laterExpired := writeAgedStagingJob(t, staging, "later-expired", "c.png", now.Add(-2*time.Hour))
+	waitUntilRemoved(t, laterExpired)
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunStagingCleanup did not stop on context cancellation")
+	}
+}
+
+func TestRunStagingCleanupFallbackDefaults(t *testing.T) {
+	mediaDir := t.TempDir()
+	staging := filepath.Join(mediaDir, MediaStagingSubdir)
+	now := time.Now()
+	expired := writeAgedStagingJob(t, staging, "over-24h", "old.png", now.Add(-48*time.Hour))
+	kept := writeAgedStagingJob(t, staging, "under-24h", "recent.png", now.Add(-12*time.Hour))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunStagingCleanup(ctx, mediaDir, 0, 0, nil)
+	}()
+
+	waitUntilRemoved(t, expired)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunStagingCleanup did not stop on context cancellation")
+	}
+
+	if _, err := os.Stat(kept); err != nil {
+		t.Fatalf("staging dir younger than default 24h TTL must be kept: %v", err)
 	}
 }

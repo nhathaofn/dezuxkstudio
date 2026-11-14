@@ -225,7 +225,7 @@ func checkSingleRef(ctx context.Context, mediaDir string, ref engine.MediaRef) (
 	if strings.TrimSpace(ref.LocalURL) == "" {
 		return "", nil
 	}
-	resolved := resolveMediaPath(ref.LocalURL, mediaDir)
+	resolved := engine.ResolveMediaPath(ref.LocalURL, mediaDir)
 	if resolved == "" {
 		return "", apperr.Validation("Input path is outside the workspace media directory")
 	}
@@ -261,7 +261,7 @@ func checkOutputDir(ctx context.Context, mediaDir, rawDir, sub string) (string, 
 		}
 		target = filepath.Join(mediaDir, "generated", sub)
 	} else {
-		target = resolveMediaPath(trimmed, mediaDir)
+		target = engine.ResolveMediaPath(trimmed, mediaDir)
 		if target == "" {
 			return "", apperr.Validation("Output directory is outside the workspace media directory")
 		}
@@ -270,29 +270,4 @@ func checkOutputDir(ctx context.Context, mediaDir, rawDir, sub string) (string, 
 		return "", err
 	}
 	return target, nil
-}
-
-func resolveMediaPath(raw, mediaDir string) string {
-	cleaned := filepath.Clean(strings.TrimSpace(raw))
-	if cleaned == "" || cleaned == "." && mediaDir == "" {
-		return ""
-	}
-	if filepath.IsAbs(cleaned) {
-		return cleaned
-	}
-	target := cleaned
-	trimmed := strings.TrimPrefix(strings.TrimPrefix(raw, "/"), `\`)
-	if strings.HasPrefix(trimmed, "media/") || strings.HasPrefix(trimmed, `media\`) {
-		trimmed = strings.TrimPrefix(strings.TrimPrefix(trimmed, "media/"), `media\`)
-		target = filepath.Clean(trimmed)
-	}
-	if mediaDir == "" {
-		return target
-	}
-	joined := filepath.Join(mediaDir, target)
-	rel, err := filepath.Rel(mediaDir, joined)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return ""
-	}
-	return joined
 }

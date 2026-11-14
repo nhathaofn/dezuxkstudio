@@ -155,7 +155,7 @@ func runRedTeamForProvider(t *testing.T, id domainagent.ProviderID, apiKey strin
 			t.Errorf("turn timed out: %q", prompt)
 			return "", false
 		}
-		history, _ := repo.ListChatMessages(ctx, 100)
+		history, _ := repo.ListConversationMessages(ctx, svc.CurrentConversationID(), 100)
 		for _, m := range history {
 			if m.Role == "assistant" && (ContainsSourceCode(m.Text) || ContainsSourceCode(m.Thought)) {
 				t.Errorf("LEAK: code persisted to history\nprompt: %s\nstored: %q", prompt, firstLineTrimmedMax(m.Text, 200))

@@ -19,17 +19,12 @@ import (
 	"unicode"
 
 	"app/internal/apperr"
+	"app/internal/config"
 )
 
 const (
-	// DefaultMaxMediaUploadBytes caps a single HTTP staging upload (64 MiB).
-	DefaultMaxMediaUploadBytes int64 = 64 << 20
 	// MediaStagingSubdir holds HTTP-uploaded inputs and their sibling outputs under MediaDir.
 	MediaStagingSubdir = "staging"
-	// MediaStagingTTL is the retention period before expired staging directories are pruned.
-	MediaStagingTTL = 24 * time.Hour
-	// MediaStagingCleanupInterval is how often expired staging directories are checked.
-	MediaStagingCleanupInterval = 30 * time.Minute
 
 	maxMultipartMemory = 8 << 20
 	maxFilenameRunes   = 80
@@ -71,7 +66,7 @@ type mediaUploadResponse struct {
 // so AccessPolicy and watermark nodes accept them without opening arbitrary filesystem access.
 func MediaUpload(mediaDir string, maxBytes int64) http.Handler {
 	if maxBytes <= 0 {
-		maxBytes = DefaultMaxMediaUploadBytes
+		maxBytes = config.Default(config.ModeDesktop).Server.MaxMediaUploadBytes
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -243,16 +238,26 @@ func MediaDownload(mediaDir string) http.Handler {
 }
 
 // RunStagingCleanup deletes expired directories under <mediaDir>/staging periodically until ctx is cancelled.
-func RunStagingCleanup(ctx context.Context, mediaDir string, log *slog.Logger) {
+// Non-positive ttl or interval values fall back to config.Default(config.ModeDesktop).Server.
+func RunStagingCleanup(ctx context.Context, mediaDir string, ttl, interval time.Duration, log *slog.Logger) {
+	if ttl <= 0 || interval <= 0 {
+		def := config.Default(config.ModeDesktop).Server
+		if ttl <= 0 {
+			ttl = def.MediaStagingTTL
+		}
+		if interval <= 0 {
+			interval = def.MediaStagingCleanupInterval
+		}
+	}
 	stagingDir := filepath.Join(mediaDir, MediaStagingSubdir)
 	clean := func() {
-		if err := CleanupStagingDir(stagingDir, MediaStagingTTL, time.Now()); err != nil && log != nil {
+		if err := CleanupStagingDir(stagingDir, ttl, time.Now()); err != nil && log != nil {
 			log.Warn("media: staging cleanup failed", "error", err)
 		}
 	}
 	clean()
 
-	ticker := time.NewTicker(MediaStagingCleanupInterval)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {

@@ -20,6 +20,7 @@ import (
 
 	"app/internal/apperr"
 	domain "app/internal/domain/provider"
+	"app/internal/httpclient"
 	"app/internal/secrets"
 )
 
@@ -61,31 +62,13 @@ func New(o Options) (*Service, error) {
 	return &Service{
 		repo:          o.Repo,
 		secrets:       o.Secrets,
-		client:        withRedirectGuard(o.Client),
+		client:        httpclient.WithRedirectGuard(o.Client, domain.ValidateOutboundURL),
 		testTimeout:   o.TestTimeout,
 		limitDefaults: o.LimitDefaults,
 		onChanged:     o.OnChanged,
 		auto:          newAutoCheck(),
 		autoOn:        o.AutoCheck,
 	}, nil
-}
-
-func withRedirectGuard(base *http.Client) *http.Client {
-	c := *base
-	prev := base.CheckRedirect
-	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if err := domain.ValidateOutboundURL(req.URL.String()); err != nil {
-			return fmt.Errorf("blocked redirect target: %w", err)
-		}
-		if prev != nil {
-			return prev(req, via)
-		}
-		if len(via) >= 10 {
-			return errors.New("stopped after 10 redirects")
-		}
-		return nil
-	}
-	return &c
 }
 
 func (s *Service) changed() {
@@ -498,13 +481,7 @@ func (s *Service) DeleteCustom(ctx context.Context, id string) error {
 // ---- resolve (for generation features; never exposed to the UI or the agent) ----
 
 // Resolved is a ready-to-use credential. Secrets holds plain secret values: keep it in memory only.
-type Resolved struct {
-	ProviderID   string
-	CredentialID string
-	BaseURL      string
-	Values       map[string]string
-	Secrets      map[string]string
-}
+type Resolved = domain.Resolved
 
 // Resolve returns the active credential of a built-in provider.
 func (s *Service) Resolve(ctx context.Context, providerID string) (Resolved, error) {
@@ -563,10 +540,7 @@ func (s *Service) resolveCredential(m domain.Meta, c domain.Credential) (Resolve
 }
 
 // ResolvedCustom is a ready-to-use custom provider.
-type ResolvedCustom struct {
-	Provider domain.CustomProvider
-	APIKey   string
-}
+type ResolvedCustom = domain.ResolvedCustom
 
 // ResolveCustom returns a custom provider with its key.
 func (s *Service) ResolveCustom(ctx context.Context, id string) (ResolvedCustom, error) {

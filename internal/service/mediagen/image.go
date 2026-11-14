@@ -12,7 +12,6 @@ import (
 	domainmedia "app/internal/domain/mediagen"
 	domainprovider "app/internal/domain/provider"
 	"app/internal/progress"
-	providersvc "app/internal/service/provider"
 )
 
 var markdownImageURLPattern = regexp.MustCompile(`!\[[^\]]*\]\(([^)\s]+)\)`)
@@ -108,7 +107,7 @@ type openAIImageResp struct {
 }
 
 func (s *Service) genOpenAIImages(ctx context.Context, t targetSpec, req domainmedia.ImageRequest, refs []localImageData) ([]byte, string, error) {
-	base := providersvc.EnsureOpenAIBase(t.baseURL)
+	base := domainprovider.EnsureOpenAIBase(t.baseURL)
 	headers := map[string]string{"Authorization": "Bearer " + t.apiKey}
 	size := domainmedia.OpenAIImageSize(req.AspectRatio, req.Resolution)
 
@@ -167,7 +166,7 @@ func (s *Service) genOpenAIImages(ctx context.Context, t targetSpec, req domainm
 }
 
 func (s *Service) genOpenAIChatImage(ctx context.Context, t targetSpec, req domainmedia.ImageRequest, refs []localImageData) ([]byte, string, error) {
-	base := providersvc.EnsureOpenAIBase(t.baseURL)
+	base := domainprovider.EnsureOpenAIBase(t.baseURL)
 	headers := map[string]string{"Authorization": "Bearer " + t.apiKey}
 
 	parts := make([]map[string]any, 0, len(refs)+1)
@@ -237,7 +236,7 @@ func (s *Service) genOpenAIChatImage(ctx context.Context, t targetSpec, req doma
 }
 
 func (s *Service) genOpenRouterImages(ctx context.Context, t targetSpec, req domainmedia.ImageRequest, refs []localImageData) ([]byte, string, error) {
-	base := providersvc.EnsureOpenAIBase(t.baseURL)
+	base := domainprovider.EnsureOpenAIBase(t.baseURL)
 	headers := map[string]string{"Authorization": "Bearer " + t.apiKey}
 
 	payload := map[string]any{
@@ -663,7 +662,7 @@ func (s *Service) genViduImage(ctx context.Context, t targetSpec, req domainmedi
 }
 
 func (s *Service) genGrokImage(ctx context.Context, t targetSpec, req domainmedia.ImageRequest, refs []localImageData) ([]byte, string, error) {
-	base := providersvc.EnsureOpenAIBase(t.baseURL)
+	base := domainprovider.EnsureOpenAIBase(t.baseURL)
 	headers := map[string]string{"Authorization": "Bearer " + t.apiKey}
 
 	payload := map[string]any{

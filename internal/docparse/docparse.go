@@ -1,4 +1,6 @@
-package agent
+// Package docparse extracts plain text from .docx, .odt, .rtf, and .pdf files
+// using only the Go standard library and bounded memory/decompression limits.
+package docparse
 
 import (
 	"archive/zip"
@@ -18,19 +20,22 @@ import (
 )
 
 const (
-	maxDocumentFileBytes         = 32 << 20  // 32 MiB max document file size
-	maxDocumentUncompressedBytes = 16 << 20  // 16 MiB bound on decompressed XML or stream payloads
-	maxExtractedDocumentRunes    = 1_000_000 // safety cap (~200+ dense pages) so gigantic docs stay bounded in memory
+	maxDocumentFileBytes         = 32 << 20 // 32 MiB max document file size
+	maxDocumentUncompressedBytes = 16 << 20 // 16 MiB bound on decompressed XML or stream payloads
+	// MaxDocumentRunes caps extracted document text (~200+ dense pages) so gigantic docs stay bounded in memory.
+	MaxDocumentRunes = 1_000_000
 )
 
-// extractDocumentText extracts clean plain text from .docx, .odt, .rtf, and .pdf files
+// ExtractText extracts clean plain text from .docx, .odt, .rtf, and .pdf files
 // using only the Go standard library and bounded memory/decompression limits.
-func extractDocumentText(path string) (string, string, error) {
-	format, text, _, err := extractDocumentTextBounded(path, maxExtractedDocumentRunes)
+func ExtractText(path string) (string, string, error) {
+	format, text, _, err := ExtractTextBounded(path, MaxDocumentRunes)
 	return format, text, err
 }
 
-func extractDocumentTextBounded(path string, maxRunes int) (string, string, bool, error) {
+// ExtractTextBounded extracts clean plain text from .docx, .odt, .rtf, and .pdf files,
+// clamping the output to maxRunes when maxRunes > 0 and reporting whether truncation occurred.
+func ExtractTextBounded(path string, maxRunes int) (string, string, bool, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return "", "", false, err

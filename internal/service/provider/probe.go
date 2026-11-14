@@ -3,11 +3,9 @@ package provider
 import (
 	"cmp"
 	"context"
-	"crypto/hmac"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -88,7 +86,7 @@ func (s *Service) TestCredential(ctx context.Context, id string) (TestResult, er
 	case err != nil:
 		return TestResult{}, err
 	default:
-		res, err = s.run(ctx, r.allSecrets(), func(ctx context.Context) ([]string, error) { return s.probeBuiltin(ctx, m, r) })
+		res, err = s.run(ctx, allSecrets(r), func(ctx context.Context) ([]string, error) { return s.probeBuiltin(ctx, m, r) })
 		if err != nil {
 			return TestResult{}, err
 		}
@@ -198,7 +196,7 @@ func discoveryError(err error, key string) error {
 	return apperr.Wrap(apperr.CodeUnavailable, "Model discovery failed", err).WithMsg("errors.provider.discovery_unavailable", nil)
 }
 
-func (r Resolved) allSecrets() []string {
+func allSecrets(r Resolved) []string {
 	out := make([]string, 0, len(r.Secrets))
 	for _, v := range r.Secrets {
 		out = append(out, v)
@@ -444,33 +442,15 @@ func (s *Service) probeKling(ctx context.Context, root string, r Resolved) error
 
 // KlingJWT mints an HS256 bearer JWT for Kling's API from an access_key and secret_key pair.
 func KlingJWT(ak, sk string, now time.Time) (string, error) {
-	return klingJWT(ak, sk, now)
+	return domain.KlingJWT(ak, sk, now)
 }
 
-// klingJWT mints the HS256 token Kling expects (ArcReel kling_shared.py: iss=AK, exp=now+1800, nbf=now-5).
 func klingJWT(ak, sk string, now time.Time) (string, error) {
-	ak, sk = strings.TrimSpace(ak), strings.TrimSpace(sk)
-	if ak == "" || sk == "" {
-		return "", errors.New("access_key and secret_key are required")
-	}
-	claims := map[string]any{"iss": ak, "exp": now.Unix() + 1800, "nbf": now.Unix() - 5}
-	return signJWT(map[string]string{"alg": "HS256", "typ": "JWT"}, claims, func(in []byte) ([]byte, error) {
-		h := hmac.New(sha256.New, []byte(sk))
-		h.Write(in)
-		return h.Sum(nil), nil
-	})
+	return domain.KlingJWT(ak, sk, now)
 }
 
 func signJWT(header map[string]string, claims map[string]any, sign func([]byte) ([]byte, error)) (string, error) {
-	enc := base64.RawURLEncoding
-	h, _ := json.Marshal(header)
-	c, _ := json.Marshal(claims)
-	unsigned := enc.EncodeToString(h) + "." + enc.EncodeToString(c)
-	sig, err := sign([]byte(unsigned))
-	if err != nil {
-		return "", err
-	}
-	return unsigned + "." + enc.EncodeToString(sig), nil
+	return domain.SignJWT(header, claims, sign)
 }
 
 // ---- Gemini / Vertex ----
@@ -651,19 +631,10 @@ func (s *Service) anthropicModels(ctx context.Context, base, key string) ([]stri
 
 // ---- custom discovery ----
 
-var versionSuffix = regexp.MustCompile(`/v\d+$`) // ArcReel ensure_openai_base_url
-
 // EnsureOpenAIBase appends /v1 when base has no /v<n> suffix.
-func EnsureOpenAIBase(base string) string { return ensureOpenAIBase(base) }
+func EnsureOpenAIBase(base string) string { return domain.EnsureOpenAIBase(base) }
 
-// ensureOpenAIBase appends /v1 when the base has no version suffix (ArcReel ensure_openai_base_url).
-func ensureOpenAIBase(base string) string {
-	base = strings.TrimRight(base, "/")
-	if versionSuffix.MatchString(base) {
-		return base
-	}
-	return base + "/v1"
-}
+func ensureOpenAIBase(base string) string { return domain.EnsureOpenAIBase(base) }
 
 func (s *Service) discover(ctx context.Context, f domain.DiscoveryFormat, base, key string) ([]DiscoveredModel, error) {
 	switch f {

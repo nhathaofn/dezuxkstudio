@@ -11,13 +11,14 @@ import (
 	"strings"
 
 	"app/internal/apperr"
+	"app/internal/contracts"
 	domain "app/internal/domain/provider"
 	"app/internal/engine"
 )
 
 // Node types.
 const (
-	NodeList     = "tool.provider_list"
+	NodeList     = contracts.NodeTypeProviderList
 	NodeSetup    = "tool.provider_setup"
 	NodeTest     = "tool.provider_test"
 	NodeActivate = "tool.provider_activate"

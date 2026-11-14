@@ -475,7 +475,7 @@ export interface ImageGenerateOutput {
   sizeBytes: number;
 }
 
-export interface ImageRef {
+export interface ImageInputRef {
   localUrl: string;
   kind: string;
   mimeType?: string;
@@ -648,14 +648,8 @@ export interface PurposeDefault {
   candidates: ModelCandidate[];
 }
 
-export interface RemoverImage {
-  localUrl: string;
-  kind: string;
-  mimeType?: string;
-}
-
 export interface RemoverInput {
-  image?: RemoverImage;
+  image?: ImageInputRef;
   images?: MediaRef[];
   inplace?: boolean;
   output_dir?: string;
@@ -818,8 +812,8 @@ export interface UpdateSettingsPayload {
 
 export interface VideoGenerateInput {
   prompt?: string;
-  start_image?: ImageRef;
-  end_image?: ImageRef;
+  start_image?: ImageInputRef;
+  end_image?: ImageInputRef;
   reference_images?: MediaRef[];
   model?: string;
   aspect_ratio?: string;
