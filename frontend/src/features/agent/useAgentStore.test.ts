@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Actions, type AgentProviderInfo } from "../../contracts/generated";
 import { ActionError, rtClient } from "../../lib/rtClient";
-import { clampDrawerWidth, finishRunningTools, useAgentStore } from "./useAgentStore";
+import { useAgentDrawerStore } from "./useAgentDrawerStore";
+import { finishRunningTools, useAgentStore } from "./useAgentStore";
 
 const mockProviders: AgentProviderInfo[] = [
   {
@@ -64,10 +65,13 @@ const mockProviders: AgentProviderInfo[] = [
 
 describe("useAgentStore", () => {
   beforeEach(() => {
-    useAgentStore.setState({
+    useAgentDrawerStore.setState({
       panelOpen: false,
       panelWidth: 420,
       activeTab: "chat",
+      chatView: "chat",
+    });
+    useAgentStore.setState({
       providers: [],
       approvals: [],
       allowedDirs: [],
@@ -83,19 +87,6 @@ describe("useAgentStore", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-  });
-
-  it("toggles drawer open state and clamps drawer width", () => {
-    const store = useAgentStore.getState();
-    expect(store.panelOpen).toBe(false);
-    store.togglePanel();
-    expect(useAgentStore.getState().panelOpen).toBe(true);
-    store.closePanel();
-    expect(useAgentStore.getState().panelOpen).toBe(false);
-
-    expect(clampDrawerWidth(100)).toBe(340);
-    expect(clampDrawerWidth(9999)).toBe(680);
-    expect(clampDrawerWidth(Number.NaN)).toBe(420);
   });
 
   it("unlocks a chat stuck in 'sending' when a reconnect shows no turn is running", async () => {
@@ -132,12 +123,12 @@ describe("useAgentStore", () => {
       active: true,
       protocol_version: 1,
     };
-    useAgentStore.getState().setActiveTab("connections");
+    useAgentDrawerStore.getState().setActiveTab("connections");
     vi.spyOn(rtClient, "request").mockResolvedValueOnce(connected);
 
     await useAgentStore.getState().connectProvider("antigravity");
     const state = useAgentStore.getState();
-    expect(state.activeTab).toBe("chat");
+    expect(useAgentDrawerStore.getState().activeTab).toBe("chat");
     expect(state.providers.find((p) => p.id === "antigravity")?.active).toBe(true);
   });
 
@@ -243,6 +234,7 @@ describe("useAgentStore", () => {
   });
 
   it("starts a new chat on the server, keeping history", async () => {
+    useAgentDrawerStore.setState({ chatView: "history" });
     useAgentStore.setState({
       providers: [{ ...mockProviders[0], state: "connected", active: true }],
       messages: [{ id: "m1", role: "user", text: "test" }],
@@ -253,6 +245,7 @@ describe("useAgentStore", () => {
 
     expect(useAgentStore.getState().messages).toEqual([]);
     expect(useAgentStore.getState().conversationId).toBe("");
+    expect(useAgentDrawerStore.getState().chatView).toBe("chat");
     expect(reqSpy).toHaveBeenCalledWith(Actions.AGENT_NEW_CONVERSATION, {});
   });
 });
@@ -295,13 +288,13 @@ describe("retryLast and newChat", () => {
 describe("conversations", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("shows the agent panel when the app starts", () => {
-    expect(useAgentStore.getInitialState().panelOpen).toBe(true);
+  it("starts with an empty conversationId", () => {
     expect(useAgentStore.getInitialState().conversationId).toBe("");
   });
 
   it("opens an earlier chat as the current one", async () => {
-    useAgentStore.setState({ chatView: "history", messages: [], conversationId: "" });
+    useAgentDrawerStore.setState({ chatView: "history" });
+    useAgentStore.setState({ messages: [], conversationId: "" });
     vi.spyOn(rtClient, "request").mockResolvedValue({
       conversation_id: "c1",
       messages: [{ id: "m1", provider_id: "codex", role: "user", text: "earlier", created_at: 1 }],
@@ -309,7 +302,7 @@ describe("conversations", () => {
     await useAgentStore.getState().openConversation("c1");
     const s = useAgentStore.getState();
     expect(s.conversationId).toBe("c1");
-    expect(s.chatView).toBe("chat");
+    expect(useAgentDrawerStore.getState().chatView).toBe("chat");
     expect(s.messages.map((m) => m.text)).toEqual(["earlier"]);
   });
 
@@ -346,9 +339,9 @@ describe("conversations", () => {
   });
 
   it("clears an active conversation when connecting a different provider", async () => {
+    useAgentDrawerStore.setState({ activeTab: "connections", chatView: "history" });
     useAgentStore.setState({
       providers: mockProviders,
-      activeTab: "connections",
       conversationId: "c-codex",
       messages: [{ id: "m1", role: "user", text: "codex prompt", providerId: "codex" }],
       approvals: [
@@ -373,16 +366,17 @@ describe("conversations", () => {
 
     await useAgentStore.getState().connectProvider("claude");
     const s = useAgentStore.getState();
-    expect(s.activeTab).toBe("chat");
+    expect(useAgentDrawerStore.getState().activeTab).toBe("chat");
+    expect(useAgentDrawerStore.getState().chatView).toBe("chat");
     expect(s.conversationId).toBe("");
     expect(s.messages).toEqual([]);
     expect(s.approvals).toEqual([]);
   });
 
   it("preserves the open conversation when reconnecting its own provider", async () => {
+    useAgentDrawerStore.setState({ activeTab: "connections", chatView: "history" });
     useAgentStore.setState({
       providers: mockProviders,
-      activeTab: "connections",
       conversationId: "c-codex",
       messages: [{ id: "m1", role: "user", text: "codex prompt", providerId: "codex" }],
     });
@@ -397,6 +391,8 @@ describe("conversations", () => {
 
     await useAgentStore.getState().connectProvider("codex");
     const s = useAgentStore.getState();
+    expect(useAgentDrawerStore.getState().activeTab).toBe("chat");
+    expect(useAgentDrawerStore.getState().chatView).toBe("history");
     expect(s.conversationId).toBe("c-codex");
     expect(s.messages.map((m) => m.id)).toEqual(["m1"]);
   });
@@ -514,7 +510,7 @@ describe("provider status snapshots", () => {
   });
 });
 
-describe("subagent events and customizations", () => {
+describe("subagent events", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("aggregates subagent lifecycle events into the streaming assistant message", () => {
@@ -660,87 +656,5 @@ describe("subagent events and customizations", () => {
     expect(useAgentStore.getState().messages[0].subagents?.[0].tools).toEqual([
       "workspace_list_dir",
     ]);
-  });
-
-  it("manages skills and subagents via customization store actions", async () => {
-    const snap = {
-      dir: "C:/data/agent-customizations",
-      skills: [
-        {
-          name: "brief-structuring",
-          description: "Structure briefs",
-          user_invocable: true,
-          enabled: true,
-          source_state: "managed" as const,
-          built_in: true,
-          tombstoned: false,
-          body: "## Steps",
-        },
-      ],
-      subagents: [
-        {
-          name: "workspace-reviewer",
-          description: "Review workspace",
-          skills: ["review-checklist"],
-          tools: ["workspace_read_file"],
-          enabled: true,
-          source_state: "managed" as const,
-          built_in: true,
-          tombstoned: false,
-          body: "Review carefully",
-        },
-      ],
-      available_tools: ["workspace_read_file", "workspace_list_dir"],
-    };
-
-    const reqSpy = vi.spyOn(rtClient, "request").mockResolvedValue(snap as never);
-    await useAgentStore.getState().fetchCustomizations();
-    expect(reqSpy).toHaveBeenCalledWith(Actions.AGENT_LIST_CUSTOMIZATIONS, {});
-    expect(useAgentStore.getState().customizationsDir).toBe(snap.dir);
-    expect(useAgentStore.getState().skills).toHaveLength(1);
-    expect(useAgentStore.getState().subagents).toHaveLength(1);
-    expect(useAgentStore.getState().availableSubagentTools).toEqual([
-      "workspace_read_file",
-      "workspace_list_dir",
-    ]);
-
-    const okSkill = await useAgentStore.getState().saveSkill({
-      name: "custom-skill",
-      description: "Custom",
-      user_invocable: true,
-      enabled: true,
-      body: "Body",
-    });
-    expect(okSkill).toBe(true);
-    expect(reqSpy).toHaveBeenCalledWith(Actions.AGENT_SAVE_SKILL, {
-      name: "custom-skill",
-      description: "Custom",
-      user_invocable: true,
-      enabled: true,
-      body: "Body",
-    });
-
-    await useAgentStore.getState().deleteSkill("custom-skill");
-    expect(reqSpy).toHaveBeenCalledWith(Actions.AGENT_DELETE_SKILL, { name: "custom-skill" });
-    await useAgentStore.getState().restoreSkill("brief-structuring");
-    expect(reqSpy).toHaveBeenCalledWith(Actions.AGENT_RESTORE_SKILL, {
-      name: "brief-structuring",
-    });
-
-    const okSub = await useAgentStore.getState().saveSubagent({
-      name: "custom-sub",
-      description: "Sub",
-      skills: [],
-      tools: ["workspace_read_file"],
-      enabled: true,
-      body: "Sub body",
-    });
-    expect(okSub).toBe(true);
-    await useAgentStore.getState().deleteSubagent("custom-sub");
-    expect(reqSpy).toHaveBeenCalledWith(Actions.AGENT_DELETE_SUBAGENT, { name: "custom-sub" });
-    await useAgentStore.getState().restoreSubagent("workspace-reviewer");
-    expect(reqSpy).toHaveBeenCalledWith(Actions.AGENT_RESTORE_SUBAGENT, {
-      name: "workspace-reviewer",
-    });
   });
 });

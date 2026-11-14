@@ -1,6 +1,7 @@
 import React from "react";
 import { NavLink } from "react-router-dom";
 import { Bot, Settings } from "lucide-react";
+import { useAgentDrawerStore } from "../features/agent/useAgentDrawerStore";
 import { useAgentStore } from "../features/agent/useAgentStore";
 import { StatusIndicator } from "../features/connection/StatusIndicator";
 import { useSystemStore } from "../features/system/useSystemStore";
@@ -10,8 +11,8 @@ import { navRoutes, settingsRoute } from "./navigation";
 export const AppHeader: React.FC = () => {
   const t = useT();
   const build = useSystemStore((s) => s.info?.build);
-  const agentOpen = useAgentStore((s) => s.panelOpen);
-  const toggleAgentPanel = useAgentStore((s) => s.togglePanel);
+  const agentOpen = useAgentDrawerStore((s) => s.panelOpen);
+  const toggleAgentPanel = useAgentDrawerStore((s) => s.togglePanel);
   const agentOnline = useAgentStore((s) => s.providers.some((p) => p.active));
 
   return (

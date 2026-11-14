@@ -25,6 +25,8 @@ import { Markdown } from "./markdown";
 import { useScreenContextStore } from "./screenContext";
 import { toolLabel } from "./toolLabels";
 import { useFlash } from "../../lib/hooks/useFlash";
+import { useAgentCustomizationsStore } from "./useAgentCustomizationsStore";
+import { useAgentDrawerStore } from "./useAgentDrawerStore";
 import { COPY_FEEDBACK_MS, useAgentStore, type AgentChatMessage } from "./useAgentStore";
 import { appConfig } from "../../config/appConfig";
 
@@ -411,7 +413,7 @@ const ComposerModelPicker: React.FC<{ provider: AgentProviderInfo; disabled: boo
 };
 
 export const AgentChatTab: React.FC<AgentChatTabProps> = ({ connectedToCore }) => {
-  const chatView = useAgentStore((s) => s.chatView);
+  const chatView = useAgentDrawerStore((s) => s.chatView);
   return chatView === "history" ? (
     <AgentHistoryList />
   ) : (
@@ -427,11 +429,11 @@ const AgentChatPane: React.FC<AgentChatTabProps> = ({ connectedToCore }) => {
   const messages = useAgentStore((s) => s.messages);
   const approvals = useAgentStore((s) => s.approvals);
   const prompt = useAgentStore((s) => s.prompt);
-  const skills = useAgentStore((s) => s.skills);
+  const skills = useAgentCustomizationsStore((s) => s.skills);
   const sending = useAgentStore((s) => s.sending);
   const busyAction = useAgentStore((s) => s.busyAction);
   const setPrompt = useAgentStore((s) => s.setPrompt);
-  const setActiveTab = useAgentStore((s) => s.setActiveTab);
+  const setActiveTab = useAgentDrawerStore((s) => s.setActiveTab);
   const connectProvider = useAgentStore((s) => s.connectProvider);
   const newChat = useAgentStore((s) => s.newChat);
   const sendPrompt = useAgentStore((s) => s.sendPrompt);

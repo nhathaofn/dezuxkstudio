@@ -1,4 +1,5 @@
 import { Events, NativeEvents } from "../contracts/generated";
+import { useAgentCustomizationsStore } from "../features/agent/useAgentCustomizationsStore";
 import { useAgentStore } from "../features/agent/useAgentStore";
 import { useBinariesStore } from "../features/binaries/useBinariesStore";
 import { useProvidersStore } from "../features/providers/useProvidersStore";
@@ -33,7 +34,7 @@ export function bootstrap(): void {
     useAgentStore.getState().receiveApprovals(p.approvals)
   );
   rtClient.on(Events.AGENT_CUSTOMIZATIONS_CHANGED, (p) =>
-    useAgentStore.getState().receiveCustomizations(p)
+    useAgentCustomizationsStore.getState().receiveCustomizations(p)
   );
   rtClient.on(Events.ACTION_PROGRESS, (p) => {
     // Heartbeats only keep a request alive; logging them would flood the live log buffer.
@@ -55,7 +56,7 @@ export function bootstrap(): void {
     void useAgentStore.getState().fetchHistory();
     void useAgentStore.getState().fetchApprovals();
     void useAgentStore.getState().fetchAllowedDirs();
-    void useAgentStore.getState().fetchCustomizations();
+    void useAgentCustomizationsStore.getState().fetchCustomizations();
     if (firstConnect && useConnectionStore.getState().endpoint?.checkUpdatesOnStartup) {
       void useSystemStore.getState().checkUpdate();
     }
