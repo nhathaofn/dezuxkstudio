@@ -37,6 +37,7 @@ func fields(c *Config) []field {
 		{key: "server.shutdown_timeout", usage: "graceful shutdown deadline", val: durationValue{&c.Server.ShutdownTimeout}},
 		{key: "server.enable_broadcast", usage: "enable POST /api/events/broadcast (requires a token)", val: boolValue{&c.Server.EnableBroadcast}},
 		{key: "server.max_broadcast_body_bytes", usage: "max body size of the broadcast endpoint", val: int64Value{&c.Server.MaxBroadcastBodyBytes}},
+		{key: "server.allow_host_admin", usage: "allow remote clients in server mode to mutate host paths, customizations or open folders", val: boolValue{&c.Server.AllowHostAdmin}},
 
 		{key: "client.remote_url", usage: "client mode: remote server WebSocket URL (ws:// or wss://)", val: stringValue{&c.Client.RemoteURL}},
 		{key: "client.auth_token", usage: "client mode: remote token (default: OS credential store)", val: stringValue{&c.Client.AuthToken}, secret: true},

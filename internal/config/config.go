@@ -71,6 +71,7 @@ type ServerConfig struct {
 	ShutdownTimeout       time.Duration
 	EnableBroadcast       bool
 	MaxBroadcastBodyBytes int64
+	AllowHostAdmin        bool // allow remote clients in server mode to mutate host binary/CLI paths or open host folders
 }
 
 // ClientConfig configures client mode (GUI connected to a remote server).
@@ -226,6 +227,7 @@ func Default(mode Mode) *Config {
 			ShutdownTimeout:       5 * time.Second,
 			EnableBroadcast:       false,
 			MaxBroadcastBodyBytes: 1 << 20,
+			AllowHostAdmin:        false,
 		},
 		Realtime: RealtimeConfig{
 			MaxConcurrentActions: 64,

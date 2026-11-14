@@ -192,6 +192,9 @@ func (c *Config) warnings() []string {
 	if c.Mode == ModeServer && c.Server.AuthToken == "" {
 		w = append(w, "server mode runs without an auth token (loopback only)")
 	}
+	if c.Mode == ModeServer && c.Server.AllowHostAdmin {
+		w = append(w, "server.allow_host_admin is enabled; remote clients can mutate host paths, agent customizations, or open folders on the server")
+	}
 	return w
 }
 

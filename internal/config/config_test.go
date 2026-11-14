@@ -268,3 +268,116 @@ func TestUpdateDefaultsFollowBuildKind(t *testing.T) {
 			relCfg.Update.CheckOnStartup, relCfg.Agent.AutoUpdateCLI, want)
 	}
 }
+
+func TestAllowHostAdminConfigAndWarnings(t *testing.T) {
+	for _, m := range Modes() {
+		if Default(m).Server.AllowHostAdmin {
+			t.Fatalf("mode %s: expected AllowHostAdmin default to be false", m)
+		}
+	}
+
+	// JSON file override to true in ModeServer emits warning and validates with token.
+	dir := t.TempDir()
+	writeFile(t, dir, FileName, `{"server":{"allow_host_admin":true}}`)
+	jsonRes, err := Load(Source{
+		Mode:      ModeServer,
+		ConfigDir: dir,
+		EnvPrefix: "T_",
+		LookupEnv: env(map[string]string{"T_SERVER_AUTH_TOKEN": "tok"}),
+	})
+	if err != nil {
+		t.Fatalf("json override Load failed: %v", err)
+	}
+	if !jsonRes.Config.Server.AllowHostAdmin {
+		t.Fatal("expected AllowHostAdmin == true from JSON config")
+	}
+	if !hasWarningContaining(jsonRes.Warnings, "server.allow_host_admin") {
+		t.Fatalf("expected ModeServer warning for server.allow_host_admin, got %v", jsonRes.Warnings)
+	}
+
+	// Env override beats JSON false; CLI flag overrides env.
+	writeFile(t, dir, FileName, `{"server":{"allow_host_admin":false}}`)
+	envRes, err := Load(Source{
+		Mode:      ModeServer,
+		ConfigDir: dir,
+		EnvPrefix: "T_",
+		LookupEnv: env(map[string]string{
+			"T_SERVER_AUTH_TOKEN":       "tok",
+			"T_SERVER_ALLOW_HOST_ADMIN": "true",
+		}),
+	})
+	if err != nil {
+		t.Fatalf("env override Load failed: %v", err)
+	}
+	if !envRes.Config.Server.AllowHostAdmin {
+		t.Fatal("expected AllowHostAdmin == true from env")
+	}
+	if !hasWarningContaining(envRes.Warnings, "server.allow_host_admin") {
+		t.Fatalf("expected ModeServer warning when enabled via env, got %v", envRes.Warnings)
+	}
+
+	cliRes, err := Load(Source{
+		Mode:      ModeServer,
+		EnvPrefix: "T_",
+		LookupEnv: env(map[string]string{"T_SERVER_AUTH_TOKEN": "tok"}),
+		Args:      []string{"--server-host=0.0.0.0", "--server-allow-host-admin"},
+	})
+	if err != nil {
+		t.Fatalf("cli override Load failed: %v", err)
+	}
+	if !cliRes.Config.Server.AllowHostAdmin {
+		t.Fatal("expected AllowHostAdmin == true from CLI flag")
+	}
+	if !hasWarningContaining(cliRes.Warnings, "server.allow_host_admin") {
+		t.Fatalf("expected ModeServer warning when enabled via CLI, got %v", cliRes.Warnings)
+	}
+
+	// CLI false overrides env true and suppresses the warning.
+	cliFalseRes, err := Load(Source{
+		Mode:      ModeServer,
+		EnvPrefix: "T_",
+		LookupEnv: env(map[string]string{
+			"T_SERVER_AUTH_TOKEN":       "tok",
+			"T_SERVER_ALLOW_HOST_ADMIN": "true",
+		}),
+		Args: []string{"--server-allow-host-admin=false"},
+	})
+	if err != nil {
+		t.Fatalf("cli false override Load failed: %v", err)
+	}
+	if cliFalseRes.Config.Server.AllowHostAdmin {
+		t.Fatal("expected CLI false to override env true")
+	}
+	if hasWarningContaining(cliFalseRes.Warnings, "server.allow_host_admin") {
+		t.Fatalf("unexpected server.allow_host_admin warning when disabled: %v", cliFalseRes.Warnings)
+	}
+
+	// Non-loopback ModeServer without auth_token still fails validation even if AllowHostAdmin is true.
+	noTok := Default(ModeServer)
+	noTok.Server.Host = "0.0.0.0"
+	noTok.Server.AllowHostAdmin = true
+	if err := noTok.Validate(); err == nil {
+		t.Fatal("expected non-loopback ModeServer without auth token to fail validation")
+	}
+
+	// ModeDesktop with AllowHostAdmin true validates without emitting the ModeServer warning.
+	deskRes, err := Load(Source{
+		Mode: ModeDesktop,
+		Args: []string{"--server-allow-host-admin"},
+	})
+	if err != nil {
+		t.Fatalf("ModeDesktop Load failed: %v", err)
+	}
+	if hasWarningContaining(deskRes.Warnings, "server.allow_host_admin") {
+		t.Fatalf("unexpected server.allow_host_admin warning in desktop mode: %v", deskRes.Warnings)
+	}
+}
+
+func hasWarningContaining(warnings []string, substr string) bool {
+	for _, w := range warnings {
+		if strings.Contains(w, substr) {
+			return true
+		}
+	}
+	return false
+}
