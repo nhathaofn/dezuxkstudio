@@ -12,6 +12,8 @@ import (
 // Binaries exposes binaries:* actions over realtime WebSocket.
 type Binaries struct {
 	Service *binariessvc.Service
+	// LockHostAdmin refuses binaries:set_path in server mode unless server.allow_host_admin is enabled.
+	LockHostAdmin bool
 }
 
 func (Binaries) Name() string { return "binaries" }
@@ -41,6 +43,9 @@ func (m Binaries) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionBinariesSetPath,
 		func(ctx context.Context, _ *realtime.Request, p contracts.BinarySetPathPayload) (contracts.BinaryInfo, error) {
+			if m.LockHostAdmin {
+				return contracts.BinaryInfo{}, hostAdminLockedError()
+			}
 			info, err := m.Service.SetCustomPath(ctx, p.ID, p.CustomPath)
 			if err != nil {
 				return contracts.BinaryInfo{}, err

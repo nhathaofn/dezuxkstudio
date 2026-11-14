@@ -321,13 +321,20 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		c.background("agent-restore-connection", agentSvc.RestoreConnection)
 	}
 
+	lockRemoteHost := cfg.Mode == config.ModeServer && !cfg.Server.AllowHostAdmin
+
 	return []realtime.Module{
-		modules.System{Info: sysSvc, Update: updSvc},
+		modules.System{Info: sysSvc, Update: updSvc, LockHostAdmin: lockRemoteHost},
 		modules.Preferences{Service: prefSvc},
 		modules.Diagnostics{Service: diagSvc},
-		modules.Binaries{Service: binSvc},
+		modules.Binaries{Service: binSvc, LockHostAdmin: lockRemoteHost},
 		modules.Workflow{Service: wfSvc, FileGuard: workflowFileGuard(cfg.Mode, agentSvc)},
-		modules.Agent{Service: agentSvc, LockTrustedFolders: cfg.Mode == config.ModeServer},
+		modules.Agent{
+			Service:            agentSvc,
+			LockTrustedFolders: cfg.Mode == config.ModeServer,
+			LockHostAdmin:      lockRemoteHost,
+			LockCustomizations: lockRemoteHost,
+		},
 		modules.Providers{Service: provSvc},
 	}, nil
 }

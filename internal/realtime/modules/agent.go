@@ -17,11 +17,23 @@ type Agent struct {
 	// server mode: trusted folders also bound what remote clients may touch (the workflow file guard),
 	// so a remote client must not be able to widen its own boundary.
 	LockTrustedFolders bool
+	// LockHostAdmin refuses agent:set_path in server mode unless server.allow_host_admin is enabled.
+	LockHostAdmin bool
+	// LockCustomizations refuses remote mutation of shared skills and subagents in server mode
+	// unless server.allow_host_admin is enabled.
+	LockCustomizations bool
 }
 
 func (m Agent) trustedFoldersLocked() error {
 	if m.LockTrustedFolders {
 		return apperr.Unavailable("trusted folders can only be changed in the desktop app on this machine")
+	}
+	return nil
+}
+
+func (m Agent) customizationsLocked() error {
+	if m.LockCustomizations {
+		return apperr.Unavailable("agent skills and subagents cannot be modified remotely in server mode")
 	}
 	return nil
 }
@@ -45,6 +57,9 @@ func (m Agent) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionAgentSetPath,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentSetPathPayload) (contracts.AgentProviderInfo, error) {
+			if m.LockHostAdmin {
+				return contracts.AgentProviderInfo{}, hostAdminLockedError()
+			}
 			info, err := m.Service.SetCustomPath(ctx, p.ID, p.CustomPath)
 			if err != nil {
 				return contracts.AgentProviderInfo{}, err
@@ -173,8 +188,7 @@ func (m Agent) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionAgentResolveApproval,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentResolveApprovalPayload) (contracts.Empty, error) {
-			_, err := m.Service.ResolveApproval(ctx, p.ID, p.Approve)
-			return contracts.Empty{}, err
+			return contracts.Empty{}, m.Service.ResolveApproval(ctx, p.ID, p.Approve)
 		})
 
 	realtime.Handle(r, contracts.ActionAgentSetUIContext,
@@ -239,7 +253,7 @@ func (m Agent) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionAgentSaveSkill,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentSaveSkillPayload) (contracts.AgentCustomizationsResult, error) {
-			if err := m.trustedFoldersLocked(); err != nil {
+			if err := m.customizationsLocked(); err != nil {
 				return contracts.AgentCustomizationsResult{}, err
 			}
 			snap, err := m.Service.SaveSkill(ctx, p.Name, p.Description, p.UserInvocable, p.Enabled, p.Body)
@@ -251,7 +265,7 @@ func (m Agent) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionAgentDeleteSkill,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentCustomizationIDPayload) (contracts.AgentCustomizationsResult, error) {
-			if err := m.trustedFoldersLocked(); err != nil {
+			if err := m.customizationsLocked(); err != nil {
 				return contracts.AgentCustomizationsResult{}, err
 			}
 			snap, err := m.Service.DeleteSkill(ctx, p.Name)
@@ -263,7 +277,7 @@ func (m Agent) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionAgentRestoreSkill,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentCustomizationIDPayload) (contracts.AgentCustomizationsResult, error) {
-			if err := m.trustedFoldersLocked(); err != nil {
+			if err := m.customizationsLocked(); err != nil {
 				return contracts.AgentCustomizationsResult{}, err
 			}
 			snap, err := m.Service.RestoreSkill(ctx, p.Name)
@@ -275,7 +289,7 @@ func (m Agent) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionAgentSaveSubagent,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentSaveSubagentPayload) (contracts.AgentCustomizationsResult, error) {
-			if err := m.trustedFoldersLocked(); err != nil {
+			if err := m.customizationsLocked(); err != nil {
 				return contracts.AgentCustomizationsResult{}, err
 			}
 			snap, err := m.Service.SaveSubagent(ctx, domainagent.SubagentInfo{
@@ -296,7 +310,7 @@ func (m Agent) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionAgentDeleteSubagent,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentCustomizationIDPayload) (contracts.AgentCustomizationsResult, error) {
-			if err := m.trustedFoldersLocked(); err != nil {
+			if err := m.customizationsLocked(); err != nil {
 				return contracts.AgentCustomizationsResult{}, err
 			}
 			snap, err := m.Service.DeleteSubagent(ctx, p.Name)
@@ -308,7 +322,7 @@ func (m Agent) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionAgentRestoreSubagent,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentCustomizationIDPayload) (contracts.AgentCustomizationsResult, error) {
-			if err := m.trustedFoldersLocked(); err != nil {
+			if err := m.customizationsLocked(); err != nil {
 				return contracts.AgentCustomizationsResult{}, err
 			}
 			snap, err := m.Service.RestoreSubagent(ctx, p.Name)
