@@ -39,28 +39,29 @@ main.go / cmd/server            entry points: nạp config → paths → logger 
        ├─ internal/realtime     hub WebSocket: auth, registry typed, dispatcher, cancel, idle timeout
        │    └─ modules/         adapter mỏng: payload → service → DTO (không có logic nghiệp vụ)
        ├─ internal/service/*    use case (preferences, system, update, diagnostics, binaries,
-       │                        workflow, agent)
+       │                        provider, mediagen, workflow, agent, agentcli)
        ├─ internal/domain/*     model + quy tắc nghiệp vụ + interface repository
-       ├─ internal/engine       runtime node/graph (DAG) cho workflow; internal/tools/* là các node
+       ├─ internal/engine       runtime node/graph (DAG), MediaRef/ResolveMediaPath/FileGuard; internal/tools/* là các node
        └─ internal/storage/*    triển khai repository (SQLite, migration có version)
 Gói dùng chung (tầng dưới, mọi service dùng được):
   internal/progress             báo tiến độ + heartbeat qua ctx, idle context (mô hình timeout)
   internal/proc                 tạo/kill tiến trình con (ẩn console, .cmd/.bat, kill cả cây)
   internal/runner               chạy CLI, stream output, parse progress
   internal/lookup               tìm file thực thi theo thứ tự ưu tiên
-  internal/httpclient           HTTP client outbound dùng chung (proxy, connection pool)
+  internal/httpclient           HTTP client outbound dùng chung (proxy, pool, chặn link-local/SSRF, WithRedirectGuard)
+  internal/docparse             trích xuất text thuần có giới hạn (.docx, .odt, .rtf, .pdf)
   internal/fsutil, safego, paths, apperr, secrets, logger
-internal/contracts              NGUỒN DUY NHẤT của hợp đồng Go ↔ TS (action, event, DTO, bridge)
+internal/contracts              NGUỒN DUY NHẤT của hợp đồng Go ↔ TS (action, event, DTO, node DTO, bridge)
 cmd/contractgen                 sinh frontend/src/contracts/generated.ts từ internal/contracts
 frontend/src
   ├─ contracts/generated.ts     (sinh tự động – không sửa tay)
   ├─ lib/rtClient               client WebSocket typed: request/cancel/progress/timeout/reconnect
   ├─ lib/bridge.ts, lib/i18n    binding desktop, đa ngôn ngữ (en, vi)
-  ├─ features/<tên>/            store + component của từng tính năng
+  ├─ features/<tên>/            store + component của từng tính năng (agent tách 3 store: useAgentStore, useAgentDrawerStore, useAgentCustomizationsStore)
   └─ app/                       bootstrap, router, layout, màn hình lỗi fatal
 ```
 
-Hướng phụ thuộc một chiều: `modules → service → domain ← storage`; `contracts` chỉ phụ thuộc `domain`/`apperr`/`config`. Không package nào import ngược lên `core`/`desktop`.
+Hướng phụ thuộc một chiều: `modules → service → domain ← storage`; `contracts` chỉ phụ thuộc `domain`/`engine`/`apperr`/`config`/`buildinfo`/`secrets` (không import `service` hay `internal/tools/*`). Không package nào import ngược lên `core`/`desktop`.
 
 ### Luồng khởi động desktop
 
@@ -98,6 +99,7 @@ Thứ tự ưu tiên: mặc định → `config.json` → môi trường → c�
 - File config được tìm theo thứ tự: `--config` / `DEZUXKSTUDIO_CONFIG` (bắt buộc phải tồn tại), rồi thư mục config của người dùng, rồi thư mục chứa exe (bản portable).
 - Khóa lạ, JSON sai hoặc giá trị sai kiểu đều làm app **dừng kèm lỗi rõ ràng**, không bị bỏ qua lặng lẽ.
 - `Validate()` kiểm tra toàn bộ ràng buộc theo từng chế độ, ví dụ: desktop chỉ được bind loopback; server bind ra ngoài phải có token; client phải dùng `ws(s)://`.
+- Một số khóa cấu hình quan trọng cho server và agent: `server.allow_host_admin` (mặc định `false`), `server.max_media_upload_bytes` (64 MiB), `server.media_staging_ttl` (`24h`), `server.media_staging_cleanup_interval` (`30m`), `agent.max_concurrent_subagents` (`4`).
 - Thư mục lưu trữ theo chuẩn từng OS ([internal/paths](internal/paths/paths.go)): config ở `%APPDATA%`, data và log ở `%LOCALAPPDATA%` (Windows); `~/Library/...` (macOS); XDG (Linux). Không bao giờ ghi vào thư mục cài đặt hay thư mục temp.
 
 ---
@@ -105,9 +107,14 @@ Thứ tự ưu tiên: mặc định → `config.json` → môi trường → c�
 ## 4. Bảo mật
 
 - Desktop: token 256-bit sinh mới mỗi phiên, so sánh constant-time, chỉ bind loopback. Allowed origins mặc định chỉ gồm origin của Wails.
-- Server: token lấy từ `server.auth_token_file` hoặc biến môi trường (nếu đặt token trong file config hoặc qua cờ CLI sẽ có cảnh báo).
+- Server (`--mode server`): token lấy từ `server.auth_token_file` hoặc biến môi trường (nếu đặt token trong file config hoặc qua cờ CLI sẽ có cảnh báo).
+  - **Biên giới quyền từ xa**: `server.allow_host_admin` mặc định là `false`, nên client từ xa bị chặn (`ERR_UNAVAILABLE`) với các thao tác quản trị host (`system:open_folder`, `binaries:set_path`, `agent:set_path`) và các thao tác chỉnh sửa skill/subagent (`agent:save_skill`, `agent:delete_skill`, `agent:restore_skill`, `agent:save_subagent`, `agent:delete_subagent`, `agent:restore_subagent`).
+  - **Thư mục tin cậy & FileGuard**: `agent:add_allowed_dir` và `agent:remove_allowed_dir` **luôn bị khóa** ở chế độ server (kể cả khi bật `server.allow_host_admin`); mọi workflow node chạy qua WebSocket trong `--mode server` đều đi qua `AccessPolicy.CheckTrustedFile` (`engine.CheckFile`) để giới hạn trong media, workspace và các thư mục đã tin cậy trên host.
+  - Nhóm action `providers:*` vẫn khả dụng cho client đã xác thực ở `--mode server` (keychain/secret vẫn được giữ an toàn trên máy chủ).
+  - Remote media staging (`POST /api/media/upload`, tối đa `server.max_media_upload_bytes`) tự dọn các thư mục staging hết hạn theo `server.media_staging_ttl` và `server.media_staging_cleanup_interval`.
 - Client: token của server từ xa được lưu trong **keychain của OS** (`internal/secrets`, qua `Bridge.SetRemoteToken`).
 - `POST /api/events/broadcast` tắt mặc định. Khi bật, bắt buộc có Bearer token, `Content-Type: application/json`, và event phải được khai báo trong contracts.
+- Outbound HTTP (`internal/httpclient`): chặn dial tới địa chỉ link-local, unspecified và multicast để chống SSRF/DNS rebinding; `WithRedirectGuard` kiểm tra từng hop chuyển hướng (tối đa 10 hop).
 - CSP được gửi qua HTTP header, `connect-src` tùy theo chế độ ([internal/desktop/csp.go](internal/desktop/csp.go)). Bản production không có `unsafe-inline` cho script.
 - Log tự che các khóa nhạy cảm (`token`, `password`, `authorization`…). Gói chẩn đoán chỉ chứa config đã được che.
 - `task audit` chạy `govulncheck` và `npm audit`.
@@ -116,8 +123,8 @@ Thứ tự ưu tiên: mặc định → `config.json` → môi trường → c�
 
 ## 5. Dữ liệu cục bộ
 
-- SQLite (WAL, một connection) đặt sau các interface repository trong `internal/domain`.
-- Migration nằm ở `internal/storage/sqlite/migrations/NNN_name.sql`: được nhúng vào binary, áp dụng theo version, mỗi migration trong một transaction. **Không sửa file đã phát hành**; thay đổi schema thì thêm file mới.
+- SQLite (WAL, một connection, bật `PRAGMA foreign_keys = ON`) đặt sau các interface repository trong `internal/domain`.
+- Migration nằm ở `internal/storage/sqlite/migrations/NNN_name.sql`: được nhúng vào binary, áp dụng theo version, mỗi migration trong một transaction. **Không sửa file đã phát hành**; thay đổi schema thì thêm file mới. Migration `014_agent_foreign_keys.sql` áp đặt khóa ngoại `ON DELETE CASCADE` cho `agent_chat_messages` và `agent_conversation_sessions` trỏ tới `agent_conversations` (các bản ghi mồ côi từ phiên bản cũ được tự động khôi phục trước khi dựng lại bảng).
 - Trước khi migrate một DB đã có dữ liệu, app tự backup bằng `VACUUM INTO` vào `data/backups` (giữ `storage.backups_to_keep` bản). App **từ chối mở** DB có schema mới hơn chính nó (trường hợp người dùng hạ cấp app).
 - Ghi file luôn dùng atomic write (`internal/fsutil`).
 - Khi khởi động chậm (backup + migrate lâu), `desktop.ready_timeout` chỉ là một lượt chờ: UI tự hỏi lại, không báo lỗi fatal.
@@ -146,7 +153,7 @@ Secret tùy chọn để ký mã: `WINDOWS_CERT_PFX_BASE64`, `WINDOWS_CERT_PASSW
 
 **Bước 0: chọn dạng tính năng để agent tự dùng được, không cần viết code cho agent** (quy tắc §11 trong `.agents/rules/architecture.md`):
 
-- Tính năng **xử lý input → output** (ảnh, video, file, text): viết thành **node** trong `internal/tools/<tên>/` và thêm vào danh sách node trong `workflow.New`. UI, workflow và agent đều tự nhận qua `engine.Spec`. App từ chối khởi động nếu spec khai báo thiếu (`engine.ValidateSpec`). Xem [docs/agent-feature-integration.md](docs/agent-feature-integration.md).
+- Tính năng **xử lý input → output** (ảnh, video, file, text): viết thành **node** trong `internal/tools/<tên>/` (DTO chia sẻ với contract đặt trong `internal/contracts/nodes_dto.go`, đầu vào ảnh dùng `engine.ImageInputRef`, chuẩn hoá đường dẫn qua `engine.ResolveMediaPath`, kiểm tra truy cập file qua `engine.CheckFile`) và thêm vào danh sách node trong `workflow.New`. UI, workflow và agent đều tự nhận qua `engine.Spec`. App từ chối khởi động nếu spec khai báo thiếu (`engine.ValidateSpec`). Xem [docs/agent-feature-integration.md](docs/agent-feature-integration.md).
 - Tính năng **khác** (cài đặt, project, điều hướng…): làm theo các bước bên dưới, rồi thêm **một MCP tool** gọi đúng service đó.
 
 Ví dụ thêm tính năng `projects` có action `projects:list`:
@@ -172,5 +179,5 @@ Các rào chắn tự động:
 
 ## 9. Ghi chú
 
-- Windows Smart App Control có thể chặn file test `.exe` vừa build trong `%TEMP%`. Taskfile đặt `GOTMPDIR=build/.gotmp` để giảm tình trạng này; nếu vẫn bị chặn, chạy lại lệnh.
+- Windows Smart App Control có thể chặn file test `.exe` vừa build trong `%TEMP%`. Taskfile đặt `GOTMPDIR=build/.gotmp` để giảm tình trạng này; khi chạy `go test` trực tiếp trong PowerShell, đặt `$env:GOTMPDIR="$PWD\build\.gotmp"` (nếu vẫn bị chặn, chạy lại lệnh).
 - Race detector cần CGO và trình biên dịch C (`task test:race`). Trên Windows: `winget install BrechtSanders.WinLibs.POSIX.UCRT` (mở terminal mới để nhận PATH). Chỉ dùng cho test; build và chạy app không cần gcc. CI chạy race trên Windows (runner có sẵn gcc).

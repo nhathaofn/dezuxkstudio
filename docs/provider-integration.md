@@ -10,10 +10,12 @@ Nguồn tham chiếu: ArcReel (`lib/config/registry.py`, `server/routers/provide
 
 | Lớp | File |
 |---|---|
-| Domain (registry, validate, custom provider, endpoint catalog) | `internal/domain/provider/` |
+| Domain (registry, validate, custom provider, resolve helpers, endpoint catalog) | `internal/domain/provider/` (`resolve.go` cho `Resolved`, `ResolvedModel`, `KlingJWT`, `SignJWT`, `EnsureOpenAIBase`; `custom.go` cho `ValidateOutboundURL`) |
 | Lưu metadata (không có secret) | `internal/storage/sqlite/provider_repo.go`, migration `009_providers.sql` |
 | Lưu secret | `internal/secrets` (`Durable`: OS keyring → file mã hóa AES-GCM → bộ nhớ) |
+| Outbound HTTP redirect guard | `internal/httpclient` (`WithRedirectGuard` + `domain.ValidateOutboundURL`) |
 | Use case, test kết nối, discover | `internal/service/provider/` |
+| Tính năng dùng `ResolveModel` | `internal/service/mediagen/`, `internal/tools/mediagen/` |
 | Realtime | `internal/realtime/modules/providers.go`, action `providers:*`, event `providers:changed` |
 | UI | `frontend/src/features/providers/`, tab **Settings → Providers** |
 
@@ -24,6 +26,7 @@ Nguồn tham chiếu: ArcReel (`lib/config/registry.py`, `server/routers/provide
   Slot keyring: `provider_cred_<credID>_<field>`, `provider_custom_<id>_api_key`. Giá trị lớn (file JSON
   service account) được chia thành nhiều slot nhỏ (giới hạn của Windows Credential Manager).
 - Khi cập nhật, ô secret để trống nghĩa là giữ giá trị cũ. `clear_secrets` dùng để xóa.
+- Trong `--mode server`, toàn bộ nhóm action `providers:*` vẫn mở cho client đã xác thực ngay cả khi `server.allow_host_admin = false` (secret vẫn nằm trên máy chủ, không lộ ra ngoài).
 - `secret_backend` trong `providers:list`:
   - `keyring`: bình thường.
   - `encrypted_file`: cảnh báo vàng. Có thể đặt `DEZUXK_MASTER_KEY` để khóa mã hóa không nằm cạnh file `secrets/secrets.enc`.

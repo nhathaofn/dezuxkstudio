@@ -12,12 +12,12 @@ Muốn nhờ AI code thêm tính năng: dùng mẫu prompt trong [feature-prompt
 
 ## 1. Checklist khi thêm một node mới
 
-1. Viết node trong `internal/tools/<ten_tinh_nang>/node.go` bằng `engine.Typed(spec, func(ctx, In) (Out, error))`.
+1. Viết node trong `internal/tools/<ten_tinh_nang>/node.go` bằng `engine.Typed(spec, func(ctx, In) (Out, error))`. Nếu DTO / hằng số `NodeType*` được chia sẻ với `internal/contracts` (để frontend hoặc runtime sinh type), đặt chúng trong `internal/contracts/nodes_dto.go` và alias sang package tool (giữ `contracts` độc lập với `internal/tools/*`).
 2. Thêm node vào danh sách `nodes` trong `workflow.New` (`internal/service/workflow/service.go`).
 3. Khai báo `engine.Spec` đầy đủ (mục 2 bên dưới). Đây là "hợp đồng" duy nhất mà agent đọc.
    `engine.ValidateSpec` kiểm tra spec lúc khởi động: thiếu `Description`, `select` không có `Options`,
    `Default` sai, `Destructive` không phải toggle hoặc mặc định `true`… thì app **không khởi động**.
-4. Chạy `go run ./cmd/contractgen` nếu đổi struct trong `internal/engine` / `internal/contracts`.
+4. Chạy `task generate` (hoặc `go run ./cmd/contractgen`) nếu đổi struct trong `internal/engine` / `internal/contracts`.
 5. UI của tính năng nên dùng đúng `Default` / `Options` trong spec. Tốt nhất là đọc từ spec, để UI và agent không bị lệch nhau.
 6. Thêm test như `internal/service/agent/access_test.go` (`TestWorkflowRunNode…`), dùng `fakeWorkflow{specs: ...}` với spec thật của node.
 
@@ -40,7 +40,7 @@ Không cần sửa `internal/service/agent` cho từng node.
   - Với cổng media, agent có thể truyền **đường dẫn file, đường dẫn thư mục, hoặc danh sách**. Server tự mở thư mục thành
     danh sách file đúng loại (sắp theo tên; bỏ qua file code, file bí mật, thư mục `.git`…). Có tham số `recursive` của tool
     để lấy cả thư mục con. Node chỉ nhận các đường dẫn file tuyệt đối đã được kiểm tra.
-  - Đường dẫn tương đối được hiểu là nằm trong thư mục media của app (giống quy ước của node).
+  - Đường dẫn tương đối hoặc tiền tố `/media/...` được phân giải thống nhất qua `engine.ResolveMediaPath` vào thư mục media của app; đầu vào ảnh/danh sách ảnh dùng `engine.ImageInputRef` / `engine.ImageInputRefs`.
   - Cổng `text` được chuyển nguyên giá trị.
 - `Multiple: true`: nhận nhiều file (batch). Nếu node có cả cổng đơn lẫn cổng nhiều, agent truyền nhiều file vào cổng đơn
   sẽ nhận lỗi gợi ý dùng cổng nhiều.
@@ -82,7 +82,7 @@ Agent **chỉ được báo cáo dựa trên kết quả tool trả về**. Vì 
 - danh sách theo từng file: đường dẫn vào, đường dẫn ra, trạng thái, lỗi (nếu có);
 - thông báo lỗi có thể hành động được (nói rõ sai gì và sửa thế nào), không chỉ "failed".
 
-Node nên tôn trọng `ctx` (huỷ/timeout), báo tiến độ bằng `progress.Report(ctx, ...)` để không bị idle timeout khi chạy lâu (qua UI, duyệt agent hay MCP tool đều nhận được), ghi file bằng `fsutil.WriteFileAtomic`, và không tự ghi đè file gốc trừ khi
+Node nên tôn trọng `ctx` (huỷ/timeout), kiểm tra mọi đường dẫn đọc/ghi cục bộ qua `engine.CheckFile(ctx, path, write)` (để `--mode server` áp dụng `AccessPolicy.CheckTrustedFile` cho client từ xa), báo tiến độ bằng `progress.Report(ctx, ...)` để không bị idle timeout khi chạy lâu (qua UI, duyệt agent hay MCP tool đều nhận được), ghi file bằng `fsutil.WriteFileAtomic`, và không tự ghi đè file gốc trừ khi
 có tham số `Destructive` được bật.
 
 ## 6. Tính năng không phải dạng node (project, điều hướng UI, …)
@@ -112,7 +112,7 @@ không cho agent truyền tự do.
 | Luôn chặn bên trong thư mục tin cậy | Mã nguồn/script/file thực thi (trừ khi bật `DeveloperMode`), thông tin đăng nhập (`.ssh`, `.env`, khoá, kho mật khẩu), `AppData`/profile trình duyệt, thư mục hệ điều hành, dữ liệu nội bộ của DezuxkStudio |
 
 Danh sách nằm trong `internal/service/agent/access_policy.go` (`forbiddenExtensions`, `forbiddenFileNames`,
-`forbiddenSegmentNames`, `buildProtectedDirs`).
+`forbiddenSegmentNames`, `buildProtectedDirs`). Trong `--mode server`, `agent:add_allowed_dir` / `agent:remove_allowed_dir` luôn bị khóa (`ERR_UNAVAILABLE`), còn việc sửa skill/subagent dùng chung (`<data>/agent-customizations/`) cũng bị khóa trừ khi bật `server.allow_host_admin = true`. Đọc tài liệu workspace (`.docx`, `.odt`, `.rtf`, `.pdf`) dùng gói `internal/docparse`, còn `subagent_run` bị giới hạn song song bởi `agent.max_concurrent_subagents` (mặc định 4).
 
 ## 8. Giới hạn vai trò (không cần làm gì thêm)
 

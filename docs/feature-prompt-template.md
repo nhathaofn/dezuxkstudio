@@ -37,6 +37,8 @@ Output: số ảnh đã xử lý, dung lượng trước/sau từng file, lỗi 
 
 Yêu cầu:
 - Báo tiến độ theo từng ảnh (progress.Report), xử lý dạng stream (không load hết vào RAM)
+- Kiểm tra mọi đường dẫn đọc/ghi cục bộ qua engine.CheckFile(ctx, path, write) (và dùng engine.ImageInputRef / engine.ResolveMediaPath nếu nhận media ref)
+- DTO/hằng số node chia sẻ với contract đặt trong internal/contracts/nodes_dto.go (tách khỏi internal/tools/*)
 - UI đọc Default từ spec, có đủ i18n en/vi
 - Test: chạy node thật với ảnh mẫu; test agent gọi workflow_run_node chạy được; inplace=true phải sinh approval
 ```
@@ -70,5 +72,6 @@ Vì vậy phần "mục đích" và "khi nào dùng" là phần nên viết kỹ
 
 1. Node có trong danh sách `nodes` của `workflow.New` (dạng node), hoặc có MCP tool trong
    `internal/service/agent/mcp_tools.go` (dạng khác).
-2. Có test chứng minh thao tác Destructive sinh approval.
+2. Có test chứng minh thao tác Destructive sinh approval (và test `engine.CheckFile` nếu node chạm vào file cục bộ).
 3. Mở chat agent trong app, hỏi "bạn làm được những gì?": tính năng mới phải có trong danh sách.
+4. Chạy `task check` (hoặc đặt `$env:GOTMPDIR="$PWD\build\.gotmp"` khi chạy `go test` trực tiếp trên Windows).
