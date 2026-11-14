@@ -105,9 +105,9 @@ and merge duplicated mechanisms into shared packages. Rules are in `.agents/rule
 ## Known gaps
 - Portable `tools/` next to the executable is still searched (violates the paths rule; kept for portable builds).
 - Startup update check reports an error when the feed has no release.
-- `--mode server` trust boundary covers files touched by nodes and the trusted-folder list only. Admin actions such as `binaries:set_path` and `system:open_folder` still trust any client holding the token; fine for an owner-run server, must be locked before serving untrusted clients.
 - `go test -race` runs only in CI (no cgo toolchain on the dev machine); the watermark streaming node relies on it.
-- Gaps closed in M6 (see below): swallowed agent bootstrap errors, half-open WebSocket detection, watermark whole-batch memory, protocol rule §13.
+- Gaps closed in M6: swallowed agent bootstrap errors, half-open WebSocket detection, watermark whole-batch memory, protocol rule §13.
+- Gaps closed in M7: `--mode server` admin actions locked under `server.allow_host_admin` (F43), SSRF redirect hopping prevented (F44), database foreign keys and cascade cleanup enforced (F51).
 
 ---
 
@@ -147,3 +147,25 @@ and rule violations found in the 2026-11 audit.
 | F40 | Test files renamed by domain; test docs refreshed | `test/`, `TEST_READY.md`, `TEST_INFRA.md` | DONE |
 | F41 | Review fixes: node specs reload on every connect (latest load wins); `output_dir` anchored to media before guard + write; trusted folders locked in server mode; agent error banner dismissible; liveness ping send guarded | `bootstrap.ts`, `useNodeSpecs.ts`, `tools/watermark/node.go`, `modules/agent.go`, `AgentDrawer.tsx`, `connection.ts` | DONE |
 | F42 | Agent drawer shows trusted folders read-only unless the desktop app runs on its own (non-server) core | `features/agent/AgentDrawer.tsx` | DONE |
+
+---
+
+# Milestone M7: Architectural Hardening, Domain Boundaries & Subsystem Decoupling (Phases 1–5)
+
+## Goal
+Harden security boundaries, eliminate cross-package duplication, establish clean domain/service layer abstractions, decouple frontend Zustand stores, enforce relational database integrity, and establish unified English architectural documentation.
+
+## Feature Inventory
+| # | Feature | Where | Status |
+|---|---------|-------|--------|
+| F43 | Server mode admin lock via `server.allow_host_admin` (locks `system:open_folder`, `binaries:set_path`, `agent:set_path`, and 6 skill/subagent mutators) | `internal/config`, `internal/realtime/modules`, `internal/contracts` | DONE |
+| F44 | HTTP client SSRF redirect protection with `WithRedirectGuard` & dial guard blocking private/link-local/multicast hops | `internal/httpclient` | DONE |
+| F45 | Document parsing bounds & caps for Office/PDF formats (`maxDocBytes`, `maxTextBytes`, decompression zip bomb defense) | `internal/docparse` | DONE |
+| F46 | Media staging upload size caps (`server.max_media_upload_bytes`) and automatic background TTL pruning (`server.media_staging_ttl`) | `internal/server/handlers/media.go` | DONE |
+| F47 | Deduplication of shared runtime paths into `internal/paths`, subprocess execution into `internal/proc`, and executable discovery into `internal/lookup` | `internal/paths`, `internal/proc`, `internal/lookup` | DONE |
+| F48 | Domain layer modularization separating core domain types and persistence from business orchestration | `internal/domain/provider`, `internal/domain/agent`, `internal/domain/mediagen`, `internal/domain/preferences` | DONE |
+| F49 | Service layer extraction isolating orchestration logic (`service/provider`, `service/agent`, `service/system`, `service/diagnostics`) | `internal/service/*` | DONE |
+| F50 | Frontend monolithic store decomposition into dedicated Zustand slices (`useProvidersStore`, `useAgentCustomizationsStore`, `useAgentDrawerStore`) | `frontend/src/features/providers`, `frontend/src/features/agent` | DONE |
+| F51 | SQLite relational schema integrity migration (`014_agent_foreign_keys.sql`) with foreign key constraints, `ON DELETE CASCADE`, and pre-014 orphan cleanup | `internal/storage/sqlite` | DONE |
+| F52 | Comprehensive English architecture blueprint & unified English documentation (`docs/architecture.md`, `README.md`, `docs/*.md`) | `docs/architecture.md`, `docs/*` | DONE |
+
