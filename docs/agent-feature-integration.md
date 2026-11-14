@@ -1,70 +1,67 @@
-# Cho agent dùng được tính năng mới (không cần viết code riêng cho agent)
+# Exposing Features to the Agent (No Agent-Specific Code Required)
 
-DezuxkStudio Assistant (agent) **không có danh sách tính năng viết cứng**. Ở mỗi lượt, agent đọc các tính năng
-đã đăng ký trong workflow engine qua tool `workflow_list_specs`, rồi chạy chúng qua `workflow_run_node` /
-`workflow_run_graph`. Các tool này đi **đúng luồng mà UI dùng** (`workflow.Service.RunNode` → `engine.Registry`).
+The DezuxkStudio Assistant (agent) **does not maintain a hardcoded list of features**. On every conversation turn, the agent dynamically discovers registered capabilities in the workflow engine via `workflow_list_specs`, and executes them via `workflow_run_node` or `workflow_run_graph`. These tools traverse the **exact same code path used by the UI** (`workflow.Service.RunNode` → `engine.Registry`).
 
-Vì vậy: **một tính năng mới được viết dưới dạng node và khai báo `engine.Spec` đầy đủ thì agent dùng được ngay.**
+Therefore: **Any new feature implemented as an engine node with an `engine.Spec` is immediately available to the agent.**
 
-Muốn nhờ AI code thêm tính năng: dùng mẫu prompt trong [feature-prompt-template.md](feature-prompt-template.md).
+To prompt an AI assistant to implement a new feature, refer to the template in [feature-prompt-template.md](feature-prompt-template.md).
 
 ---
 
-## 1. Checklist khi thêm một node mới
+## 1. Checklist for Adding a New Node
 
-1. Viết node trong `internal/tools/<ten_tinh_nang>/node.go` bằng `engine.Typed(spec, func(ctx, In) (Out, error))`. Nếu DTO / hằng số `NodeType*` được chia sẻ với `internal/contracts` (để frontend hoặc runtime sinh type), đặt chúng trong `internal/contracts/nodes_dto.go` và alias sang package tool (giữ `contracts` độc lập với `internal/tools/*`).
-2. Thêm node vào danh sách `nodes` trong `workflow.New` (`internal/service/workflow/service.go`).
-3. Khai báo `engine.Spec` đầy đủ (mục 2 bên dưới). Đây là "hợp đồng" duy nhất mà agent đọc.
-   `engine.ValidateSpec` kiểm tra spec lúc khởi động: thiếu `Description`, `select` không có `Options`,
-   `Default` sai, `Destructive` không phải toggle hoặc mặc định `true`… thì app **không khởi động**.
-4. Chạy `task generate` (hoặc `go run ./cmd/contractgen`) nếu đổi struct trong `internal/engine` / `internal/contracts`.
-5. UI của tính năng nên dùng đúng `Default` / `Options` trong spec. Tốt nhất là đọc từ spec, để UI và agent không bị lệch nhau.
-6. Thêm test như `internal/service/agent/access_test.go` (`TestWorkflowRunNode…`), dùng `fakeWorkflow{specs: ...}` với spec thật của node.
+1. **Implement Node**: Create your node in `internal/tools/<feature_name>/node.go` using `engine.Typed(spec, func(ctx context.Context, in In) (out Out, err error))`. If DTOs or `NodeType*` constants are shared across boundaries (e.g. for frontend or runtime contracts), place them in `internal/contracts/nodes_dto.go` and alias them in your tool package (keeping `internal/contracts` decoupled from `internal/tools/*`).
+2. **Register Node**: Register the node within `workflow.New(...)` in `internal/service/workflow/service.go`.
+3. **Declare Complete `engine.Spec`**: Provide complete specifications (see Section 2). This is the sole contract parsed by the agent. `engine.ValidateSpec` validates all specs on application startup: missing `Description`, `select` without `Options`, incorrect `Default`, or non-toggle `Destructive` flags will **cause startup validation to fail**.
+4. **Regenerate Contracts**: Run `task generate` (or `go run ./cmd/contractgen`) if you modify structs in `internal/engine` or `internal/contracts`.
+5. **UI Alignment**: The frontend UI for the feature must use the exact `Default` and `Options` values specified in the spec. Deriving UI defaults directly from the spec guarantees zero divergence between manual UI workflows and autonomous agent operations.
+6. **Add Unit & Agent Tests**: Add test cases following `internal/service/agent/access_test.go` (`TestWorkflowRunNode...`), using `fakeWorkflow{specs: ...}` with the node's real spec.
 
-Không cần sửa `internal/service/agent` cho từng node.
+No modifications to `internal/service/agent` are required when adding new processing nodes.
 
-## 2. Khai báo `engine.Spec` để agent hiểu đúng
+---
 
-| Trường | Agent dùng để làm gì | Lưu ý |
+## 2. Declaring `engine.Spec` for Clear Agent Comprehension
+
+| Field | Purpose for the Agent | Guidelines |
 |---|---|---|
-| `Type` | Định danh duy nhất, ví dụ `tool.watermark_remover` | Không đổi sau khi phát hành |
-| `Label` | Tên hiển thị, dùng trong bảng Approve | Ngắn, rõ ràng |
-| `Description` | Agent đọc để biết **khi nào** dùng node này | Viết rõ tính năng làm gì và nhận loại file nào |
-| `Inputs[]` (`Port`) | Agent truyền đường dẫn file/thư mục vào đây | Xem mục 3 |
-| `Params[]` (`Param`) | Các thiết lập | Xem mục 4 |
-| `Outputs[]` | Mô tả kết quả | |
+| `Type` | Unique identifier (e.g. `tool.watermark_remover`) | Immutable once published. |
+| `Label` | Display name shown in UI and Approval dialogs | Keep concise and self-explanatory. |
+| `Description` | Semantic trigger condition read by the LLM | Clearly state what the node does and which file types it accepts. |
+| `Inputs[]` (`engine.Port`) | File, directory, or media inputs | See Section 3. |
+| `Params[]` (`engine.Param`) | Execution configuration parameters | See Section 4. |
+| `Outputs[]` | Output descriptors | Document result shapes accurately. |
 
-## 3. Cổng input (`engine.Port`)
+---
 
-- `Type`: `image` / `video` / `media` (ảnh hoặc video) / `text`.
-  - Với cổng media, agent có thể truyền **đường dẫn file, đường dẫn thư mục, hoặc danh sách**. Server tự mở thư mục thành
-    danh sách file đúng loại (sắp theo tên; bỏ qua file code, file bí mật, thư mục `.git`…). Có tham số `recursive` của tool
-    để lấy cả thư mục con. Node chỉ nhận các đường dẫn file tuyệt đối đã được kiểm tra.
-  - Đường dẫn tương đối hoặc tiền tố `/media/...` được phân giải thống nhất qua `engine.ResolveMediaPath` vào thư mục media của app; đầu vào ảnh/danh sách ảnh dùng `engine.ImageInputRef` / `engine.ImageInputRefs`.
-  - Cổng `text` được chuyển nguyên giá trị.
-- `Multiple: true`: nhận nhiều file (batch). Nếu node có cả cổng đơn lẫn cổng nhiều, agent truyền nhiều file vào cổng đơn
-  sẽ nhận lỗi gợi ý dùng cổng nhiều.
-- `Optional: false`: bắt buộc. Thiếu thì agent nhận lỗi rõ ràng.
+## 3. Input Ports (`engine.Port`)
 
-Giới hạn: tối đa `maxNodeInputFiles` (10.000) file cho mỗi lần chạy.
+- **`Type`**: `image`, `video`, `media` (either image or video), or `text`.
+  - For media ports, the agent can supply **a single file path, a directory path, or an array of paths**. The server automatically expands directory paths into matching media files (sorted alphabetically, filtering out code files, secrets, `.git`, etc.). The agent tool accepts an optional `recursive: true` parameter to traverse subdirectories. The node receives only sanitized, validated absolute file paths.
+  - Relative paths or `/media/...` URLs are resolved deterministically against the application media directory using `engine.ResolveMediaPath`. Image inputs and collections use `engine.ImageInputRef` and `engine.ImageInputRefs`.
+  - `text` ports pass strings unmodified.
+- **`Multiple: true`**: Accepts batch files. If a node defines both single-item and multi-item ports, providing multiple files to a single-item port produces an actionable error guiding the agent to use the multi-item port.
+- **`Optional: false`**: Mandatory input. If omitted, the agent receives an immediate validation error.
 
-## 4. Thiết lập (`engine.Param`)
+Limit: A maximum of `maxNodeInputFiles` (10,000 files) can be processed per execution.
 
-| Trường | Ý nghĩa với agent |
+---
+
+## 4. Settings & Parameters (`engine.Param`)
+
+| Field | Meaning to the Agent |
 |---|---|
-| `Kind` | `toggle` → bool, `integer` → số nguyên, `select` → một trong `Options`, `text` → chuỗi |
-| `Options` | **Bắt buộc với `select`.** Giá trị ngoài danh sách bị từ chối (không phân biệt hoa/thường) |
-| `Default` | **Giá trị mặc định giống UI**, dạng chuỗi (`"false"`, `"0"`, `"bottom-right"`). Agent không truyền thì server tự điền |
-| `Min` / `Max` | Giới hạn của `integer`. Ngoài khoảng sẽ bị từ chối |
-| `Role: engine.ParamRoleOutputDir` | Tham số là **thư mục ghi kết quả**: được kiểm tra qua `AccessPolicy` và không được là file |
-| `Destructive: true` | Toggle này khi bật sẽ **sửa/ghi đè file gốc của người dùng** → luôn chờ người dùng bấm **Approve** |
-| `Secret: true` | Tham số text chứa thông tin đăng nhập (API key...). Không hiện trong summary hay thẻ Approve, và bị xoá khỏi lịch sử chat sau khi chạy. Không được có `Default` |
+| `Kind` | `engine.ParamToggle` (bool), `engine.ParamInteger` (int), `engine.ParamSelect` (enum), `engine.ParamText` (string). |
+| `Options` | **Mandatory for `select`**. Values not in this list are rejected (case-insensitive). |
+| `Default` | **Matches UI default values**, serialized as a string (`"false"`, `"0"`, `"bottom-right"`). If omitted by the agent, the server automatically populates it. |
+| `Min` / `Max` | Bounds for `integer`. Values outside this range are rejected. |
+| `Role: engine.ParamRoleOutputDir` | Indicates an **output destination directory**: validated against `AccessPolicy` and cannot point to an existing file. |
+| `Destructive: true` | Setting this toggle to true will **modify or overwrite the user's original files** $\rightarrow$ Always pauses execution to await user **Approval**. |
+| `Secret: true` | Parameter contains sensitive credentials (e.g. API keys). Redacted from logs, summaries, and approval cards, and purged from chat history upon turn completion. Must never define a `Default`. |
 
-Mọi key không có trong `Inputs` / `Params` đều bị từ chối. Vì vậy, các tham số tinh chỉnh nội bộ mà UI không hiển thị
-(ví dụ `min_score` của watermark) agent sẽ không dùng được. Đó là chủ ý, để agent đi đúng như UI.
+Any parameter not declared in `Inputs` or `Params` is rejected. Internal tuning knobs not exposed in the UI (e.g. internal algorithm thresholds) are deliberately omitted from the spec to ensure the agent adheres strictly to UI behavior.
 
-Ví dụ (watermark):
-
+Example (Watermark Remover):
 ```go
 Params: []engine.Param{
     {Name: "inplace", Label: "Overwrite original file", Kind: engine.ParamToggle, Default: "false", Destructive: true},
@@ -75,72 +72,59 @@ Params: []engine.Param{
 },
 ```
 
-## 5. Kết quả trả về của node
+---
 
-Agent **chỉ được báo cáo dựa trên kết quả tool trả về**. Vì vậy output của node nên có:
-- tổng số mục, số mục đã thay đổi;
-- danh sách theo từng file: đường dẫn vào, đường dẫn ra, trạng thái, lỗi (nếu có);
-- thông báo lỗi có thể hành động được (nói rõ sai gì và sửa thế nào), không chỉ "failed".
+## 5. Node Output & Result Contracts
 
-Node nên tôn trọng `ctx` (huỷ/timeout), kiểm tra mọi đường dẫn đọc/ghi cục bộ qua `engine.CheckFile(ctx, path, write)` (để `--mode server` áp dụng `AccessPolicy.CheckTrustedFile` cho client từ xa), báo tiến độ bằng `progress.Report(ctx, ...)` để không bị idle timeout khi chạy lâu (qua UI, duyệt agent hay MCP tool đều nhận được), ghi file bằng `fsutil.WriteFileAtomic`, và không tự ghi đè file gốc trừ khi
-có tham số `Destructive` được bật.
+The agent **reasons and reports strictly based on structured tool outputs**. Node outputs should include:
+- Total items processed and count of modified items.
+- Per-file breakdown: input path, output path, status, and error details (if any).
+- Actionable error messages clearly stating the root cause and remediation, rather than generic `"failed"` messages.
 
-## 6. Tính năng không phải dạng node (project, điều hướng UI, …)
+Nodes must respect `ctx.Done()` (cancellation/timeouts), check all local read/write paths via `engine.CheckFile(ctx, path, write)` (ensuring `--mode server` enforces `AccessPolicy.CheckTrustedFile` for remote clients), report streaming progress with `progress.Report(ctx, ...)`, write files atomically using `fsutil.WriteFileAtomic`, and never overwrite original files unless a `Destructive` flag is explicitly enabled.
 
-Những tính năng không phải "xử lý input → output" (quản lý project, mở màn hình, …) thì thêm **MCP tool** trong
-`internal/service/agent/mcp_tools.go`:
+---
 
-- Gọi vào service domain có sẵn (giống realtime module). Không viết lại logic trong agent.
-- Hành động phá huỷ hoặc thay đổi dữ liệu người dùng → `s.needsApproval(tool, title, summary, exec)`.
-- Đường dẫn → luôn qua `s.policy` (`Resolve`, `ValidateRead`, `ValidateWrite`, …).
-- Trả kết quả có cấu trúc bằng `mcpJSON(...)`, lỗi bằng `mcpError(...)`.
-- Cập nhật `buildCapabilitiesSnapshot` nếu muốn agent thấy tính năng đó trong `studio_list_capabilities`.
+## 6. Non-Node Capabilities (Navigation, Project Management, System)
 
-**Project (dự kiến):** khi có project, đưa thư mục các project vào `AccessPolicy.SetAllowedDirs(...)`, hoặc mở rộng
-nguồn "trusted roots". Agent sẽ tự làm việc tự do trong project mà không cần thay đổi gì khác.
+Capabilities that do not follow an `input → output` processing model (such as project management or window navigation) are exposed as **MCP Tools** in `internal/service/agent/mcp_tools.go`:
+- Delegate directly to existing domain services. Never re-implement business logic inside the agent package.
+- Destructive actions or user data modifications must trigger `s.needsApproval(tool, title, summary, exec)`.
+- All paths must pass through `s.policy` (`Resolve`, `ValidateRead`, `ValidateWrite`, etc.).
+- Return structured data using `mcpJSON(...)` and errors via `mcpError(...)`.
+- Register the tool in `buildCapabilitiesSnapshot` if it should appear in `mcp__dezuxk__studio_list_capabilities`.
 
-**Điều hướng UI (dự kiến):** agent hiện **không** có tool để chuyển màn hình. Nếu cần, thêm tool `ui_navigate(route)`
-phát một event realtime cho frontend. `route` phải lấy từ danh sách route có thật (`frontend/src/app/navigation.ts`),
-không cho agent truyền tự do.
+---
 
-## 7. Quyền truy cập file của agent (`AccessPolicy`)
+## 7. Filesystem Access Policy (`AccessPolicy`)
 
-| Vùng | Quyền |
+| Zone | Permissions |
 |---|---|
-| Ngoài thư mục tin cậy | **Từ chối hoàn toàn** (kể cả đọc/liệt kê/ghi/xoá) |
-| Thư mục tin cậy (workspace, media, thư mục người dùng thêm, sau này là project) | Liệt kê, đọc, ghi, sửa, di chuyển, xoá trực tiếp (không hỏi Approve cho file tool; chỉ hỏi **Approve** với tham số `Destructive` của node như `inplace` hoặc xoá credential) |
-| Luôn chặn bên trong thư mục tin cậy | Mã nguồn/script/file thực thi (trừ khi bật `DeveloperMode`), thông tin đăng nhập (`.ssh`, `.env`, khoá, kho mật khẩu), `AppData`/profile trình duyệt, thư mục hệ điều hành, dữ liệu nội bộ của DezuxkStudio |
+| **Outside Trusted Directories** | **Completely Denied** (Reading, writing, listing, or deleting). |
+| **Trusted Directories** (Workspace, media, user-approved folders) | Listing, reading, writing, moving, and deleting within authorized roots. Node operations marked `Destructive` still require explicit user approval. |
+| **Always Blocked Inside Trusted Directories** | Source code, scripts, binaries (unless in `DeveloperMode`), credentials (`.ssh`, `.env`, keyrings), browser profiles, OS directories, and DezuxkStudio internal application storage. |
 
-Danh sách nằm trong `internal/service/agent/access_policy.go` (`forbiddenExtensions`, `forbiddenFileNames`,
-`forbiddenSegmentNames`, `buildProtectedDirs`). Trong `--mode server`, `agent:add_allowed_dir` / `agent:remove_allowed_dir` luôn bị khóa (`ERR_UNAVAILABLE`), còn việc sửa skill/subagent dùng chung (`<data>/agent-customizations/`) cũng bị khóa trừ khi bật `server.allow_host_admin = true`. Đọc tài liệu workspace (`.docx`, `.odt`, `.rtf`, `.pdf`) dùng gói `internal/docparse`, còn `subagent_run` bị giới hạn song song bởi `agent.max_concurrent_subagents` (mặc định 4).
+Security rules are enforced by `internal/service/agent/access_policy.go` (`forbiddenExtensions`, `forbiddenFileNames`, `forbiddenSegmentNames`, `buildProtectedDirs`). In `--mode server`, `agent:add_allowed_dir` and `agent:remove_allowed_dir` are strictly locked (`ERR_UNAVAILABLE`), and editing shared customizations (`<data>/agent-customizations/`) is denied unless `server.allow_host_admin` is enabled. Document reading in workspace directories (.docx, .odt, .rtf, .pdf) uses `internal/docparse`, and parallel subagent execution is bounded by `agent.max_concurrent_subagents` (default 4).
 
-## 8. Giới hạn vai trò (không cần làm gì thêm)
+---
 
-Mọi đầu ra của agent đi qua `code_guard.go`: code và lệnh terminal bị chặn trước khi tới UI, lịch sử chat hoặc file.
+## 8. Safety & Policy Guardrails
 
-### Cấu trúc system prompt (`internal/service/agent/profile.go`)
+All raw text output generated by external agent CLIs passes through `code_guard.go`. Prohibited code blocks or unauthorized shell commands are intercepted before reaching the UI, conversation history, or filesystem.
 
-System prompt được ghép theo lớp, phần ổn định đặt trước để provider dùng lại được cache (tốn ít hạn mức hơn):
+### Layered System Prompt Structure (`internal/service/agent/profile.go`)
 
-| Lớp | Nguồn | Nội dung |
+System prompts are assembled in stable layers to maximize prefix prompt caching across model providers:
+
+| Layer | Source | Contents |
 |---|---|---|
-| `<policy>` | `profile/policy.md` | **Chỉ quy tắc của ứng dụng**: phạm vi, giới hạn cứng, an toàn, trung thực. Không tên tool, không tính năng, không ngôn ngữ cụ thể. `{{app}}` được thay bằng tên sản phẩm |
-| `<application>` | lúc chạy | Tên, phiên bản, nền tảng, ngôn ngữ giao diện |
-| `<features>` | `engine.Spec` của các node | Một dòng cho mỗi tính năng: type, tên, mô tả, input, setting |
-| Theo lượt | `UIContext` | Ngữ cảnh màn hình, **chỉ gửi khi thay đổi** trong cùng một phiên |
+| `<policy>` | `profile/policy.md` | **Application invariant rules**: scope, hard boundaries, truthfulness. Tool names and features are forbidden. `{{app}}` expands to the product name. |
+| `<application>` | Runtime | Name, version, OS platform, active UI language. |
+| `<features>` | Registered `engine.Spec`s | Dynamic single-line summary per capability: type, name, description, inputs, settings. |
+| Per Turn | `UIContext` | Screen context, sent **only when changed** within a session. |
 
-Quy tắc khi sửa:
-- Hướng dẫn dùng một tool → viết vào mô tả của tool đó trong `mcp_tools.go`, không viết vào `policy.md`.
-- Agent cần hiểu thêm về một tính năng → viết vào `Description` của node; nó tự vào lớp `<features>`.
-- Câu thông báo hiển thị cho người dùng → khóa i18n ở frontend (`agent.notice.*`, `agent.err.*`), backend chỉ gửi khóa.
-- `policy.md` chỉ sửa khi đổi quy tắc của ứng dụng. Test `TestPolicyIsRulesOnly` chặn việc viết cứng tên tool, tính năng hoặc chữ không phải tiếng Anh vào đó.
-
-## 9. Kiểm thử với model thật
-
-```powershell
-# Antigravity đã đăng nhập trong app (dùng profile isolated của app)
-$env:DEZUXK_LIVE_AGY="1"; go test -run TestLiveAgyFeatures -v -timeout 40m ./internal/service/agent/
-
-# Bộ red-team (cần API key test của provider)
-$env:DEZUXK_REDTEAM="1"; $env:DEZUXK_TEST_GEMINI_API_KEY="..."; go test -run TestLiveRedTeam -v ./internal/service/agent/
-```
+### Editing Principles:
+- Tool usage guidelines belong in tool descriptions in `mcp_tools.go`, never in `policy.md`.
+- Capability descriptions belong in `engine.Spec.Description`; they automatically populate the `<features>` block.
+- User-visible text must use frontend i18n keys (`agent.notice.*`, `agent.err.*`).
+- `policy.md` is strictly reserved for core system invariants. The `TestPolicyIsRulesOnly` test guarantees that tool names, feature specifics, and non-English text never pollute `policy.md`.

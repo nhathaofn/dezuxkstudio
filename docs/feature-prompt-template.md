@@ -1,77 +1,88 @@
-# Mẫu prompt: thêm tính năng mà agent trong app điều khiển được
+# Feature Specification Prompt Templates (Agent-Accessible Capabilities)
 
-Quy tắc kỹ thuật nằm trong `.agents/rules/architecture.md` (luôn được nạp), nên prompt chỉ cần nói rõ:
-**tính năng làm gì, dạng nào, agent được tự làm gì, cái gì phải chờ Approve.**
-Chi tiết kỹ thuật: [agent-feature-integration.md](agent-feature-integration.md).
+Technical design rules are strictly enforced in `.agents/rules/architecture.md` and [docs/architecture.md](architecture.md). When prompting an AI agent to implement a new capability, you only need to specify:
+**What the feature does, its execution shape, autonomous agent permissions, and actions requiring explicit user Approval.**
 
-## 1. Mẫu ngắn
+For comprehensive technical requirements, refer to [docs/agent-feature-integration.md](agent-feature-integration.md).
 
-```
-Thêm tính năng <tên>: <mô tả 1–2 câu tính năng làm gì>.
-Tính năng phải để agent trong app điều khiển được, theo quy tắc §11 (architecture.md).
-- Input: <loại file / dữ liệu vào>
-- Output: <kết quả mong muốn>
-- Thiết lập người dùng chỉnh được: <danh sách, kèm giá trị mặc định>
-- Thao tác cần Approve: <ví dụ: ghi đè file gốc / xoá file>
-Làm trên branch mới, có test thật, chạy task check.
-```
+---
 
-## 2. Tính năng xử lý file (dạng engine node)
+## 1. Concise Prompt Template
 
-```
-Thêm tính năng "Nén ảnh" dạng engine node (input → output), agent dùng được qua workflow_* tool.
-
-Mục đích (để viết Description cho agent): giảm dung lượng ảnh JPG/PNG/WebP, giữ nguyên kích thước.
-Khi nào agent nên dùng: người dùng muốn ảnh nhẹ hơn, gửi qua mạng, tiết kiệm ổ đĩa.
-
-Input:
-- images: nhiều ảnh (Multiple), nhận cả thư mục
-
-Thiết lập (Param):
-- quality: integer 1–100, mặc định 80
-- format: select [giữ nguyên, jpg, webp], mặc định "giữ nguyên"
-- output_dir: thư mục kết quả (Role output_dir)
-- inplace: ghi đè file gốc, toggle, mặc định false, Destructive → phải chờ Approve
-
-Output: số ảnh đã xử lý, dung lượng trước/sau từng file, lỗi rõ ràng nếu file hỏng.
-
-Yêu cầu:
-- Báo tiến độ theo từng ảnh (progress.Report), xử lý dạng stream (không load hết vào RAM)
-- Kiểm tra mọi đường dẫn đọc/ghi cục bộ qua engine.CheckFile(ctx, path, write) (và dùng engine.ImageInputRef / engine.ResolveMediaPath nếu nhận media ref)
-- DTO/hằng số node chia sẻ với contract đặt trong internal/contracts/nodes_dto.go (tách khỏi internal/tools/*)
-- UI đọc Default từ spec, có đủ i18n en/vi
-- Test: chạy node thật với ảnh mẫu; test agent gọi workflow_run_node chạy được; inplace=true phải sinh approval
+```text
+Add feature <name>: <1-2 sentence summary of what the feature achieves>.
+The feature must be accessible to both UI workflows and the assistant agent, adhering to clean architecture rules.
+- Input: <file types / input data shape>
+- Output: <expected result structure & output artifacts>
+- User-configurable parameters: <list with UI default values and bounds>
+- Actions requiring Approval: <e.g. in-place file overwrite / permanent deletion>
+Implement on a new branch with automated test suites, and ensure `task check` passes.
 ```
 
-## 3. Tính năng không xử lý file (dạng action + MCP tool)
+---
 
+## 2. File-Processing Feature Template (Engine Node Model)
+
+```text
+Add an "Image Compressor" feature as an engine node (input → output), accessible to the agent via workflow_* tools.
+
+Purpose (for engine.Spec Description): Compresses JPG/PNG/WebP images to reduce file size while preserving resolution.
+When the agent should invoke it: When the user asks to reduce image size, optimize for web, or free up disk space.
+
+Input Ports:
+- images: Multiple image inputs (engine.Port with Multiple: true), accepts both file paths and directories.
+
+Parameters (engine.Param):
+- quality: integer between 1 and 100, default 80.
+- format: select [original, jpg, webp], default "original".
+- output_dir: directory path (engine.ParamRoleOutputDir).
+- inplace: overwrite original files in place, toggle, default false, Destructive: true → requires user Approval.
+
+Output:
+- Total items processed, per-file before/after byte sizes, and actionable error messages for corrupt files.
+
+Technical Requirements:
+- Report streaming progress per item using progress.Report; process as a stream (do not load all files into RAM simultaneously).
+- Validate all local read/write paths via engine.CheckFile(ctx, path, write) and resolve paths using engine.ResolveMediaPath / engine.ImageInputRef.
+- Declare shared node DTOs in internal/contracts/nodes_dto.go (decoupled from internal/tools/*).
+- UI must read Default values directly from spec, with 100% en/vi i18n parity.
+- Unit tests: execute node against sample images; test agent MCP workflow_run_node invocation; verify inplace=true creates a pending approval item.
 ```
-Thêm tính năng "Quản lý project": tạo, đổi tên, xoá, liệt kê project.
-Đây không phải dạng input → output, nên làm service + realtime action + MCP tool cho agent (§11).
 
-Agent được tự làm: liệt kê, tạo mới, đổi tên.
-Agent phải chờ Approve: xoá project, di chuyển file ra ngoài project.
-Thư mục project được thêm vào thư mục tin cậy của AccessPolicy.
-Thêm project vào studio_list_capabilities.
-Test: tool gọi đúng service, thao tác xoá sinh approval, đường dẫn đi qua policy.
+---
+
+## 3. Non-File Feature Template (Realtime Action + MCP Tool Model)
+
+```text
+Add a "Project Workspace Manager" feature: create, rename, delete, and list project directories.
+This is not an input → output media transform; implement it as a domain service + realtime module + agent MCP tool.
+
+Agent Permissions:
+- Autonomous: list projects, create new project, rename project.
+- Requires Approval: delete project, move files outside project boundary.
+
+Requirements:
+- Register project paths into AccessPolicy trusted roots.
+- Include project management in studio_list_capabilities.
+- Tests: verify MCP tool dispatches to service; verify delete operations pause for user Approval; verify path boundaries pass through AccessPolicy.
 ```
 
-## 4. Vì sao các mục trong prompt quan trọng
+---
 
-| Mục bạn ghi | Trở thành | Agent trong app nhờ đó biết |
+## 4. Why Prompt Sections Matter
+
+| Specified Field | Becomes | Purpose for the Agent |
 |---|---|---|
-| "Mục đích" và "khi nào dùng" | `Description` của spec | Khi nào nên chọn tính năng này |
-| Thiết lập kèm mặc định | `Param` có `Default`, `Options`, `Min`/`Max` | Gọi đúng như UI, không đoán tham số |
-| Thao tác cần Approve | `Destructive: true` hoặc `needsApproval` | Phải dừng lại chờ người dùng bấm Approve |
-| Output có số liệu và lỗi rõ | Kết quả có cấu trúc | Báo cáo đúng sự thật cho người dùng |
+| "Purpose" & "When to use" | `engine.Spec.Description` | Guides the LLM's semantic routing to pick this tool. |
+| Settings & Defaults | `engine.Param` (`Default`, `Options`, `Min`/`Max`) | Allows the agent to use identical defaults to the UI without guessing. |
+| Destructive actions | `Destructive: true` or `needsApproval` | Triggers the safety gate to pause turn and request user confirmation. |
+| Structured error shapes | Machine-readable outputs | Enables the agent to accurately report status and diagnose failures. |
 
-`engine.ValidateSpec` chặn spec khai báo thiếu, nhưng không kiểm tra được nội dung có hợp lý không.
-Vì vậy phần "mục đích" và "khi nào dùng" là phần nên viết kỹ nhất.
+---
 
-## 5. Kiểm tra sau khi làm xong
+## 5. Verification Checklist After Implementation
 
-1. Node có trong danh sách `nodes` của `workflow.New` (dạng node), hoặc có MCP tool trong
-   `internal/service/agent/mcp_tools.go` (dạng khác).
-2. Có test chứng minh thao tác Destructive sinh approval (và test `engine.CheckFile` nếu node chạm vào file cục bộ).
-3. Mở chat agent trong app, hỏi "bạn làm được những gì?": tính năng mới phải có trong danh sách.
-4. Chạy `task check` (hoặc đặt `$env:GOTMPDIR="$PWD\build\.gotmp"` khi chạy `go test` trực tiếp trên Windows).
+1. **Node Registered**: Verified in `workflow.New(...)` (for engine nodes), or declared in `internal/service/agent/mcp_tools.go` (for direct MCP tools).
+2. **Approval Verification**: Automated tests verify that `Destructive` operations generate approval requests.
+3. **Capability Discovery**: Asking the Assistant "What capabilities do you have?" in chat includes the new feature.
+4. **CI Gates Pass**: `$env:GOTMPDIR="$PWD\build\.gotmp"; task check` and `task test:race` pass with 0 errors.
