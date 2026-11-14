@@ -15,7 +15,6 @@ import (
 	domainmedia "app/internal/domain/mediagen"
 	domainprovider "app/internal/domain/provider"
 	"app/internal/progress"
-	providersvc "app/internal/service/provider"
 )
 
 type videoInputs struct {
@@ -153,7 +152,7 @@ func absInt(v int) int {
 }
 
 func (s *Service) genOpenAIVideo(ctx context.Context, t targetSpec, req domainmedia.VideoRequest, in videoInputs) ([]byte, string, error) {
-	base := providersvc.EnsureOpenAIBase(t.baseURL)
+	base := domainprovider.EnsureOpenAIBase(t.baseURL)
 	headers := map[string]string{"Authorization": "Bearer " + t.apiKey}
 	size := domainmedia.OpenAIVideoSize(req.AspectRatio, req.Resolution)
 	seconds := strconv.Itoa(req.DurationSec)
@@ -866,7 +865,7 @@ func (s *Service) genViduVideo(ctx context.Context, t targetSpec, req domainmedi
 }
 
 func (s *Service) genGrokVideo(ctx context.Context, t targetSpec, req domainmedia.VideoRequest, in videoInputs) ([]byte, string, error) {
-	base := providersvc.EnsureOpenAIBase(t.baseURL)
+	base := domainprovider.EnsureOpenAIBase(t.baseURL)
 	headers := map[string]string{"Authorization": "Bearer " + t.apiKey}
 
 	payload := map[string]any{

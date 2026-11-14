@@ -276,15 +276,7 @@ func (s *Service) SetDefault(ctx context.Context, p domain.Purpose, ref string) 
 }
 
 // ResolvedModel is everything a generation feature needs to call a model. Secrets stay in memory only.
-type ResolvedModel struct {
-	Purpose domain.Purpose
-	Ref     domain.ModelRef
-	Model   domain.Model
-	Limits  domain.Limits
-	// Exactly one of Builtin / Custom is set.
-	Builtin *Resolved
-	Custom  *ResolvedCustom
-}
+type ResolvedModel = domain.ResolvedModel
 
 // ResolveModel returns the model to use for a purpose: ref when given ("provider/model"), otherwise the
 // user's default for the purpose, otherwise auto. It fails with details.not_configured when nothing fits.

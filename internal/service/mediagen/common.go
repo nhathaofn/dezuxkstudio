@@ -28,7 +28,6 @@ import (
 	"app/internal/fsutil"
 	"app/internal/httpclient"
 	"app/internal/progress"
-	providersvc "app/internal/service/provider"
 )
 
 const (
@@ -37,9 +36,9 @@ const (
 	defaultPollPercentCap = 90.0
 )
 
-// ProviderResolver resolves configured models/credentials (satisfied by *providersvc.Service).
+// ProviderResolver resolves configured models/credentials (satisfied by service/provider.Service).
 type ProviderResolver interface {
-	ResolveModel(ctx context.Context, p domainprovider.Purpose, ref string) (providersvc.ResolvedModel, error)
+	ResolveModel(ctx context.Context, p domainprovider.Purpose, ref string) (domainprovider.ResolvedModel, error)
 	VertexToken(ctx context.Context, raw string) (accessToken, projectID string, expiresIn time.Duration, err error)
 }
 
@@ -362,7 +361,7 @@ func (s *Service) klingBearer(t targetSpec) (string, error) {
 		return t.apiKey, nil
 	}
 	if t.accessKey != "" && t.secretKey != "" {
-		tok, err := providersvc.KlingJWT(t.accessKey, t.secretKey, time.Now())
+		tok, err := domainprovider.KlingJWT(t.accessKey, t.secretKey, time.Now())
 		if err != nil {
 			return "", apperr.Wrap(apperr.CodeUnauthorized, "Failed to sign Kling JWT", err).
 				WithMsg("errors.mediagen.auth_failed", map[string]any{"provider": t.providerName})
