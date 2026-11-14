@@ -20,6 +20,7 @@ import (
 
 	"app/internal/apperr"
 	domain "app/internal/domain/provider"
+	"app/internal/httpclient"
 	"app/internal/secrets"
 )
 
@@ -61,31 +62,13 @@ func New(o Options) (*Service, error) {
 	return &Service{
 		repo:          o.Repo,
 		secrets:       o.Secrets,
-		client:        withRedirectGuard(o.Client),
+		client:        httpclient.WithRedirectGuard(o.Client, domain.ValidateOutboundURL),
 		testTimeout:   o.TestTimeout,
 		limitDefaults: o.LimitDefaults,
 		onChanged:     o.OnChanged,
 		auto:          newAutoCheck(),
 		autoOn:        o.AutoCheck,
 	}, nil
-}
-
-func withRedirectGuard(base *http.Client) *http.Client {
-	c := *base
-	prev := base.CheckRedirect
-	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if err := domain.ValidateOutboundURL(req.URL.String()); err != nil {
-			return fmt.Errorf("blocked redirect target: %w", err)
-		}
-		if prev != nil {
-			return prev(req, via)
-		}
-		if len(via) >= 10 {
-			return errors.New("stopped after 10 redirects")
-		}
-		return nil
-	}
-	return &c
 }
 
 func (s *Service) changed() {

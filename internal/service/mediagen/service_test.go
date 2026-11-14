@@ -764,3 +764,131 @@ func TestVertexTokenCaching(t *testing.T) {
 		t.Fatalf("expected VertexToken to be cached (calls=%d, want 1)", resolver.vertexHit.Load())
 	}
 }
+
+func TestNewDerivesDefaultsFromConfig(t *testing.T) {
+	def := config.Default(config.ModeDesktop).MediaGen
+
+	svc := New(Options{})
+	if svc.cfg.RequestTimeout != def.RequestTimeout {
+		t.Fatalf("RequestTimeout = %v, want %v", svc.cfg.RequestTimeout, def.RequestTimeout)
+	}
+	if svc.cfg.VideoTimeout != def.VideoTimeout {
+		t.Fatalf("VideoTimeout = %v, want %v", svc.cfg.VideoTimeout, def.VideoTimeout)
+	}
+	if svc.cfg.VideoPollInterval != def.VideoPollInterval {
+		t.Fatalf("VideoPollInterval = %v, want %v", svc.cfg.VideoPollInterval, def.VideoPollInterval)
+	}
+	if svc.cfg.MaxOutputBytes != def.MaxOutputBytes {
+		t.Fatalf("MaxOutputBytes = %d, want %d", svc.cfg.MaxOutputBytes, def.MaxOutputBytes)
+	}
+	if svc.cfg.MaxReferenceBytes != def.MaxReferenceBytes {
+		t.Fatalf("MaxReferenceBytes = %d, want %d", svc.cfg.MaxReferenceBytes, def.MaxReferenceBytes)
+	}
+	if svc.httpClient == nil {
+		t.Fatal("expected default httpClient to be constructed")
+	}
+	if svc.httpClient.Timeout != 0 {
+		t.Fatalf("httpClient.Timeout = %v, want 0 (streaming client from httpclient.New)", svc.httpClient.Timeout)
+	}
+	if svc.httpClient.CheckRedirect == nil {
+		t.Fatal("expected CheckRedirect guard on default httpClient")
+	}
+
+	partial := New(Options{
+		Config: config.MediaGenConfig{
+			RequestTimeout: 45 * time.Second,
+			MaxOutputBytes: 128 << 20,
+		},
+	})
+	if partial.cfg.RequestTimeout != 45*time.Second {
+		t.Fatalf("partial RequestTimeout = %v, want 45s", partial.cfg.RequestTimeout)
+	}
+	if partial.cfg.MaxOutputBytes != 128<<20 {
+		t.Fatalf("partial MaxOutputBytes = %d, want %d", partial.cfg.MaxOutputBytes, 128<<20)
+	}
+	if partial.cfg.VideoTimeout != def.VideoTimeout ||
+		partial.cfg.VideoPollInterval != def.VideoPollInterval ||
+		partial.cfg.MaxReferenceBytes != def.MaxReferenceBytes {
+		t.Fatalf("partial config did not fall back to config.Default: %+v", partial.cfg)
+	}
+
+	baseClient := &http.Client{Timeout: 12 * time.Second}
+	withBase := New(Options{HTTPClient: baseClient})
+	if baseClient.CheckRedirect != nil {
+		t.Fatal("New must not mutate caller-supplied HTTPClient")
+	}
+	if withBase.httpClient.Timeout != 12*time.Second || withBase.httpClient.CheckRedirect == nil {
+		t.Fatalf("expected cloned client preserving timeout and adding CheckRedirect, got timeout=%v guard=%v",
+			withBase.httpClient.Timeout, withBase.httpClient.CheckRedirect != nil)
+	}
+}
+
+func TestMediaGenRedirectValidationAndHopCap(t *testing.T) {
+	var loopHits atomic.Int32
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/unsafe/v1/images/generations":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"url":"` + srv.URL + `/dl/meta-redir"}]}`))
+		case "/dl/meta-redir":
+			http.Redirect(w, r, "http://metadata.google.internal/computeMetadata/v1/", http.StatusFound)
+		case "/loop/v1/images/generations":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"url":"` + srv.URL + `/dl/loop"}]}`))
+		case "/dl/loop":
+			loopHits.Add(1)
+			http.Redirect(w, r, srv.URL+"/dl/loop", http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	t.Run("blocks unsafe redirect target", func(t *testing.T) {
+		resolver := &fakeResolver{
+			resolveFn: func(context.Context, domainprovider.Purpose, string) (providersvc.ResolvedModel, error) {
+				return providersvc.ResolvedModel{
+					Purpose: domainprovider.PurposeImage,
+					Model:   domainprovider.Model{ModelID: "m", Capability: domainprovider.CapabilityImage},
+					Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDOpenAI, BaseURL: srv.URL + "/unsafe", Secrets: map[string]string{"api_key": "supersecret"}},
+				}, nil
+			},
+		}
+		svc, _ := testService(t, resolver)
+		_, err := svc.GenerateImage(context.Background(), domainmedia.ImageRequest{Prompt: "test"})
+		if err == nil {
+			t.Fatal("expected unsafe metadata redirect to be blocked")
+		}
+		if !strings.Contains(err.Error(), "blocked redirect target") {
+			t.Fatalf("expected blocked redirect target error, got %v", err)
+		}
+		if strings.Contains(err.Error(), "supersecret") {
+			t.Fatalf("secret leaked in error message: %v", err)
+		}
+	})
+
+	t.Run("enforces 10 redirect hop cap", func(t *testing.T) {
+		loopHits.Store(0)
+		resolver := &fakeResolver{
+			resolveFn: func(context.Context, domainprovider.Purpose, string) (providersvc.ResolvedModel, error) {
+				return providersvc.ResolvedModel{
+					Purpose: domainprovider.PurposeImage,
+					Model:   domainprovider.Model{ModelID: "m", Capability: domainprovider.CapabilityImage},
+					Builtin: &providersvc.Resolved{ProviderID: domainprovider.IDOpenAI, BaseURL: srv.URL + "/loop", Secrets: map[string]string{"api_key": "k"}},
+				}, nil
+			},
+		}
+		svc, _ := testService(t, resolver)
+		_, err := svc.GenerateImage(context.Background(), domainmedia.ImageRequest{Prompt: "test"})
+		if err == nil {
+			t.Fatal("expected redirect loop to stop after 10 redirects")
+		}
+		if !strings.Contains(err.Error(), "stopped after 10 redirects") {
+			t.Fatalf("expected 10-redirect cap error, got %v", err)
+		}
+		if loopHits.Load() != 10 {
+			t.Fatalf("loopHits = %d, want 10", loopHits.Load())
+		}
+	})
+}

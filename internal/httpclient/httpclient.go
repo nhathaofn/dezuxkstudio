@@ -3,6 +3,7 @@
 package httpclient
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -55,5 +56,31 @@ func rejectLinkLocalControl(_, address string, _ syscall.RawConn) error {
 func WithTimeout(base *http.Client, timeout time.Duration) *http.Client {
 	c := *base
 	c.Timeout = timeout
+	return &c
+}
+
+// WithRedirectGuard clones base and validates every redirect hop (capped at 10 hops).
+func WithRedirectGuard(base *http.Client, validateURL func(raw string) error) *http.Client {
+	if base == nil {
+		base = &http.Client{}
+	}
+	c := *base
+	prev := base.CheckRedirect
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if validateURL != nil {
+			if err := validateURL(req.URL.String()); err != nil {
+				return fmt.Errorf("blocked redirect target: %w", err)
+			}
+		}
+		if prev != nil {
+			if err := prev(req, via); err != nil {
+				return err
+			}
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
 	return &c
 }

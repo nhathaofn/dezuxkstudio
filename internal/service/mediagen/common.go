@@ -26,6 +26,7 @@ import (
 	domainmedia "app/internal/domain/mediagen"
 	domainprovider "app/internal/domain/provider"
 	"app/internal/fsutil"
+	"app/internal/httpclient"
 	"app/internal/progress"
 	providersvc "app/internal/service/provider"
 )
@@ -74,26 +75,11 @@ type Service struct {
 func New(o Options) *Service {
 	client := o.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 3 * time.Minute}
+		client = httpclient.New(config.Default(config.ModeDesktop).Network)
 	}
-	clientCopy := withRedirectGuard(client)
+	clientCopy := httpclient.WithRedirectGuard(client, domainprovider.ValidateOutboundURL)
 
-	cfg := o.Config
-	if cfg.RequestTimeout <= 0 {
-		cfg.RequestTimeout = 2 * time.Minute
-	}
-	if cfg.VideoTimeout <= 0 {
-		cfg.VideoTimeout = 15 * time.Minute
-	}
-	if cfg.VideoPollInterval <= 0 {
-		cfg.VideoPollInterval = 4 * time.Second
-	}
-	if cfg.MaxOutputBytes <= 0 {
-		cfg.MaxOutputBytes = 256 << 20
-	}
-	if cfg.MaxReferenceBytes <= 0 {
-		cfg.MaxReferenceBytes = 20 << 20
-	}
+	cfg := withMediaGenDefaults(o.Config)
 
 	log := o.Logger
 	if log == nil {
@@ -111,19 +97,24 @@ func New(o Options) *Service {
 	}
 }
 
-func withRedirectGuard(base *http.Client) *http.Client {
-	c := *base
-	prev := base.CheckRedirect
-	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if err := domainprovider.ValidateOutboundURL(req.URL.String()); err != nil {
-			return fmt.Errorf("blocked redirect target: %w", err)
-		}
-		if prev != nil {
-			return prev(req, via)
-		}
-		return nil
+func withMediaGenDefaults(cfg config.MediaGenConfig) config.MediaGenConfig {
+	def := config.Default(config.ModeDesktop).MediaGen
+	if cfg.RequestTimeout <= 0 {
+		cfg.RequestTimeout = def.RequestTimeout
 	}
-	return &c
+	if cfg.VideoTimeout <= 0 {
+		cfg.VideoTimeout = def.VideoTimeout
+	}
+	if cfg.VideoPollInterval <= 0 {
+		cfg.VideoPollInterval = def.VideoPollInterval
+	}
+	if cfg.MaxOutputBytes <= 0 {
+		cfg.MaxOutputBytes = def.MaxOutputBytes
+	}
+	if cfg.MaxReferenceBytes <= 0 {
+		cfg.MaxReferenceBytes = def.MaxReferenceBytes
+	}
+	return cfg
 }
 
 type targetSpec struct {
