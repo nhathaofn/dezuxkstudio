@@ -84,19 +84,6 @@ func (r *fakeRepo) AppendChatMessage(_ context.Context, msg domainagent.ChatMess
 	return nil
 }
 
-func (r *fakeRepo) ListChatMessages(_ context.Context, limit int) ([]domainagent.ChatMessage, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if limit <= 0 || len(r.messages) <= limit {
-		cp := make([]domainagent.ChatMessage, len(r.messages))
-		copy(cp, r.messages)
-		return cp, nil
-	}
-	cp := make([]domainagent.ChatMessage, limit)
-	copy(cp, r.messages[len(r.messages)-limit:])
-	return cp, nil
-}
-
 func (r *fakeRepo) RedactChatMessages(_ context.Context, secret, replacement string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -358,7 +358,6 @@ type Repository interface {
 	GetAllCustomPaths(ctx context.Context) (map[ProviderID]string, error)
 	SetCustomPath(ctx context.Context, id ProviderID, customPath string) error
 	AppendChatMessage(ctx context.Context, msg ChatMessage) error
-	ListChatMessages(ctx context.Context, limit int) ([]ChatMessage, error)
 	ClearChatMessages(ctx context.Context) error
 	// RedactChatMessages replaces every occurrence of secret in stored chat text.
 	RedactChatMessages(ctx context.Context, secret, replacement string) error

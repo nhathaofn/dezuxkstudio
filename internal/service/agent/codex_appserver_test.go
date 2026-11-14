@@ -175,7 +175,7 @@ func TestCodexAppServerStreamsDeltasAndReusesThread(t *testing.T) {
 	if strings.Join(kinds, "|") != strings.Join(want, "|") {
 		t.Fatalf("events = %v, want %v (retried errors and the completed message must not be re-emitted)", kinds, want)
 	}
-	msgs, _ := repo.ListChatMessages(context.Background(), 10)
+	msgs, _ := repo.ListConversationMessages(context.Background(), svc.CurrentConversationID(), 10)
 	if len(msgs) != 1 || msgs[0].Text != "Xin chào bạn nhé" || msgs[0].Thought != "Thinking" {
 		t.Fatalf("persisted = %+v", msgs)
 	}
@@ -219,7 +219,7 @@ func TestCodexAppServerCancelInterruptsTurn(t *testing.T) {
 		t.Fatal("cancel must send turn/interrupt")
 	}
 	svc.endTurn(tr, errTurnCancelled)
-	if msgs, _ := repo.ListChatMessages(context.Background(), 10); len(msgs) != 1 || msgs[0].Text != "partial" {
+	if msgs, _ := repo.ListConversationMessages(context.Background(), svc.CurrentConversationID(), 10); len(msgs) != 1 || msgs[0].Text != "partial" {
 		t.Fatalf("partial reply must be kept, got %+v", msgs)
 	}
 }
