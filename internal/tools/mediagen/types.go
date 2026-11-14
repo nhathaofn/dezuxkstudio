@@ -34,66 +34,11 @@ type Options struct {
 
 // ImageRef accepts either a JSON string path or an engine.MediaRef object.
 type ImageRef struct {
-	engine.MediaRef
-}
-
-// UnmarshalJSON implements json.Unmarshaler.
-func (r *ImageRef) UnmarshalJSON(data []byte) error {
-	var s string
-	if err := json.Unmarshal(data, &s); err == nil {
-		if strings.TrimSpace(s) != "" {
-			r.MediaRef = engine.RefFor(strings.TrimSpace(s), engine.MediaImage)
-		}
-		return nil
-	}
-	var ref engine.MediaRef
-	if err := json.Unmarshal(data, &ref); err != nil {
-		return err
-	}
-	if ref.LocalURL != "" && ref.Kind == "" {
-		ref.Kind = engine.MediaImage
-	}
-	r.MediaRef = ref
-	return nil
+	engine.ImageInputRef
 }
 
 // ImageRefs accepts either a slice of strings/MediaRefs or a single string/MediaRef.
-type ImageRefs []engine.MediaRef
-
-// UnmarshalJSON implements json.Unmarshaler.
-func (r *ImageRefs) UnmarshalJSON(data []byte) error {
-	var singleStr string
-	if err := json.Unmarshal(data, &singleStr); err == nil {
-		if strings.TrimSpace(singleStr) != "" {
-			*r = []engine.MediaRef{engine.RefFor(strings.TrimSpace(singleStr), engine.MediaImage)}
-		}
-		return nil
-	}
-	var singleRef engine.MediaRef
-	if err := json.Unmarshal(data, &singleRef); err == nil && singleRef.LocalURL != "" {
-		if singleRef.Kind == "" {
-			singleRef.Kind = engine.MediaImage
-		}
-		*r = []engine.MediaRef{singleRef}
-		return nil
-	}
-	var rawList []json.RawMessage
-	if err := json.Unmarshal(data, &rawList); err != nil {
-		return fmt.Errorf("expected image list or path: %w", err)
-	}
-	out := make([]engine.MediaRef, 0, len(rawList))
-	for _, item := range rawList {
-		var img ImageRef
-		if err := json.Unmarshal(item, &img); err != nil {
-			return err
-		}
-		if img.LocalURL != "" {
-			out = append(out, img.MediaRef)
-		}
-	}
-	*r = out
-	return nil
-}
+type ImageRefs = engine.ImageInputRefs
 
 // ImageGenerateInput is the merged input+params contract for tool.generate_image.
 type ImageGenerateInput struct {

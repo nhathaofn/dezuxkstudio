@@ -4,7 +4,6 @@ package watermark
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,69 +32,11 @@ type Options struct {
 
 // RemoverImage accepts either an engine.MediaRef object or a plain string path.
 type RemoverImage struct {
-	engine.MediaRef
-}
-
-func (f *RemoverImage) UnmarshalJSON(data []byte) error {
-	if len(data) == 0 || string(data) == "null" {
-		return nil
-	}
-	var s string
-	if err := json.Unmarshal(data, &s); err == nil {
-		if s != "" {
-			f.MediaRef = engine.RefFor(s, engine.MediaImage)
-		}
-		return nil
-	}
-	return json.Unmarshal(data, &f.MediaRef)
+	engine.ImageInputRef
 }
 
 // RemoverImages accepts a string, []string, MediaRef, or []MediaRef.
-type RemoverImages []engine.MediaRef
-
-func (f *RemoverImages) UnmarshalJSON(data []byte) error {
-	if len(data) == 0 || string(data) == "null" {
-		return nil
-	}
-
-	// Try single string
-	var singleStr string
-	if err := json.Unmarshal(data, &singleStr); err == nil {
-		if singleStr != "" {
-			*f = []engine.MediaRef{engine.RefFor(singleStr, engine.MediaImage)}
-		}
-		return nil
-	}
-
-	// Try single MediaRef
-	var singleRef engine.MediaRef
-	if err := json.Unmarshal(data, &singleRef); err == nil && singleRef.LocalURL != "" {
-		*f = []engine.MediaRef{singleRef}
-		return nil
-	}
-
-	// Try array of strings
-	var strArr []string
-	if err := json.Unmarshal(data, &strArr); err == nil {
-		refs := make([]engine.MediaRef, 0, len(strArr))
-		for _, s := range strArr {
-			if s != "" {
-				refs = append(refs, engine.RefFor(s, engine.MediaImage))
-			}
-		}
-		*f = refs
-		return nil
-	}
-
-	// Try array of MediaRefs
-	var refArr []engine.MediaRef
-	if err := json.Unmarshal(data, &refArr); err == nil {
-		*f = refArr
-		return nil
-	}
-
-	return fmt.Errorf("cannot decode image list: %s", string(data))
-}
+type RemoverImages = engine.ImageInputRefs
 
 // RemoverInput is the input payload for the watermark remover node.
 type RemoverInput struct {
@@ -196,7 +137,7 @@ func NewNode(opts Options) engine.Node {
 		if targetDir != "" {
 			// Anchor a relative folder exactly like the input paths, so the file guard checks the
 			// same folder the node then creates and writes (never the server's working directory).
-			resolved := resolveFilePath(targetDir, opts.MediaDir)
+			resolved := engine.ResolveMediaPath(targetDir, opts.MediaDir)
 			if resolved == "" || !filepath.IsAbs(resolved) {
 				return RemoverOutput{}, engine.Invalid("output_dir must be an absolute path or a folder inside the media folder")
 			}
@@ -301,7 +242,7 @@ func NewNode(opts Options) engine.Node {
 
 // readInput resolves one input path, asks the caller's file guard for read access and loads it.
 func readInput(ctx context.Context, raw, mediaDir string) (string, []byte, error) {
-	resPath := resolveFilePath(raw, mediaDir)
+	resPath := engine.ResolveMediaPath(raw, mediaDir)
 	if resPath == "" {
 		return "", nil, fmt.Errorf("failed to read file: path %q is outside the media folder", filepath.Base(raw))
 	}
@@ -467,30 +408,4 @@ func replacePathVariants(msg, raw, replacement string) string {
 		}
 	}
 	return msg
-}
-
-func resolveFilePath(p, mediaDir string) string {
-	cleaned := filepath.Clean(p)
-	if filepath.IsAbs(cleaned) {
-		return cleaned
-	}
-
-	target := cleaned
-	trimmed := strings.TrimPrefix(p, "/")
-	trimmed = strings.TrimPrefix(trimmed, "\\")
-	if strings.HasPrefix(trimmed, "media/") || strings.HasPrefix(trimmed, "media\\") {
-		trimmed = strings.TrimPrefix(trimmed, "media/")
-		trimmed = strings.TrimPrefix(trimmed, "media\\")
-		target = filepath.Clean(trimmed)
-	}
-
-	if mediaDir != "" {
-		joined := filepath.Join(mediaDir, target)
-		rel, err := filepath.Rel(mediaDir, joined)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return ""
-		}
-		return joined
-	}
-	return cleaned
 }
