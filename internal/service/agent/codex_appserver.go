@@ -222,7 +222,22 @@ func (c *codexAppServer) write(v any) error {
 	return err
 }
 
+func decodeRPCResult(method string, res codexRPCResult, out any) error {
+	if res.err != nil {
+		return fmt.Errorf("codex %s failed: %w", method, res.err)
+	}
+	if out != nil && len(res.result) > 0 {
+		if err := json.Unmarshal(res.result, out); err != nil {
+			return fmt.Errorf("codex %s: decode result: %w", method, err)
+		}
+	}
+	return nil
+}
+
 func (c *codexAppServer) call(ctx context.Context, method string, params any, out any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	id := c.nextID.Add(1)
 	ch := make(chan codexRPCResult, 1)
 	c.mu.Lock()
@@ -241,16 +256,13 @@ func (c *codexAppServer) call(ctx context.Context, method string, params any, ou
 	}
 	select {
 	case res := <-ch:
-		if res.err != nil {
-			return fmt.Errorf("codex %s failed: %w", method, res.err)
-		}
-		if out != nil && len(res.result) > 0 {
-			if err := json.Unmarshal(res.result, out); err != nil {
-				return fmt.Errorf("codex %s: decode result: %w", method, err)
-			}
-		}
-		return nil
+		return decodeRPCResult(method, res, out)
 	case <-ctx.Done():
+		select {
+		case res := <-ch:
+			return decodeRPCResult(method, res, out)
+		default:
+		}
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
@@ -276,6 +288,9 @@ func (c *codexAppServer) setHandler(h func(method string, params json.RawMessage
 // ensureCodexAppServer returns a running, initialized app-server for this executable/profile/MCP endpoint,
 // restarting it when any of them changed or the process died.
 func (s *Service) ensureCodexAppServer(ctx context.Context, executable, profileRoot, workspaceDir, mcpURL, mcpToken string) (*codexAppServer, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// The base instructions are fixed when the process starts, so a changed prompt (interface
 	// language, installed features) starts a new process.
 	instructions := s.systemPrompt(ctx, domainagent.ProviderCodex)
@@ -301,15 +316,24 @@ func (s *Service) ensureCodexAppServer(ctx context.Context, executable, profileR
 	if err != nil {
 		return nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	args := append([]string{"app-server"}, codexPolicyArgsForMode(mcpURL, baseFile, s.limits.MCPToolTimeout, s.developerMode)...)
 	srv, err = s.spawnCodexAppServer(key, executable, args, providerEnv(domainagent.ProviderCodex, envMap), workspaceDir)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, fmt.Errorf("%w: start: %v", errCodexAppServerUnavailable, err)
 	}
 	initCtx, cancel := context.WithTimeout(ctx, s.limits.InitializeTimeout)
 	defer cancel()
 	if err := srv.initialize(initCtx, s.appVersion); err != nil {
 		srv.close()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, fmt.Errorf("%w: initialize: %v", errCodexAppServerUnavailable, err)
 	}
 
@@ -321,6 +345,9 @@ func (s *Service) ensureCodexAppServer(ctx context.Context, executable, profileR
 	}
 	s.codexServer = srv
 	s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return srv, nil
 }
 
@@ -339,6 +366,9 @@ func (s *Service) closeCodexAppServer() {
 // runCodexTurn streams one turn through `codex app-server`, falling back to `codex exec` when the
 // app-server cannot be used with this CLI.
 func (s *Service) runCodexTurn(ctx context.Context, executable, profileRoot, workspaceDir, mcpURL, mcpToken, messageID, prompt string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	unsupported := s.codexAppServerBroken[executable]
 	s.mu.Unlock()
@@ -350,11 +380,17 @@ func (s *Service) runCodexTurn(ctx context.Context, executable, profileRoot, wor
 		if !errors.Is(err, errCodexAppServerUnavailable) {
 			return err
 		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		// Remember per executable, so an old CLI does not pay the failed start on every turn.
 		s.log.Warn("agent: codex app-server unavailable, falling back to codex exec", "error", err)
 		s.mu.Lock()
 		s.codexAppServerBroken[executable] = true
 		s.mu.Unlock()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	return s.runCodexExecTurn(ctx, executable, profileRoot, workspaceDir, mcpURL, mcpToken, messageID, prompt)
 }
@@ -561,6 +597,9 @@ func (t *codexTurnState) handleItem(completed bool, item codexItem) {
 func (s *Service) runCodexAppServerTurn(ctx context.Context, srv *codexAppServer, workspaceDir, messageID, prompt string) error {
 	threadID, err := s.codexThread(ctx, srv, workspaceDir)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return classifyProviderError(err)
 	}
 	st := &codexTurnState{
