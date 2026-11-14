@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -531,5 +533,26 @@ func TestDeveloperModePolicyAllowsCodeOutsideSecrets(t *testing.T) {
 		if _, err := p.ValidateRead(denied); err == nil {
 			t.Errorf("developer mode must still deny secret/binary/profile path %s", denied)
 		}
+	}
+}
+
+func writeZipFixture(t *testing.T, path string, files map[string]string) {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, content := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

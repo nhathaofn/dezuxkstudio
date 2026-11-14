@@ -1,4 +1,4 @@
-package agent
+package docparse
 
 import (
 	"archive/zip"
@@ -44,7 +44,7 @@ func TestExtractDocumentFormats(t *testing.T) {
 			`</w:body></w:document>`
 		writeZipFixture(t, p, map[string]string{"word/document.xml": docXML})
 
-		format, got, err := extractDocumentText(p)
+		format, got, err := ExtractText(p)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -65,7 +65,7 @@ func TestExtractDocumentFormats(t *testing.T) {
 			`</office:text></office:body></office:document-content>`
 		writeZipFixture(t, p, map[string]string{"content.xml": odtXML})
 
-		format, got, err := extractDocumentText(p)
+		format, got, err := ExtractText(p)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -116,7 +116,7 @@ func TestExtractDocumentFormats(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		format, got, err := extractDocumentText(p)
+		format, got, err := ExtractText(p)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -131,14 +131,14 @@ func TestExtractDocumentFormats(t *testing.T) {
 		if err := os.WriteFile(p, []byte(pdf), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := extractDocumentText(p); err == nil {
+		if _, _, err := ExtractText(p); err == nil {
 			t.Fatal("expected descriptive error for scanned/empty PDF")
 		}
 	})
 }
 
 func extractRTFFileForTest(path string) (string, string, error) {
-	return extractDocumentText(path)
+	return ExtractText(path)
 }
 
 func TestExtractDocumentSupportsLargeDocsAndReportsTruncation(t *testing.T) {
@@ -152,9 +152,9 @@ func TestExtractDocumentSupportsLargeDocsAndReportsTruncation(t *testing.T) {
 			`</w:body></w:document>`,
 	})
 
-	format, text, err := extractDocumentText(docPath)
+	format, text, err := ExtractText(docPath)
 	if err != nil {
-		t.Fatalf("extractDocumentText: %v", err)
+		t.Fatalf("ExtractText: %v", err)
 	}
 	if format != "docx" {
 		t.Fatalf("unexpected format %q", format)
@@ -163,11 +163,58 @@ func TestExtractDocumentSupportsLargeDocsAndReportsTruncation(t *testing.T) {
 		t.Fatalf("expected 300000 runes without 250k truncation, got %d", got)
 	}
 
-	_, bounded, truncated, err := extractDocumentTextBounded(docPath, 50)
+	_, bounded, truncated, err := ExtractTextBounded(docPath, 50)
 	if err != nil {
-		t.Fatalf("extractDocumentTextBounded: %v", err)
+		t.Fatalf("ExtractTextBounded: %v", err)
 	}
 	if !truncated || len([]rune(bounded)) != 50 {
 		t.Fatalf("expected truncated=true and 50 runes, got truncated=%v len=%d", truncated, len([]rune(bounded)))
+	}
+
+	_, unbounded, truncatedZero, err := ExtractTextBounded(docPath, 0)
+	if err != nil {
+		t.Fatalf("ExtractTextBounded(0): %v", err)
+	}
+	if truncatedZero || len([]rune(unbounded)) != 300_000 {
+		t.Fatalf("expected unbounded 300000 runes when maxRunes=0, got truncated=%v len=%d", truncatedZero, len([]rune(unbounded)))
+	}
+}
+
+func TestExtractDocumentErrorsAndLimits(t *testing.T) {
+	if MaxDocumentRunes != 1_000_000 {
+		t.Fatalf("expected MaxDocumentRunes=1_000_000, got %d", MaxDocumentRunes)
+	}
+
+	dir := t.TempDir()
+	if _, _, err := ExtractText(dir); err == nil || !strings.Contains(err.Error(), "folder") {
+		t.Fatalf("expected folder error, got %v", err)
+	}
+
+	txtPath := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(txtPath, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ExtractText(txtPath); err == nil || !strings.Contains(err.Error(), "unsupported document format") {
+		t.Fatalf("expected unsupported format error, got %v", err)
+	}
+
+	badPDF := filepath.Join(dir, "bad.pdf")
+	if err := os.WriteFile(badPDF, []byte("not a pdf"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ExtractText(badPDF); err == nil || !strings.Contains(err.Error(), "invalid PDF header") {
+		t.Fatalf("expected invalid PDF header error, got %v", err)
+	}
+
+	badDOCX := filepath.Join(dir, "bad.docx")
+	writeZipFixture(t, badDOCX, map[string]string{"other.xml": "<root/>"})
+	if _, _, err := ExtractText(badDOCX); err == nil || !strings.Contains(err.Error(), "word/document.xml") {
+		t.Fatalf("expected missing word/document.xml error, got %v", err)
+	}
+
+	badODT := filepath.Join(dir, "bad.odt")
+	writeZipFixture(t, badODT, map[string]string{"meta.xml": "<root/>"})
+	if _, _, err := ExtractText(badODT); err == nil || !strings.Contains(err.Error(), "content.xml") {
+		t.Fatalf("expected missing content.xml error, got %v", err)
 	}
 }
