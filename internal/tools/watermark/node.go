@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"app/internal/apperr"
 	"app/internal/engine"
 	"app/internal/fsutil"
 	"app/internal/progress"
@@ -197,7 +198,7 @@ func NewNode(opts Options) engine.Node {
 			// same folder the node then creates and writes (never the server's working directory).
 			resolved := resolveFilePath(targetDir, opts.MediaDir)
 			if resolved == "" || !filepath.IsAbs(resolved) {
-				return RemoverOutput{}, engine.Invalid(fmt.Sprintf("output_dir %q must be an absolute path or a folder inside the media folder", targetDir))
+				return RemoverOutput{}, engine.Invalid("output_dir must be an absolute path or a folder inside the media folder")
 			}
 			targetDir = resolved
 		}
@@ -272,7 +273,7 @@ func NewNode(opts Options) engine.Node {
 			if r.Error != "" || outPaths[i] == "" {
 				failedCount++
 				if firstErr == "" {
-					firstErr = fmt.Sprintf("%s: %s", rawPaths[i], r.Error)
+					firstErr = fmt.Sprintf("%s: %s", filepath.Base(rawPaths[i]), r.Error)
 				}
 				continue
 			}
@@ -292,7 +293,7 @@ func NewNode(opts Options) engine.Node {
 			Results:       itemResults,
 		}
 		if failedCount == total {
-			return out, fmt.Errorf("watermark removal failed for all %d images: %s", total, firstErr)
+			return out, apperr.New(apperr.CodeUnavailable, fmt.Sprintf("watermark removal failed for all %d images: %s", total, firstErr))
 		}
 		return out, nil
 	})
@@ -302,14 +303,14 @@ func NewNode(opts Options) engine.Node {
 func readInput(ctx context.Context, raw, mediaDir string) (string, []byte, error) {
 	resPath := resolveFilePath(raw, mediaDir)
 	if resPath == "" {
-		return "", nil, fmt.Errorf("failed to read file: path %q is outside the media folder", raw)
+		return "", nil, fmt.Errorf("failed to read file: path %q is outside the media folder", filepath.Base(raw))
 	}
 	if err := engine.CheckFile(ctx, resPath, false); err != nil {
-		return resPath, nil, fmt.Errorf("failed to read file: %w", err)
+		return resPath, nil, fmt.Errorf("failed to read file: %s", sanitizePathError(resPath, err))
 	}
 	data, err := os.ReadFile(resPath)
 	if err != nil {
-		return resPath, nil, fmt.Errorf("failed to read file: %w", err)
+		return resPath, nil, fmt.Errorf("failed to read file: %s", sanitizePathError(resPath, err))
 	}
 	return resPath, data, nil
 }
@@ -345,27 +346,27 @@ func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPat
 			destDir = filepath.Dir(resPath)
 		}
 		if err := engine.CheckFile(ctx, destDir, true); err != nil {
-			res.Error = fmt.Sprintf("failed to create directory %q: %v", destDir, err)
+			res.Error = formatPathError("create directory", destDir, err)
 			return res, ""
 		}
 		if err := os.MkdirAll(destDir, 0o755); err != nil {
-			res.Error = fmt.Sprintf("failed to create directory %q: %v", destDir, err)
+			res.Error = formatPathError("create directory", destDir, err)
 			return res, ""
 		}
 		outPath = filepath.Join(destDir, base+"_nowm"+outExt)
 	}
 	if in.InPlace && !strings.EqualFold(outPath, resPath) {
 		if _, err := os.Stat(outPath); err == nil {
-			res.Error = fmt.Sprintf("target file %q already exists", outPath)
+			res.Error = fmt.Sprintf("target file %q already exists", filepath.Base(outPath))
 			return res, ""
 		} else if !os.IsNotExist(err) {
-			res.Error = fmt.Sprintf("failed to inspect target %q: %v", outPath, err)
+			res.Error = formatPathError("inspect target", outPath, err)
 			return res, ""
 		}
 	}
 
 	if err := engine.CheckFile(ctx, outPath, true); err != nil {
-		res.Error = fmt.Sprintf("failed to write file %q: %v", outPath, err)
+		res.Error = formatPathError("write file", outPath, err)
 		return res, ""
 	}
 
@@ -376,7 +377,7 @@ func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPat
 		}
 	}
 	if err := fsutil.WriteFileAtomic(outPath, br.Output, perm); err != nil {
-		res.Error = fmt.Sprintf("failed to write file %q: %v", outPath, err)
+		res.Error = formatPathError("write file", outPath, err)
 		return res, ""
 	}
 	if in.InPlace && !strings.EqualFold(outPath, resPath) {
@@ -384,6 +385,88 @@ func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPat
 	}
 	res.OutPath = outPath
 	return res, outPath
+}
+
+func formatPathError(action, targetPath string, err error) string {
+	return fmt.Sprintf("failed to %s %q: %s", action, filepath.Base(targetPath), sanitizePathError(targetPath, err))
+}
+
+// sanitizePathError strips full local directory paths from OS, fsutil, and file-guard errors so
+// user-facing error messages only name the leaf file or folder.
+func sanitizePathError(targetPath string, err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := replacePathWithBase(err.Error(), targetPath)
+	msg = sanitizeWrappedPathErrors(msg, err)
+	if targetPath != "" {
+		dir := filepath.Dir(filepath.Clean(targetPath))
+		if dir != "" && dir != "." && filepath.Dir(dir) != dir {
+			msg = replacePathVariants(msg, dir+string(filepath.Separator), "")
+			if strings.ContainsAny(dir, `/\`) {
+				msg = replacePathVariants(msg, dir, "target directory")
+			}
+		}
+	}
+	return msg
+}
+
+func sanitizeWrappedPathErrors(msg string, err error) string {
+	switch e := err.(type) {
+	case *os.PathError:
+		msg = replacePathWithBase(msg, e.Path)
+	case *os.LinkError:
+		msg = replacePathWithBase(msg, e.Old)
+		msg = replacePathWithBase(msg, e.New)
+	}
+	if u, ok := err.(interface{ Unwrap() error }); ok {
+		if inner := u.Unwrap(); inner != nil {
+			msg = sanitizeWrappedPathErrors(msg, inner)
+		}
+	} else if u, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, inner := range u.Unwrap() {
+			if inner != nil {
+				msg = sanitizeWrappedPathErrors(msg, inner)
+			}
+		}
+	}
+	return msg
+}
+
+func replacePathWithBase(msg, path string) string {
+	if path == "" {
+		return msg
+	}
+	cleaned := filepath.Clean(path)
+	if cleaned == "." || filepath.Dir(cleaned) == cleaned {
+		return msg
+	}
+	base := filepath.Base(cleaned)
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		return msg
+	}
+	msg = replacePathVariants(msg, path, base)
+	if cleaned != path {
+		msg = replacePathVariants(msg, cleaned, base)
+	}
+	return msg
+}
+
+func replacePathVariants(msg, raw, replacement string) string {
+	if raw == "" {
+		return msg
+	}
+	repQuoted := strings.TrimSuffix(strings.TrimPrefix(strconv.Quote(replacement), `"`), `"`)
+	for _, candidate := range []string{raw, filepath.ToSlash(raw)} {
+		if candidate == "" {
+			continue
+		}
+		msg = strings.ReplaceAll(msg, candidate, replacement)
+		if quoted := strings.TrimSuffix(strings.TrimPrefix(strconv.Quote(candidate), `"`), `"`); quoted != candidate {
+			msg = strings.ReplaceAll(msg, quoted, repQuoted)
+		}
+	}
+	return msg
 }
 
 func resolveFilePath(p, mediaDir string) string {

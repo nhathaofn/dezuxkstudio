@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	"app/internal/apperr"
 	"app/internal/engine"
 	"app/internal/tools/watermark"
 	pkgwatermark "app/pkg/watermark"
@@ -512,5 +513,128 @@ func TestWatermarkRemoverNode_ContextCanceled(t *testing.T) {
 	_, err := node.Run(ctx, json.RawMessage(inputJSON))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled error, got: %v", err)
+	}
+}
+
+func TestWatermarkRemoverNode_AllFailedReturnsUnavailableAndHidesDir(t *testing.T) {
+	secretDir := t.TempDir()
+	missing1 := filepath.Join(secretDir, "nested", "missing_one.png")
+	missing2 := filepath.Join(secretDir, "missing_two.png")
+
+	node := watermark.NewNode(watermark.Options{})
+	inputJSON := fmt.Sprintf(`{"images": [%q, %q]}`, filepath.ToSlash(missing1), filepath.ToSlash(missing2))
+
+	outRaw, err := node.Run(context.Background(), json.RawMessage(inputJSON))
+	if !apperr.IsCode(err, apperr.CodeUnavailable) {
+		t.Fatalf("expected ERR_UNAVAILABLE when all items fail, got %v", err)
+	}
+	var ae *apperr.Error
+	if !errors.As(err, &ae) {
+		t.Fatalf("expected *apperr.Error, got %T", err)
+	}
+	if !strings.Contains(ae.Message, "watermark removal failed for all 2 images") {
+		t.Fatalf("unexpected error message: %q", ae.Message)
+	}
+	if !strings.Contains(ae.Message, "missing_one.png") {
+		t.Fatalf("expected basename in error message, got %q", ae.Message)
+	}
+	for _, leak := range []string{secretDir, filepath.ToSlash(secretDir), "nested"} {
+		if strings.Contains(err.Error(), leak) || strings.Contains(ae.Message, leak) {
+			t.Fatalf("batch error leaked directory fragment %q: %q", leak, err.Error())
+		}
+	}
+
+	outBytes, _ := json.Marshal(outRaw)
+	var out watermark.RemoverOutput
+	if err := json.Unmarshal(outBytes, &out); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if len(out.Results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(out.Results))
+	}
+	for i, r := range out.Results {
+		for _, leak := range []string{secretDir, filepath.ToSlash(secretDir), "nested"} {
+			if strings.Contains(r.Error, leak) {
+				t.Fatalf("result[%d] error leaked directory fragment %q: %q", i, leak, r.Error)
+			}
+		}
+	}
+}
+
+func TestWatermarkRemoverNode_WriteAndMkdirFailuresHideDir(t *testing.T) {
+	t.Run("locked in-place write failure", func(t *testing.T) {
+		secretDir := t.TempDir()
+		testImg := createWatermarkedPNG(t, secretDir, "locked_secret.png")
+
+		f, err := os.OpenFile(testImg, os.O_RDWR, 0)
+		if err != nil {
+			t.Fatalf("open file lock failed: %v", err)
+		}
+		node := watermark.NewNode(watermark.Options{})
+		outRaw, runErr := node.Run(context.Background(), json.RawMessage(fmt.Sprintf(`{"image": %q, "inplace": true}`, filepath.ToSlash(testImg))))
+		_ = f.Close()
+
+		if !apperr.IsCode(runErr, apperr.CodeUnavailable) {
+			t.Fatalf("expected ERR_UNAVAILABLE, got %v", runErr)
+		}
+		for _, leak := range []string{secretDir, filepath.ToSlash(secretDir)} {
+			if strings.Contains(runErr.Error(), leak) {
+				t.Fatalf("run error leaked directory %q: %q", leak, runErr.Error())
+			}
+		}
+		outBytes, _ := json.Marshal(outRaw)
+		var out watermark.RemoverOutput
+		_ = json.Unmarshal(outBytes, &out)
+		if len(out.Results) != 1 || out.Results[0].Error == "" {
+			t.Fatalf("expected 1 failed result, got %+v", out.Results)
+		}
+		for _, leak := range []string{secretDir, filepath.ToSlash(secretDir)} {
+			if strings.Contains(out.Results[0].Error, leak) {
+				t.Fatalf("result error leaked directory %q: %q", leak, out.Results[0].Error)
+			}
+		}
+	})
+
+	t.Run("mkdir failure under regular file", func(t *testing.T) {
+		srcDir := t.TempDir()
+		secretDir := t.TempDir()
+		testImg := createWatermarkedPNG(t, srcDir, "source.png")
+		blocker := filepath.Join(secretDir, "blocker")
+		if err := os.WriteFile(blocker, []byte("not-a-dir"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		badOutDir := filepath.Join(blocker, "nested_out")
+
+		node := watermark.NewNode(watermark.Options{})
+		outRaw, runErr := node.Run(context.Background(), json.RawMessage(fmt.Sprintf(`{"image": %q, "output_dir": %q}`, filepath.ToSlash(testImg), filepath.ToSlash(badOutDir))))
+		if !apperr.IsCode(runErr, apperr.CodeUnavailable) {
+			t.Fatalf("expected ERR_UNAVAILABLE, got %v", runErr)
+		}
+		outBytes, _ := json.Marshal(outRaw)
+		var out watermark.RemoverOutput
+		_ = json.Unmarshal(outBytes, &out)
+		if len(out.Results) != 1 || out.Results[0].Error == "" {
+			t.Fatalf("expected 1 failed result, got %+v", out.Results)
+		}
+		for _, leak := range []string{secretDir, filepath.ToSlash(secretDir), srcDir, filepath.ToSlash(srcDir)} {
+			if strings.Contains(runErr.Error(), leak) || strings.Contains(out.Results[0].Error, leak) {
+				t.Fatalf("mkdir failure leaked directory %q: runErr=%q itemErr=%q", leak, runErr.Error(), out.Results[0].Error)
+			}
+		}
+	})
+}
+
+func TestWatermarkRemoverNode_OutputDirValidationHidesInput(t *testing.T) {
+	img := createTestPNG(t, t.TempDir(), "a.png")
+	node := watermark.NewNode(watermark.Options{})
+	_, err := node.Run(context.Background(), json.RawMessage(fmt.Sprintf(`{"image": %q, "output_dir": "../private_host_folder"}`, filepath.ToSlash(img))))
+	if !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected ERR_VALIDATION, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "output_dir") {
+		t.Fatalf("expected output_dir in error, got %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "private_host_folder") {
+		t.Fatalf("validation error must not echo raw output_dir: %q", err.Error())
 	}
 }
