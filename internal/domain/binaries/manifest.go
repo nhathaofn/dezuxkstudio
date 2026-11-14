@@ -2,9 +2,7 @@
 package binaries
 
 import (
-	"fmt"
 	"regexp"
-	"runtime"
 )
 
 // Supported binary version constants.
@@ -93,32 +91,17 @@ type ManifestEntry struct {
 
 // ExecutableName returns the OS-specific file name (e.g. ffmpeg.exe on Windows).
 func (e ManifestEntry) ExecutableName() string {
-	if runtime.GOOS == "windows" {
-		return e.Executable + ".exe"
-	}
-	return e.Executable
+	return executableName(e.Executable)
 }
 
 // CurrentDownloadSpec returns the download specification for the host OS and architecture, if configured.
 func (e ManifestEntry) CurrentDownloadSpec() (DownloadSpec, bool) {
-	key := fmt.Sprintf("%s_%s", runtime.GOOS, runtime.GOARCH)
-	spec, ok := e.Downloads[key]
-	return spec, ok
+	return currentDownloadSpec(e.Downloads)
 }
 
 // ExtractVersion parses the version identifier from probe output using the precompiled regex.
 func (e ManifestEntry) ExtractVersion(output string) string {
-	if e.VersionRegex == nil {
-		return ""
-	}
-	matches := e.VersionRegex.FindStringSubmatch(output)
-	if len(matches) > 1 {
-		return matches[1]
-	}
-	if len(matches) == 1 {
-		return matches[0]
-	}
-	return ""
+	return extractVersion(e.VersionRegex, "", output)
 }
 
 // Manifest is the centralized registry of declarative specifications for all external binaries.

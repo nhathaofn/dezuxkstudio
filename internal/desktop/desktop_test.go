@@ -1,11 +1,15 @@
 package desktop
 
 import (
+	"context"
 	"errors"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"app/internal/apperr"
 	"app/internal/config"
@@ -159,5 +163,81 @@ func TestBridgeSlowStartIsRetryable(t *testing.T) {
 	_, err = failed.GetConnectionInfo()
 	if fb := contracts.NewErrorBody(err); fb.Details[DetailStarting] == true {
 		t.Fatalf("a real startup failure must not be retried: %+v", fb)
+	}
+}
+
+func TestBridgeBrowseNilContext(t *testing.T) {
+	b := newBridge(config.Default(config.ModeDesktop), secrets.NewMemory())
+
+	if ctx, err := b.requireContext(); ctx != nil || !apperr.IsCode(err, apperr.CodeUnavailable) || !strings.Contains(err.Error(), "desktop window is not ready") {
+		t.Fatalf("requireContext without wailsCtx = (%v, %v), want unavailable", ctx, err)
+	}
+
+	checkUnavailable := func(name string, err error) {
+		t.Helper()
+		if err == nil || !apperr.IsCode(err, apperr.CodeUnavailable) || !strings.Contains(err.Error(), "desktop window is not ready") {
+			t.Errorf("%s: err = %v, want CodeUnavailable(%q)", name, err, "desktop window is not ready")
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		call func(string) (string, error)
+	}{
+		{"BrowseExecutable", b.BrowseExecutable},
+		{"BrowseImage", b.BrowseImage},
+		{"BrowseDirectory", b.BrowseDirectory},
+	} {
+		got, err := tc.call("")
+		if got != "" {
+			t.Errorf("%s: got %q, want empty", tc.name, got)
+		}
+		checkUnavailable(tc.name, err)
+	}
+
+	gotImgs, err := b.BrowseImages("")
+	if gotImgs != nil {
+		t.Errorf("BrowseImages: got %v, want nil", gotImgs)
+	}
+	checkUnavailable("BrowseImages", err)
+
+	ctxKey := struct{}{}
+	wantCtx := context.WithValue(context.Background(), ctxKey, "ready")
+	b.setWailsContext(wantCtx)
+	gotCtx, err := b.requireContext()
+	if err != nil || gotCtx != wantCtx {
+		t.Fatalf("requireContext after setWailsContext = (%v, %v), want (%v, nil)", gotCtx, err, wantCtx)
+	}
+}
+
+func TestBridgePickerTitleAndFilters(t *testing.T) {
+	if got := defaultPickerTitle("", "Select Executable"); got != "Select Executable" {
+		t.Errorf("defaultPickerTitle empty = %q, want %q", got, "Select Executable")
+	}
+	if got := defaultPickerTitle("Choose FFmpeg", "Select Executable"); got != "Choose FFmpeg" {
+		t.Errorf("defaultPickerTitle custom = %q, want %q", got, "Choose FFmpeg")
+	}
+
+	imgFilters := imageWindowsFilters()
+	wantImgFilters := []wailsruntime.FileFilter{
+		{DisplayName: "Images (*.png;*.jpg;*.jpeg;*.webp)", Pattern: "*.png;*.jpg;*.jpeg;*.webp"},
+		{DisplayName: "All Files (*.*)", Pattern: "*.*"},
+	}
+	if !reflect.DeepEqual(imgFilters, wantImgFilters) {
+		t.Errorf("imageWindowsFilters() = %+v, want %+v", imgFilters, wantImgFilters)
+	}
+
+	gotFilters := pickerFilters(imgFilters)
+	if runtime.GOOS == "windows" {
+		if !reflect.DeepEqual(gotFilters, wantImgFilters) {
+			t.Errorf("pickerFilters() on windows = %+v, want %+v", gotFilters, wantImgFilters)
+		}
+	} else {
+		wantNonWin := []wailsruntime.FileFilter{
+			{DisplayName: "All Files (*)", Pattern: "*"},
+		}
+		if !reflect.DeepEqual(gotFilters, wantNonWin) {
+			t.Errorf("pickerFilters() on %s = %+v, want %+v", runtime.GOOS, gotFilters, wantNonWin)
+		}
 	}
 }
