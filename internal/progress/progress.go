@@ -77,20 +77,34 @@ func KeepAlive(ctx context.Context) (stop func()) {
 		return func() {}
 	}
 	done := make(chan struct{})
+	exited := make(chan struct{})
 	var once sync.Once
 	safego.Go("progress.keepalive", func() {
+		defer close(exited)
 		t := time.NewTicker(s.Interval)
 		defer t.Stop()
 		for {
 			select {
-			case <-t.C:
-				s.Beat()
 			case <-done:
 				return
 			case <-ctx.Done():
 				return
+			case <-t.C:
+				select {
+				case <-done:
+					return
+				case <-ctx.Done():
+					return
+				default:
+					s.Beat()
+				}
 			}
 		}
 	})
-	return func() { once.Do(func() { close(done) }) }
+	return func() {
+		once.Do(func() {
+			close(done)
+			<-exited
+		})
+	}
 }
