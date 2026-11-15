@@ -793,4 +793,30 @@ export const vi: Record<MessageKey, string> = {
   "errors.mediagen.reference_required":
     "Model này yêu cầu ít nhất một ảnh tham chiếu để chỉnh sửa.",
   "errors.mediagen.reference_not_supported": "Model hoặc endpoint này không hỗ trợ ảnh tham chiếu.",
+
+  "agent.code.copy": "Sao chép mã",
+  "agent.code.copied": "Đã sao chép",
+  "agent.errors.approval_busy": "Yêu cầu phê duyệt đang được thực thi.",
+  "agent.errors.approval_ambiguous": "Trạng thái phê duyệt bất định, cần người dùng xác nhận lại.",
+  "agent.errors.approval_already_resolved": "Yêu cầu phê duyệt này đã được xử lý trước đó.",
+  "agent.errors.approval_hash_mismatch":
+    "Tham số đầu vào đã bị sửa đổi sau khi yêu cầu phê duyệt. Yêu cầu đã mất hiệu lực.",
+  "agent.errors.approval_concurrent":
+    "Yêu cầu phê duyệt đã được thao tác bởi một tiến trình đồng thời khác.",
+  "agent.errors.approval_expired": "Yêu cầu phê duyệt đã hết hạn.",
+
+  "watermark.copyClean.label": "Sao chép ảnh sạch sang thư mục đích",
+  "watermark.copyClean.desc":
+    "Tự động sao chép ảnh nguyên bản không có watermark sang thư mục xuất",
+  "watermark.preserveTree.label": "Giữ nguyên cấu trúc thư mục",
+  "watermark.preserveTree.desc": "Bảo tồn phân cấp thư mục con khi sử dụng đường dẫn tương đối",
+  "watermark.status.processed": "Đã xử lý",
+  "watermark.status.copied": "Đã sao chép",
+  "watermark.status.skipped": "Đã bỏ qua",
+  "watermark.status.failed": "Thất bại",
+  "watermark.compare": "So sánh",
+
+  "system.desktopOnly": "Thao tác này chỉ khả dụng ở chế độ ứng dụng desktop",
+
+  "mediagen.action.retry": "Thử lại",
 };

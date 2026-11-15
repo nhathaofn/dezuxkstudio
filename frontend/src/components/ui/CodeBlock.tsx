@@ -79,7 +79,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = React.memo(
       }
     };
 
-    const copyLabel = copied ? t("agent.chat.copied") : t("agent.login.copyCode");
+    const copyLabel = copied ? t("agent.code.copied") : t("agent.code.copy");
 
     return (
       <div className={`md-codeblock${className ? ` ${className}` : ""}`}>

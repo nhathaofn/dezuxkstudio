@@ -88,7 +88,7 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
 
   const systemInfo = useSystemStore((s) => s.info) ?? useSystemStore.getState().info;
   const isRemote = systemInfo?.mode === "server" || systemInfo?.mode === "client";
-  const desktopOnlyTooltip = "This action is only available in desktop mode";
+  const desktopOnlyTooltip = t("system.desktopOnly");
   const canBrowse = isDesktop() && !isRemote;
 
   const getPathWarning = (): string | null => {
@@ -99,7 +99,7 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
       }
       const pathWithoutDrive = trimmed.replace(/^[a-zA-Z]:/, "");
       if (/[<>"|?*]/.test(pathWithoutDrive)) {
-        return "Path contains invalid characters (< > \" | ? *).";
+        return 'Path contains invalid characters (< > " | ? *).';
       }
       if (
         !trimmed.toLowerCase().endsWith(".exe") &&
@@ -266,7 +266,10 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
                   {mbText}
                 </span>
               )}
-              <span className="binary-progress-pct" style={{ fontWeight: "var(--weight-semibold)" }}>
+              <span
+                className="binary-progress-pct"
+                style={{ fontWeight: "var(--weight-semibold)" }}
+              >
                 {downloadProgress.percent.toFixed(1)}%
               </span>
             </span>

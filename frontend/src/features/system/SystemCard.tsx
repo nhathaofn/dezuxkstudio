@@ -18,7 +18,7 @@ export const SystemCard: React.FC = () => {
   const [openError, setOpenError] = useState<ActionError | null>(null);
 
   const isRemote = info?.mode === "server" || info?.mode === "client";
-  const desktopOnlyTooltip = "This action is only available in desktop mode";
+  const desktopOnlyTooltip = t("system.desktopOnly");
 
   const formatUptime = (sec: number): string => formatDuration(t, sec);
 

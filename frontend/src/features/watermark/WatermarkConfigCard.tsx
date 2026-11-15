@@ -315,24 +315,16 @@ export const WatermarkConfigCard: React.FC = () => {
               >
                 <div>
                   <div className="field-label" style={{ marginBottom: 0 }}>
-                    {isMessageKey("watermark.copyClean.label")
-                      ? t("watermark.copyClean.label")
-                      : "Copy clean images to destination"}
+                    {t("watermark.copyClean.label")}
                   </div>
                   <div className="muted-text" style={{ fontSize: "var(--text-xs)" }}>
-                    {isMessageKey("watermark.copyClean.desc")
-                      ? t("watermark.copyClean.desc")
-                      : "Copy clean original images directly to output folder"}
+                    {t("watermark.copyClean.desc")}
                   </div>
                 </div>
                 <Switch
                   checked={copyClean}
                   onCheckedChange={setCopyClean}
-                  aria-label={
-                    isMessageKey("watermark.copyClean.label")
-                      ? t("watermark.copyClean.label")
-                      : "Copy clean images to destination"
-                  }
+                  aria-label={t("watermark.copyClean.label")}
                 />
               </div>
 
@@ -347,24 +339,16 @@ export const WatermarkConfigCard: React.FC = () => {
               >
                 <div>
                   <div className="field-label" style={{ marginBottom: 0 }}>
-                    {isMessageKey("watermark.preserveTree.label")
-                      ? t("watermark.preserveTree.label")
-                      : "Preserve directory structure"}
+                    {t("watermark.preserveTree.label")}
                   </div>
                   <div className="muted-text" style={{ fontSize: "var(--text-xs)" }}>
-                    {isMessageKey("watermark.preserveTree.desc")
-                      ? t("watermark.preserveTree.desc")
-                      : "Maintain subfolder tree when relative paths are used"}
+                    {t("watermark.preserveTree.desc")}
                   </div>
                 </div>
                 <Switch
                   checked={preserveTree}
                   onCheckedChange={setPreserveTree}
-                  aria-label={
-                    isMessageKey("watermark.preserveTree.label")
-                      ? t("watermark.preserveTree.label")
-                      : "Preserve directory structure"
-                  }
+                  aria-label={t("watermark.preserveTree.label")}
                 />
               </div>
             </div>

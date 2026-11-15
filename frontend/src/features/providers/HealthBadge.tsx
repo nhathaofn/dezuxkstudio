@@ -49,8 +49,12 @@ export function HealthBadge({
         {label}
         {detail && ` ${status === "ok" ? "·" : "—"} ${detail}`}
         {hasLatency && (
-          <span className="providers-latency" style={{ opacity: 0.85, fontWeight: "var(--weight-medium, 500)" }}>
-            {" "}({latencyMs}ms)
+          <span
+            className="providers-latency"
+            style={{ opacity: 0.85, fontWeight: "var(--weight-medium, 500)" }}
+          >
+            {" "}
+            ({latencyMs}ms)
           </span>
         )}
       </span>

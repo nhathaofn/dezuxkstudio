@@ -121,14 +121,7 @@ export const Markdown: React.FC<{ text: string; className?: string }> = React.me
             case "quote":
               return <blockquote key={key}>{renderLines(b.text, key)}</blockquote>;
             case "code":
-              return (
-                <CodeBlock
-                  key={key}
-                  code={b.text}
-                  lang={b.lang}
-                  closed={b.closed}
-                />
-              );
+              return <CodeBlock key={key} code={b.text} lang={b.lang} closed={b.closed} />;
             case "table":
               return (
                 <div key={key} className="md-table-wrap">
@@ -139,9 +132,7 @@ export const Markdown: React.FC<{ text: string; className?: string }> = React.me
                           <th
                             key={colIdx}
                             style={
-                              b.alignments[colIdx]
-                                ? { textAlign: b.alignments[colIdx] }
-                                : undefined
+                              b.alignments[colIdx] ? { textAlign: b.alignments[colIdx] } : undefined
                             }
                           >
                             {renderInline(h, `${key}-th-${colIdx}`)}

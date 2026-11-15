@@ -730,7 +730,7 @@ describe("Phase 1 Wave B Watermark Policy & Compare UX Enhancement", () => {
 
   it("manages comparison state and respects appConfig.ui.watermarkCompare limits", () => {
     const store = useWatermarkStore.getState();
-    const { zoomMin, zoomMax, zoomStep } = appConfig.ui.watermarkCompare;
+    const { zoomMax, zoomStep } = appConfig.ui.watermarkCompare;
 
     store.setComparisonItem({
       beforeUrl: "C:/input.png",
@@ -793,7 +793,7 @@ describe("Phase 1 Wave B Watermark Policy & Compare UX Enhancement", () => {
 
   it("dismisses error when dismiss button is triggered or dismissError action called", () => {
     useWatermarkStore.setState({
-      error: new ActionError("ERR_INVALID", "Test dismissable error"),
+      error: new ActionError("ERR_VALIDATION", "Test dismissable error"),
     });
 
     let html = renderToStaticMarkup(React.createElement(WatermarkView));

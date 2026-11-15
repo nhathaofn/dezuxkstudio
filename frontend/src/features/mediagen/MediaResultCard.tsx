@@ -353,10 +353,10 @@ export const MediaResultCard: React.FC<MediaResultCardProps> = ({
                 size="sm"
                 variant="secondary"
                 onClick={onRetry}
-                title={t("mediagen.action.retry" as MessageKey) || "Retry"}
+                title={t("mediagen.action.retry")}
               >
                 <RotateCcw size={12} />
-                {t("mediagen.action.retry" as MessageKey) || "Retry"}
+                {t("mediagen.action.retry")}
               </Button>
             )}
             {onDismissError && (

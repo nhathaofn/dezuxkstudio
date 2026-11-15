@@ -479,9 +479,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     set((s) => ({
       error: null,
       resolvingApprovalIds: { ...s.resolvingApprovalIds, [id]: true },
-      approvals: s.approvals.map((a) =>
-        a.id === id ? { ...a, status: targetStatus } : a
-      ),
+      approvals: s.approvals.map((a) => (a.id === id ? { ...a, status: targetStatus } : a)),
     }));
 
     try {
@@ -494,9 +492,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       // On failure: revert optimistic status back to pending
       set((s) => ({
         error: toActionError(err),
-        approvals: s.approvals.map((a) =>
-          a.id === id ? { ...a, status: "pending" } : a
-        ),
+        approvals: s.approvals.map((a) => (a.id === id ? { ...a, status: "pending" } : a)),
       }));
     } finally {
       set((s) => {

@@ -28,7 +28,7 @@ describe("parseBlocks", () => {
   });
 
   it("marks a properly closed fence as closed: true", () => {
-    expect(parseBlocks('```typescript\nconst x: number = 42;\n```')).toEqual([
+    expect(parseBlocks("```typescript\nconst x: number = 42;\n```")).toEqual([
       { type: "code", lang: "typescript", text: "const x: number = 42;", closed: true },
     ]);
   });
@@ -158,9 +158,9 @@ describe("CodeBlock syntax highlighting", () => {
 
     // Unsupported languages fallback to plain text
     expect(renderCodeBlock({ code: "test", lang: "unknown_lang", closed: true })).not.toContain(
-      "class=\"hljs"
+      'class="hljs'
     );
-    expect(renderCodeBlock({ code: "test", lang: "", closed: true })).not.toContain("class=\"hljs");
+    expect(renderCodeBlock({ code: "test", lang: "", closed: true })).not.toContain('class="hljs');
   });
 
   it("renders syntax highlighted tokens for TypeScript", () => {
@@ -178,7 +178,7 @@ describe("CodeBlock syntax highlighting", () => {
   });
 
   it("renders syntax highlighted tokens for Python", () => {
-    const out = html('```python\ndef calculate(x: int) -> int:\n    return x * 2\n```');
+    const out = html("```python\ndef calculate(x: int) -> int:\n    return x * 2\n```");
     expect(out).toContain("hljs-keyword");
     expect(out).toContain("calculate");
   });

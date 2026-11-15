@@ -2,6 +2,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { type BinaryInfo, type SystemInfo } from "../../contracts/generated";
+import { ActionError } from "../../lib/rtClient";
 import { BinaryCard } from "../binaries/BinaryCard";
 import { HealthBadge } from "../providers/HealthBadge";
 import { SecretInput } from "../providers/SecretInput";
@@ -30,6 +31,7 @@ describe("Phase 1 Wave B - Feature Worker 4 Enhancements", () => {
             outcome: "ok",
             detail: "",
             tested_at: "2026-11-15T12:00:00Z",
+            dead: false,
           },
           latencyMs: 42,
         })
@@ -75,10 +77,21 @@ describe("Phase 1 Wave B - Feature Worker 4 Enhancements", () => {
       useSystemStore.setState({
         info: {
           mode: "server",
-          build: { version: "1.0.0", commit: "abc", os: "windows", arch: "amd64", go_version: "1.24" },
+          build: {
+            version: "1.0.0",
+            commit: "abc",
+            os: "windows",
+            arch: "amd64",
+            go_version: "1.24",
+          },
           runtime: { uptime_seconds: 3600, goroutines: 10, memory_alloc_bytes: 1000 },
-          paths: { config_dir: "C:/app", data_dir: "C:/app", logs_dir: "C:/app", tools_dir: "C:/app" },
-        } as SystemInfo,
+          paths: {
+            config_dir: "C:/app",
+            data_dir: "C:/app",
+            logs_dir: "C:/app",
+            tools_dir: "C:/app",
+          },
+        } as unknown as SystemInfo,
       });
 
       const html = renderToStaticMarkup(React.createElement(SystemCard));
@@ -90,10 +103,21 @@ describe("Phase 1 Wave B - Feature Worker 4 Enhancements", () => {
       useSystemStore.setState({
         info: {
           mode: "client",
-          build: { version: "1.0.0", commit: "abc", os: "windows", arch: "amd64", go_version: "1.24" },
+          build: {
+            version: "1.0.0",
+            commit: "abc",
+            os: "windows",
+            arch: "amd64",
+            go_version: "1.24",
+          },
           runtime: { uptime_seconds: 3600, goroutines: 10, memory_alloc_bytes: 1000 },
-          paths: { config_dir: "C:/app", data_dir: "C:/app", logs_dir: "C:/app", tools_dir: "C:/app" },
-        } as SystemInfo,
+          paths: {
+            config_dir: "C:/app",
+            data_dir: "C:/app",
+            logs_dir: "C:/app",
+            tools_dir: "C:/app",
+          },
+        } as unknown as SystemInfo,
       });
 
       const dummyBinary: BinaryInfo = {
@@ -101,6 +125,9 @@ describe("Phase 1 Wave B - Feature Worker 4 Enhancements", () => {
         name: "FFmpeg",
         description: "Media processor",
         executable: "ffmpeg.exe",
+        resolved_path: "C:/app/tools/ffmpeg.exe",
+        custom_path: "",
+        version: "7.0",
         status: "available",
         source: "tools",
         can_download: true,
@@ -119,9 +146,11 @@ describe("Phase 1 Wave B - Feature Worker 4 Enhancements", () => {
         name: "FFmpeg",
         description: "Media processor",
         executable: "ffmpeg.exe",
+        resolved_path: "",
+        custom_path: "C:/invalid/path/ffmpeg.exe",
+        version: "",
         status: "invalid",
         source: "custom",
-        custom_path: "C:/invalid/path/ffmpeg.exe",
         can_download: true,
       };
 
@@ -159,7 +188,7 @@ describe("Phase 1 Wave B - Feature Worker 4 Enhancements", () => {
           kind: "image",
           loading: false,
           progress: null,
-          error: { code: "ERR_UNAVAILABLE", message: "GPU pipeline timeout" },
+          error: new ActionError("ERR_UNAVAILABLE", "GPU pipeline timeout"),
           result: null,
           downloadingPath: null,
           onDownload: () => {},
@@ -204,7 +233,7 @@ describe("Phase 1 Wave B - Feature Worker 4 Enhancements", () => {
       imgStore.setResolution("4K");
       imgStore.setSeed("42");
 
-      useImageGenStore.setState({ error: { code: "ERR_FAILED", message: "Transient failure" } });
+      useImageGenStore.setState({ error: new ActionError("ERR_VALIDATION", "Transient failure") });
       expect(useImageGenStore.getState().error).not.toBeNull();
 
       useImageGenStore.getState().clearError();

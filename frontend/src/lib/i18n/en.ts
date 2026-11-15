@@ -793,6 +793,31 @@ export const en = {
     "This model requires at least one reference image for editing.",
   "errors.mediagen.reference_not_supported":
     "This model or endpoint does not accept reference images.",
+
+  "agent.code.copy": "Copy code",
+  "agent.code.copied": "Copied",
+  "agent.errors.approval_busy": "The approval request is currently executing.",
+  "agent.errors.approval_ambiguous":
+    "Approval execution state is ambiguous and requires confirmation.",
+  "agent.errors.approval_already_resolved": "The approval request has already been resolved.",
+  "agent.errors.approval_hash_mismatch":
+    "Input parameters were modified after approval was requested. Approval has been invalidated.",
+  "agent.errors.approval_concurrent": "Approval request was modified by another concurrent action.",
+  "agent.errors.approval_expired": "Approval request has expired.",
+
+  "watermark.copyClean.label": "Copy clean images to destination",
+  "watermark.copyClean.desc": "Copy clean original images directly to output folder",
+  "watermark.preserveTree.label": "Preserve directory structure",
+  "watermark.preserveTree.desc": "Maintain subfolder tree when relative paths are used",
+  "watermark.status.processed": "Processed",
+  "watermark.status.copied": "Copied",
+  "watermark.status.skipped": "Skipped",
+  "watermark.status.failed": "Failed",
+  "watermark.compare": "Compare",
+
+  "system.desktopOnly": "This action is only available in desktop mode",
+
+  "mediagen.action.retry": "Retry",
 } as const;
 
 export type MessageKey = keyof typeof en;

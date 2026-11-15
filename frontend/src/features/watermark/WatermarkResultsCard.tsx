@@ -19,10 +19,10 @@ import {
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
-import { isMessageKey, translateServerMessage, useT } from "../../lib/i18n";
+import { translateServerMessage, useT } from "../../lib/i18n";
 import { downloadMediaBlob, mediaBasename } from "../../lib/rtClient";
 import { useConnectionStore } from "../connection/useConnectionStore";
-import { useWatermarkStore, type WatermarkItemResult } from "./useWatermarkStore";
+import { useWatermarkStore } from "./useWatermarkStore";
 
 function usePreviewUrl(path: string): string | null {
   const [url, setUrl] = useState<string | null>(null);
@@ -250,7 +250,9 @@ const ComparisonViewer: React.FC<{
               }}
             />
           ) : (
-            <div style={{ padding: "var(--space-4)", textAlign: "center", fontSize: "var(--text-xs)" }}>
+            <div
+              style={{ padding: "var(--space-4)", textAlign: "center", fontSize: "var(--text-xs)" }}
+            >
               <Loader2 size={16} className="animate-spin" />
             </div>
           )}
@@ -335,13 +337,11 @@ export const WatermarkResultsCard: React.FC = () => {
     error?: string;
     reason?: string;
   }) => {
-    const status =
-      item.status || (item.error ? "failed" : item.detected ? "processed" : "skipped");
+    const status = item.status || (item.error ? "failed" : item.detected ? "processed" : "skipped");
     if (status === "failed") {
       return (
         <Badge className="watermark-badge-error" title={item.error}>
-          <AlertCircle size={11} className="watermark-badge-icon" />{" "}
-          {t("watermark.result.error")}
+          <AlertCircle size={11} className="watermark-badge-icon" /> {t("watermark.result.error")}
         </Badge>
       );
     }
@@ -351,28 +351,26 @@ export const WatermarkResultsCard: React.FC = () => {
           <CheckCircle2 size={11} className="watermark-badge-icon" />{" "}
           {item.score != null && item.score > 0
             ? t("watermark.result.detectedScore", { score: Math.round(item.score * 100) })
-            : isMessageKey("watermark.status.processed")
-              ? t("watermark.status.processed")
-              : "Processed"}
+            : t("watermark.status.processed")}
         </Badge>
       );
     }
     if (status === "copied") {
       return (
         <Badge className="watermark-badge-copied">
-          <Copy size={11} className="watermark-badge-icon" />{" "}
-          {isMessageKey("watermark.status.copied") ? t("watermark.status.copied") : "Copied"}
+          <Copy size={11} className="watermark-badge-icon" /> {t("watermark.status.copied")}
         </Badge>
       );
     }
     return (
-      <Badge className="watermark-badge-skipped" title={item.reason || t("watermark.result.cleanBadge")}>
+      <Badge
+        className="watermark-badge-skipped"
+        title={item.reason || t("watermark.result.cleanBadge")}
+      >
         <Check size={11} className="watermark-badge-icon" />{" "}
-        {item.status === "skipped" && isMessageKey("watermark.status.skipped")
+        {item.status === "skipped"
           ? t("watermark.status.skipped")
-          : item.status === "skipped"
-            ? "Skipped"
-            : t("watermark.result.cleanBadge")}
+          : t("watermark.result.cleanBadge")}
       </Badge>
     );
   };
@@ -503,8 +501,8 @@ export const WatermarkResultsCard: React.FC = () => {
                       })
                     }
                     className="watermark-icon-btn"
-                    title="Compare Before / After"
-                    aria-label="Compare Before / After"
+                    title={t("watermark.compare")}
+                    aria-label={t("watermark.compare")}
                   >
                     <Eye size={12} />
                   </button>
@@ -516,7 +514,10 @@ export const WatermarkResultsCard: React.FC = () => {
                     iconOnly
                     disabled={downloadingPath === result.image.localUrl}
                     onClick={() =>
-                      void downloadOutput(result.image.localUrl, mediaBasename(result.image.localUrl))
+                      void downloadOutput(
+                        result.image.localUrl,
+                        mediaBasename(result.image.localUrl)
+                      )
                     }
                     title={t("watermark.download")}
                     aria-label={t("watermark.download")}
@@ -535,7 +536,11 @@ export const WatermarkResultsCard: React.FC = () => {
                     title={t("watermark.copyPath")}
                     aria-label={t("watermark.copyPath")}
                   >
-                    {copiedPath === result.image.localUrl ? <Check size={12} /> : <Copy size={12} />}
+                    {copiedPath === result.image.localUrl ? (
+                      <Check size={12} />
+                    ) : (
+                      <Copy size={12} />
+                    )}
                   </Button>
                 )}
               </div>
@@ -573,8 +578,8 @@ export const WatermarkResultsCard: React.FC = () => {
                           })
                         }
                         className="watermark-icon-btn"
-                        title="Compare Before / After"
-                        aria-label="Compare Before / After"
+                        title={t("watermark.compare")}
+                        aria-label={t("watermark.compare")}
                       >
                         <Eye size={12} />
                       </button>

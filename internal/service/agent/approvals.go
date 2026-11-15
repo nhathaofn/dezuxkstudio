@@ -331,11 +331,11 @@ func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) 
 	case contracts.ApprovalStatusPending:
 		// Expected status, continue
 	case contracts.ApprovalStatusExecuting:
-		return userError(apperr.CodeConflict, "approval_busy", "approval request is currently executing", nil)
+		return userError(apperr.CodeConflict, "agent.errors.approval_busy", "approval request is currently executing", nil)
 	case contracts.ApprovalStatusAmbiguous:
-		return userError(apperr.CodeConflict, "approval_ambiguous", "approval execution status is ambiguous; requires user confirmation", nil)
+		return userError(apperr.CodeConflict, "agent.errors.approval_ambiguous", "approval execution status is ambiguous; requires user confirmation", nil)
 	case contracts.ApprovalStatusApproved, contracts.ApprovalStatusRejected, contracts.ApprovalStatusFailed:
-		return userError(apperr.CodeConflict, "approval_already_resolved", fmt.Sprintf("approval request was already resolved as %s", rec.Status), nil)
+		return userError(apperr.CodeConflict, "agent.errors.approval_already_resolved", fmt.Sprintf("approval request was already resolved as %s", rec.Status), nil)
 	default:
 		return userError(apperr.CodeConflict, "approval_not_pending", fmt.Sprintf("approval request is in %s state, not pending", rec.Status), nil)
 	}
@@ -346,7 +346,7 @@ func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) 
 		if canonErr == nil {
 			currHash := CalculateInputHash(canon)
 			if currHash != rec.InputHash {
-				return userError(apperr.CodeValidation, "approval_hash_mismatch", "input snapshot hash mismatch; approval request is invalidated", nil)
+				return userError(apperr.CodeValidation, "agent.errors.approval_hash_mismatch", "input snapshot hash mismatch; approval request is invalidated", nil)
 			}
 		}
 	}
@@ -357,7 +357,7 @@ func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) 
 		if now-rec.CreatedAt > s.limits.ApprovalTTL.Milliseconds() {
 			_, _ = s.approvalRepo.UpdateApprovalStatus(ctx, id, contracts.ApprovalStatusPending, contracts.ApprovalStatusFailed, "expired", "", "approval TTL expired")
 			s.emitApprovals()
-			return userError(apperr.CodeValidation, "approval_expired", "approval request has expired", nil)
+			return userError(apperr.CodeValidation, "agent.errors.approval_expired", "approval request has expired", nil)
 		}
 	}
 
@@ -379,7 +379,7 @@ func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) 
 		return fmt.Errorf("agent: update approval status: %w", err)
 	}
 	if !updated {
-		return userError(apperr.CodeConflict, "approval_concurrent", "approval request status changed concurrently", nil)
+		return userError(apperr.CodeConflict, "agent.errors.approval_concurrent", "approval request status changed concurrently", nil)
 	}
 
 	// Remove from in-memory store now that it's no longer pending

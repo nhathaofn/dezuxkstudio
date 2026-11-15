@@ -51,7 +51,9 @@ export function SecretInput({
           iconOnly
           disabled={!value || cleared}
           title={t(visible && Boolean(value) ? "providers.hideSecret" : "providers.showSecret")}
-          aria-label={t(visible && Boolean(value) ? "providers.hideSecret" : "providers.showSecret")}
+          aria-label={t(
+            visible && Boolean(value) ? "providers.hideSecret" : "providers.showSecret"
+          )}
           aria-pressed={visible && Boolean(value)}
           onClick={() => setVisible(!visible)}
         >
