@@ -56,3 +56,9 @@ export const settingsRoute = {
   label: "header.settings" as MessageKey,
   load: () => import("../features/preferences/SettingsView"),
 };
+
+/** State payload passed when performing 1-click cross-actions into /watermark */
+export interface WatermarkNavState {
+  asset_id?: string;
+  path?: string;
+}

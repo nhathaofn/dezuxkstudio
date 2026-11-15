@@ -14,13 +14,16 @@ import {
   ZoomIn,
   ZoomOut,
   RotateCcw,
+  Sparkles,
+  Bot,
   X,
 } from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
-import { translateServerMessage, useT } from "../../lib/i18n";
+import { translateServerMessage, useT, type MessageKey } from "../../lib/i18n";
 import { downloadMediaBlob, mediaBasename } from "../../lib/rtClient";
+import { askAgentAboutMediaAsset } from "../agent/screenContext";
 import { useConnectionStore } from "../connection/useConnectionStore";
 import { useWatermarkStore } from "./useWatermarkStore";
 
@@ -320,6 +323,7 @@ export const WatermarkResultsCard: React.FC = () => {
     downloadOutput,
     setComparisonItem,
     resetComparison,
+    setInputPath,
   } = useWatermarkStore();
 
   const displayName = (rawPath: string) =>
@@ -508,6 +512,30 @@ export const WatermarkResultsCard: React.FC = () => {
                   </button>
                 )}
 
+                <button
+                  type="button"
+                  onClick={() => setInputPath(result.image.localUrl)}
+                  className="watermark-icon-btn"
+                  title={t("cross.sendToWatermark" as MessageKey) || "Send to Watermark"}
+                  aria-label="Send to Watermark"
+                >
+                  <Sparkles size={12} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    askAgentAboutMediaAsset({
+                      assetId: result.results?.[0]?.asset_id,
+                      filePath: result.image.localUrl,
+                    })
+                  }
+                  className="watermark-icon-btn"
+                  title={t("cross.askAgent" as MessageKey) || "Ask Agent about this file"}
+                  aria-label="Ask Agent about this file"
+                >
+                  <Bot size={12} />
+                </button>
+
                 {isRemoteMode ? (
                   <Button
                     size="sm"
@@ -582,6 +610,35 @@ export const WatermarkResultsCard: React.FC = () => {
                         aria-label={t("watermark.compare")}
                       >
                         <Eye size={12} />
+                      </button>
+                    )}
+
+                    {item.out_path && (
+                      <button
+                        type="button"
+                        onClick={() => setInputPath(item.out_path)}
+                        className="watermark-icon-btn"
+                        title={t("cross.sendToWatermark" as MessageKey) || "Send to Watermark"}
+                        aria-label="Send to Watermark"
+                      >
+                        <Sparkles size={12} />
+                      </button>
+                    )}
+
+                    {item.out_path && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          askAgentAboutMediaAsset({
+                            assetId: item.asset_id,
+                            filePath: item.out_path,
+                          })
+                        }
+                        className="watermark-icon-btn"
+                        title={t("cross.askAgent" as MessageKey) || "Ask Agent about this file"}
+                        aria-label="Ask Agent about this file"
+                      >
+                        <Bot size={12} />
                       </button>
                     )}
 

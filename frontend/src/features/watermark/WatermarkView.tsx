@@ -1,21 +1,64 @@
-import React from "react";
+import React, { useEffect } from "react";
+import { useInRouterContext, useLocation } from "react-router-dom";
 import { Sparkles, Loader2, RotateCcw, X } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Badge } from "../../components/ui/Badge";
+import { MediaDropZone } from "../../components/ui/MediaDropZone";
 import { describeError, useT } from "../../lib/i18n";
 import { useAgentScreenContext } from "../agent/screenContext";
 import { WATERMARK_NODE, useWatermarkStore, type WatermarkNodeResult } from "./useWatermarkStore";
 import { WatermarkConfigCard } from "./WatermarkConfigCard";
 import { WatermarkResultsCard } from "./WatermarkResultsCard";
 
+/**
+ * Handles incoming navigation parameters (e.g. 1-click cross action from MediaGen or MediaLibrary).
+ * Safely isolated to avoid router context errors in standalone test harnesses.
+ */
+const WatermarkNavigationListener: React.FC = () => {
+  const location = useLocation();
+  const setInputPath = useWatermarkStore((s) => s.setInputPath);
+
+  useEffect(() => {
+    const state = location.state as { asset_id?: string; path?: string } | null;
+    const searchParams = new URLSearchParams(location.search);
+    const incomingAssetId = state?.asset_id || searchParams.get("asset_id");
+    const incomingPath = state?.path || searchParams.get("path");
+    const target = incomingPath || incomingAssetId;
+    if (target) {
+      setInputPath(target);
+    }
+  }, [location.state, location.search, setInputPath]);
+
+  return null;
+};
+
 export const WatermarkView: React.FC = () => {
   const t = useT();
+  const inRouter = useInRouterContext();
 
-  const { inputPath, inputPaths, loading, result, error, removeWatermark, reset, dismissError } =
-    useWatermarkStore();
+  const {
+    inputPath,
+    inputPaths,
+    loading,
+    result,
+    error,
+    setInputPaths,
+    setQueuedFiles,
+    removeWatermark,
+    reset,
+    dismissError,
+  } = useWatermarkStore();
 
   const totalFiles = inputPaths.length > 0 ? inputPaths.length : inputPath ? 1 : 0;
   const { inPlace, outputDir, workers, corner } = useWatermarkStore();
+
+  const handleDropZoneSelected = (files: File[], paths?: string[]) => {
+    if (paths && paths.length > 0) {
+      setInputPaths(paths);
+    } else if (files.length > 0) {
+      setQueuedFiles(files);
+    }
+  };
 
   // Let the agent see this screen: loaded images, current settings (keyed by the node's param names), last run.
   useAgentScreenContext({
@@ -33,6 +76,8 @@ export const WatermarkView: React.FC = () => {
 
   return (
     <div className="dashboard-layout watermark-layout">
+      {inRouter && <WatermarkNavigationListener />}
+
       {/* Header Bar */}
       <div className="dashboard-hero watermark-hero">
         <div className="watermark-hero-title-group">
@@ -95,6 +140,19 @@ export const WatermarkView: React.FC = () => {
           >
             <X size={14} />
           </button>
+        </div>
+      )}
+
+      {/* Shared Dropzone for fast onboarding when no files are loaded */}
+      {totalFiles === 0 && !result && (
+        <div style={{ marginBottom: "var(--space-4)" }}>
+          <MediaDropZone
+            multiple
+            label={t("watermark.browse.title")}
+            title={t("watermark.dragOrClick")}
+            description={t("watermark.dragOrClickDesc")}
+            onSelected={handleDropZoneSelected}
+          />
         </div>
       )}
 

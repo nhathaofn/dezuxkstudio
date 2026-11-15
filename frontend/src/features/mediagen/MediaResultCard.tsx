@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
+import { useInRouterContext, useNavigate } from "react-router-dom";
 import {
+  Bot,
   Check,
   CheckCircle2,
   Copy,
@@ -11,6 +13,7 @@ import {
   Pause,
   Play,
   RotateCcw,
+  Sparkles,
   Volume2,
   VolumeX,
   X,
@@ -22,6 +25,7 @@ import { ErrorText } from "../../components/ui/ErrorText";
 import type { ActionProgress } from "../../contracts/generated";
 import { downloadMediaBlob, type ActionError } from "../../lib/rtClient";
 import { translateServerMessage, useT, type MessageKey } from "../../lib/i18n";
+import { askAgentAboutMediaAsset } from "../agent/screenContext";
 import { formatByteSize } from "./types";
 
 export type MediaResultKind = "image" | "video" | "tts";
@@ -33,6 +37,7 @@ export interface MediaOutputSummary {
   model: string;
   sizeBytes: number;
   duration?: number;
+  asset_id?: string;
 }
 
 function formatAudioTime(seconds: number): string {
@@ -241,6 +246,16 @@ interface MediaResultCardProps {
   onDismissError?: () => void;
 }
 
+const RouterNavigateBridge: React.FC<{
+  navRef: React.MutableRefObject<((path: string, opts?: { state?: unknown }) => void) | null>;
+}> = ({ navRef }) => {
+  const navigate = useNavigate();
+  useEffect(() => {
+    navRef.current = navigate;
+  }, [navigate, navRef]);
+  return null;
+};
+
 export const MediaResultCard: React.FC<MediaResultCardProps> = ({
   kind,
   loading,
@@ -253,6 +268,8 @@ export const MediaResultCard: React.FC<MediaResultCardProps> = ({
   onDismissError,
 }) => {
   const t = useT();
+  const inRouter = useInRouterContext();
+  const navRef = useRef<((path: string, opts?: { state?: unknown }) => void) | null>(null);
   const [copied, setCopied] = useState(false);
   const [previewState, setPreviewState] = useState<{ path: string; url: string | null }>({
     path: "",
@@ -306,6 +323,22 @@ export const MediaResultCard: React.FC<MediaResultCardProps> = ({
     }
   };
 
+  const handleSendToWatermark = () => {
+    if (!result?.path) return;
+    if (navRef.current) {
+      navRef.current("/watermark", { state: { asset_id: result.asset_id, path: result.path } });
+    }
+  };
+
+  const handleAskAgent = () => {
+    if (!result) return;
+    askAgentAboutMediaAsset({
+      assetId: result.asset_id,
+      filePath: result.path,
+      mimeType: result.mimeType,
+    });
+  };
+
   return (
     <Card
       icon={KindIcon}
@@ -320,6 +353,7 @@ export const MediaResultCard: React.FC<MediaResultCardProps> = ({
         ) : undefined
       }
     >
+      {inRouter && <RouterNavigateBridge navRef={navRef} />}
       {error && (
         <div
           className="mediagen-error-box"
@@ -464,6 +498,26 @@ export const MediaResultCard: React.FC<MediaResultCardProps> = ({
               </div>
             </div>
             <div className="watermark-file-actions">
+              {kind === "image" && (
+                <button
+                  type="button"
+                  className="watermark-icon-btn"
+                  title={t("cross.sendToWatermark" as MessageKey) || "Send to Watermark"}
+                  aria-label="Send to Watermark"
+                  onClick={handleSendToWatermark}
+                >
+                  <Sparkles size={12} />
+                </button>
+              )}
+              <button
+                type="button"
+                className="watermark-icon-btn"
+                title={t("cross.askAgent" as MessageKey) || "Ask Agent about this file"}
+                aria-label="Ask Agent about this file"
+                onClick={handleAskAgent}
+              >
+                <Bot size={12} />
+              </button>
               <button
                 type="button"
                 className="watermark-icon-btn"
@@ -488,6 +542,26 @@ export const MediaResultCard: React.FC<MediaResultCardProps> = ({
                 )}
               </button>
             </div>
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: "var(--space-2)",
+              marginTop: "var(--space-3)",
+            }}
+          >
+            {kind === "image" && (
+              <Button size="sm" variant="secondary" onClick={handleSendToWatermark}>
+                <Sparkles size={12} />
+                {t("cross.sendToWatermark" as MessageKey) || "Send to Watermark"}
+              </Button>
+            )}
+            <Button size="sm" variant="secondary" onClick={handleAskAgent}>
+              <Bot size={12} />
+              {t("cross.askAgent" as MessageKey) || "Ask Agent about this file"}
+            </Button>
           </div>
         </div>
       )}

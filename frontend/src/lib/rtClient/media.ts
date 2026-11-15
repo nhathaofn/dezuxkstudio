@@ -1,8 +1,18 @@
 import { appConfig } from "../../config/appConfig";
+import {
+  Actions,
+  type ErrorBody,
+  type MediaAssetItem,
+  type MediaDeletePayload,
+  type MediaListPayload,
+  type MediaListResult,
+  type MediaRegisterInputPayload,
+  type MediaSignURLPayload,
+  type MediaSignedURLResult,
+} from "../../contracts/generated";
 import { rtClient } from "./client";
 import type { Endpoint } from "./endpoint";
 import { ActionError, ClientErrorCodes } from "./errors";
-import type { ErrorBody } from "../../contracts/generated";
 
 export interface UploadedMedia {
   path: string;
@@ -140,4 +150,54 @@ function parseDispositionFilename(header: string | null): string | null {
   if (quotedMatch?.[1]) return quotedMatch[1];
   const bareMatch = /filename=([^;\s]+)/i.exec(header);
   return bareMatch?.[1] ?? null;
+}
+
+/** Resolves an absolute HTTP(S) URL for a media endpoint or signed ticket path. */
+export function resolveMediaHttpUrl(
+  pathOrUrl: string,
+  endpoint?: Endpoint | null
+): string {
+  if (!pathOrUrl || /^https?:\/\//i.test(pathOrUrl)) {
+    return pathOrUrl;
+  }
+  const ep = endpoint ?? rtClient.getEndpoint();
+  if (ep?.url) {
+    const base = httpBaseUrl(ep.url);
+    const path = pathOrUrl.startsWith("/") ? pathOrUrl : `/${pathOrUrl}`;
+    return `${base}${path}`;
+  }
+  return pathOrUrl;
+}
+
+/** Generates a scoped signed download/streaming ticket for an asset. */
+export async function signMediaURL(
+  payload: MediaSignURLPayload,
+  endpoint?: Endpoint | null
+): Promise<MediaSignedURLResult> {
+  const result = await rtClient.request(Actions.MEDIA_SIGN_URL, payload);
+  return {
+    ...result,
+    url: resolveMediaHttpUrl(result.url, endpoint),
+  };
+}
+
+/** Lists registered media assets with optional filter and search. */
+export async function listMediaAssets(
+  payload: MediaListPayload = {}
+): Promise<MediaListResult> {
+  return rtClient.request(Actions.MEDIA_LIST, payload);
+}
+
+/** Deletes a registered media asset record (and optionally its backing file). */
+export async function deleteMediaAsset(
+  payload: MediaDeletePayload
+): Promise<void> {
+  await rtClient.request(Actions.MEDIA_DELETE, payload);
+}
+
+/** Registers an existing local media file as an asset. */
+export async function registerMediaInput(
+  payload: MediaRegisterInputPayload
+): Promise<MediaAssetItem> {
+  return rtClient.request(Actions.MEDIA_REGISTER_INPUT, payload);
 }

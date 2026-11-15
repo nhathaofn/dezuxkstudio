@@ -1,0 +1,249 @@
+import React, {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
+import { UploadCloud } from "lucide-react";
+import { getBridge, isDesktop, onFileDrop } from "../../lib/bridge";
+
+export interface MediaDropZoneHandle {
+  browse: () => void;
+}
+
+export interface MediaDropZoneProps {
+  /** Label for native file picker dialog or accessibility. */
+  label?: string;
+  /** Primary hint or title displayed inside the dropzone. */
+  title?: string;
+  /** Secondary subtitle or description displayed inside the dropzone. */
+  description?: string;
+  /** MIME types or file extensions accepted. Defaults to image types. */
+  accept?: string;
+  /** Whether multiple files can be selected or dropped. Defaults to false. */
+  multiple?: boolean;
+  /** Whether the dropzone is disabled. */
+  disabled?: boolean;
+  /** Optional custom icon component to display. */
+  icon?: React.ComponentType<{ size?: number; className?: string; style?: React.CSSProperties }>;
+  /** Additional custom class names for the container. */
+  className?: string;
+  /** Number of currently selected items to reflect in the UI. */
+  selectedCount?: number;
+  /** Summary text when files are selected (e.g. "3 images ready"). */
+  selectedSummary?: string;
+  /** Callback when files are selected via HTML file input or web drag-and-drop. */
+  onFilesSelected?: (files: File[]) => void;
+  /** Callback when native local file paths are selected via desktop dialog or native drag-and-drop. */
+  onPathsSelected?: (paths: string[]) => void;
+  /** Unified callback delivering both files and native paths if available. */
+  onSelected?: (files: File[], paths?: string[]) => void;
+  /** Optional custom child nodes or render function. */
+  children?:
+    | React.ReactNode
+    | ((state: { isDragging: boolean; browse: () => void }) => React.ReactNode);
+}
+
+const DEFAULT_IMAGE_ACCEPT = "image/png,image/jpeg,image/webp,image/*";
+
+export const MediaDropZone = forwardRef<MediaDropZoneHandle, MediaDropZoneProps>(
+  (
+    {
+      label = "Select media",
+      title,
+      description,
+      accept = DEFAULT_IMAGE_ACCEPT,
+      multiple = false,
+      disabled = false,
+      icon: Icon = UploadCloud,
+      className = "",
+      selectedCount = 0,
+      selectedSummary,
+      onFilesSelected,
+      onPathsSelected,
+      onSelected,
+      children,
+    },
+    ref
+  ) => {
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
+    const containerRef = useRef<HTMLDivElement | null>(null);
+    const [isDragging, setIsDragging] = useState(false);
+
+    const handleBrowse = async () => {
+      if (disabled) return;
+      const bridge = getBridge();
+      if (isDesktop() && bridge) {
+        try {
+          if (multiple && bridge.BrowseImages) {
+            const picked = await bridge.BrowseImages(label);
+            if (picked && picked.length > 0) {
+              onPathsSelected?.(picked);
+              onSelected?.([], picked);
+              return;
+            }
+          }
+          if (bridge.BrowseImage) {
+            const picked = await bridge.BrowseImage(label);
+            if (picked) {
+              onPathsSelected?.([picked]);
+              onSelected?.([], [picked]);
+              return;
+            }
+          }
+        } catch (err) {
+          console.error("Native file picker failed:", err);
+        }
+      }
+      fileInputRef.current?.click();
+    };
+
+    useImperativeHandle(ref, () => ({
+      browse: handleBrowse,
+    }));
+
+    // Native desktop Wails onFileDrop support
+    useEffect(() => {
+      if (disabled || !isDesktop()) return;
+
+      const unsub = onFileDrop((x, y, paths) => {
+        setIsDragging(false);
+        const target = document.elementFromPoint(x, y);
+        const rect = containerRef.current?.getBoundingClientRect();
+        const isInsideRect =
+          rect !== undefined &&
+          x >= rect.left &&
+          x <= rect.right &&
+          y >= rect.top &&
+          y <= rect.bottom;
+        const isInsideContainer =
+          isInsideRect ||
+          (containerRef.current !== null &&
+            target !== null &&
+            (containerRef.current === target || containerRef.current.contains(target)));
+
+        if (isInsideContainer && paths && paths.length > 0) {
+          const validPaths = multiple ? paths : [paths[0]];
+          onPathsSelected?.(validPaths);
+          onSelected?.([], validPaths);
+        }
+      }, false);
+
+      return () => {
+        unsub();
+      };
+    }, [disabled, multiple, onPathsSelected, onSelected]);
+
+    const handleDragOver = (e: React.DragEvent) => {
+      e.preventDefault();
+      if (!disabled) {
+        setIsDragging(true);
+      }
+    };
+
+    const handleDragLeave = (e: React.DragEvent) => {
+      e.preventDefault();
+      setIsDragging(false);
+    };
+
+    const handleDrop = (e: React.DragEvent) => {
+      e.preventDefault();
+      setIsDragging(false);
+      if (disabled) return;
+
+      if (isDesktop()) return;
+
+      const files = Array.from(e.dataTransfer.files || []);
+      if (files.length === 0) return;
+
+      const chosen = multiple ? files : [files[0]];
+      const nativePaths = chosen
+        .map((f) => (f as unknown as { path?: string }).path)
+        .filter((p): p is string => Boolean(p));
+
+      onFilesSelected?.(chosen);
+      if (nativePaths.length > 0) {
+        onPathsSelected?.(nativePaths);
+      }
+      onSelected?.(chosen, nativePaths.length > 0 ? nativePaths : undefined);
+    };
+
+    const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files || []);
+      e.target.value = "";
+      if (files.length === 0) return;
+
+      const chosen = multiple ? files : [files[0]];
+      const nativePaths = chosen
+        .map((f) => (f as unknown as { path?: string }).path)
+        .filter((p): p is string => Boolean(p));
+
+      onFilesSelected?.(chosen);
+      if (nativePaths.length > 0) {
+        onPathsSelected?.(nativePaths);
+      }
+      onSelected?.(chosen, nativePaths.length > 0 ? nativePaths : undefined);
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        void handleBrowse();
+      }
+    };
+
+    const containerClasses = [
+      "watermark-dropzone",
+      isDragging ? "watermark-dropzone--active" : "",
+      disabled ? "is-disabled" : "",
+      className,
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    return (
+      <div
+        ref={containerRef}
+        role="button"
+        tabIndex={disabled ? -1 : 0}
+        className={containerClasses}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        onClick={handleBrowse}
+        onKeyDown={handleKeyDown}
+        aria-disabled={disabled}
+        aria-label={label}
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={accept}
+          multiple={multiple}
+          disabled={disabled}
+          className="watermark-dropzone__input"
+          onChange={handleInputChange}
+        />
+
+        {typeof children === "function" ? (
+          children({ isDragging, browse: handleBrowse })
+        ) : children ? (
+          children
+        ) : (
+          <>
+            <Icon size={22} className="watermark-dropzone__icon" />
+            <div className="watermark-dropzone__title">
+              {selectedCount > 0
+                ? selectedSummary || `${selectedCount} files selected`
+                : title || "Drop files here or click to browse"}
+            </div>
+            {description && <div className="watermark-dropzone__desc">{description}</div>}
+          </>
+        )}
+      </div>
+    );
+  }
+);
+
+MediaDropZone.displayName = "MediaDropZone";

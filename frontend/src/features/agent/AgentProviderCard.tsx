@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -15,6 +15,7 @@ import {
   XCircle,
 } from "lucide-react";
 import type {
+  ActionName,
   AgentAuthState,
   AgentConnectionState,
   AgentProviderInfo,
@@ -23,6 +24,9 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { getBridge, isDesktop } from "../../lib/bridge";
 import { translateServerMessage, useT, type MessageKey } from "../../lib/i18n";
+import { rtClient } from "../../lib/rtClient";
+import { safeStorage } from "../../lib/storage";
+import { useProvidersStore } from "../providers/useProvidersStore";
 import { LoginPromptDialog } from "./LoginPromptDialog";
 import { useAgentStore } from "./useAgentStore";
 
@@ -210,6 +214,66 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
   const busyAction = useAgentStore((s) => s.busyAction);
   const loginPrompt = useAgentStore((s) => s.loginPrompts[provider.id]);
 
+  const rawBuiltins = useProvidersStore((s) => s.data?.builtins);
+  const builtins = useMemo(() => rawBuiltins ?? [], [rawBuiltins]);
+
+  const [linkedCredKey, setLinkedCredKey] = useState<string>(
+    () => safeStorage.get(`agent_provider_link:${provider.id}`) || ""
+  );
+
+  const compatibleCreds = useMemo(() => {
+    if (!provider.compatible_providers || provider.compatible_providers.length === 0) {
+      return [];
+    }
+    const result: Array<{
+      credentialId: string;
+      providerId: string;
+      providerName: string;
+      credentialName: string;
+    }> = [];
+
+    for (const b of builtins) {
+      if (provider.compatible_providers.includes(b.id)) {
+        for (const c of b.credentials ?? []) {
+          result.push({
+            credentialId: c.id,
+            providerId: b.id,
+            providerName: b.display_name,
+            credentialName: c.name,
+          });
+        }
+      }
+    }
+    return result;
+  }, [builtins, provider.compatible_providers]);
+
+  const activeBillingSource = useMemo(() => {
+    if (!linkedCredKey) return "OAuth / Subscription";
+    const found = compatibleCreds.find(
+      (c) => `${c.providerId}:${c.credentialId}` === linkedCredKey
+    );
+    return found ? `Linked API Key: ${found.credentialName}` : "OAuth / Subscription";
+  }, [linkedCredKey, compatibleCreds]);
+
+  const handleSelectLinkedCred = (val: string) => {
+    setLinkedCredKey(val);
+    if (val) {
+      safeStorage.set(`agent_provider_link:${provider.id}`, val);
+    } else {
+      safeStorage.remove(`agent_provider_link:${provider.id}`);
+    }
+    const [targetProviderId, credId] = val.split(":");
+    if (targetProviderId && credId) {
+      void rtClient
+        .request("agent:set_provider_link" as ActionName, {
+          agent_provider_id: provider.id,
+          provider_id: targetProviderId,
+          credential_id: credId,
+        })
+        .catch(() => {});
+    }
+  };
+
   const [probing, setProbing] = useState(false);
   const [customDraft, setCustomDraft] = useState<string | null>(null);
   const [showKeyForm, setShowKeyForm] = useState(false);
@@ -350,6 +414,11 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
             </span>
           </>
         )}
+
+        <span className="agent-provider-meta__label">{t("agent.connections.billing" as MessageKey) || "Billing"}:</span>
+        <span className="agent-provider-meta__val" style={{ fontWeight: "var(--weight-semibold)" }}>
+          {activeBillingSource}
+        </span>
       </div>
 
       {provider.supported && provider.state !== "missing" && (
@@ -358,6 +427,52 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
           disabled={disabled || probing || busyAction || provider.busy}
           onChange={(model, effort) => void setModel(provider.id, model, effort)}
         />
+      )}
+
+      {provider.supported && provider.state !== "missing" && compatibleCreds.length > 0 && (
+        <div className="agent-model-row">
+          <label className="agent-provider-meta__label" htmlFor={`agent-credential-link-${provider.id}`}>
+            {t("agent.connections.linkedCredential" as MessageKey) || "Credential Link"}:
+          </label>
+          <select
+            id={`agent-credential-link-${provider.id}`}
+            className="input-control agent-model-row__select"
+            value={linkedCredKey}
+            onChange={(e) => handleSelectLinkedCred(e.target.value)}
+            disabled={disabled || probing || busyAction}
+            aria-label="Linked API Credential"
+          >
+            <option value="">{t("agent.connections.oauthDefault" as MessageKey) || "OAuth / Subscription (Default)"}</option>
+            {compatibleCreds.map((c) => (
+              <option key={`${c.providerId}:${c.credentialId}`} value={`${c.providerId}:${c.credentialId}`}>
+                Linked API Key: {c.providerName} — {c.credentialName}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {provider.active && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "var(--space-2) var(--space-3)",
+            background: "var(--bg-surface-elevated)",
+            border: "var(--border-width) solid var(--border-default)",
+            borderRadius: "var(--radius-sm)",
+            marginTop: "var(--space-2)",
+            fontSize: "var(--text-xs)",
+          }}
+        >
+          <span style={{ color: "var(--text-secondary)" }}>
+            {t("agent.connections.activeSource" as MessageKey) || "Active Connection & Billing"}:
+          </span>
+          <Badge>
+            {activeBillingSource}
+          </Badge>
+        </div>
       )}
 
       {provider.supported && provider.auth_state !== "authenticated" && (
