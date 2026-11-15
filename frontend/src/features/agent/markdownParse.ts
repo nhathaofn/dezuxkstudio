@@ -3,13 +3,16 @@
  * are re-parsed on every streamed chunk, and an unterminated ``` fence renders as code so far.
  */
 
+export type TableAlign = "left" | "center" | "right" | undefined;
+
 export type MdBlock =
   | { type: "p"; text: string }
   | { type: "h"; level: number; text: string }
   | { type: "ul"; items: string[] }
   | { type: "ol"; items: string[]; start: number }
   | { type: "quote"; text: string }
-  | { type: "code"; lang: string; text: string }
+  | { type: "code"; lang: string; text: string; closed: boolean }
+  | { type: "table"; headers: string[]; alignments: TableAlign[]; rows: string[][] }
   | { type: "hr" }
   /** A server notice line "[[notice:key]]", translated by the UI (agent.notice.<key>). */
   | { type: "notice"; key: string };
@@ -21,6 +24,46 @@ const reOl = /^\s*(\d{1,4})[.)]\s+(.*)$/;
 const reQuote = /^\s*>\s?(.*)$/;
 const reNotice = /^\s*\[\[notice:([a-z_]+)\]\]\s*$/;
 const reHr = /^\s*([-*_])(\s*\1){2,}\s*$/;
+
+export function splitCells(line: string): string[] {
+  let text = line.trim();
+  if (text.startsWith("|")) text = text.slice(1);
+  if (text.endsWith("|") && !text.endsWith("\\|")) text = text.slice(0, -1);
+  const cells: string[] = [];
+  let cur = "";
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) {
+      cur += ch;
+      escaped = false;
+    } else if (ch === "\\") {
+      escaped = true;
+    } else if (ch === "|") {
+      cells.push(cur.trim());
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+
+export function isDelimiterRow(cells: string[]): boolean {
+  if (cells.length === 0) return false;
+  return cells.every((c) => /^:?-{1,}:?$/.test(c));
+}
+
+export function parseAlignment(cell: string): TableAlign {
+  const trimmed = cell.trim();
+  const left = trimmed.startsWith(":");
+  const right = trimmed.endsWith(":");
+  if (left && right) return "center";
+  if (right) return "right";
+  if (left) return "left";
+  return undefined;
+}
 
 /** Splits Markdown source into blocks. */
 export function parseBlocks(src: string): MdBlock[] {
@@ -43,17 +86,62 @@ export function parseBlocks(src: string): MdBlock[] {
       flushPara();
       const body: string[] = [];
       i++;
-      while (i < lines.length && !reFence.test(lines[i])) {
+      let closed = false;
+      while (i < lines.length) {
+        if (reFence.test(lines[i])) {
+          closed = true;
+          break;
+        }
         body.push(lines[i]);
         i++;
       }
-      blocks.push({ type: "code", lang: fence[2] ?? "", text: body.join("\n") });
+      blocks.push({
+        type: "code",
+        lang: fence[2] ?? "",
+        text: body.join("\n"),
+        closed,
+      });
       continue;
     }
 
     if (line.trim() === "") {
       flushPara();
       continue;
+    }
+
+    // Markdown Table check: header row with '|' followed by delimiter row with '---'
+    if (line.includes("|") && i + 1 < lines.length && lines[i + 1].includes("|")) {
+      const headerCells = splitCells(line);
+      const delimCells = splitCells(lines[i + 1]);
+      if (headerCells.length > 0 && isDelimiterRow(delimCells)) {
+        flushPara();
+        const alignments = delimCells.map(parseAlignment);
+        while (alignments.length < headerCells.length) {
+          alignments.push(undefined);
+        }
+        i += 2;
+        const rows: string[][] = [];
+        while (i < lines.length) {
+          const rowLine = lines[i];
+          if (rowLine.trim() === "" || !rowLine.includes("|") || reFence.test(rowLine)) {
+            break;
+          }
+          const rowCells = splitCells(rowLine);
+          while (rowCells.length < headerCells.length) {
+            rowCells.push("");
+          }
+          rows.push(rowCells.slice(0, headerCells.length));
+          i++;
+        }
+        i--;
+        blocks.push({
+          type: "table",
+          headers: headerCells,
+          alignments,
+          rows,
+        });
+        continue;
+      }
     }
 
     const notice = reNotice.exec(line);

@@ -173,6 +173,7 @@ const ChatBubble: React.FC<ChatBubbleProps> = React.memo(
     const [detail, setDetail] = useState<"tools" | "thought" | null>(null);
     const toggle = (d: "tools" | "thought") => setDetail((cur) => (cur === d ? null : d));
     const [copied, flashCopied] = useFlash(COPY_FEEDBACK_MS);
+    const [dismissed, setDismissed] = useState(false);
 
     const isUser = msg.role === "user";
     const isError = msg.role === "error";
@@ -269,15 +270,28 @@ const ChatBubble: React.FC<ChatBubbleProps> = React.memo(
         )}
 
         {isError ? (
-          <div className="agent-msg__error" role="alert">
-            <span>{errorText}</span>
-            {canRetry && (
-              <Button size="sm" onClick={onRetry}>
-                <RotateCw size={12} />
-                {t("agent.chat.retry")}
-              </Button>
-            )}
-          </div>
+          !dismissed ? (
+            <div className="agent-msg__error" role="alert">
+              <span>{errorText}</span>
+              <div className="agent-msg__error-actions">
+                {canRetry && (
+                  <Button size="sm" onClick={onRetry}>
+                    <RotateCw size={12} />
+                    {t("agent.chat.retry")}
+                  </Button>
+                )}
+                <button
+                  type="button"
+                  className="agent-msg__error-dismiss"
+                  onClick={() => setDismissed(true)}
+                  title={t("dialog.close")}
+                  aria-label={t("dialog.close")}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            </div>
+          ) : null
         ) : msg.text ? (
           <div className={`agent-msg__body${msg.streaming ? " is-streaming" : ""}`}>
             <Markdown text={msg.text} />
@@ -445,6 +459,7 @@ const AgentChatPane: React.FC<AgentChatTabProps> = ({ connectedToCore }) => {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const stickRef = useRef(true);
   const [showJump, setShowJump] = useState(false);
+  const [wrongProviderDismissed, setWrongProviderDismissed] = useState(false);
   const [slashIdx, setSlashIdx] = useState(0);
   const [slashDismissedFor, setSlashDismissedFor] = useState<string | null>(null);
   const activeProvider = providers.find((p) => p.active);
@@ -654,14 +669,25 @@ const AgentChatPane: React.FC<AgentChatTabProps> = ({ connectedToCore }) => {
         </div>
       )}
 
-      {wrongProvider && activeProvider && (
+      {wrongProvider && activeProvider && !wrongProviderDismissed && (
         <div className="agent-chat-banner" role="status">
-          <p className="agent-chat-banner__text">
-            {t("agent.chat.wrongProviderBanner", {
-              provider: convOwnerName,
-              active: activeProvider.name,
-            })}
-          </p>
+          <div className="agent-chat-banner__top">
+            <p className="agent-chat-banner__text">
+              {t("agent.chat.wrongProviderBanner", {
+                provider: convOwnerName,
+                active: activeProvider.name,
+              })}
+            </p>
+            <button
+              type="button"
+              className="agent-chat-banner__dismiss"
+              onClick={() => setWrongProviderDismissed(true)}
+              title={t("dialog.close")}
+              aria-label={t("dialog.close")}
+            >
+              <X size={12} />
+            </button>
+          </div>
           <div className="agent-chat-banner__actions">
             {convOwner && (
               <Button
