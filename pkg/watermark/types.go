@@ -32,6 +32,30 @@ const (
 	CornerAny         Corner = "any"
 )
 
+// Item status values reporting the outcome of processing.
+const (
+	StatusProcessed = "processed"
+	StatusCopied    = "copied"
+	StatusSkipped   = "skipped"
+	StatusFailed    = "failed"
+)
+
+// Standard reasons for skipping output generation.
+const (
+	ReasonIdempotentSkip = "output already exists with identical parameters"
+	ReasonNoWatermark    = "no watermark detected"
+)
+
+// TaskParams captures parameters that affect watermark processing and output generation,
+// allowing idempotent re-runs to be distinguished from collisions.
+type TaskParams struct {
+	InputPath string  `json:"input_path"`
+	Corner    string  `json:"corner"`
+	MinScore  float64 `json:"min_score"`
+	MinGain   float64 `json:"min_gain"`
+	MaxGain   float64 `json:"max_gain"`
+}
+
 // Info holds details about the detected watermark location and size.
 type Info struct {
 	Size     int             `json:"size"`

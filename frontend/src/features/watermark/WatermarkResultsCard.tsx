@@ -1,5 +1,5 @@
 import { appConfig } from "../../config/appConfig";
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { useFlash } from "../../lib/hooks/useFlash";
 import {
   Layers,
@@ -10,14 +10,295 @@ import {
   AlertCircle,
   Copy,
   Download,
+  Eye,
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
+  X,
 } from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
-import { translateServerMessage, useT } from "../../lib/i18n";
-import { mediaBasename } from "../../lib/rtClient";
+import { isMessageKey, translateServerMessage, useT } from "../../lib/i18n";
+import { downloadMediaBlob, mediaBasename } from "../../lib/rtClient";
 import { useConnectionStore } from "../connection/useConnectionStore";
-import { useWatermarkStore } from "./useWatermarkStore";
+import { useWatermarkStore, type WatermarkItemResult } from "./useWatermarkStore";
+
+function usePreviewUrl(path: string): string | null {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!path || typeof URL.createObjectURL !== "function") return;
+    let cancelled = false;
+    let objUrl: string | null = null;
+    void downloadMediaBlob(path)
+      .then(({ blob }) => {
+        if (cancelled) return;
+        objUrl = URL.createObjectURL(blob);
+        setUrl(objUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setUrl(null);
+      });
+    return () => {
+      cancelled = true;
+      if (objUrl) URL.revokeObjectURL(objUrl);
+    };
+  }, [path]);
+  return url;
+}
+
+const ComparisonViewer: React.FC<{
+  beforePath: string;
+  afterPath: string;
+  title: string;
+  onClose: () => void;
+}> = ({ beforePath, afterPath, title, onClose }) => {
+  const {
+    comparisonZoom,
+    comparisonPan,
+    comparisonSliderPos,
+    setComparisonZoom,
+    setComparisonPan,
+    setComparisonSliderPos,
+  } = useWatermarkStore();
+
+  const [isPanning, setIsPanning] = useState(false);
+  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
+
+  const beforeUrl = usePreviewUrl(beforePath);
+  const afterUrl = usePreviewUrl(afterPath);
+
+  const { zoomMin, zoomMax, zoomStep } = appConfig.ui.watermarkCompare;
+
+  const handleZoomIn = () => {
+    setComparisonZoom((z) => Math.min(zoomMax, +(z + zoomStep).toFixed(2)));
+  };
+
+  const handleZoomOut = () => {
+    setComparisonZoom((z) => Math.max(zoomMin, +(z - zoomStep).toFixed(2)));
+  };
+
+  const handleZoomReset = () => {
+    setComparisonZoom(1.0);
+    setComparisonPan({ x: 0, y: 0 });
+  };
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    setIsPanning(true);
+    setDragStart({ x: e.clientX - comparisonPan.x, y: e.clientY - comparisonPan.y });
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isPanning || !dragStart) return;
+    setComparisonPan({
+      x: Math.round(e.clientX - dragStart.x),
+      y: Math.round(e.clientY - dragStart.y),
+    });
+  };
+
+  const handleMouseUp = () => {
+    setIsPanning(false);
+    setDragStart(null);
+  };
+
+  return (
+    <div
+      className="watermark-comparison-viewer"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-2)",
+        padding: "var(--space-3)",
+        border: "var(--border-width) solid var(--border-subtle)",
+        borderRadius: "var(--radius-md)",
+        background: "var(--bg-surface-elevated)",
+      }}
+    >
+      {/* Header with Title and Close Button */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span
+          className="watermark-file-path"
+          style={{ fontWeight: "var(--weight-semibold)", fontSize: "var(--text-sm)" }}
+          title={title}
+        >
+          {title}
+        </span>
+        <button
+          type="button"
+          onClick={onClose}
+          className="watermark-icon-btn"
+          aria-label="Close comparison"
+          title="Close comparison"
+        >
+          <X size={14} />
+        </button>
+      </div>
+
+      {/* Zoom and Pan Toolbar */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "var(--space-2)",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-1)" }}>
+          <button
+            type="button"
+            className="watermark-icon-btn"
+            onClick={handleZoomOut}
+            disabled={comparisonZoom <= zoomMin}
+            aria-label="Zoom out"
+            title="Zoom out"
+          >
+            <ZoomOut size={13} />
+          </button>
+          <span
+            style={{
+              fontSize: "var(--text-xs)",
+              minWidth: "48px",
+              textAlign: "center",
+              fontFamily: "var(--font-mono)",
+            }}
+          >
+            {Math.round(comparisonZoom * 100)}%
+          </span>
+          <button
+            type="button"
+            className="watermark-icon-btn"
+            onClick={handleZoomIn}
+            disabled={comparisonZoom >= zoomMax}
+            aria-label="Zoom in"
+            title="Zoom in"
+          >
+            <ZoomIn size={13} />
+          </button>
+          <button
+            type="button"
+            className="watermark-icon-btn"
+            onClick={handleZoomReset}
+            aria-label="Reset zoom and pan"
+            title="Reset zoom"
+          >
+            <RotateCcw size={12} />
+          </button>
+        </div>
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "var(--space-2)",
+            fontSize: "var(--text-xs)",
+          }}
+        >
+          <span className="muted-text">Before</span>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={comparisonSliderPos}
+            onChange={(e) => setComparisonSliderPos(Number(e.target.value))}
+            aria-label="Before/After split slider"
+            style={{ width: "120px", cursor: "pointer" }}
+          />
+          <span className="muted-text">After</span>
+        </div>
+      </div>
+
+      {/* Interactive Image Viewport */}
+      <div
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+        style={{
+          position: "relative",
+          width: "100%",
+          height: "260px",
+          overflow: "hidden",
+          borderRadius: "var(--radius-sm)",
+          background: "var(--bg-canvas)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: isPanning ? "grabbing" : "grab",
+          userSelect: "none",
+        }}
+      >
+        <div
+          style={{
+            transform: `scale(${comparisonZoom}) translate(${comparisonPan.x}px, ${comparisonPan.y}px)`,
+            transformOrigin: "center center",
+            position: "relative",
+            display: "inline-block",
+            transition: isPanning ? "none" : "transform var(--transition-fast)",
+          }}
+        >
+          {/* After image (base layer) */}
+          {afterUrl ? (
+            <img
+              src={afterUrl}
+              alt="After cleaned"
+              style={{
+                maxHeight: "240px",
+                maxWidth: "100%",
+                display: "block",
+                pointerEvents: "none",
+              }}
+            />
+          ) : (
+            <div style={{ padding: "var(--space-4)", textAlign: "center", fontSize: "var(--text-xs)" }}>
+              <Loader2 size={16} className="animate-spin" />
+            </div>
+          )}
+
+          {/* Before image (clipped overlay) */}
+          {beforeUrl && (
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                height: "100%",
+                overflow: "hidden",
+                clipPath: `inset(0 ${100 - comparisonSliderPos}% 0 0)`,
+                pointerEvents: "none",
+              }}
+            >
+              <img
+                src={beforeUrl}
+                alt="Before original"
+                style={{
+                  maxHeight: "240px",
+                  maxWidth: "100%",
+                  display: "block",
+                }}
+              />
+            </div>
+          )}
+
+          {/* Split divider line */}
+          <div
+            style={{
+              position: "absolute",
+              top: 0,
+              bottom: 0,
+              left: `${comparisonSliderPos}%`,
+              width: "2px",
+              backgroundColor: "var(--accent)",
+              pointerEvents: "none",
+              boxShadow: "0 0 4px var(--overlay-bg)",
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export const WatermarkResultsCard: React.FC = () => {
   const t = useT();
@@ -33,7 +314,10 @@ export const WatermarkResultsCard: React.FC = () => {
     downloadingPath,
     progress,
     result,
+    comparisonItem,
     downloadOutput,
+    setComparisonItem,
+    resetComparison,
   } = useWatermarkStore();
 
   const displayName = (rawPath: string) =>
@@ -42,6 +326,55 @@ export const WatermarkResultsCard: React.FC = () => {
   const handleCopy = (text: string) => {
     void navigator.clipboard.writeText(text);
     flashCopiedPath(text);
+  };
+
+  const renderItemStatusBadge = (item: {
+    status?: string;
+    detected?: boolean;
+    score?: number;
+    error?: string;
+    reason?: string;
+  }) => {
+    const status =
+      item.status || (item.error ? "failed" : item.detected ? "processed" : "skipped");
+    if (status === "failed") {
+      return (
+        <Badge className="watermark-badge-error" title={item.error}>
+          <AlertCircle size={11} className="watermark-badge-icon" />{" "}
+          {t("watermark.result.error")}
+        </Badge>
+      );
+    }
+    if (status === "processed") {
+      return (
+        <Badge className="watermark-badge-connected">
+          <CheckCircle2 size={11} className="watermark-badge-icon" />{" "}
+          {item.score != null && item.score > 0
+            ? t("watermark.result.detectedScore", { score: Math.round(item.score * 100) })
+            : isMessageKey("watermark.status.processed")
+              ? t("watermark.status.processed")
+              : "Processed"}
+        </Badge>
+      );
+    }
+    if (status === "copied") {
+      return (
+        <Badge className="watermark-badge-copied">
+          <Copy size={11} className="watermark-badge-icon" />{" "}
+          {isMessageKey("watermark.status.copied") ? t("watermark.status.copied") : "Copied"}
+        </Badge>
+      );
+    }
+    return (
+      <Badge className="watermark-badge-skipped" title={item.reason || t("watermark.result.cleanBadge")}>
+        <Check size={11} className="watermark-badge-icon" />{" "}
+        {item.status === "skipped" && isMessageKey("watermark.status.skipped")
+          ? t("watermark.status.skipped")
+          : item.status === "skipped"
+            ? "Skipped"
+            : t("watermark.result.cleanBadge")}
+      </Badge>
+    );
   };
 
   const totalFiles = inputPaths.length > 0 ? inputPaths.length : inputPath ? 1 : 0;
@@ -136,6 +469,16 @@ export const WatermarkResultsCard: React.FC = () => {
             </div>
           </div>
 
+          {/* Before/After Visual Comparison Slider (when an item is selected for comparison) */}
+          {comparisonItem && (
+            <ComparisonViewer
+              beforePath={comparisonItem.beforeUrl}
+              afterPath={comparisonItem.afterUrl}
+              title={comparisonItem.title}
+              onClose={resetComparison}
+            />
+          )}
+
           {/* Single File Result Display */}
           {(!result.results || result.results.length <= 1) && result.image && (
             <div className="watermark-file-row">
@@ -146,34 +489,56 @@ export const WatermarkResultsCard: React.FC = () => {
                 </div>
               </div>
 
-              {isRemoteMode ? (
-                <Button
-                  size="sm"
-                  iconOnly
-                  disabled={downloadingPath === result.image.localUrl}
-                  onClick={() =>
-                    void downloadOutput(result.image.localUrl, mediaBasename(result.image.localUrl))
-                  }
-                  title={t("watermark.download")}
-                  aria-label={t("watermark.download")}
-                >
-                  {downloadingPath === result.image.localUrl ? (
-                    <Loader2 size={12} className="animate-spin" />
-                  ) : (
-                    <Download size={12} />
-                  )}
-                </Button>
-              ) : (
-                <Button
-                  size="sm"
-                  iconOnly
-                  onClick={() => handleCopy(result.image.localUrl)}
-                  title={t("watermark.copyPath")}
-                  aria-label={t("watermark.copyPath")}
-                >
-                  {copiedPath === result.image.localUrl ? <Check size={12} /> : <Copy size={12} />}
-                </Button>
-              )}
+              <div className="watermark-file-actions">
+                {result.results && result.results[0] && renderItemStatusBadge(result.results[0])}
+
+                {inputPath && result.image.localUrl && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setComparisonItem({
+                        beforeUrl: inputPath,
+                        afterUrl: result.image.localUrl,
+                        title: displayName(result.image.localUrl),
+                      })
+                    }
+                    className="watermark-icon-btn"
+                    title="Compare Before / After"
+                    aria-label="Compare Before / After"
+                  >
+                    <Eye size={12} />
+                  </button>
+                )}
+
+                {isRemoteMode ? (
+                  <Button
+                    size="sm"
+                    iconOnly
+                    disabled={downloadingPath === result.image.localUrl}
+                    onClick={() =>
+                      void downloadOutput(result.image.localUrl, mediaBasename(result.image.localUrl))
+                    }
+                    title={t("watermark.download")}
+                    aria-label={t("watermark.download")}
+                  >
+                    {downloadingPath === result.image.localUrl ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <Download size={12} />
+                    )}
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    iconOnly
+                    onClick={() => handleCopy(result.image.localUrl)}
+                    title={t("watermark.copyPath")}
+                    aria-label={t("watermark.copyPath")}
+                  >
+                    {copiedPath === result.image.localUrl ? <Check size={12} /> : <Copy size={12} />}
+                  </Button>
+                )}
+              </div>
             </div>
           )}
 
@@ -195,23 +560,24 @@ export const WatermarkResultsCard: React.FC = () => {
                   </div>
 
                   <div className="watermark-file-actions">
-                    {item.error ? (
-                      <Badge className="watermark-badge-error">
-                        <AlertCircle size={11} className="watermark-badge-icon" />{" "}
-                        {t("watermark.result.error")}
-                      </Badge>
-                    ) : item.detected ? (
-                      <Badge className="watermark-badge-connected">
-                        <CheckCircle2 size={11} className="watermark-badge-icon" />{" "}
-                        {t("watermark.result.detectedScore", {
-                          score: Math.round(item.score * 100),
-                        })}
-                      </Badge>
-                    ) : (
-                      <Badge>
-                        <Check size={11} className="watermark-badge-icon" />{" "}
-                        {t("watermark.result.cleanBadge")}
-                      </Badge>
+                    {renderItemStatusBadge(item)}
+
+                    {item.out_path && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setComparisonItem({
+                            beforeUrl: item.path,
+                            afterUrl: item.out_path,
+                            title: displayName(item.path),
+                          })
+                        }
+                        className="watermark-icon-btn"
+                        title="Compare Before / After"
+                        aria-label="Compare Before / After"
+                      >
+                        <Eye size={12} />
+                      </button>
                     )}
 
                     {item.out_path &&

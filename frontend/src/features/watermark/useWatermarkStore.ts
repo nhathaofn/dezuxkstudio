@@ -23,6 +23,8 @@ interface WatermarkState {
   remoteNameMap: Record<string, string>;
   inPlace: boolean;
   outputDir: string;
+  copyClean: boolean;
+  preserveTree: boolean;
   /** null = the node's default (from workflow:specs). */
   workers: number | null;
   /** null = the node's default (from workflow:specs). */
@@ -34,13 +36,28 @@ interface WatermarkState {
   result: WatermarkNodeResult | null;
   error: ActionError | null;
 
+  comparisonItem: { beforeUrl: string; afterUrl: string; title: string } | null;
+  comparisonZoom: number;
+  comparisonPan: { x: number; y: number };
+  comparisonSliderPos: number;
+
   setInputPath: (path: string) => void;
   setInputPaths: (paths: string[]) => void;
   setQueuedFiles: (files: File[]) => void;
   setInPlace: (inPlace: boolean) => void;
   setOutputDir: (dir: string) => void;
+  setCopyClean: (copyClean: boolean) => void;
+  setPreserveTree: (preserveTree: boolean) => void;
   setWorkers: (workers: number) => void;
   setCorner: (corner: string) => void;
+  setComparisonItem: (item: { beforeUrl: string; afterUrl: string; title: string } | null) => void;
+  setComparisonZoom: (zoom: number | ((prev: number) => number)) => void;
+  setComparisonPan: (
+    pan: { x: number; y: number } | ((prev: { x: number; y: number }) => { x: number; y: number })
+  ) => void;
+  setComparisonSliderPos: (pos: number) => void;
+  resetComparison: () => void;
+  dismissError: () => void;
   removeWatermark: (pathsOverride?: string[] | string) => Promise<void>;
   downloadOutput: (path: string, preferredName?: string) => Promise<void>;
   reset: () => void;
@@ -53,6 +70,8 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
   remoteNameMap: {},
   inPlace: false,
   outputDir: "",
+  copyClean: true,
+  preserveTree: false,
   workers: null,
   corner: null,
   loading: false,
@@ -60,6 +79,10 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
   progress: null,
   result: null,
   error: null,
+  comparisonItem: null,
+  comparisonZoom: 1.0,
+  comparisonPan: { x: 0, y: 0 },
+  comparisonSliderPos: 50,
 
   setInputPath: (inputPath) =>
     set({
@@ -93,8 +116,34 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
 
   setInPlace: (inPlace) => set({ inPlace }),
   setOutputDir: (outputDir) => set({ outputDir }),
+  setCopyClean: (copyClean) => set({ copyClean }),
+  setPreserveTree: (preserveTree) => set({ preserveTree }),
   setWorkers: (workers) => set({ workers }),
   setCorner: (corner) => set({ corner }),
+  setComparisonItem: (comparisonItem) =>
+    set({
+      comparisonItem,
+      comparisonZoom: 1.0,
+      comparisonPan: { x: 0, y: 0 },
+      comparisonSliderPos: 50,
+    }),
+  setComparisonZoom: (zoom) =>
+    set((s) => ({
+      comparisonZoom: typeof zoom === "function" ? zoom(s.comparisonZoom) : zoom,
+    })),
+  setComparisonPan: (pan) =>
+    set((s) => ({
+      comparisonPan: typeof pan === "function" ? pan(s.comparisonPan) : pan,
+    })),
+  setComparisonSliderPos: (comparisonSliderPos) => set({ comparisonSliderPos }),
+  resetComparison: () =>
+    set({
+      comparisonItem: null,
+      comparisonZoom: 1.0,
+      comparisonPan: { x: 0, y: 0 },
+      comparisonSliderPos: 50,
+    }),
+  dismissError: () => set({ error: null }),
 
   removeWatermark: async (pathsOverride?: string[] | string) => {
     const queued = !pathsOverride ? get().queuedFiles : [];
@@ -112,7 +161,7 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
 
     if (targets.length === 0 && !uploadingQueued) return;
 
-    const { inPlace, outputDir, workers, corner } = get();
+    const { inPlace, outputDir, workers, corner, copyClean, preserveTree } = get();
     set({ loading: true, progress: null, error: null, result: null });
 
     try {
@@ -142,6 +191,8 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
         inplace: inPlace,
         // Staged uploads write sibling outputs in staging so /api/media/download can serve them.
         output_dir: uploadingQueued ? "" : outputDir,
+        copy_clean: copyClean,
+        preserve_tree: preserveTree,
         ...(workers !== null ? { workers } : {}),
         ...(corner !== null ? { corner } : {}),
       };
@@ -179,5 +230,9 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
       error: null,
       loading: false,
       progress: null,
+      comparisonItem: null,
+      comparisonZoom: 1.0,
+      comparisonPan: { x: 0, y: 0 },
+      comparisonSliderPos: 50,
     }),
 }));

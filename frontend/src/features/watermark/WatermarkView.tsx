@@ -1,9 +1,8 @@
 import React from "react";
-import { Sparkles, Loader2, RotateCcw } from "lucide-react";
+import { Sparkles, Loader2, RotateCcw, X } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Badge } from "../../components/ui/Badge";
-import { ErrorText } from "../../components/ui/ErrorText";
-import { useT } from "../../lib/i18n";
+import { describeError, useT } from "../../lib/i18n";
 import { useAgentScreenContext } from "../agent/screenContext";
 import { WATERMARK_NODE, useWatermarkStore, type WatermarkNodeResult } from "./useWatermarkStore";
 import { WatermarkConfigCard } from "./WatermarkConfigCard";
@@ -12,7 +11,7 @@ import { WatermarkResultsCard } from "./WatermarkResultsCard";
 export const WatermarkView: React.FC = () => {
   const t = useT();
 
-  const { inputPath, inputPaths, loading, result, error, removeWatermark, reset } =
+  const { inputPath, inputPaths, loading, result, error, removeWatermark, reset, dismissError } =
     useWatermarkStore();
 
   const totalFiles = inputPaths.length > 0 ? inputPaths.length : inputPath ? 1 : 0;
@@ -74,7 +73,30 @@ export const WatermarkView: React.FC = () => {
         </div>
       </div>
 
-      <ErrorText error={error} />
+      {error && (
+        <div
+          className="alert-box"
+          role="alert"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "var(--space-2)",
+          }}
+        >
+          <div style={{ flex: 1 }}>{describeError(t, error)}</div>
+          <button
+            type="button"
+            onClick={dismissError}
+            aria-label="Dismiss error"
+            title="Dismiss error"
+            className="watermark-icon-btn"
+            style={{ flexShrink: 0 }}
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       {/* Main 2-Column Responsive Workspace */}
       <div className="watermark-grid">

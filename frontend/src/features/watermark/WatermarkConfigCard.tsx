@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Sparkles, UploadCloud, Crosshair, Cpu, FolderOpen } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
+import { Switch } from "../../components/ui/Switch";
 import { getBridge, isDesktop, onFileDrop } from "../../lib/bridge";
 import { isMessageKey, useT } from "../../lib/i18n";
 import { useConnectionStore } from "../connection/useConnectionStore";
@@ -24,6 +25,8 @@ export const WatermarkConfigCard: React.FC = () => {
     inputPaths,
     inPlace,
     outputDir,
+    copyClean,
+    preserveTree,
     workers,
     corner,
     setInputPath,
@@ -31,6 +34,8 @@ export const WatermarkConfigCard: React.FC = () => {
     setQueuedFiles,
     setInPlace,
     setOutputDir,
+    setCopyClean,
+    setPreserveTree,
     setWorkers,
     setCorner,
   } = useWatermarkStore();
@@ -292,6 +297,75 @@ export const WatermarkConfigCard: React.FC = () => {
                 >
                   <FolderOpen size={14} />
                 </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Copy Clean & Preserve Tree Options (only when not in-place) */}
+          {!inPlace && (
+            <div className="watermark-config-stack" style={{ gap: "var(--space-2)" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "var(--space-2) 0",
+                  gap: "var(--space-2)",
+                }}
+              >
+                <div>
+                  <div className="field-label" style={{ marginBottom: 0 }}>
+                    {isMessageKey("watermark.copyClean.label")
+                      ? t("watermark.copyClean.label")
+                      : "Copy clean images to destination"}
+                  </div>
+                  <div className="muted-text" style={{ fontSize: "var(--text-xs)" }}>
+                    {isMessageKey("watermark.copyClean.desc")
+                      ? t("watermark.copyClean.desc")
+                      : "Copy clean original images directly to output folder"}
+                  </div>
+                </div>
+                <Switch
+                  checked={copyClean}
+                  onCheckedChange={setCopyClean}
+                  aria-label={
+                    isMessageKey("watermark.copyClean.label")
+                      ? t("watermark.copyClean.label")
+                      : "Copy clean images to destination"
+                  }
+                />
+              </div>
+
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "var(--space-2) 0",
+                  gap: "var(--space-2)",
+                }}
+              >
+                <div>
+                  <div className="field-label" style={{ marginBottom: 0 }}>
+                    {isMessageKey("watermark.preserveTree.label")
+                      ? t("watermark.preserveTree.label")
+                      : "Preserve directory structure"}
+                  </div>
+                  <div className="muted-text" style={{ fontSize: "var(--text-xs)" }}>
+                    {isMessageKey("watermark.preserveTree.desc")
+                      ? t("watermark.preserveTree.desc")
+                      : "Maintain subfolder tree when relative paths are used"}
+                  </div>
+                </div>
+                <Switch
+                  checked={preserveTree}
+                  onCheckedChange={setPreserveTree}
+                  aria-label={
+                    isMessageKey("watermark.preserveTree.label")
+                      ? t("watermark.preserveTree.label")
+                      : "Preserve directory structure"
+                  }
+                />
               </div>
             </div>
           )}
