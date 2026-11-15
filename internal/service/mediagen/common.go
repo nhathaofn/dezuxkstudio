@@ -23,11 +23,13 @@ import (
 
 	"app/internal/apperr"
 	"app/internal/config"
+	"app/internal/contracts"
 	domainmedia "app/internal/domain/mediagen"
 	domainprovider "app/internal/domain/provider"
 	"app/internal/fsutil"
 	"app/internal/httpclient"
 	"app/internal/progress"
+	"app/internal/service/media"
 )
 
 const (
@@ -35,6 +37,11 @@ const (
 	maxErrorSnippetBytes  = 512
 	defaultPollPercentCap = 90.0
 )
+
+// MediaRegistrar registers newly produced media files into the media library.
+type MediaRegistrar interface {
+	RegisterAsset(ctx context.Context, params media.RegisterAssetParams) (*contracts.MediaAssetItem, error)
+}
 
 // ProviderResolver resolves configured models/credentials (satisfied by service/provider.Service).
 type ProviderResolver interface {
@@ -47,6 +54,8 @@ type Options struct {
 	Providers  ProviderResolver
 	HTTPClient *http.Client
 	MediaDir   string
+	Registrar  MediaRegistrar
+	MediaRepo  MediaRegistrar
 	Config     config.MediaGenConfig
 	Logger     *slog.Logger
 }
@@ -62,12 +71,16 @@ type Service struct {
 	providers  ProviderResolver
 	httpClient *http.Client
 	mediaDir   string
+	registrar  MediaRegistrar
 	cfg        config.MediaGenConfig
 	log        *slog.Logger
 	limiter    *rateLimiter
 
 	vertexMu    sync.Mutex
 	vertexCache map[string]cachedVertexToken
+
+	assetsMu sync.RWMutex
+	assets   map[string]string // map[path]assetID
 }
 
 // New constructs a unified media generation service.
@@ -85,14 +98,21 @@ func New(o Options) *Service {
 		log = slog.Default()
 	}
 
+	reg := o.Registrar
+	if reg == nil {
+		reg = o.MediaRepo
+	}
+
 	return &Service{
 		providers:   o.Providers,
 		httpClient:  clientCopy,
 		mediaDir:    o.MediaDir,
+		registrar:   reg,
 		cfg:         cfg,
 		log:         log,
 		limiter:     newRateLimiter(),
 		vertexCache: make(map[string]cachedVertexToken),
+		assets:      make(map[string]string),
 	}
 }
 
@@ -750,6 +770,38 @@ func (s *Service) saveOutput(kind domainmedia.Kind, outputDir, prefix, mimeType,
 		return domainmedia.Result{}, apperr.Internal(err)
 	}
 
+	if s.registrar != nil {
+		sourceNode := "mediagen"
+		switch kind {
+		case domainmedia.KindImage:
+			sourceNode = "tool.generate_image"
+		case domainmedia.KindVideo:
+			sourceNode = "tool.generate_video"
+		case domainmedia.KindTTS:
+			sourceNode = "tool.generate_tts"
+		}
+		regRoot := s.mediaDir
+		if strings.TrimSpace(outputDir) != "" {
+			regRoot = outputDir
+		}
+		if regRoot == "" {
+			regRoot = dir
+		}
+		asset, err := s.registrar.RegisterAsset(context.Background(), media.RegisterAssetParams{
+			Kind:           string(kind),
+			SourceNode:     sourceNode,
+			FilePath:       fullPath,
+			RegisteredRoot: regRoot,
+			MIMEType:       mimeType,
+			SizeBytes:      int64(len(data)),
+		})
+		if err != nil {
+			s.log.Warn("failed to register generated media asset", "path", fullPath, "err", err)
+		} else if asset != nil {
+			s.setAssetID(fullPath, asset.ID)
+		}
+	}
+
 	return domainmedia.Result{
 		Kind:      kind,
 		Path:      fullPath,
@@ -759,6 +811,30 @@ func (s *Service) saveOutput(kind domainmedia.Kind, outputDir, prefix, mimeType,
 		Model:     t.modelID,
 		SizeBytes: int64(len(data)),
 	}, nil
+}
+
+func (s *Service) setAssetID(path, assetID string) {
+	s.assetsMu.Lock()
+	defer s.assetsMu.Unlock()
+	if s.assets == nil {
+		s.assets = make(map[string]string)
+	}
+	s.assets[path] = assetID
+}
+
+// AssetID returns the registered asset ID for a generated media file path, or empty string if not found.
+func (s *Service) AssetID(path string) string {
+	s.assetsMu.RLock()
+	defer s.assetsMu.RUnlock()
+	if s.assets == nil {
+		return ""
+	}
+	return s.assets[path]
+}
+
+// SetRegistrar sets or updates the media asset registrar.
+func (s *Service) SetRegistrar(r MediaRegistrar) {
+	s.registrar = r
 }
 
 func uniqueFilename(prefix, ext string) string {

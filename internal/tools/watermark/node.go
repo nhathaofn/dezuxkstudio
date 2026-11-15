@@ -18,17 +18,24 @@ import (
 	"app/internal/fsutil"
 	"app/internal/progress"
 	"app/internal/safego"
+	"app/internal/service/media"
 	"app/pkg/watermark"
 )
 
 // NodeType is the unique identifier for the watermark remover node.
 const NodeType = contracts.NodeTypeWatermarkRemover
 
+// MediaRegistrar registers newly created or copied media assets into the library.
+type MediaRegistrar interface {
+	RegisterAsset(ctx context.Context, params media.RegisterAssetParams) (*contracts.MediaAssetItem, error)
+}
+
 // Options configures default directories for the node.
 type Options struct {
 	MediaDir  string // Application media storage directory
 	OutputDir string // Default folder to save cleaned images
 	Templates []watermark.Template
+	Registrar MediaRegistrar
 }
 
 // RemoverImage accepts either an engine.MediaRef object or a plain string path.
@@ -174,7 +181,7 @@ func NewNode(opts Options) engine.Node {
 			if err != nil || i < 0 || i >= total {
 				continue
 			}
-			itemResults[i], outPaths[i] = finishItem(ctx, in, targetDir, rawPaths[i], resolvedPaths[i], br)
+			itemResults[i], outPaths[i] = finishItem(ctx, in, targetDir, rawPaths[i], resolvedPaths[i], br, opts)
 			reportDone()
 		}
 		if ctx.Err() != nil {
@@ -235,7 +242,7 @@ func readInput(ctx context.Context, raw, mediaDir string) (string, []byte, error
 
 // finishItem writes one processed image (when a watermark was found) or handles CopyClean (when clean)
 // and returns its result and output path ("" when the item failed).
-func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPath string, br watermark.BatchResult) (RemoverItem, string) {
+func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPath string, br watermark.BatchResult, nodeOpts ...Options) (RemoverItem, string) {
 	if br.Err != nil {
 		return RemoverItem{
 			Path:   rawPath,
@@ -310,6 +317,7 @@ func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPat
 			res.Status = watermark.StatusSkipped
 			res.Reason = watermark.ReasonIdempotentSkip
 			res.OutPath = outPath
+			res.AssetID = registerWatermarkAsset(ctx, nodeOpts, destDir, outPath)
 			return res, outPath
 		}
 
@@ -331,6 +339,7 @@ func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPat
 		watermark.DefaultProvenance.Record(outPath, taskParams)
 		res.Status = watermark.StatusCopied
 		res.OutPath = outPath
+		res.AssetID = registerWatermarkAsset(ctx, nodeOpts, destDir, outPath)
 		return res, outPath
 	}
 
@@ -382,6 +391,7 @@ func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPat
 			res.Status = watermark.StatusSkipped
 			res.Reason = watermark.ReasonIdempotentSkip
 			res.OutPath = outPath
+			res.AssetID = registerWatermarkAsset(ctx, nodeOpts, destDir, outPath)
 			return res, outPath
 		}
 	}
@@ -410,7 +420,32 @@ func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPat
 	watermark.DefaultProvenance.Record(outPath, taskParams)
 	res.Status = watermark.StatusProcessed
 	res.OutPath = outPath
+	res.AssetID = registerWatermarkAsset(ctx, nodeOpts, destDir, outPath)
 	return res, outPath
+}
+
+func registerWatermarkAsset(ctx context.Context, nodeOpts []Options, destDir, outPath string) string {
+	if len(nodeOpts) == 0 || nodeOpts[0].Registrar == nil || strings.TrimSpace(outPath) == "" {
+		return ""
+	}
+	opts := nodeOpts[0]
+	root := opts.MediaDir
+	if strings.TrimSpace(destDir) != "" {
+		root = destDir
+	}
+	if root == "" {
+		root = filepath.Dir(outPath)
+	}
+	asset, err := opts.Registrar.RegisterAsset(ctx, media.RegisterAssetParams{
+		Kind:           "image",
+		SourceNode:     NodeType,
+		FilePath:       outPath,
+		RegisteredRoot: root,
+	})
+	if err != nil || asset == nil {
+		return ""
+	}
+	return asset.ID
 }
 
 func formatPathError(action, targetPath string, err error) string {
