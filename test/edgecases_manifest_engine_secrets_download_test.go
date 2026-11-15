@@ -584,10 +584,10 @@ func TestAdversarial_Download_CrashSafetyAndTempFileCleanup(t *testing.T) {
 			t.Errorf("target executable %s should not exist after aborted download", targetExec)
 		}
 
-		// Verify no leftover .tmp-* or .*-download.zip files in toolsDir
+		// Verify no leftover .tmp-* or .*-download.zip files in toolsDir (resumable .part/.part.meta are preserved)
 		entries, _ := os.ReadDir(toolsDir)
 		for _, e := range entries {
-			if strings.HasPrefix(e.Name(), ".") {
+			if strings.HasPrefix(e.Name(), ".tmp-") || strings.HasSuffix(e.Name(), "-download.zip") {
 				t.Errorf("found leftover temporary file in toolsDir: %s", e.Name())
 			}
 		}

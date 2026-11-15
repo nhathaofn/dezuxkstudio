@@ -236,7 +236,11 @@ func (c *Core) modules(o Options, ticketSigner *security.TicketSigner) ([]realti
 	}
 
 	binSvc := binariessvc.New(sqlite.NewBinariesRepository(c.db), o.Paths.Tools(), o.Logger,
-		binariessvc.WithProbeTimeout(cfg.Binaries.ProbeTimeout), binariessvc.WithHTTPClient(o.HTTPClient))
+		binariessvc.WithProbeTimeout(cfg.Binaries.ProbeTimeout),
+		binariessvc.WithHTTPClient(o.HTTPClient),
+		binariessvc.WithEventPublisher(c.hub),
+		binariessvc.WithConfig(cfg),
+	)
 
 	var provSvc *providersvc.Service
 	provSvc, err = providersvc.New(providersvc.Options{
@@ -290,13 +294,21 @@ func (c *Core) modules(o Options, ticketSigner *security.TicketSigner) ([]realti
 	c.mediaSvc = mediaSvc
 
 	mediaGenSvc := mediagensvc.New(mediagensvc.Options{
-		Providers:  provSvc,
-		HTTPClient: o.HTTPClient,
-		MediaDir:   o.Paths.Media(),
-		Registrar:  mediaSvc,
-		Config:     cfg.MediaGen,
-		Logger:     o.Logger,
+		Providers:         provSvc,
+		HTTPClient:        o.HTTPClient,
+		MediaDir:          o.Paths.Media(),
+		Registrar:         mediaSvc,
+		Config:            cfg.MediaGen,
+		Logger:            o.Logger,
+		StagingTTL:        cfg.MediaStagingTTL(),
+		StagingGCInterval: cfg.MediaStagingGCInterval(),
 	})
+	if mediaDir := o.Paths.Media(); mediaDir != "" {
+		stagedDir := mediaGenSvc.StagingDir()
+		c.background("mediagen-staging-gc", func(ctx context.Context) {
+			mediagensvc.StartStagingGC(ctx, stagedDir, cfg.MediaStagingTTL(), cfg.MediaStagingGCInterval())
+		})
+	}
 
 	wfSvc, err := workflow.New(workflow.Options{
 		Paths:     o.Paths,

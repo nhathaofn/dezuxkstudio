@@ -230,6 +230,9 @@ func (s *Service) Download(ctx context.Context, id domainbinaries.BinaryID) (dom
 	}
 
 	if !downloadedComplete {
+		if !s.isResumeEnabled() {
+			cleanupTemps()
+		}
 		if lastErr != nil {
 			var ae *apperr.Error
 			if errors.As(lastErr, &ae) {
