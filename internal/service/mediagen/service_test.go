@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -888,6 +890,394 @@ func TestMediaGenRedirectValidationAndHopCap(t *testing.T) {
 		}
 		if loopHits.Load() != 10 {
 			t.Fatalf("loopHits = %d, want 10", loopHits.Load())
+		}
+	})
+}
+
+func TestSharedRetryHelper_503And429AndConnectionReset(t *testing.T) {
+	t.Run("retries on 503 Service Unavailable and succeeds", func(t *testing.T) {
+		var attempts atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			att := attempts.Add(1)
+			if att < 3 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":"service unavailable"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"result":"ok"}`))
+		}))
+		defer srv.Close()
+
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+
+		cfg := RetryConfig{
+			MaxRetries:    3,
+			InitialDelay:  5 * time.Millisecond,
+			MaxDelay:      50 * time.Millisecond,
+			BackoffFactor: 2.0,
+		}
+
+		raw, ct, status, err := ExecHTTPWithRetry(context.Background(), srv.Client(), req, 1<<20, cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+		if !strings.Contains(ct, "application/json") {
+			t.Fatalf("Content-Type = %s, want json", ct)
+		}
+		if !strings.Contains(string(raw), `"result":"ok"`) {
+			t.Fatalf("body = %s, want ok", string(raw))
+		}
+		if attempts.Load() != 3 {
+			t.Fatalf("attempts = %d, want 3", attempts.Load())
+		}
+	})
+
+	t.Run("retries on 429 Too Many Requests with Retry-After header", func(t *testing.T) {
+		var attempts atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			att := attempts.Add(1)
+			if att == 1 {
+				w.Header().Set("Retry-After", "0")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":"rate limited"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"result":"rate_limit_recovered"}`))
+		}))
+		defer srv.Close()
+
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL, strings.NewReader(`{"hello":"world"}`))
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+
+		cfg := RetryConfig{
+			MaxRetries:    2,
+			InitialDelay:  5 * time.Millisecond,
+			MaxDelay:      50 * time.Millisecond,
+			BackoffFactor: 2.0,
+		}
+
+		raw, _, status, err := ExecHTTPWithRetry(context.Background(), srv.Client(), req, 1<<20, cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+		if !strings.Contains(string(raw), "rate_limit_recovered") {
+			t.Fatalf("body = %s, want rate_limit_recovered", string(raw))
+		}
+		if attempts.Load() != 2 {
+			t.Fatalf("attempts = %d, want 2", attempts.Load())
+		}
+	})
+
+	t.Run("retries on connection reset network error and succeeds", func(t *testing.T) {
+		var attempts atomic.Int32
+		client := &http.Client{
+			Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				att := attempts.Add(1)
+				if att == 1 {
+					return nil, &net.OpError{Op: "read", Err: syscall.ECONNRESET}
+				}
+				if att == 2 {
+					return nil, errors.New("read: connection reset by peer")
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(`{"result":"conn_reset_recovered"}`)),
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+				}, nil
+			}),
+		}
+
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://fake.test/api", nil)
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+
+		cfg := RetryConfig{
+			MaxRetries:    3,
+			InitialDelay:  5 * time.Millisecond,
+			MaxDelay:      50 * time.Millisecond,
+			BackoffFactor: 2.0,
+		}
+
+		raw, _, status, err := ExecHTTPWithRetry(context.Background(), client, req, 1<<20, cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+		if !strings.Contains(string(raw), "conn_reset_recovered") {
+			t.Fatalf("body = %s, want conn_reset_recovered", string(raw))
+		}
+		if attempts.Load() != 3 {
+			t.Fatalf("attempts = %d, want 3", attempts.Load())
+		}
+	})
+
+	t.Run("exhausts retries and returns final error or status", func(t *testing.T) {
+		var attempts atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			attempts.Add(1)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"temporarily unavailable"}`))
+		}))
+		defer srv.Close()
+
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
+		cfg := RetryConfig{
+			MaxRetries:    2,
+			InitialDelay:  5 * time.Millisecond,
+			MaxDelay:      20 * time.Millisecond,
+			BackoffFactor: 1.5,
+		}
+
+		_, _, status, err := ExecHTTPWithRetry(context.Background(), srv.Client(), req, 1<<20, cfg)
+		if err != nil {
+			t.Fatalf("expected status 503 response without transport error, got: %v", err)
+		}
+		if status != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503", status)
+		}
+		if attempts.Load() != 3 { // 1 initial + 2 retries
+			t.Fatalf("attempts = %d, want 3", attempts.Load())
+		}
+	})
+
+	t.Run("context cancellation stops retry loop promptly", func(t *testing.T) {
+		var attempts atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			attempts.Add(1)
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		defer srv.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+		cfg := RetryConfig{
+			MaxRetries:   5,
+			InitialDelay: 200 * time.Millisecond,
+			MaxDelay:     1 * time.Second,
+		}
+
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			cancel()
+		}()
+
+		_, _, _, err := ExecHTTPWithRetry(ctx, srv.Client(), req, 1<<20, cfg)
+		if err == nil {
+			t.Fatal("expected context canceled error, got nil")
+		}
+		if !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "context canceled") {
+			t.Fatalf("expected context canceled, got: %v", err)
+		}
+	})
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestStartStagingGCAndPruneStaging(t *testing.T) {
+	t.Run("confirms expired unleased files are deleted", func(t *testing.T) {
+		dir := t.TempDir()
+		expiredFile := filepath.Join(dir, "expired.png")
+		if err := os.WriteFile(expiredFile, []byte("expired image data"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		past := time.Now().Add(-48 * time.Hour)
+		if err := os.Chtimes(expiredFile, past, past); err != nil {
+			t.Fatal(err)
+		}
+
+		pruned, err := PruneStaging(dir, 24*time.Hour)
+		if err != nil {
+			t.Fatalf("PruneStaging failed: %v", err)
+		}
+		if pruned != 1 {
+			t.Fatalf("pruned = %d, want 1", pruned)
+		}
+
+		if _, err := os.Stat(expiredFile); !os.IsNotExist(err) {
+			t.Fatalf("expected expired unleased file to be deleted, got err: %v", err)
+		}
+	})
+
+	t.Run("confirms unexpired files are preserved", func(t *testing.T) {
+		dir := t.TempDir()
+		freshFile := filepath.Join(dir, "fresh.png")
+		if err := os.WriteFile(freshFile, []byte("fresh image data"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// mtime is current (now)
+		pruned, err := PruneStaging(dir, 24*time.Hour)
+		if err != nil {
+			t.Fatalf("PruneStaging failed: %v", err)
+		}
+		if pruned != 0 {
+			t.Fatalf("pruned = %d, want 0", pruned)
+		}
+
+		if _, err := os.Stat(freshFile); err != nil {
+			t.Fatalf("expected unexpired file to be preserved, got err: %v", err)
+		}
+	})
+
+	t.Run("confirms expired files WITH active lease are strictly protected from deletion", func(t *testing.T) {
+		dir := t.TempDir()
+		leasedExpiredFile := filepath.Join(dir, "leased_expired.mp4")
+		if err := os.WriteFile(leasedExpiredFile, []byte("leased video frame"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		past := time.Now().Add(-72 * time.Hour)
+		if err := os.Chtimes(leasedExpiredFile, past, past); err != nil {
+			t.Fatal(err)
+		}
+
+		// Acquire active lease
+		release := LeaseFile(leasedExpiredFile)
+		defer release()
+
+		if !IsLeased(leasedExpiredFile) {
+			t.Fatal("expected file to be reported as leased")
+		}
+
+		// Run pruning with TTL = 24h
+		pruned, err := PruneStaging(dir, 24*time.Hour)
+		if err != nil {
+			t.Fatalf("PruneStaging failed: %v", err)
+		}
+		if pruned != 0 {
+			t.Fatalf("pruned = %d, want 0 (leased file must be protected)", pruned)
+		}
+
+		// Verify file still exists on disk despite being 72 hours old
+		if _, err := os.Stat(leasedExpiredFile); err != nil {
+			t.Fatalf("expected leased expired file to be preserved on disk, got err: %v", err)
+		}
+
+		// Now release lease and prune again
+		release()
+		if IsLeased(leasedExpiredFile) {
+			t.Fatal("expected file to not be leased after release")
+		}
+
+		prunedAfter, err := PruneStaging(dir, 24*time.Hour)
+		if err != nil {
+			t.Fatalf("PruneStaging failed after release: %v", err)
+		}
+		if prunedAfter != 1 {
+			t.Fatalf("prunedAfter = %d, want 1", prunedAfter)
+		}
+		if _, err := os.Stat(leasedExpiredFile); !os.IsNotExist(err) {
+			t.Fatalf("expected file to be deleted once lease was released, got err: %v", err)
+		}
+	})
+
+	t.Run("confirms context cancellation stops the GC ticker promptly without goroutine leak", func(t *testing.T) {
+		dir := t.TempDir()
+		expiredFile := filepath.Join(dir, "temp_render.bin")
+		if err := os.WriteFile(expiredFile, []byte("intermediate staged data"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		past := time.Now().Add(-10 * time.Minute)
+		if err := os.Chtimes(expiredFile, past, past); err != nil {
+			t.Fatal(err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+
+		go func() {
+			StartStagingGC(ctx, dir, 5*time.Minute, 15*time.Millisecond)
+			close(done)
+		}()
+
+		// Wait briefly for initial GC pass
+		time.Sleep(30 * time.Millisecond)
+		if _, err := os.Stat(expiredFile); !os.IsNotExist(err) {
+			t.Fatalf("expected file to be pruned during GC pass, got err: %v", err)
+		}
+
+		// Cancel context to stop GC ticker
+		cancel()
+
+		select {
+		case <-done:
+			// Passed! Stopped promptly
+		case <-time.After(1 * time.Second):
+			t.Fatal("StartStagingGC did not terminate promptly after context cancellation")
+		}
+	})
+
+	t.Run("confirms active generation job holds lease on inputs for job duration", func(t *testing.T) {
+		refFile := writeTempPNG(t)
+		var wasLeasedDuringJob atomic.Bool
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "/images/edits") || strings.Contains(r.URL.Path, "/images") {
+				// While handling the job, verify the input reference file is actively leased
+				if IsLeased(refFile) {
+					wasLeasedDuringJob.Store(true)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":[{"b64_json":"` + base64.StdEncoding.EncodeToString([]byte("fake-png")) + `"}]}`))
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		defer srv.Close()
+
+		resolver := &fakeResolver{
+			resolveFn: func(context.Context, domainprovider.Purpose, string) (domainprovider.ResolvedModel, error) {
+				return domainprovider.ResolvedModel{
+					Purpose: domainprovider.PurposeImage,
+					Model:   domainprovider.Model{ModelID: "dall-e-2", Capability: domainprovider.CapabilityImage},
+					Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDOpenAI, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "k"}},
+				}, nil
+			},
+		}
+
+		svc, _ := testService(t, resolver)
+
+		if svc.IsLeased(refFile) {
+			t.Fatal("expected file not to be leased before job start")
+		}
+
+		res, err := svc.GenerateImage(context.Background(), domainmedia.ImageRequest{
+			Prompt:          "edit prompt",
+			ReferenceImages: []string{refFile},
+		})
+		if err != nil {
+			t.Fatalf("GenerateImage failed: %v", err)
+		}
+		if res.Path == "" {
+			t.Fatal("expected non-empty output path")
+		}
+
+		if !wasLeasedDuringJob.Load() {
+			t.Fatal("expected reference image to be actively leased during job execution")
+		}
+
+		if svc.IsLeased(refFile) {
+			t.Fatal("expected lease on input file to be released after job completion")
 		}
 	})
 }

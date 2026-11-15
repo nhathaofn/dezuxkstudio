@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"app/internal/apperr"
 	domainprovider "app/internal/domain/provider"
 )
 
@@ -113,4 +114,32 @@ func (l *rateLimiter) acquire(ctx context.Context, owner string, cap domainprovi
 			timer.Stop()
 		}
 	}
+}
+
+// recordBackoff pauses subsequent requests for the given (owner, capability) key until now + backoff.
+func (l *rateLimiter) recordBackoff(owner string, cap domainprovider.Capability, backoff time.Duration) {
+	if backoff <= 0 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	key := limiterKey{owner: owner, cap: cap}
+	b := l.buckets[key]
+	if b == nil {
+		b = &bucketState{}
+		l.buckets[key] = b
+	}
+	targetTime := time.Now().Add(backoff)
+	if targetTime.After(b.lastStart) {
+		b.lastStart = targetTime
+	}
+}
+
+// acquireLimit coordinates rate-limiter acquisition with domain limits and returns a cleanup callback.
+func (s *Service) acquireLimit(ctx context.Context, target targetSpec, cap domainprovider.Capability, limits domainprovider.Limits) (func(), error) {
+	release, err := s.limiter.acquire(ctx, target.ownerID, cap, limits)
+	if err != nil {
+		return nil, apperr.From(err)
+	}
+	return release, nil
 }
