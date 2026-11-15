@@ -20,7 +20,55 @@ import (
 
 	"app/internal/apperr"
 	"app/internal/config"
+	"app/internal/security"
 )
+
+// AssetResolver resolves an asset_id to its backing file path and registered root directory.
+type AssetResolver interface {
+	ResolveAsset(ctx context.Context, assetID string) (filePath string, registeredRoot string, err error)
+}
+
+// AssetResolverFunc is an adapter to allow the use of ordinary functions as AssetResolvers.
+type AssetResolverFunc func(ctx context.Context, assetID string) (string, string, error)
+
+// ResolveAsset calls f(ctx, assetID).
+func (f AssetResolverFunc) ResolveAsset(ctx context.Context, assetID string) (string, string, error) {
+	return f(ctx, assetID)
+}
+
+type mediaDownloadConfig struct {
+	ticketSigner   *security.TicketSigner
+	assetResolver  AssetResolver
+	authToken      string
+	allowAnonymous bool
+	enforceAuth    bool
+}
+
+// MediaDownloadOption configures MediaDownload.
+type MediaDownloadOption func(*mediaDownloadConfig)
+
+// WithTicketSigner sets the TicketSigner used to verify HMAC signed media tickets.
+func WithTicketSigner(signer *security.TicketSigner) MediaDownloadOption {
+	return func(c *mediaDownloadConfig) {
+		c.ticketSigner = signer
+	}
+}
+
+// WithAssetResolver sets the AssetResolver used to resolve asset_id to file paths.
+func WithAssetResolver(resolver AssetResolver) MediaDownloadOption {
+	return func(c *mediaDownloadConfig) {
+		c.assetResolver = resolver
+	}
+}
+
+// WithAuth configures master token or anonymous authentication for MediaDownload.
+func WithAuth(token string, allowAnonymous bool) MediaDownloadOption {
+	return func(c *mediaDownloadConfig) {
+		c.authToken = token
+		c.allowAnonymous = allowAnonymous
+		c.enforceAuth = true
+	}
+}
 
 const (
 	// MediaStagingSubdir holds HTTP-uploaded inputs and their sibling outputs under MediaDir.
@@ -157,27 +205,140 @@ func MediaUpload(mediaDir string, maxBytes int64) http.Handler {
 	})
 }
 
-// MediaDownload handles GET /api/media/download?path=... for regular files strictly
-// inside mediaDir (symlink-resolved). Arbitrary host paths outside mediaDir are refused.
-func MediaDownload(mediaDir string) http.Handler {
+// MediaDownload handles GET /api/media/download supporting asset_id with signed HMAC tickets
+// or valid Bearer tokens, as well as legacy path resolution inside mediaDir.
+// It streams files using http.ServeContent to support HTTP 206 Range requests and video seeking.
+func MediaDownload(mediaDir string, opts ...MediaDownloadOption) http.Handler {
+	cfg := mediaDownloadConfig{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			writeError(w, http.StatusMethodNotAllowed, apperr.New(apperr.CodeBadRequest, "method not allowed"))
 			return
 		}
-		rawPath := strings.TrimSpace(r.URL.Query().Get("path"))
-		if rawPath == "" || strings.ContainsRune(rawPath, 0) {
-			writeError(w, http.StatusBadRequest, apperr.Validation("missing or invalid 'path' query parameter"))
+
+		// Security: Reject ANY ?token= query parameter carrying master tokens.
+		// Master tokens must NEVER be passed via URL query strings.
+		if r.URL.Query().Has("token") || r.URL.Query().Get("token") != "" {
+			writeError(w, http.StatusBadRequest, apperr.Validation("token query parameter is forbidden; master tokens must not be passed via URL query strings"))
 			return
 		}
 
-		realRoot, err := resolveExistingDir(mediaDir)
+		assetID := strings.TrimSpace(r.URL.Query().Get("asset_id"))
+		rawPath := strings.TrimSpace(r.URL.Query().Get("path"))
+
+		if assetID == "" && rawPath == "" {
+			writeError(w, http.StatusBadRequest, apperr.Validation("missing or invalid 'asset_id' or 'path' query parameter"))
+			return
+		}
+		if (assetID != "" && strings.ContainsRune(assetID, 0)) || (rawPath != "" && strings.ContainsRune(rawPath, 0)) {
+			writeError(w, http.StatusBadRequest, apperr.Validation("invalid character in identifier"))
+			return
+		}
+
+		ticketStr := strings.TrimSpace(r.URL.Query().Get("ticket"))
+		purpose := security.PurposeDownload
+
+		if ticketStr != "" {
+			if assetID == "" {
+				writeError(w, http.StatusBadRequest, apperr.Validation("ticket authentication requires 'asset_id' parameter"))
+				return
+			}
+			if cfg.ticketSigner == nil {
+				writeError(w, http.StatusUnauthorized, apperr.New(apperr.CodeUnauthorized, "ticket signer not configured"))
+				return
+			}
+
+			purposeParam := strings.TrimSpace(r.URL.Query().Get("purpose"))
+			var claims *security.TicketClaims
+			var err error
+
+			if purposeParam != "" {
+				if purposeParam != security.PurposePreview && purposeParam != security.PurposeDownload {
+					writeError(w, http.StatusBadRequest, apperr.Validation("invalid purpose; must be 'preview' or 'download'"))
+					return
+				}
+				claims, err = cfg.ticketSigner.VerifyTicket(ticketStr, assetID, purposeParam)
+			} else {
+				claims, err = cfg.ticketSigner.VerifyTicket(ticketStr, assetID, security.PurposePreview)
+				if errors.Is(err, security.ErrPurposeMismatch) {
+					claims, err = cfg.ticketSigner.VerifyTicket(ticketStr, assetID, security.PurposeDownload)
+				}
+			}
+
+			if err != nil {
+				if errors.Is(err, security.ErrExpiredTicket) {
+					writeError(w, http.StatusUnauthorized, apperr.New(apperr.CodeUnauthorized, "ticket expired"))
+					return
+				}
+				if errors.Is(err, security.ErrInvalidSignature) {
+					writeError(w, http.StatusForbidden, apperr.New(apperr.CodeUnauthorized, "invalid ticket signature"))
+					return
+				}
+				writeError(w, http.StatusForbidden, apperr.New(apperr.CodeUnauthorized, err.Error()))
+				return
+			}
+			purpose = claims.Purpose
+		} else {
+			if cfg.enforceAuth {
+				if cfg.authToken == "" && cfg.allowAnonymous {
+					// Anonymous access allowed
+				} else {
+					bearer := security.BearerToken(r)
+					if !security.TokenEqual(cfg.authToken, bearer) {
+						writeError(w, http.StatusUnauthorized, apperr.New(apperr.CodeUnauthorized, "unauthorized"))
+						return
+					}
+				}
+			} else if cfg.authToken != "" {
+				bearer := security.BearerToken(r)
+				if !security.TokenEqual(cfg.authToken, bearer) {
+					writeError(w, http.StatusUnauthorized, apperr.New(apperr.CodeUnauthorized, "unauthorized"))
+					return
+				}
+			}
+
+			if purposeParam := strings.TrimSpace(r.URL.Query().Get("purpose")); purposeParam == security.PurposePreview {
+				purpose = security.PurposePreview
+			}
+		}
+
+		var targetPath string
+		var targetRoot string
+
+		if assetID != "" {
+			if cfg.assetResolver != nil {
+				p, rRoot, err := cfg.assetResolver.ResolveAsset(r.Context(), assetID)
+				if err != nil {
+					writeError(w, http.StatusNotFound, apperr.NotFound("requested media asset not found"))
+					return
+				}
+				targetPath = p
+				targetRoot = rRoot
+			} else {
+				targetPath = filepath.Join(mediaDir, filepath.FromSlash(assetID))
+				targetRoot = mediaDir
+			}
+			if targetRoot == "" {
+				targetRoot = mediaDir
+			}
+		} else {
+			targetPath = rawPath
+			targetRoot = mediaDir
+		}
+
+		realRoot, err := resolveExistingDir(targetRoot)
 		if err != nil {
 			writeError(w, http.StatusNotFound, apperr.NotFound("media folder not found"))
 			return
 		}
 
-		candidate := rawPath
+		candidate := targetPath
 		if !filepath.IsAbs(candidate) {
 			candidate = filepath.Join(realRoot, filepath.FromSlash(candidate))
 		}
@@ -225,11 +386,17 @@ func MediaDownload(mediaDir string) http.Handler {
 			contentType = "application/octet-stream"
 		}
 
+		dispositionType := "attachment"
+		if purpose == security.PurposePreview {
+			dispositionType = "inline"
+		}
+
 		h := w.Header()
 		h.Set("Content-Type", contentType)
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Cache-Control", "no-store")
-		h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{
+		h.Set("Accept-Ranges", "bytes")
+		h.Set("Content-Disposition", mime.FormatMediaType(dispositionType, map[string]string{
 			"filename": filepath.Base(realTarget),
 		}))
 

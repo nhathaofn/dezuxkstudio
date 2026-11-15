@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -74,5 +75,71 @@ func TestRequireJSON(t *testing.T) {
 	}
 	if w := serve(RequireJSON(ok), "POST", "", "application/json; charset=utf-8", ""); w.Code != 200 {
 		t.Errorf("json: %d", w.Code)
+	}
+}
+
+func TestSanitizeURI(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{
+			input:    "/api/media/download?asset_id=123&ticket=secret_ticket_123&purpose=preview",
+			expected: "/api/media/download?asset_id=123&ticket=[REDACTED]&purpose=preview",
+		},
+		{
+			input:    "/api/media/download?ticket=raw.ticket.signature",
+			expected: "/api/media/download?ticket=[REDACTED]",
+		},
+		{
+			input:    "/api/media/download?ticket=",
+			expected: "/api/media/download?ticket=[REDACTED]",
+		},
+		{
+			input:    "/api/events/broadcast?token=master_secret_val",
+			expected: "/api/events/broadcast?token=[REDACTED]",
+		},
+		{
+			input:    "/api/media/download?asset_id=xyz&token=secret&ticket=signature",
+			expected: "/api/media/download?asset_id=xyz&token=[REDACTED]&ticket=[REDACTED]",
+		},
+		{
+			input:    "/api/media/download?path=normal/path.png",
+			expected: "/api/media/download?path=normal/path.png",
+		},
+	}
+
+	for _, tc := range cases {
+		got := SanitizeURI(tc.input)
+		if got != tc.expected {
+			t.Errorf("SanitizeURI(%q) = %q; want %q", tc.input, got, tc.expected)
+		}
+	}
+}
+
+func TestRequestLoggerRedactsTicketAndToken(t *testing.T) {
+	var buf strings.Builder
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	handler := RequestLogger(log)(ok)
+
+	rawURI := "/api/media/download?asset_id=test-123&ticket=sensitive-hmac-ticket&token=secret-token"
+	req := httptest.NewRequest(http.MethodGet, rawURI, nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	logged := buf.String()
+	if strings.Contains(logged, "sensitive-hmac-ticket") {
+		t.Fatalf("logger leaked raw ticket string: %s", logged)
+	}
+	if strings.Contains(logged, "secret-token") {
+		t.Fatalf("logger leaked raw token string: %s", logged)
+	}
+	if !strings.Contains(logged, "ticket=[REDACTED]") {
+		t.Fatalf("logger did not contain ticket=[REDACTED]: %s", logged)
+	}
+	if !strings.Contains(logged, "token=[REDACTED]") {
+		t.Fatalf("logger did not contain token=[REDACTED]: %s", logged)
 	}
 }

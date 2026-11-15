@@ -1,10 +1,12 @@
 package server
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
 	"app/internal/realtime"
+	"app/internal/security"
 	"app/internal/server/handlers"
 	"app/internal/server/middleware"
 )
@@ -35,6 +37,9 @@ type RouterOptions struct {
 	Timeouts              handlers.Timeouts
 	MediaDir              string
 	MaxUploadBytes        int64
+	TicketSigner          *security.TicketSigner
+	AssetResolver         handlers.AssetResolver
+	Logger                *slog.Logger
 }
 
 // NewRouter builds the HTTP routes. Endpoints exposing state never reveal the token.
@@ -55,7 +60,17 @@ func NewRouter(o RouterOptions) http.Handler {
 	if o.MediaDir != "" {
 		auth := middleware.RequireAuth(o.AuthToken, o.AllowAnonymous)
 		mux.Handle(PathMediaUpload, cors(auth(handlers.MediaUpload(o.MediaDir, o.MaxUploadBytes))))
-		mux.Handle(PathMediaDownload, cors(auth(handlers.MediaDownload(o.MediaDir))))
+		mux.Handle(PathMediaDownload, cors(handlers.MediaDownload(
+			o.MediaDir,
+			handlers.WithTicketSigner(o.TicketSigner),
+			handlers.WithAssetResolver(o.AssetResolver),
+			handlers.WithAuth(o.AuthToken, o.AllowAnonymous),
+		)))
 	}
-	return mux
+
+	var handler http.Handler = mux
+	if o.Logger != nil {
+		handler = middleware.RequestLogger(o.Logger)(handler)
+	}
+	return handler
 }
