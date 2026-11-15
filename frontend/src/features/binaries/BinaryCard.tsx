@@ -68,12 +68,14 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
   const storeProbe = useBinariesStore((s) => s.probe);
   const storeDownload = useBinariesStore((s) => s.download);
   const storeSetCustomPath = useBinariesStore((s) => s.setCustomPath);
+  const storeProgress = useBinariesStore((s) => s.activeProgress[binary.id]);
 
   const [isProbing, setIsProbing] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<ActionProgress | null>(null);
   const [customPathDraft, setCustomPathDraft] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  const activeProgress = downloadProgress ?? storeProgress ?? null;
   const customPathInput = customPathDraft ?? (binary.custom_path || "");
 
   useEffect(() => {
@@ -82,7 +84,7 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
     };
   }, []);
 
-  const isDownloading = downloadProgress !== null;
+  const isDownloading = activeProgress !== null;
   const isDirty = customPathDraft !== null && customPathDraft !== (binary.custom_path || "");
   const badge = getStatusBadge(binary.status, t);
 
@@ -90,6 +92,27 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
   const isRemote = systemInfo?.mode === "server" || systemInfo?.mode === "client";
   const desktopOnlyTooltip = t("system.desktopOnly");
   const canBrowse = isDesktop() && !isRemote;
+
+  const isResume = Boolean(
+    activeProgress?.is_resume ||
+    activeProgress?.binary_progress?.is_resume ||
+    activeProgress?.msg_params?.is_resume === "true"
+  );
+
+  const resumedFromBytes =
+    activeProgress?.resumed_from_bytes ||
+    activeProgress?.binary_progress?.resumed_from_bytes ||
+    (activeProgress?.msg_params?.resumed_from ? Number(activeProgress.msg_params.resumed_from) : 0);
+
+  const resumedFromMB = (() => {
+    if (activeProgress?.msg_params?.resumed_from_mb) {
+      return activeProgress.msg_params.resumed_from_mb;
+    }
+    if (resumedFromBytes > 0) {
+      return (resumedFromBytes / (1024 * 1024)).toFixed(1);
+    }
+    return null;
+  })();
 
   const getPathWarning = (): string | null => {
     if (customPathDraft !== null) {
@@ -118,15 +141,13 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
   const pathWarning = getPathWarning();
 
   const mbText = (() => {
-    if (downloadProgress?.msg_params?.done) {
-      if (downloadProgress.msg_params.total) {
-        return `${downloadProgress.msg_params.done} / ${downloadProgress.msg_params.total} MB`;
+    if (activeProgress?.msg_params?.done) {
+      if (activeProgress.msg_params.total) {
+        return `${activeProgress.msg_params.done} / ${activeProgress.msg_params.total} MB`;
       }
-      return `${downloadProgress.msg_params.done} MB`;
+      return `${activeProgress.msg_params.done} MB`;
     }
-    const match = downloadProgress?.message?.match(
-      /(\d+(?:\.\d+)?(?:\s*\/\s*\d+(?:\.\d+)?)?\s*MB)/i
-    );
+    const match = activeProgress?.message?.match(/(\d+(?:\.\d+)?(?:\s*\/\s*\d+(?:\.\d+)?)?\s*MB)/i);
     return match ? match[1] : null;
   })();
 
@@ -252,13 +273,25 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
       </div>
 
       {/* Progress bar during download */}
-      {isDownloading && downloadProgress && (
+      {isDownloading && activeProgress && (
         <div className="binary-progress-wrap">
           <div className="binary-progress-meta">
             <span className="binary-progress-status">
-              {translateServerMessage(t, downloadProgress.msg_key, downloadProgress.msg_params) ||
-                downloadProgress.message ||
+              {translateServerMessage(t, activeProgress.msg_key, activeProgress.msg_params) ||
+                activeProgress.message ||
                 t("tools.downloading")}
+              {isResume && (
+                <Badge
+                  className="binary-resumed-badge"
+                  style={{
+                    marginLeft: "var(--space-2)",
+                    fontSize: "var(--text-xs)",
+                    color: "var(--status-connecting)",
+                  }}
+                >
+                  {resumedFromMB ? `Resumed from ${resumedFromMB} MB` : "Resumed"}
+                </Badge>
+              )}
             </span>
             <span className="binary-progress-metrics">
               {mbText && (
@@ -270,7 +303,7 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
                 className="binary-progress-pct"
                 style={{ fontWeight: "var(--weight-semibold)" }}
               >
-                {downloadProgress.percent.toFixed(1)}%
+                {activeProgress.percent.toFixed(1)}%
               </span>
             </span>
           </div>
@@ -278,7 +311,7 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
             <div
               className="progress__bar"
               style={{
-                width: `${Math.min(100, Math.max(0, downloadProgress.percent))}%`,
+                width: `${Math.min(100, Math.max(0, activeProgress.percent))}%`,
               }}
             />
           </div>

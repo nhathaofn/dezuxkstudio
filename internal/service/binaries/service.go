@@ -13,10 +13,16 @@ import (
 
 	"app/internal/apperr"
 	"app/internal/config"
+	"app/internal/contracts"
 	domainbinaries "app/internal/domain/binaries"
 	"app/internal/lookup"
 	"app/internal/runner"
 )
+
+// EventPublisher broadcasts realtime events to connected clients.
+type EventPublisher interface {
+	Publish(event string, data any)
+}
 
 // Service coordinates binary inspection, path overrides, and automated downloads.
 type Service struct {
@@ -27,6 +33,11 @@ type Service struct {
 	// probeTimeout bounds one version probe (config binaries.probe_timeout).
 	probeTimeout time.Duration
 	dlSlot       chan struct{} // capacity 1: serialises downloads into toolsDir
+	publisher    EventPublisher
+	onProgress   func(contracts.BinaryProgress)
+	cfg          *config.Config
+	retryMax     *int
+	retryDelay   *time.Duration
 }
 
 // DefaultProbeTimeout is the config default (binaries.probe_timeout), for standalone use.
@@ -54,6 +65,77 @@ func WithHTTPClient(c *http.Client) Option {
 			s.client = c
 		}
 	}
+}
+
+// WithEventPublisher sets the event publisher used to broadcast EventBinariesProgress.
+func WithEventPublisher(pub EventPublisher) Option {
+	return func(s *Service) {
+		s.publisher = pub
+	}
+}
+
+// WithOnProgress registers a callback invoked whenever download progress is emitted.
+func WithOnProgress(fn func(contracts.BinaryProgress)) Option {
+	return func(s *Service) {
+		s.onProgress = fn
+	}
+}
+
+// WithConfig sets the app config for download retries and resume.
+func WithConfig(c *config.Config) Option {
+	return func(s *Service) {
+		s.cfg = c
+	}
+}
+
+// WithRetry sets custom download retry attempts and backoff delay.
+func WithRetry(maxRetries int, delay time.Duration) Option {
+	return func(s *Service) {
+		s.retryMax = &maxRetries
+		s.retryDelay = &delay
+	}
+}
+
+func (s *Service) emitProgress(p contracts.BinaryProgress) {
+	if s.publisher != nil {
+		s.publisher.Publish(contracts.EventBinariesProgress, p)
+	}
+	if s.onProgress != nil {
+		s.onProgress(p)
+	}
+}
+
+func (s *Service) getRetryMax() int {
+	if s.retryMax != nil {
+		if *s.retryMax < 0 {
+			return 0
+		}
+		return *s.retryMax
+	}
+	if s.cfg != nil {
+		return s.cfg.BinariesDownloadRetryMax()
+	}
+	return 3
+}
+
+func (s *Service) getRetryDelay() time.Duration {
+	if s.retryDelay != nil {
+		if *s.retryDelay <= 0 {
+			return 0
+		}
+		return *s.retryDelay
+	}
+	if s.cfg != nil {
+		return s.cfg.BinariesDownloadRetryDelay()
+	}
+	return 1 * time.Second
+}
+
+func (s *Service) isResumeEnabled() bool {
+	if s.cfg != nil {
+		return s.cfg.BinariesDownloadResume()
+	}
+	return true
 }
 
 // New creates a new binaries Service.
