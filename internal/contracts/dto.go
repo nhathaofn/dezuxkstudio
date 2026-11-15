@@ -253,34 +253,35 @@ type WorkflowRunGraphResult struct {
 
 // AgentProviderInfo describes an external isolated agent provider and its live connection state.
 type AgentProviderInfo struct {
-	ID                 agent.ProviderID      `json:"id"`
-	Name               string                `json:"name"`
-	Executable         string                `json:"executable"`
-	ResolvedPath       string                `json:"resolved_path"`
-	CustomPath         string                `json:"custom_path"`
-	Source             agent.Source          `json:"source"`
-	Version            string                `json:"version"`
-	State              agent.ConnectionState `json:"state"`
-	Supported          bool                  `json:"supported"`
-	UnsupportedReason  string                `json:"unsupported_reason"`
-	AuthState          agent.AuthState       `json:"auth_state"`
-	AccountInfo        string                `json:"account_info"`
-	IsolatedProfileDir string                `json:"isolated_profile_dir"`
-	ProtocolVersion    int                   `json:"protocol_version"`
-	AgentName          string                `json:"agent_name"`
-	AgentVersion       string                `json:"agent_version"`
-	LastError          string                `json:"last_error"`
-	LastErrorKey       string                `json:"last_error_key,omitempty"`
-	LastErrorParams    map[string]string     `json:"last_error_params,omitempty"`
-	Active             bool                  `json:"active"`
-	Busy               bool                  `json:"busy"`
-	Models             []agent.ModelOption   `json:"models"`
-	CurrentModel       string                `json:"current_model"`
-	SelectedModel      string                `json:"selected_model"`
-	SelectedEffort     string                `json:"selected_effort"`
-	Revision           int64                 `json:"revision"`
-	Installing         bool                  `json:"installing"`
-	InstallPercent     float64               `json:"install_percent"`
+	ID                  agent.ProviderID      `json:"id"`
+	Name                string                `json:"name"`
+	Executable          string                `json:"executable"`
+	ResolvedPath        string                `json:"resolved_path"`
+	CustomPath          string                `json:"custom_path"`
+	Source              agent.Source          `json:"source"`
+	Version             string                `json:"version"`
+	State               agent.ConnectionState `json:"state"`
+	Supported           bool                  `json:"supported"`
+	UnsupportedReason   string                `json:"unsupported_reason"`
+	AuthState           agent.AuthState       `json:"auth_state"`
+	AccountInfo         string                `json:"account_info"`
+	IsolatedProfileDir  string                `json:"isolated_profile_dir"`
+	ProtocolVersion     int                   `json:"protocol_version"`
+	AgentName           string                `json:"agent_name"`
+	AgentVersion        string                `json:"agent_version"`
+	LastError           string                `json:"last_error"`
+	LastErrorKey        string                `json:"last_error_key,omitempty"`
+	LastErrorParams     map[string]string     `json:"last_error_params,omitempty"`
+	Active              bool                  `json:"active"`
+	Busy                bool                  `json:"busy"`
+	Models              []agent.ModelOption   `json:"models"`
+	CurrentModel        string                `json:"current_model"`
+	SelectedModel       string                `json:"selected_model"`
+	SelectedEffort      string                `json:"selected_effort"`
+	Revision            int64                 `json:"revision"`
+	Installing          bool                  `json:"installing"`
+	InstallPercent      float64               `json:"install_percent"`
+	CompatibleProviders []string              `json:"compatible_providers,omitempty"`
 }
 
 // AgentSetModelPayload selects the model (and optional reasoning effort) used by a provider.
@@ -297,7 +298,36 @@ func (p AgentSetModelPayload) Validate() error {
 
 // NewAgentProviderInfo converts a domain agent.ProviderInfo to the wire DTO.
 func NewAgentProviderInfo(in agent.ProviderInfo) AgentProviderInfo {
-	return AgentProviderInfo(in)
+	return AgentProviderInfo{
+		ID:                 in.ID,
+		Name:               in.Name,
+		Executable:         in.Executable,
+		ResolvedPath:       in.ResolvedPath,
+		CustomPath:         in.CustomPath,
+		Source:             in.Source,
+		Version:            in.Version,
+		State:              in.State,
+		Supported:          in.Supported,
+		UnsupportedReason:  in.UnsupportedReason,
+		AuthState:          in.AuthState,
+		AccountInfo:        in.AccountInfo,
+		IsolatedProfileDir: in.IsolatedProfileDir,
+		ProtocolVersion:    in.ProtocolVersion,
+		AgentName:          in.AgentName,
+		AgentVersion:       in.AgentVersion,
+		LastError:          in.LastError,
+		LastErrorKey:       in.LastErrorKey,
+		LastErrorParams:    in.LastErrorParams,
+		Active:             in.Active,
+		Busy:               in.Busy,
+		Models:             in.Models,
+		CurrentModel:       in.CurrentModel,
+		SelectedModel:      in.SelectedModel,
+		SelectedEffort:     in.SelectedEffort,
+		Revision:           in.Revision,
+		Installing:         in.Installing,
+		InstallPercent:     in.InstallPercent,
+	}
 }
 
 // AgentListResult answers agent:list and agent:disconnect.
@@ -611,6 +641,93 @@ func (p AgentSaveSubagentPayload) Validate() error {
 		if err := agent.ValidateProviderID(p.Provider); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// MediaAssetItem represents a registered media asset across features.
+type MediaAssetItem struct {
+	ID             string  `json:"id"`
+	Kind           string  `json:"kind"`
+	SourceNode     string  `json:"source_node"`
+	FilePath       string  `json:"file_path"`
+	RegisteredRoot string  `json:"registered_root"`
+	MIMEType       string  `json:"mime_type"`
+	SizeBytes      int64   `json:"size_bytes"`
+	Width          int     `json:"width,omitempty"`
+	Height         int     `json:"height,omitempty"`
+	DurationSec    float64 `json:"duration_sec,omitempty"`
+	MetadataJSON   string  `json:"metadata_json,omitempty"`
+	CreatedAt      int64   `json:"created_at"`
+	LastVerifiedAt int64   `json:"last_verified_at"`
+}
+
+// MediaListPayload is the filter payload for media:list.
+type MediaListPayload struct {
+	Kind   string `json:"kind,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+	Offset int    `json:"offset,omitempty"`
+	Search string `json:"search,omitempty"`
+}
+
+// MediaListResult answers media:list.
+type MediaListResult struct {
+	Assets []MediaAssetItem `json:"assets"`
+	Total  int              `json:"total"`
+}
+
+// MediaDeletePayload targets an asset for deletion in media:delete.
+type MediaDeletePayload struct {
+	ID         string `json:"id"`
+	DeleteFile bool   `json:"delete_file,omitempty"`
+}
+
+// Validate checks the asset ID.
+func (p MediaDeletePayload) Validate() error {
+	if strings.TrimSpace(p.ID) == "" {
+		return apperr.Validation("id is required")
+	}
+	return nil
+}
+
+// MediaSignURLPayload requests a signed scoped streaming/download URL in media:sign_url.
+type MediaSignURLPayload struct {
+	AssetID    string `json:"asset_id"`
+	Purpose    string `json:"purpose,omitempty"`     // "preview" | "download"
+	TTLSeconds int    `json:"ttl_seconds,omitempty"` // optional custom TTL in seconds
+}
+
+// Validate checks the asset ID and optional purpose.
+func (p MediaSignURLPayload) Validate() error {
+	if strings.TrimSpace(p.AssetID) == "" {
+		return apperr.Validation("asset_id is required")
+	}
+	if p.Purpose != "" && p.Purpose != "preview" && p.Purpose != "download" {
+		return apperr.Validation(fmt.Sprintf("invalid purpose %q: must be preview or download", p.Purpose))
+	}
+	return nil
+}
+
+// MediaSignedURLResult returns a generated signed URL and ticket metadata.
+type MediaSignedURLResult struct {
+	AssetID   string `json:"asset_id"`
+	URL       string `json:"url"`
+	Ticket    string `json:"ticket"`
+	ExpiresAt int64  `json:"expires_at"`
+	Purpose   string `json:"purpose"`
+}
+
+// MediaRegisterInputPayload registers a local media file as an asset in media:register_input.
+type MediaRegisterInputPayload struct {
+	FilePath   string `json:"file_path"`
+	Kind       string `json:"kind,omitempty"`
+	SourceNode string `json:"source_node,omitempty"`
+}
+
+// Validate checks the file path.
+func (p MediaRegisterInputPayload) Validate() error {
+	if strings.TrimSpace(p.FilePath) == "" {
+		return apperr.Validation("file_path is required")
 	}
 	return nil
 }

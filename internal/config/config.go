@@ -54,6 +54,7 @@ type Config struct {
 	Binaries    BinariesConfig
 	Providers   ProvidersConfig
 	MediaGen    MediaGenConfig
+	Media       MediaConfig
 	Network     NetworkConfig
 	Desktop     DesktopConfig
 	Agent       AgentConfig
@@ -151,6 +152,15 @@ type MediaGenConfig struct {
 	VideoPollInterval time.Duration // delay between async task status polls
 	MaxOutputBytes    int64         // safety cap on downloaded image, video, or audio payloads
 	MaxReferenceBytes int64         // max bytes allowed per local reference image
+}
+
+// MediaConfig tunes the media assets library and signed ticket streaming.
+type MediaConfig struct {
+	LibraryMaxItems    int           // max items retained in the media library
+	LibraryRetention   time.Duration // retention duration before unreferenced media assets are pruned
+	TicketTTL          time.Duration // lifetime of a signed media download ticket
+	TicketRenewSkew    time.Duration // renewal window before ticket expiration
+	RegisteredRootsMax int           // max allowed registered root paths for media file inspection
 }
 
 // UpdateConfig configures release update checks.
@@ -270,6 +280,13 @@ func Default(mode Mode) *Config {
 			VideoPollInterval: 4 * time.Second,
 			MaxOutputBytes:    256 << 20, // 256 MiB
 			MaxReferenceBytes: 20 << 20,  // 20 MiB
+		},
+		Media: MediaConfig{
+			LibraryMaxItems:    1000,
+			LibraryRetention:   30 * 24 * time.Hour,
+			TicketTTL:          15 * time.Minute,
+			TicketRenewSkew:    2 * time.Minute,
+			RegisteredRootsMax: 32,
 		},
 		Network: NetworkConfig{IdleConnTimeout: 90 * time.Second, MaxIdleConns: 100, MaxIdleConnsPerHost: 10},
 		Update: UpdateConfig{

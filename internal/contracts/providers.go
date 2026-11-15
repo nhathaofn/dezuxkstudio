@@ -1,6 +1,7 @@
 package contracts
 
 import (
+	"strings"
 	"time"
 
 	"app/internal/apperr"
@@ -455,6 +456,27 @@ type SetDefaultPayload struct {
 func (p SetDefaultPayload) Validate() error {
 	if p.Purpose == "" {
 		return apperr.New(apperr.CodeBadRequest, "purpose is required").WithMsg("errors.provider.purpose_required", nil)
+	}
+	return nil
+}
+
+// AgentLinkProviderPayload links an agent provider to an API provider credential.
+type AgentLinkProviderPayload struct {
+	AgentProviderID string `json:"agent_provider_id"`
+	ProviderID      string `json:"provider_id"`
+	CredentialID    string `json:"credential_id"`
+}
+
+// Validate checks the required identifiers.
+func (p AgentLinkProviderPayload) Validate() error {
+	if strings.TrimSpace(p.AgentProviderID) == "" {
+		return apperr.Validation("agent_provider_id is required")
+	}
+	if strings.TrimSpace(p.ProviderID) == "" {
+		return apperr.Validation("provider_id is required")
+	}
+	if strings.TrimSpace(p.CredentialID) == "" {
+		return apperr.Validation("credential_id is required")
 	}
 	return nil
 }

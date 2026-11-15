@@ -226,6 +226,7 @@ export interface AgentProviderInfo {
   revision: number;
   installing: boolean;
   install_percent: number;
+  compatible_providers?: string[];
 }
 
 export interface AgentResolveApprovalPayload {
@@ -476,6 +477,7 @@ export interface ImageGenerateOutput {
   provider: string;
   model: string;
   sizeBytes: number;
+  asset_id?: string;
 }
 
 export interface ImageInputRef {
@@ -484,10 +486,63 @@ export interface ImageInputRef {
   mimeType?: string;
 }
 
+export interface MediaAssetItem {
+  id: string;
+  kind: string;
+  source_node: string;
+  file_path: string;
+  registered_root: string;
+  mime_type: string;
+  size_bytes: number;
+  width?: number;
+  height?: number;
+  duration_sec?: number;
+  metadata_json?: string;
+  created_at: number;
+  last_verified_at: number;
+}
+
+export interface MediaDeletePayload {
+  id: string;
+  delete_file?: boolean;
+}
+
+export interface MediaListPayload {
+  kind?: string;
+  limit?: number;
+  offset?: number;
+  search?: string;
+}
+
+export interface MediaListResult {
+  assets: MediaAssetItem[];
+  total: number;
+}
+
 export interface MediaRef {
   localUrl: string;
   kind: string;
   mimeType?: string;
+}
+
+export interface MediaRegisterInputPayload {
+  file_path: string;
+  kind?: string;
+  source_node?: string;
+}
+
+export interface MediaSignURLPayload {
+  asset_id: string;
+  purpose?: string;
+  ttl_seconds?: number;
+}
+
+export interface MediaSignedURLResult {
+  asset_id: string;
+  url: string;
+  ticket: string;
+  expires_at: number;
+  purpose: string;
 }
 
 export interface ModelCandidate {
@@ -674,6 +729,7 @@ export interface RemoverItem {
   error?: string;
   status?: string;
   reason?: string;
+  asset_id?: string;
 }
 
 export interface RemoverOutput {
@@ -791,6 +847,7 @@ export interface TTSGenerateOutput {
   provider: string;
   model: string;
   sizeBytes: number;
+  asset_id?: string;
 }
 
 export interface UpdateCredentialPayload {
@@ -839,6 +896,7 @@ export interface VideoGenerateOutput {
   model: string;
   duration: number;
   sizeBytes: number;
+  asset_id?: string;
 }
 
 export interface WorkflowRunGraphPayload {
@@ -987,6 +1045,14 @@ export const Actions = {
   PROVIDERS_DEFAULTS: "providers:defaults",
   /** Sets the default model of a purpose (provider/model, or empty for auto). */
   PROVIDERS_SET_DEFAULT: "providers:set_default",
+  /** Lists registered media assets with filtering. */
+  MEDIA_LIST: "media:list",
+  /** Deletes a media asset record (and optionally backing file). */
+  MEDIA_DELETE: "media:delete",
+  /** Generates a signed scoped download/streaming URL for a media asset. */
+  MEDIA_SIGN_URL: "media:sign_url",
+  /** Registers an existing local media file as an asset. */
+  MEDIA_REGISTER_INPUT: "media:register_input",
 } as const;
 export type ActionName = (typeof Actions)[keyof typeof Actions];
 
@@ -1062,6 +1128,10 @@ export interface ActionMap {
   "providers:update_settings": { payload: UpdateSettingsPayload; result: ProviderSettingsResult };
   "providers:defaults": { payload: Empty; result: ProviderDefaultsResult };
   "providers:set_default": { payload: SetDefaultPayload; result: ProviderDefaultsResult };
+  "media:list": { payload: MediaListPayload; result: MediaListResult };
+  "media:delete": { payload: MediaDeletePayload; result: Empty };
+  "media:sign_url": { payload: MediaSignURLPayload; result: MediaSignedURLResult };
+  "media:register_input": { payload: MediaRegisterInputPayload; result: MediaAssetItem };
 }
 
 /** Built-in workflow node types (contracts.Nodes). Settings come from workflow:specs. */
@@ -1097,6 +1167,8 @@ export const Events = {
   AGENT_CUSTOMIZATIONS_CHANGED: "agent:customizations_changed",
   /** Provider credentials or custom providers changed. */
   PROVIDERS_CHANGED: "providers:changed",
+  /** Media assets library content changed. */
+  MEDIA_ASSETS_CHANGED: "media:assets_changed",
 } as const;
 export type EventName = (typeof Events)[keyof typeof Events];
 
@@ -1109,6 +1181,7 @@ export interface EventMap {
   "agent:approvals": AgentApprovalListResult;
   "agent:customizations_changed": AgentCustomizationsResult;
   "providers:changed": ProvidersListResult;
+  "media:assets_changed": Empty;
 }
 
 export const NativeEvents = {

@@ -93,4 +93,9 @@ export const appConfig = {
   mediaUploadPath: "/api/media/upload",
   /** Authenticated HTTP media download endpoint (browser and remote client modes). */
   mediaDownloadPath: "/api/media/download",
+  /** Media tuning knobs (ticket auto-renewal and lifetime). */
+  media: {
+    ticketRenewSkewMs: 120_000,
+    ticketTtlMs: 900_000,
+  },
 } as const;

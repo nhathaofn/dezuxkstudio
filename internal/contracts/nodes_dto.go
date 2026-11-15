@@ -43,6 +43,7 @@ type RemoverItem struct {
 	Error    string  `json:"error,omitempty"`
 	Status   string  `json:"status,omitempty"`
 	Reason   string  `json:"reason,omitempty"`
+	AssetID  string  `json:"asset_id,omitempty"`
 }
 
 // RemoverOutput is the output payload produced by the watermark remover node.
@@ -74,6 +75,7 @@ type ImageGenerateOutput struct {
 	Provider  string          `json:"provider"`
 	Model     string          `json:"model"`
 	SizeBytes int64           `json:"sizeBytes"`
+	AssetID   string          `json:"asset_id,omitempty"`
 }
 
 // VideoGenerateInput is the merged input+params contract for tool.generate_video.
@@ -100,6 +102,7 @@ type VideoGenerateOutput struct {
 	Model     string          `json:"model"`
 	Duration  float64         `json:"duration"`
 	SizeBytes int64           `json:"sizeBytes"`
+	AssetID   string          `json:"asset_id,omitempty"`
 }
 
 // TTSGenerateInput is the merged input+params contract for tool.generate_tts.
@@ -157,4 +160,5 @@ type TTSGenerateOutput struct {
 	Provider  string          `json:"provider"`
 	Model     string          `json:"model"`
 	SizeBytes int64           `json:"sizeBytes"`
+	AssetID   string          `json:"asset_id,omitempty"`
 }

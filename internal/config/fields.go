@@ -88,6 +88,11 @@ func fields(c *Config) []field {
 		{key: "mediagen.video_poll_interval", usage: "interval between status polls for async image/video generation", val: durationValue{&c.MediaGen.VideoPollInterval}},
 		{key: "mediagen.max_output_bytes", usage: "max size of a downloaded generated media artifact in bytes", val: int64Value{&c.MediaGen.MaxOutputBytes}},
 		{key: "mediagen.max_reference_bytes", usage: "max size of each local reference image file in bytes", val: int64Value{&c.MediaGen.MaxReferenceBytes}},
+		{key: "media.library_max_items", usage: "max items retained in the media library", val: intValue{&c.Media.LibraryMaxItems}},
+		{key: "media.library_retention", usage: "retention duration before unreferenced media assets are pruned", val: durationValue{&c.Media.LibraryRetention}},
+		{key: "media.ticket_ttl", usage: "lifetime of a signed media download ticket", val: durationValue{&c.Media.TicketTTL}},
+		{key: "media.ticket_renew_skew", usage: "renewal window before ticket expiration", val: durationValue{&c.Media.TicketRenewSkew}},
+		{key: "media.registered_roots_max", usage: "max allowed registered root paths for media file inspection", val: intValue{&c.Media.RegisteredRootsMax}},
 		{key: "binaries.probe_timeout", usage: "max duration of an external tool version probe", val: durationValue{&c.Binaries.ProbeTimeout}},
 
 		{key: "agent.turn_timeout", usage: "an agent chat turn is stopped after this long without activity (text, tool calls, tool progress)", val: durationValue{&c.Agent.TurnTimeout}},
