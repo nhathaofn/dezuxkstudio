@@ -818,6 +818,29 @@ export const en = {
   "system.desktopOnly": "This action is only available in desktop mode",
 
   "mediagen.action.retry": "Retry",
+
+  "cross.sendToWatermark": "Send to Watermark",
+  "cross.askAgent": "Ask Agent about this file",
+
+  "media.library.title": "Media Library",
+  "media.filter.all": "All",
+  "media.filter.images": "Images",
+  "media.filter.videos": "Videos",
+  "media.filter.audio": "Audio",
+  "media.search.placeholder": "Search registered assets...",
+  "media.loading": "Loading media assets...",
+  "media.empty.title": "No media assets",
+  "media.empty.desc": "Generated and imported media files will appear here.",
+  "media.action.refresh": "Refresh",
+  "media.action.delete": "Delete",
+
+  "agent.connections.billing": "Billing",
+  "agent.connections.billingSource": "Billing Source",
+  "agent.connections.linkedCredential": "Credential Link",
+  "agent.connections.oauthDefault": "OAuth / Subscription (Default)",
+  "agent.connections.activeSource": "Active Connection & Billing",
+
+  "tools.delete": "Delete",
 } as const;
 
 export type MessageKey = keyof typeof en;

@@ -131,6 +131,10 @@ export interface AgentChatMessage {
   conversation_id?: string;
 }
 
+export interface AgentCompatibleProvidersResult {
+  compatible_providers: string[];
+}
+
 export interface AgentConversation {
   id: string;
   title: string;
@@ -162,6 +166,12 @@ export interface AgentCustomizationsResult {
 export interface AgentHistoryResult {
   conversation_id: string;
   messages: AgentChatMessage[];
+}
+
+export interface AgentLinkProviderPayload {
+  agent_provider_id: string;
+  provider_id: string;
+  credential_id: string;
 }
 
 export interface AgentListResult {
@@ -227,6 +237,17 @@ export interface AgentProviderInfo {
   installing: boolean;
   install_percent: number;
   compatible_providers?: string[];
+}
+
+export interface AgentProviderLinkItem {
+  agent_provider_id: string;
+  provider_id: string;
+  credential_id: string;
+  updated_at?: number;
+}
+
+export interface AgentProviderLinksResult {
+  links: AgentProviderLinkItem[];
 }
 
 export interface AgentResolveApprovalPayload {
@@ -1053,6 +1074,16 @@ export const Actions = {
   MEDIA_SIGN_URL: "media:sign_url",
   /** Registers an existing local media file as an asset. */
   MEDIA_REGISTER_INPUT: "media:register_input",
+  /** Sets the opt-in provider credential link for an agent provider. */
+  AGENT_SET_PROVIDER_LINK: "agent:set_provider_link",
+  /** Sets the opt-in provider credential link for an agent provider. */
+  AGENT_LINK_PROVIDER: "agent:link_provider",
+  /** Removes the opt-in provider link for an agent provider. */
+  AGENT_UNLINK_PROVIDER: "agent:unlink_provider",
+  /** Lists all configured agent provider links. */
+  AGENT_LIST_PROVIDER_LINKS: "agent:list_provider_links",
+  /** Lists allowed target providers for an agent provider. */
+  AGENT_COMPATIBLE_PROVIDERS: "agent:compatible_providers",
 } as const;
 export type ActionName = (typeof Actions)[keyof typeof Actions];
 
@@ -1132,6 +1163,11 @@ export interface ActionMap {
   "media:delete": { payload: MediaDeletePayload; result: Empty };
   "media:sign_url": { payload: MediaSignURLPayload; result: MediaSignedURLResult };
   "media:register_input": { payload: MediaRegisterInputPayload; result: MediaAssetItem };
+  "agent:set_provider_link": { payload: AgentLinkProviderPayload; result: Empty };
+  "agent:link_provider": { payload: AgentLinkProviderPayload; result: Empty };
+  "agent:unlink_provider": { payload: AgentProviderIDPayload; result: Empty };
+  "agent:list_provider_links": { payload: Empty; result: AgentProviderLinksResult };
+  "agent:compatible_providers": { payload: AgentProviderIDPayload; result: AgentCompatibleProvidersResult };
 }
 
 /** Built-in workflow node types (contracts.Nodes). Settings come from workflow:specs. */

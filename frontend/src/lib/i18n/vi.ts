@@ -819,4 +819,27 @@ export const vi: Record<MessageKey, string> = {
   "system.desktopOnly": "Thao tác này chỉ khả dụng ở chế độ ứng dụng desktop",
 
   "mediagen.action.retry": "Thử lại",
+
+  "cross.sendToWatermark": "Đưa sang Watermark",
+  "cross.askAgent": "Hỏi Agent về tệp này",
+
+  "media.library.title": "Thư viện Đa phương tiện",
+  "media.filter.all": "Tất cả",
+  "media.filter.images": "Hình ảnh",
+  "media.filter.videos": "Video",
+  "media.filter.audio": "Âm thanh",
+  "media.search.placeholder": "Tìm kiếm tài sản đã đăng ký...",
+  "media.loading": "Đang tải tài sản đa phương tiện...",
+  "media.empty.title": "Chưa có tài sản nào",
+  "media.empty.desc": "Các tệp tạo ra hoặc nhập vào sẽ xuất hiện tại đây.",
+  "media.action.refresh": "Làm mới",
+  "media.action.delete": "Xóa",
+
+  "agent.connections.billing": "Tính phí",
+  "agent.connections.billingSource": "Nguồn tính phí",
+  "agent.connections.linkedCredential": "Liên kết khóa API",
+  "agent.connections.oauthDefault": "OAuth / Gói thuê bao (Mặc định)",
+  "agent.connections.activeSource": "Kết nối & Nguồn tính phí hoạt động",
+
+  "tools.delete": "Xóa",
 };

@@ -1,12 +1,6 @@
 import { create } from "zustand";
-import {
-  Events,
-  type MediaAssetItem,
-} from "../../contracts/generated";
-import {
-  deleteMediaAsset,
-  listMediaAssets,
-} from "../../lib/rtClient/media";
+import { Events, type MediaAssetItem } from "../../contracts/generated";
+import { deleteMediaAsset, listMediaAssets } from "../../lib/rtClient/media";
 import { rtClient } from "../../lib/rtClient/client";
 import { toActionError, type ActionError } from "../../lib/rtClient/errors";
 

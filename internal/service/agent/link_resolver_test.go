@@ -87,7 +87,7 @@ func (d *fakeDriver) probeAuth(_ context.Context, _ string) (domainagent.AuthSta
 	return d.authState, d.account
 }
 func (d *fakeDriver) login(_ context.Context, _, _ string) error { return nil }
-func (d *fakeDriver) logout(_ context.Context, _ string) error    { return nil }
+func (d *fakeDriver) logout(_ context.Context, _ string) error   { return nil }
 func (d *fakeDriver) release()                                   {}
 func (d *fakeDriver) toolCallHint() string                       { return "" }
 func (d *fakeDriver) sessionEnv(_, _ string) ([]string, error)   { return []string{"BASE_ENV=1"}, nil }

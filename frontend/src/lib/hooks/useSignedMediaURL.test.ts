@@ -252,14 +252,12 @@ describe("SignedMediaSession & useSignedMediaURL logic", () => {
   it("renders with useSignedMediaURL hook in a component without crashing", () => {
     function DummyMediaViewer({ assetId }: { assetId: string }) {
       const { url, loading } = useSignedMediaURL(assetId);
-      return React.createElement(
-        "div",
-        null,
-        loading ? "loading..." : url || "none"
-      );
+      return React.createElement("div", null, loading ? "loading..." : url || "none");
     }
 
-    const html = renderToStaticMarkup(React.createElement(DummyMediaViewer, { assetId: "test-id" }));
+    const html = renderToStaticMarkup(
+      React.createElement(DummyMediaViewer, { assetId: "test-id" })
+    );
     expect(html).toContain("div");
   });
 });

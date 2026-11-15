@@ -23,6 +23,8 @@ type Options struct {
 	Providers providernodes.Service
 	// MediaGen backs the unified image/video/TTS generation nodes (nil leaves them out in minimal tests).
 	MediaGen mediagennodes.MediaService
+	// Registrar auto-registers newly created or cleaned media assets into the library.
+	Registrar watermark.MediaRegistrar
 }
 
 // Service manages DezuxkStudio's workflow runtime and registered nodes.
@@ -43,7 +45,10 @@ func New(o Options) (*Service, error) {
 	// Built-in feature nodes. A new feature = one entry here: the UI, workflows and the agent
 	// (MCP workflow_* tools) all pick it up from its Spec, with no agent-specific code.
 	nodes := []engine.Node{
-		watermark.NewNode(watermark.Options{MediaDir: o.Paths.Media()}),
+		watermark.NewNode(watermark.Options{
+			MediaDir:  o.Paths.Media(),
+			Registrar: o.Registrar,
+		}),
 	}
 	if o.MediaGen != nil {
 		nodes = append(nodes, mediagennodes.NewNodes(mediagennodes.Options{

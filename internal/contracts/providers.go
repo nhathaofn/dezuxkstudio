@@ -480,3 +480,21 @@ func (p AgentLinkProviderPayload) Validate() error {
 	}
 	return nil
 }
+
+// AgentProviderLinkItem describes a configured agent provider link.
+type AgentProviderLinkItem struct {
+	AgentProviderID string `json:"agent_provider_id"`
+	ProviderID      string `json:"provider_id"`
+	CredentialID    string `json:"credential_id"`
+	UpdatedAt       int64  `json:"updated_at,omitempty"`
+}
+
+// AgentProviderLinksResult contains all configured agent provider links.
+type AgentProviderLinksResult struct {
+	Links []AgentProviderLinkItem `json:"links"`
+}
+
+// AgentCompatibleProvidersResult contains allowed target provider IDs for an agent provider.
+type AgentCompatibleProvidersResult struct {
+	CompatibleProviders []string `json:"compatible_providers"`
+}

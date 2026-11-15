@@ -1,10 +1,4 @@
-import React, {
-  forwardRef,
-  useEffect,
-  useImperativeHandle,
-  useRef,
-  useState,
-} from "react";
+import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { UploadCloud } from "lucide-react";
 import { getBridge, isDesktop, onFileDrop } from "../../lib/bridge";
 
@@ -41,8 +35,7 @@ export interface MediaDropZoneProps {
   onSelected?: (files: File[], paths?: string[]) => void;
   /** Optional custom child nodes or render function. */
   children?:
-    | React.ReactNode
-    | ((state: { isDragging: boolean; browse: () => void }) => React.ReactNode);
+    React.ReactNode | ((state: { isDragging: boolean; browse: () => void }) => React.ReactNode);
 }
 
 const DEFAULT_IMAGE_ACCEPT = "image/png,image/jpeg,image/webp,image/*";

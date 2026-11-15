@@ -415,7 +415,9 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
           </>
         )}
 
-        <span className="agent-provider-meta__label">{t("agent.connections.billing" as MessageKey) || "Billing"}:</span>
+        <span className="agent-provider-meta__label">
+          {t("agent.connections.billing" as MessageKey) || "Billing"}:
+        </span>
         <span className="agent-provider-meta__val" style={{ fontWeight: "var(--weight-semibold)" }}>
           {activeBillingSource}
         </span>
@@ -431,7 +433,10 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
 
       {provider.supported && provider.state !== "missing" && compatibleCreds.length > 0 && (
         <div className="agent-model-row">
-          <label className="agent-provider-meta__label" htmlFor={`agent-credential-link-${provider.id}`}>
+          <label
+            className="agent-provider-meta__label"
+            htmlFor={`agent-credential-link-${provider.id}`}
+          >
             {t("agent.connections.linkedCredential" as MessageKey) || "Credential Link"}:
           </label>
           <select
@@ -442,9 +447,15 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
             disabled={disabled || probing || busyAction}
             aria-label="Linked API Credential"
           >
-            <option value="">{t("agent.connections.oauthDefault" as MessageKey) || "OAuth / Subscription (Default)"}</option>
+            <option value="">
+              {t("agent.connections.oauthDefault" as MessageKey) ||
+                "OAuth / Subscription (Default)"}
+            </option>
             {compatibleCreds.map((c) => (
-              <option key={`${c.providerId}:${c.credentialId}`} value={`${c.providerId}:${c.credentialId}`}>
+              <option
+                key={`${c.providerId}:${c.credentialId}`}
+                value={`${c.providerId}:${c.credentialId}`}
+              >
                 Linked API Key: {c.providerName} — {c.credentialName}
               </option>
             ))}
@@ -469,9 +480,7 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
           <span style={{ color: "var(--text-secondary)" }}>
             {t("agent.connections.activeSource" as MessageKey) || "Active Connection & Billing"}:
           </span>
-          <Badge>
-            {activeBillingSource}
-          </Badge>
+          <Badge>{activeBillingSource}</Badge>
         </div>
       )}
 

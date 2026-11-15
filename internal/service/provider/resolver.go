@@ -26,10 +26,10 @@ type ProviderLinkRepository interface {
 // target API provider, and authentication method.
 type CompatibilityRule struct {
 	AgentProviderID  string   `json:"agent_provider_id"`
-	RunnerDriver     string   `json:"runner_driver"`     // "acp", "cli", etc.
+	RunnerDriver     string   `json:"runner_driver"`      // "acp", "cli", etc.
 	TargetProviderID string   `json:"target_provider_id"` // "gemini-aistudio", "openai", "anthropic"
-	AuthMethod       string   `json:"auth_method"`       // "api_key"
-	EnvVars          []string `json:"env_vars"`          // environment variable names for injection
+	AuthMethod       string   `json:"auth_method"`        // "api_key"
+	EnvVars          []string `json:"env_vars"`           // environment variable names for injection
 }
 
 // CompatibilityMatrix defines the authoritative rules for linking agent runners to API providers.

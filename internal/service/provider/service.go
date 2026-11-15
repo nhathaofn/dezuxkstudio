@@ -656,4 +656,3 @@ func (s *Service) ListProviderLinks(ctx context.Context) ([]AgentProviderLink, e
 	}
 	return lr.ListProviderLinks(ctx)
 }
-

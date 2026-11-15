@@ -66,6 +66,11 @@ const (
 	ActionAgentSaveSubagent         = "agent:save_subagent"
 	ActionAgentDeleteSubagent       = "agent:delete_subagent"
 	ActionAgentRestoreSubagent      = "agent:restore_subagent"
+	ActionAgentSetProviderLink      = "agent:set_provider_link"
+	ActionAgentLinkProvider         = "agent:link_provider"
+	ActionAgentUnlinkProvider       = "agent:unlink_provider"
+	ActionAgentListProviderLinks    = "agent:list_provider_links"
+	ActionAgentCompatibleProviders  = "agent:compatible_providers"
 
 	ActionMediaList          = "media:list"
 	ActionMediaDelete        = "media:delete"
@@ -218,6 +223,11 @@ func Actions() []ActionSpec {
 		{ActionMediaDelete, "Deletes a media asset record (and optionally backing file).", t[MediaDeletePayload](), t[Empty]()},
 		{ActionMediaSignURL, "Generates a signed scoped download/streaming URL for a media asset.", t[MediaSignURLPayload](), t[MediaSignedURLResult]()},
 		{ActionMediaRegisterInput, "Registers an existing local media file as an asset.", t[MediaRegisterInputPayload](), t[MediaAssetItem]()},
+		{ActionAgentSetProviderLink, "Sets the opt-in provider credential link for an agent provider.", t[AgentLinkProviderPayload](), t[Empty]()},
+		{ActionAgentLinkProvider, "Sets the opt-in provider credential link for an agent provider.", t[AgentLinkProviderPayload](), t[Empty]()},
+		{ActionAgentUnlinkProvider, "Removes the opt-in provider link for an agent provider.", t[AgentProviderIDPayload](), t[Empty]()},
+		{ActionAgentListProviderLinks, "Lists all configured agent provider links.", t[Empty](), t[AgentProviderLinksResult]()},
+		{ActionAgentCompatibleProviders, "Lists allowed target providers for an agent provider.", t[AgentProviderIDPayload](), t[AgentCompatibleProvidersResult]()},
 	}
 }
 

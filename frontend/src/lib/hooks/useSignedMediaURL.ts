@@ -273,12 +273,15 @@ export function useSignedMediaURL(
   assetId: string | null | undefined,
   purposeOrOptions: string | UseSignedMediaURLOptions = "preview"
 ): UseSignedMediaURLResult {
-  const purpose = typeof purposeOrOptions === "string" ? purposeOrOptions : purposeOrOptions.purpose;
+  const purpose =
+    typeof purposeOrOptions === "string" ? purposeOrOptions : purposeOrOptions.purpose;
   const autoRenew = typeof purposeOrOptions === "string" ? undefined : purposeOrOptions.autoRenew;
   const skewMs = typeof purposeOrOptions === "string" ? undefined : purposeOrOptions.skewMs;
   const ttlSeconds = typeof purposeOrOptions === "string" ? undefined : purposeOrOptions.ttlSeconds;
 
-  const [session] = useState(() => new SignedMediaSession({ purpose, autoRenew, skewMs, ttlSeconds }));
+  const [session] = useState(
+    () => new SignedMediaSession({ purpose, autoRenew, skewMs, ttlSeconds })
+  );
   const [state, setState] = useState<SignedMediaState>(() => session.getState());
   const mediaRef = useRef<HTMLMediaElement | null>(null);
 

@@ -790,4 +790,3 @@ func (s *Service) inspectMediaAsset(ctx context.Context, id string) (map[string]
 
 	return nil, fmt.Errorf("media asset %q not found", id)
 }
-

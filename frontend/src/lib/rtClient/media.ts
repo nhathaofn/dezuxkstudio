@@ -153,10 +153,7 @@ function parseDispositionFilename(header: string | null): string | null {
 }
 
 /** Resolves an absolute HTTP(S) URL for a media endpoint or signed ticket path. */
-export function resolveMediaHttpUrl(
-  pathOrUrl: string,
-  endpoint?: Endpoint | null
-): string {
+export function resolveMediaHttpUrl(pathOrUrl: string, endpoint?: Endpoint | null): string {
   if (!pathOrUrl || /^https?:\/\//i.test(pathOrUrl)) {
     return pathOrUrl;
   }
@@ -182,16 +179,12 @@ export async function signMediaURL(
 }
 
 /** Lists registered media assets with optional filter and search. */
-export async function listMediaAssets(
-  payload: MediaListPayload = {}
-): Promise<MediaListResult> {
+export async function listMediaAssets(payload: MediaListPayload = {}): Promise<MediaListResult> {
   return rtClient.request(Actions.MEDIA_LIST, payload);
 }
 
 /** Deletes a registered media asset record (and optionally its backing file). */
-export async function deleteMediaAsset(
-  payload: MediaDeletePayload
-): Promise<void> {
+export async function deleteMediaAsset(payload: MediaDeletePayload): Promise<void> {
   await rtClient.request(Actions.MEDIA_DELETE, payload);
 }
 

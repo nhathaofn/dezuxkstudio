@@ -472,6 +472,38 @@ func (s *Service) ResolveAssetFile(ctx context.Context, assetID string) (filePat
 	return realTarget, asset.MIMEType, fi.ModTime(), fi.Size(), nil
 }
 
+// ResolveAsset returns the on-disk file path and registered root for an asset ID.
+// It implements handlers.AssetResolver for MediaDownload.
+func (s *Service) ResolveAsset(ctx context.Context, assetID string) (filePath string, registeredRoot string, err error) {
+	if s.repo == nil {
+		return "", "", apperr.Unavailable("media repository is unavailable")
+	}
+	asset, err := s.repo.GetAsset(ctx, assetID)
+	if err != nil {
+		return "", "", apperr.Wrap(apperr.CodeInternal, "failed to get asset", err)
+	}
+	if asset == nil {
+		return "", "", apperr.NotFound(fmt.Sprintf("media asset %q not found", assetID))
+	}
+	return asset.FilePath, asset.RegisteredRoot, nil
+}
+
+// GetAsset returns a single media asset item by ID.
+func (s *Service) GetAsset(ctx context.Context, id string) (*contracts.MediaAssetItem, error) {
+	if s.repo == nil {
+		return nil, apperr.Unavailable("media repository is unavailable")
+	}
+	asset, err := s.repo.GetAsset(ctx, id)
+	if err != nil {
+		return nil, apperr.Wrap(apperr.CodeInternal, "failed to get asset", err)
+	}
+	if asset == nil {
+		return nil, apperr.NotFound(fmt.Sprintf("media asset %q not found", id))
+	}
+	item := toContract(*asset)
+	return &item, nil
+}
+
 // evalSubpath evaluates symlinks and asserts realTarget is inside realRoot.
 func evalSubpath(targetPath, rootPath string) (realTarget, realRoot string, err error) {
 	cleanRoot := filepath.Clean(rootPath)

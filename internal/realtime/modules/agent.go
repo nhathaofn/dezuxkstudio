@@ -12,10 +12,11 @@ import (
 
 // Realtime actions for agent provider link synergy.
 const (
-	ActionAgentLinkProvider        = "agent:link_provider"
-	ActionAgentUnlinkProvider      = "agent:unlink_provider"
-	ActionAgentListProviderLinks   = "agent:list_provider_links"
-	ActionAgentCompatibleProviders = "agent:compatible_providers"
+	ActionAgentSetProviderLink     = contracts.ActionAgentSetProviderLink
+	ActionAgentLinkProvider        = contracts.ActionAgentLinkProvider
+	ActionAgentUnlinkProvider      = contracts.ActionAgentUnlinkProvider
+	ActionAgentListProviderLinks   = contracts.ActionAgentListProviderLinks
+	ActionAgentCompatibleProviders = contracts.ActionAgentCompatibleProviders
 )
 
 // Agent exposes agent:* actions over realtime WebSocket.
@@ -50,8 +51,20 @@ func (Agent) Name() string { return "agent" }
 
 func (m Agent) Register(r *realtime.Registry) {
 	// Provider linking actions.
+	realtime.Handle(r, ActionAgentSetProviderLink,
+		func(ctx context.Context, _ *realtime.Request, p contracts.AgentLinkProviderPayload) (contracts.Empty, error) {
+			if err := p.Validate(); err != nil {
+				return contracts.Empty{}, err
+			}
+			err := m.Service.SetProviderLink(ctx, domainagent.ProviderID(p.AgentProviderID), p.ProviderID, p.CredentialID)
+			return contracts.Empty{}, err
+		})
+
 	realtime.Handle(r, ActionAgentLinkProvider,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentLinkProviderPayload) (contracts.Empty, error) {
+			if err := p.Validate(); err != nil {
+				return contracts.Empty{}, err
+			}
 			err := m.Service.SetProviderLink(ctx, domainagent.ProviderID(p.AgentProviderID), p.ProviderID, p.CredentialID)
 			return contracts.Empty{}, err
 		})
@@ -63,18 +76,27 @@ func (m Agent) Register(r *realtime.Registry) {
 		})
 
 	realtime.Handle(r, ActionAgentListProviderLinks,
-		func(ctx context.Context, _ *realtime.Request, _ contracts.Empty) (any, error) {
+		func(ctx context.Context, _ *realtime.Request, _ contracts.Empty) (contracts.AgentProviderLinksResult, error) {
 			links, err := m.Service.ListProviderLinks(ctx)
 			if err != nil {
-				return nil, err
+				return contracts.AgentProviderLinksResult{}, err
 			}
-			return map[string]any{"links": links}, nil
+			items := make([]contracts.AgentProviderLinkItem, len(links))
+			for i, l := range links {
+				items[i] = contracts.AgentProviderLinkItem{
+					AgentProviderID: l.AgentProviderID,
+					ProviderID:      l.ProviderID,
+					CredentialID:    l.CredentialID,
+					UpdatedAt:       l.UpdatedAt.Unix(),
+				}
+			}
+			return contracts.AgentProviderLinksResult{Links: items}, nil
 		})
 
 	realtime.Handle(r, ActionAgentCompatibleProviders,
-		func(_ context.Context, _ *realtime.Request, p contracts.AgentProviderIDPayload) (any, error) {
-			providers := m.Service.CompatibleProviders(p.ID)
-			return map[string]any{"compatible_providers": providers}, nil
+		func(_ context.Context, _ *realtime.Request, p contracts.AgentProviderIDPayload) (contracts.AgentCompatibleProvidersResult, error) {
+			providers := m.Service.CompatibleProviders(domainagent.ProviderID(p.ID))
+			return contracts.AgentCompatibleProvidersResult{CompatibleProviders: providers}, nil
 		})
 
 	realtime.Handle(r, contracts.ActionAgentList,

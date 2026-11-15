@@ -1,8 +1,9 @@
 import React from "react";
 import { NavLink } from "react-router-dom";
-import { Bot, Settings } from "lucide-react";
+import { Bot, FolderArchive, Settings } from "lucide-react";
 import { useAgentDrawerStore } from "../features/agent/useAgentDrawerStore";
 import { useAgentStore } from "../features/agent/useAgentStore";
+import { useMediaLibraryStore } from "../features/media/useMediaLibraryStore";
 import { StatusIndicator } from "../features/connection/StatusIndicator";
 import { useSystemStore } from "../features/system/useSystemStore";
 import { useT } from "../lib/i18n";
@@ -14,6 +15,8 @@ export const AppHeader: React.FC = () => {
   const agentOpen = useAgentDrawerStore((s) => s.panelOpen);
   const toggleAgentPanel = useAgentDrawerStore((s) => s.togglePanel);
   const agentOnline = useAgentStore((s) => s.providers.some((p) => p.active));
+  const mediaOpen = useMediaLibraryStore((s) => s.drawerOpen);
+  const toggleMediaDrawer = useMediaLibraryStore((s) => s.toggleDrawer);
 
   return (
     <header className="app-header">
@@ -37,6 +40,16 @@ export const AppHeader: React.FC = () => {
         </div>
         <div className="header-right">
           <StatusIndicator />
+          <button
+            type="button"
+            className={`ds-button ds-button--sm ds-button--icon ${mediaOpen ? "ds-button--primary" : "ds-button--secondary"}`}
+            onClick={toggleMediaDrawer}
+            title={t("media.library.title")}
+            aria-label={t("media.library.title")}
+            aria-expanded={mediaOpen}
+          >
+            <FolderArchive size={14} />
+          </button>
           <button
             type="button"
             className={`ds-button ds-button--sm ds-button--icon agent-bot-btn ${agentOpen ? "ds-button--primary" : "ds-button--secondary"}`}

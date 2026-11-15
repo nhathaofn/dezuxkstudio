@@ -40,10 +40,7 @@ const RouterNavigateBridge: React.FC<{
 };
 
 const MediaAssetPreview: React.FC<{ asset: MediaAssetItem }> = ({ asset }) => {
-  const { url, loading, handleMediaError, mediaRef } = useSignedMediaURL(
-    asset.id,
-    "preview"
-  );
+  const { url, loading, handleMediaError, mediaRef } = useSignedMediaURL(asset.id, "preview");
 
   const isImg = asset.kind === "image" || asset.mime_type.startsWith("image/");
   const isVid = asset.kind === "video" || asset.mime_type.startsWith("video/");
@@ -196,7 +193,9 @@ export const MediaLibraryDrawer: React.FC = () => {
       <div className="agent-drawer__header">
         <div className="agent-drawer__title-group">
           <FolderArchive size={16} className="agent-drawer__icon" />
-          <h2 className="agent-drawer__title">{t("media.library.title" as MessageKey) || "Media Library"}</h2>
+          <h2 className="agent-drawer__title">
+            {t("media.library.title" as MessageKey) || "Media Library"}
+          </h2>
           <Badge>{total}</Badge>
         </div>
 
@@ -249,7 +248,9 @@ export const MediaLibraryDrawer: React.FC = () => {
             type="text"
             className="input-control"
             style={{ paddingLeft: "30px", width: "100%" }}
-            placeholder={t("media.search.placeholder" as MessageKey) || "Search registered assets..."}
+            placeholder={
+              t("media.search.placeholder" as MessageKey) || "Search registered assets..."
+            }
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
@@ -266,10 +267,8 @@ export const MediaLibraryDrawer: React.FC = () => {
                 fontSize: "var(--text-xs)",
                 borderRadius: "var(--radius-sm)",
                 border: "var(--border-width) solid var(--border-default)",
-                background:
-                  kindFilter === k.id ? "var(--btn-primary-bg)" : "var(--bg-surface)",
-                color:
-                  kindFilter === k.id ? "var(--btn-primary-text)" : "var(--text-secondary)",
+                background: kindFilter === k.id ? "var(--btn-primary-bg)" : "var(--bg-surface)",
+                color: kindFilter === k.id ? "var(--btn-primary-text)" : "var(--text-secondary)",
                 cursor: "pointer",
               }}
             >
@@ -324,7 +323,8 @@ export const MediaLibraryDrawer: React.FC = () => {
               {t("media.empty.title" as MessageKey) || "No media assets"}
             </div>
             <div style={{ fontSize: "var(--text-xs)" }}>
-              {t("media.empty.desc" as MessageKey) || "Generated and imported media files will appear here."}
+              {t("media.empty.desc" as MessageKey) ||
+                "Generated and imported media files will appear here."}
             </div>
           </div>
         )}
