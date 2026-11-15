@@ -450,14 +450,30 @@ func (p AgentConversationIDPayload) Validate() error {
 	return nil
 }
 
+// Approval status values for agent MCP tool invocations.
+const (
+	ApprovalStatusPending   = "pending"
+	ApprovalStatusExecuting = "executing"
+	ApprovalStatusApproved  = "approved"
+	ApprovalStatusRejected  = "rejected"
+	ApprovalStatusFailed    = "failed"
+	ApprovalStatusAmbiguous = "ambiguous"
+)
+
+// AgentApproval is an alias for AgentApprovalRequest.
+type AgentApproval = AgentApprovalRequest
+
 // AgentApprovalRequest describes a high-impact action waiting for desktop UI approval.
 type AgentApprovalRequest struct {
-	ID         string           `json:"id"`
-	ProviderID agent.ProviderID `json:"provider_id"`
-	Tool       string           `json:"tool"`
-	Title      string           `json:"title"`
-	Summary    string           `json:"summary"`
-	CreatedAt  string           `json:"created_at"`
+	ID                string           `json:"id"`
+	ProviderID        agent.ProviderID `json:"provider_id"`
+	Tool              string           `json:"tool"`
+	Title             string           `json:"title"`
+	Summary           string           `json:"summary"`
+	CreatedAt         string           `json:"created_at"`
+	InputHash         string           `json:"input_hash,omitempty"`
+	Status            string           `json:"status,omitempty"`
+	ContinuationDepth int              `json:"continuation_depth,omitempty"`
 }
 
 // AgentApprovalListResult returns pending agent approvals.
@@ -469,7 +485,15 @@ type AgentApprovalListResult struct {
 func NewAgentApprovalListResult(in []agent.ApprovalRequest) AgentApprovalListResult {
 	out := make([]AgentApprovalRequest, len(in))
 	for i, item := range in {
-		out[i] = AgentApprovalRequest(item)
+		out[i] = AgentApprovalRequest{
+			ID:         item.ID,
+			ProviderID: item.ProviderID,
+			Tool:       item.Tool,
+			Title:      item.Title,
+			Summary:    item.Summary,
+			CreatedAt:  item.CreatedAt,
+			Status:     ApprovalStatusPending,
+		}
 	}
 	return AgentApprovalListResult{Approvals: out}
 }

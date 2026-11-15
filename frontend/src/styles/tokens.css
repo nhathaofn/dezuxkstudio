@@ -113,6 +113,33 @@
   --select-arrow-offset: 13px;
   --select-padding-right: 36px;
   --select-chevron-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23334155' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+
+  /* 6. Code Syntax Highlighting (Dark default) */
+  --code-bg: #0d1117;
+  --code-keyword: #ff7b72;
+  --code-string: #a5d6ff;
+  --code-number: #79c0ff;
+  --code-comment: #8b949e;
+  --code-type: #ffa657;
+  --code-fn: #d2a8ff;
+  --code-attr: #79c0ff;
+  --code-punctuation: #c9d1d9;
+}
+
+/* ==========================================================================
+   THEME: LIGHT MODE CODE SYNTAX HIGHLIGHTING
+   ========================================================================== */
+html[data-theme="light"],
+[data-theme="light"] {
+  --code-bg: #f6f8fa;
+  --code-keyword: #cf222e;
+  --code-string: #0a3069;
+  --code-number: #953800;
+  --code-comment: #6e7781;
+  --code-type: #953800;
+  --code-fn: #8250df;
+  --code-attr: #0550ae;
+  --code-punctuation: #24292f;
 }
 
 /* ==========================================================================
@@ -167,4 +194,15 @@
   --alert-error-text: #fca5a5;
 
   --select-chevron-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23cbd5e1' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+
+  /* Code Syntax Highlighting (Dark) */
+  --code-bg: #080a0f;
+  --code-keyword: #ff7b72;
+  --code-string: #a5d6ff;
+  --code-number: #79c0ff;
+  --code-comment: #8b949e;
+  --code-type: #ffa657;
+  --code-fn: #d2a8ff;
+  --code-attr: #79c0ff;
+  --code-punctuation: #c9d1d9;
 }

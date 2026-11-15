@@ -100,6 +100,9 @@ export interface AgentApprovalRequest {
   title: string;
   summary: string;
   created_at: string;
+  input_hash?: string;
+  status?: string;
+  continuation_depth?: number;
 }
 
 export interface AgentChatEvent {
@@ -658,6 +661,8 @@ export interface RemoverInput {
   min_score?: number;
   min_gain?: number;
   max_gain?: number;
+  copy_clean?: boolean;
+  preserve_tree?: boolean;
 }
 
 export interface RemoverItem {
@@ -667,6 +672,8 @@ export interface RemoverItem {
   score: number;
   size?: number;
   error?: string;
+  status?: string;
+  reason?: string;
 }
 
 export interface RemoverOutput {

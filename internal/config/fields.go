@@ -102,6 +102,7 @@ func fields(c *Config) []field {
 		{key: "agent.auto_install_cli", usage: "download the agent CLIs (claude, codex, agy) into the app folder when missing; never touches CLIs already on the machine", val: boolValue{&c.Agent.AutoInstallCLI}},
 		{key: "agent.auto_update_cli", usage: "update installed agent CLIs once at startup in release builds", val: boolValue{&c.Agent.AutoUpdateCLI}},
 		{key: "agent.approval_ttl", usage: "pending agent approvals expire after this long", val: durationValue{&c.Agent.ApprovalTTL}},
+		{key: "agent.max_approval_continuations", usage: "max chained continuation turns after approval", val: intValue{&c.Agent.MaxApprovalContinuations}},
 		{key: "agent.history_limit", usage: "agent chat messages shown in the UI", val: intValue{&c.Agent.HistoryLimit}},
 		{key: "agent.mode", usage: "agent runtime mode: assistant (default, restricted) or developer (opt-in coding/tools)", val: stringValue{&c.Agent.Mode}},
 		{key: "agent.workspace_dir", usage: "override directory used as the agent workspace (empty = app default)", val: stringValue{&c.Agent.WorkspaceDir}},

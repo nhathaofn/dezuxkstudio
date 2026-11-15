@@ -55,6 +55,17 @@ export const appConfig = {
     composerMaxHeight: 200,
     /** Quiet time before the current screen is sent to the agent (typing does not spam the backend). */
     screenContextDebounceMs: 300,
+    /** Code block syntax highlighting, plain text fallback cap, and copy feedback. */
+    codeBlock: {
+      maxPlainCharacters: 20_000,
+      copyFeedbackMs: 1_500,
+    },
+    /** Watermark comparison slider and zoom controls. */
+    watermarkCompare: {
+      zoomMin: 0.5,
+      zoomMax: 4.0,
+      zoomStep: 0.25,
+    },
   },
   /** How often the header status pill pings the server. */
   latencyProbeIntervalMs: 5_000,
