@@ -18,6 +18,7 @@ import { useVideoGenStore } from "./useMediaGenStores";
 const FALLBACK_ASPECTS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"];
 const FALLBACK_RESOLUTIONS = ["480p", "720p", "1080p"];
 const FALLBACK_DURATIONS = [4, 5, 6, 8, 10, 12];
+const QUICK_ASPECT_RATIOS = ["1:1", "16:9", "9:16", "4:3"] as const;
 
 export const VideoGenView: React.FC = () => {
   const t = useT();
@@ -54,6 +55,7 @@ export const VideoGenView: React.FC = () => {
     setOutputDir,
     generate,
     downloadResult,
+    clearError,
     reset,
   } = useVideoGenStore();
 
@@ -203,6 +205,28 @@ export const VideoGenView: React.FC = () => {
                     </option>
                   ))}
                 </select>
+                <div
+                  className="mediagen-aspect-presets"
+                  style={{
+                    display: "flex",
+                    gap: "var(--space-1)",
+                    marginTop: "var(--space-1)",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  {QUICK_ASPECT_RATIOS.map((ratio) => (
+                    <Button
+                      key={ratio}
+                      type="button"
+                      size="sm"
+                      variant={activeAspect === ratio ? "primary" : "secondary"}
+                      disabled={loading}
+                      onClick={() => setAspectRatio(ratio)}
+                    >
+                      {ratio}
+                    </Button>
+                  ))}
+                </div>
               </div>
 
               <div className="form-group">
@@ -301,6 +325,8 @@ export const VideoGenView: React.FC = () => {
           }
           downloadingPath={downloadingPath}
           onDownload={() => void downloadResult()}
+          onRetry={canRun ? () => void generate(spec) : undefined}
+          onDismissError={clearError}
         />
       </div>
     </div>

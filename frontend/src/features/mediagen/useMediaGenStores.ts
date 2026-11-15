@@ -100,6 +100,7 @@ interface ImageGenState {
   setOutputDir: (v: string) => void;
   generate: (spec?: Spec) => Promise<void>;
   downloadResult: () => Promise<void>;
+  clearError: () => void;
   reset: () => void;
 }
 
@@ -126,6 +127,7 @@ export const useImageGenStore = create<ImageGenState>((set, get) => ({
   setResolution: (resolution) => set({ resolution }),
   setSeed: (seed) => set({ seed }),
   setOutputDir: (outputDir) => set({ outputDir }),
+  clearError: () => set({ error: null }),
 
   generate: (spec) =>
     runMediaNode<ImageGenerateInput, ImageGenerateOutput>({
@@ -208,6 +210,7 @@ interface VideoGenState {
   setOutputDir: (v: string) => void;
   generate: (spec?: Spec) => Promise<void>;
   downloadResult: () => Promise<void>;
+  clearError: () => void;
   reset: () => void;
 }
 
@@ -241,6 +244,7 @@ export const useVideoGenStore = create<VideoGenState>((set, get) => ({
   setGenerateAudio: (generateAudio) => set({ generateAudio }),
   setSeed: (seed) => set({ seed }),
   setOutputDir: (outputDir) => set({ outputDir }),
+  clearError: () => set({ error: null }),
 
   generate: (spec) =>
     runMediaNode<VideoGenerateInput, VideoGenerateOutput>({
@@ -322,6 +326,7 @@ interface TTSGenState {
   setOutputDir: (v: string) => void;
   generate: (spec?: Spec) => Promise<void>;
   downloadResult: () => Promise<void>;
+  clearError: () => void;
   reset: () => void;
 }
 
@@ -346,6 +351,7 @@ export const useTTSGenStore = create<TTSGenState>((set, get) => ({
   setSpeed: (speed) => set({ speed }),
   setLanguage: (language) => set({ language }),
   setOutputDir: (outputDir) => set({ outputDir }),
+  clearError: () => set({ error: null }),
 
   generate: (spec) =>
     runMediaNode<TTSGenerateInput, TTSGenerateOutput>({

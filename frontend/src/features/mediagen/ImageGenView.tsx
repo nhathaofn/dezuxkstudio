@@ -15,6 +15,7 @@ import { useImageGenStore } from "./useMediaGenStores";
 
 const FALLBACK_ASPECTS = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"];
 const FALLBACK_RESOLUTIONS = ["1K", "2K", "4K"];
+const QUICK_ASPECT_RATIOS = ["1:1", "16:9", "9:16", "4:3"] as const;
 
 export const ImageGenView: React.FC = () => {
   const t = useT();
@@ -42,6 +43,7 @@ export const ImageGenView: React.FC = () => {
     setOutputDir,
     generate,
     downloadResult,
+    clearError,
     reset,
   } = useImageGenStore();
 
@@ -154,6 +156,28 @@ export const ImageGenView: React.FC = () => {
                     </option>
                   ))}
                 </select>
+                <div
+                  className="mediagen-aspect-presets"
+                  style={{
+                    display: "flex",
+                    gap: "var(--space-1)",
+                    marginTop: "var(--space-1)",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  {QUICK_ASPECT_RATIOS.map((ratio) => (
+                    <Button
+                      key={ratio}
+                      type="button"
+                      size="sm"
+                      variant={activeAspect === ratio ? "primary" : "secondary"}
+                      disabled={loading}
+                      onClick={() => setAspectRatio(ratio)}
+                    >
+                      {ratio}
+                    </Button>
+                  ))}
+                </div>
               </div>
 
               <div className="form-group">
@@ -219,6 +243,8 @@ export const ImageGenView: React.FC = () => {
           }
           downloadingPath={downloadingPath}
           onDownload={() => void downloadResult()}
+          onRetry={canRun ? () => void generate(spec) : undefined}
+          onDismissError={clearError}
         />
       </div>
     </div>

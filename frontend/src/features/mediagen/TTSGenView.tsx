@@ -50,6 +50,7 @@ export const TTSGenView: React.FC = () => {
     setOutputDir,
     generate,
     downloadResult,
+    clearError,
     reset,
   } = useTTSGenStore();
 
@@ -230,6 +231,8 @@ export const TTSGenView: React.FC = () => {
           }
           downloadingPath={downloadingPath}
           onDownload={() => void downloadResult()}
+          onRetry={canRun ? () => void generate(spec) : undefined}
+          onDismissError={clearError}
         />
       </div>
     </div>

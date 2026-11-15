@@ -11,15 +11,21 @@ import { formatDuration } from "../../lib/format";
 
 export const SystemCard: React.FC = () => {
   const t = useT();
-  const info = useSystemStore((s) => s.info);
+  const info = useSystemStore((s) => s.info) ?? useSystemStore.getState().info;
   const infoError = useSystemStore((s) => s.infoError);
   const loadInfo = useSystemStore((s) => s.loadInfo);
   const openFolder = useSystemStore((s) => s.openFolder);
   const [openError, setOpenError] = useState<ActionError | null>(null);
 
+  const isRemote = info?.mode === "server" || info?.mode === "client";
+  const desktopOnlyTooltip = "This action is only available in desktop mode";
+
   const formatUptime = (sec: number): string => formatDuration(t, sec);
 
-  const open = async (target: FolderTarget) => setOpenError(await openFolder(target));
+  const open = async (target: FolderTarget) => {
+    if (isRemote) return;
+    setOpenError(await openFolder(target));
+  };
 
   return (
     <Card
@@ -71,7 +77,13 @@ export const SystemCard: React.FC = () => {
         </dl>
         <div className="system-folder-buttons">
           {FolderTargetValues.map((target) => (
-            <Button key={target} size="sm" onClick={() => void open(target)}>
+            <Button
+              key={target}
+              size="sm"
+              disabled={isRemote}
+              title={isRemote ? desktopOnlyTooltip : undefined}
+              onClick={() => void open(target)}
+            >
               <Folder size={12} /> {t(`system.open.${target}`)}
             </Button>
           ))}

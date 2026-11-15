@@ -52,6 +52,7 @@ export function ProviderDetail({
   const remove = useProvidersStore((s) => s.deleteCredential);
   const testCustom = useProvidersStore((s) => s.testCustom);
   const removeCustom = useProvidersStore((s) => s.deleteCustom);
+  const testResults = useProvidersStore((s) => s.testResults);
   const active =
     entry.kind === "builtin" ? entry.provider.credentials.find((key) => key.active) : undefined;
   const testId =
@@ -61,6 +62,7 @@ export function ProviderDetail({
         : undefined
       : active?.id;
   const testing = useProvidersStore((s) => (testId ? s.testing[testId] : false));
+  const headerTestResult = testId ? testResults[testId] : undefined;
   const health = activeHealth(entry);
   const status = providerStatus(entry);
   const provider = entry.provider;
@@ -88,7 +90,13 @@ export function ProviderDetail({
                 className={`providers-status providers-status--${status}`}
                 title={
                   health?.tested
-                    ? [t(`providers.outcome.${health.outcome}`), health.detail]
+                    ? [
+                        t(`providers.outcome.${health.outcome}`),
+                        health.detail,
+                        headerTestResult?.latency_ms != null && headerTestResult.latency_ms > 0
+                          ? `${headerTestResult.latency_ms}ms`
+                          : "",
+                      ]
                         .filter(Boolean)
                         .join(": ")
                     : undefined
@@ -96,6 +104,15 @@ export function ProviderDetail({
               >
                 <span className={`providers-dot providers-dot--${status}`} />
                 {t(`providers.status.${status}`)}
+                {headerTestResult?.latency_ms != null && headerTestResult.latency_ms > 0 && (
+                  <span
+                    className="providers-latency"
+                    style={{ opacity: 0.85, fontWeight: "var(--weight-medium, 500)" }}
+                  >
+                    {" "}
+                    ({headerTestResult.latency_ms}ms)
+                  </span>
+                )}
               </span>
             </div>
             <div className="providers-capabilities">
@@ -204,7 +221,11 @@ export function ProviderDetail({
                       )}
                     </div>
                   </div>
-                  <HealthBadge health={credential.health} checking={credential.checking} />
+                  <HealthBadge
+                    health={credential.health}
+                    checking={credential.checking}
+                    latencyMs={testResults[credential.id]?.latency_ms}
+                  />
                   <ProviderActions
                     id={credential.id}
                     disabled={disabled}
@@ -243,7 +264,11 @@ export function ProviderDetail({
                 </dd>
               </div>
             </dl>
-            <HealthBadge health={entry.provider.health} checking={entry.provider.checking} />
+            <HealthBadge
+              health={entry.provider.health}
+              checking={entry.provider.checking}
+              latencyMs={testResults[provider.id]?.latency_ms}
+            />
             <ProviderActions
               id={provider.id}
               disabled={disabled}
