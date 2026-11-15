@@ -43,35 +43,37 @@ type CodexAuthProber func(ctx context.Context, executable, profileRoot string) (
 
 // Options configures the agent Service.
 type Options struct {
-	Repo                    domainagent.Repository
-	DataDir                 string
-	WorkspaceDir            string
-	MediaDir                string
-	ProfilesDir             string
-	CustomizationsDir       string
-	DeveloperMode           bool // opt-in unrestricted developer/coding mode (disabled by default)
-	AppVersion              string
-	Limits                  Limits        // zero fields use DefaultLimits
-	Secrets                 secrets.Store // OS credential store for provider API keys (in-memory when nil)
-	Logger                  *slog.Logger
-	Workflow                WorkflowRunner
-	Binaries                BinariesManager
-	Managed                 ManagedCLIs // the app's own agent CLI copies; nil keeps using what is on the machine
-	AutoInstall             bool        // install a missing managed copy in the background
-	AutoUpdate              bool        // move managed copies to newer official releases
-	Preferences             PreferencesManager
-	System                  SystemInspector
-	Diagnostics             DiagnosticsExporter
-	OnStatusChanged         func(domainagent.ProviderInfo)
-	OnChatEvent             func(domainagent.ChatEvent)
-	OnApprovalsChanged      func([]domainagent.ApprovalRequest)
-	OnLoginPrompt           func(domainagent.LoginPrompt) // the page/code the user must use to finish a running sign-in
-	OnCustomizationsChanged func(domainagent.CustomizationsSnapshot)
-	SpawnTransport          TransportFactory
-	RunCodexTurn            CodexTurnRunner
-	ProbeCodexAuth          CodexAuthProber
-	RunClaudeTurn           CodexTurnRunner
-	ProbeClaudeAuth         CodexAuthProber
+	Repo                     domainagent.Repository
+	ApprovalRepo             ApprovalRepository // persistent storage for MCP tool approvals; defaults to Repo if it implements ApprovalRepository
+	MaxApprovalContinuations int                // max chained continuation turns after approval
+	DataDir                  string
+	WorkspaceDir             string
+	MediaDir                 string
+	ProfilesDir              string
+	CustomizationsDir        string
+	DeveloperMode            bool // opt-in unrestricted developer/coding mode (disabled by default)
+	AppVersion               string
+	Limits                   Limits        // zero fields use DefaultLimits
+	Secrets                  secrets.Store // OS credential store for provider API keys (in-memory when nil)
+	Logger                   *slog.Logger
+	Workflow                 WorkflowRunner
+	Binaries                 BinariesManager
+	Managed                  ManagedCLIs // the app's own agent CLI copies; nil keeps using what is on the machine
+	AutoInstall              bool        // install a missing managed copy in the background
+	AutoUpdate               bool        // move managed copies to newer official releases
+	Preferences              PreferencesManager
+	System                   SystemInspector
+	Diagnostics              DiagnosticsExporter
+	OnStatusChanged          func(domainagent.ProviderInfo)
+	OnChatEvent              func(domainagent.ChatEvent)
+	OnApprovalsChanged       func([]domainagent.ApprovalRequest)
+	OnLoginPrompt            func(domainagent.LoginPrompt) // the page/code the user must use to finish a running sign-in
+	OnCustomizationsChanged  func(domainagent.CustomizationsSnapshot)
+	SpawnTransport           TransportFactory
+	RunCodexTurn             CodexTurnRunner
+	ProbeCodexAuth           CodexAuthProber
+	RunClaudeTurn            CodexTurnRunner
+	ProbeClaudeAuth          CodexAuthProber
 }
 
 // Service manages isolated external AI agent connections, MCP tooling, approvals, and chat turns.
@@ -112,12 +114,15 @@ type Service struct {
 	runClaude               CodexTurnRunner
 	probeClaude             CodexAuthProber
 
-	drivers        map[domainagent.ProviderID]providerDriver
-	policy         *AccessPolicy
-	approvals      *approvalStore
-	secrets        profileSecrets // API keys of the isolated provider profiles
-	customizations *customizationManager
-	subagentSem    chan struct{}
+	drivers                  map[domainagent.ProviderID]providerDriver
+	policy                   *AccessPolicy
+	approvals                *approvalStore
+	approvalRepo             ApprovalRepository
+	maxApprovalContinuations int
+	continuationDepth        int
+	secrets                  profileSecrets // API keys of the isolated provider profiles
+	customizations           *customizationManager
+	subagentSem              chan struct{}
 
 	toolDocsOnce sync.Once
 	docs         []toolDoc // registered MCP tools, see toolDocs
@@ -185,53 +190,65 @@ func New(o Options) (*Service, error) {
 			o.Logger.Warn("agent: failed to sync customizations", "error", syncErr)
 		}
 	}
+	var appRepo ApprovalRepository
+	if o.ApprovalRepo != nil {
+		appRepo = o.ApprovalRepo
+	} else if ar, ok := o.Repo.(ApprovalRepository); ok {
+		appRepo = ar
+	}
+	maxContinuations := o.MaxApprovalContinuations
+	if maxContinuations <= 0 {
+		maxContinuations = 5
+	}
 	s := &Service{
-		repo:                    o.Repo,
-		dataDir:                 o.DataDir,
-		workspaceDir:            o.WorkspaceDir,
-		mediaDir:                o.MediaDir,
-		profilesDir:             o.ProfilesDir,
-		customizationsDir:       custDir,
-		developerMode:           o.DeveloperMode,
-		appVersion:              version,
-		limits:                  limits,
-		log:                     o.Logger,
-		workflow:                o.Workflow,
-		binaries:                o.Binaries,
-		managed:                 o.Managed,
-		autoInstall:             o.AutoInstall,
-		autoUpdate:              o.AutoUpdate,
-		provisioning:            make(map[domainagent.ProviderID]provisionState),
-		onLoginPrompt:           o.OnLoginPrompt,
-		logins:                  make(map[domainagent.ProviderID]*loginSession),
-		preferences:             o.Preferences,
-		system:                  o.System,
-		diagnostics:             o.Diagnostics,
-		onStatusChanged:         o.OnStatusChanged,
-		onChatEvent:             o.OnChatEvent,
-		onApprovalsChanged:      o.OnApprovalsChanged,
-		onCustomizationsChanged: o.OnCustomizationsChanged,
-		spawnTransport:          o.SpawnTransport,
-		spawnTransportCustom:    o.SpawnTransport != nil,
-		runCodex:                o.RunCodexTurn,
-		probeCodex:              o.ProbeCodexAuth,
-		runClaude:               o.RunClaudeTurn,
-		probeClaude:             o.ProbeClaudeAuth,
-		policy:                  NewAccessPolicy(o.DataDir, o.WorkspaceDir, o.MediaDir, o.ProfilesDir, allowedDirs),
-		secrets:                 profileSecrets{store: secretStore},
-		approvals:               newApprovalStore(limits.ApprovalTTL, limits.MaxPendingApprovals),
-		customizations:          custMgr,
-		subagentSem:             make(chan struct{}, limits.MaxConcurrentSubagents),
-		models:                  newModelState(),
-		runningTurns:            make(map[*turn]struct{}),
-		cliSessions:             make(map[domainagent.ProviderID]string),
-		states:                  make(map[domainagent.ProviderID]domainagent.ConnectionState),
-		authStates:              make(map[domainagent.ProviderID]domainagent.AuthState),
-		accountInfos:            make(map[domainagent.ProviderID]string),
-		lastErrors:              make(map[domainagent.ProviderID]error),
-		cachedVersions:          make(map[domainagent.ProviderID]cachedProbe),
-		authProbes:              make(map[domainagent.ProviderID]cachedProbe),
-		sentScreen:              make(map[string]string),
+		repo:                     o.Repo,
+		approvalRepo:             appRepo,
+		maxApprovalContinuations: maxContinuations,
+		dataDir:                  o.DataDir,
+		workspaceDir:             o.WorkspaceDir,
+		mediaDir:                 o.MediaDir,
+		profilesDir:              o.ProfilesDir,
+		customizationsDir:        custDir,
+		developerMode:            o.DeveloperMode,
+		appVersion:               version,
+		limits:                   limits,
+		log:                      o.Logger,
+		workflow:                 o.Workflow,
+		binaries:                 o.Binaries,
+		managed:                  o.Managed,
+		autoInstall:              o.AutoInstall,
+		autoUpdate:               o.AutoUpdate,
+		provisioning:             make(map[domainagent.ProviderID]provisionState),
+		onLoginPrompt:            o.OnLoginPrompt,
+		logins:                   make(map[domainagent.ProviderID]*loginSession),
+		preferences:              o.Preferences,
+		system:                   o.System,
+		diagnostics:              o.Diagnostics,
+		onStatusChanged:          o.OnStatusChanged,
+		onChatEvent:              o.OnChatEvent,
+		onApprovalsChanged:       o.OnApprovalsChanged,
+		onCustomizationsChanged:  o.OnCustomizationsChanged,
+		spawnTransport:           o.SpawnTransport,
+		spawnTransportCustom:     o.SpawnTransport != nil,
+		runCodex:                 o.RunCodexTurn,
+		probeCodex:               o.ProbeCodexAuth,
+		runClaude:                o.RunClaudeTurn,
+		probeClaude:              o.ProbeClaudeAuth,
+		policy:                   NewAccessPolicy(o.DataDir, o.WorkspaceDir, o.MediaDir, o.ProfilesDir, allowedDirs),
+		secrets:                  profileSecrets{store: secretStore},
+		approvals:                newApprovalStore(limits.ApprovalTTL, limits.MaxPendingApprovals),
+		customizations:           custMgr,
+		subagentSem:              make(chan struct{}, limits.MaxConcurrentSubagents),
+		models:                   newModelState(),
+		runningTurns:             make(map[*turn]struct{}),
+		cliSessions:              make(map[domainagent.ProviderID]string),
+		states:                   make(map[domainagent.ProviderID]domainagent.ConnectionState),
+		authStates:               make(map[domainagent.ProviderID]domainagent.AuthState),
+		accountInfos:             make(map[domainagent.ProviderID]string),
+		lastErrors:               make(map[domainagent.ProviderID]error),
+		cachedVersions:           make(map[domainagent.ProviderID]cachedProbe),
+		authProbes:               make(map[domainagent.ProviderID]cachedProbe),
+		sentScreen:               make(map[string]string),
 
 		codexAppServerBroken: make(map[string]bool),
 		spawnCodexAppServer:  startCodexAppServer,
@@ -261,6 +278,11 @@ func New(o Options) (*Service, error) {
 	s.statusRevision.Store(time.Now().UnixMicro())
 	s.loadModelSelections(context.Background())
 	s.policy.SetDeveloperMode(o.DeveloperMode)
+	if s.approvalRepo != nil {
+		if recErr := s.approvalRepo.RecoverAmbiguousApprovals(context.Background()); recErr != nil {
+			s.log.Warn("agent: failed to recover ambiguous approvals", "error", recErr)
+		}
+	}
 	return s, nil
 }
 
