@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"app/internal/apperr"
+	"app/internal/config"
 	"app/internal/contracts"
 	"app/internal/engine"
 	"app/internal/fsutil"
@@ -36,6 +37,7 @@ type Options struct {
 	OutputDir string // Default folder to save cleaned images
 	Templates []watermark.Template
 	Registrar MediaRegistrar
+	Config    *config.Config
 }
 
 // RemoverImage accepts either an engine.MediaRef object or a plain string path.
@@ -100,15 +102,25 @@ func NewNode(opts Options) engine.Node {
 			return RemoverOutput{}, engine.Invalid("Watermark Remover input port 'image' or 'images' received no file path")
 		}
 
+		maxWorkers := opts.Config.WatermarkMaxWorkers()
+		maxPixels := opts.Config.WatermarkMaxImagePixels()
+		decodeConcurrency := opts.Config.WatermarkDecodeConcurrency()
+
+		workers := in.Workers
+		if workers <= 0 {
+			workers = maxWorkers
+		}
+
 		cfg := watermark.Config{
 			Corner:    watermark.Corner(in.Corner),
-			Workers:   in.Workers,
+			Workers:   workers,
 			MinScore:  in.MinScore,
 			MinGain:   in.MinGain,
 			MaxGain:   in.MaxGain,
 			Templates: opts.Templates,
 		}
 		eng := watermark.New(cfg)
+		eng.SetLimits(maxPixels, decodeConcurrency)
 
 		if ctx.Err() != nil {
 			return RemoverOutput{}, ctx.Err()
@@ -176,7 +188,10 @@ func NewNode(opts Options) engine.Node {
 			}
 		})
 
-		for br := range eng.ProcessStream(streamCtx, itemsCh, in.Workers) {
+		for br := range eng.ProcessStream(streamCtx, itemsCh, workers) {
+			if ctx.Err() != nil {
+				return RemoverOutput{}, ctx.Err()
+			}
 			i, err := strconv.Atoi(br.ID)
 			if err != nil || i < 0 || i >= total {
 				continue
@@ -243,6 +258,14 @@ func readInput(ctx context.Context, raw, mediaDir string) (string, []byte, error
 // finishItem writes one processed image (when a watermark was found) or handles CopyClean (when clean)
 // and returns its result and output path ("" when the item failed).
 func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPath string, br watermark.BatchResult, nodeOpts ...Options) (RemoverItem, string) {
+	if err := ctx.Err(); err != nil {
+		return RemoverItem{
+			Path:   rawPath,
+			Status: watermark.StatusFailed,
+			Error:  err.Error(),
+		}, ""
+	}
+
 	if br.Err != nil {
 		return RemoverItem{
 			Path:   rawPath,
@@ -331,7 +354,7 @@ func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPat
 		if fi, err := os.Stat(resPath); err == nil {
 			perm = fi.Mode().Perm()
 		}
-		if err := watermark.CopyFileAtomic(resPath, outPath, perm); err != nil {
+		if err := watermark.CopyFileAtomicContext(ctx, resPath, outPath, perm); err != nil {
 			res.Status = watermark.StatusFailed
 			res.Error = formatPathError("write file", outPath, err)
 			return res, ""
@@ -407,6 +430,11 @@ func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPat
 		if fi, err := os.Stat(resPath); err == nil {
 			perm = fi.Mode().Perm()
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		res.Status = watermark.StatusFailed
+		res.Error = err.Error()
+		return res, ""
 	}
 	if err := fsutil.WriteFileAtomic(outPath, br.Output, perm); err != nil {
 		res.Status = watermark.StatusFailed

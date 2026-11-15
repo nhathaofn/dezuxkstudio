@@ -3,14 +3,127 @@ package watermark
 import (
 	"bytes"
 	"cmp"
+	"context"
 	"fmt"
 	"image"
 	_ "image/jpeg"
 	"math"
 	"slices"
+	"sync"
 
 	_ "golang.org/x/image/webp"
 )
+
+var floatPool = sync.Pool{
+	New: func() any {
+		b := make([]float64, 0, 16384)
+		return &b
+	},
+}
+
+func getFloatBuffer(capacity int) *[]float64 {
+	buf := floatPool.Get().(*[]float64)
+	if cap(*buf) < capacity {
+		*buf = make([]float64, 0, capacity)
+	}
+	*buf = (*buf)[:capacity]
+	return buf
+}
+
+func putFloatBuffer(buf *[]float64) {
+	if buf == nil {
+		return
+	}
+	*buf = (*buf)[:0]
+	floatPool.Put(buf)
+}
+
+type engineLimits struct {
+	maxImagePixels    int64
+	decodeConcurrency int
+	decodeSem         chan struct{}
+}
+
+var (
+	engineLimitsMu   sync.RWMutex
+	engineLimitsMap  = make(map[*Engine]*engineLimits)
+	defaultDecodeSem = make(chan struct{}, 2)
+)
+
+// SetLimits configures the maximum allowed image pixels and decode concurrency for this Engine.
+func (e *Engine) SetLimits(maxPixels int64, decodeConcurrency int) {
+	if maxPixels <= 0 {
+		maxPixels = 100_000_000
+	}
+	if decodeConcurrency <= 0 {
+		decodeConcurrency = 2
+	}
+	engineLimitsMu.Lock()
+	defer engineLimitsMu.Unlock()
+	engineLimitsMap[e] = &engineLimits{
+		maxImagePixels:    maxPixels,
+		decodeConcurrency: decodeConcurrency,
+		decodeSem:         make(chan struct{}, decodeConcurrency),
+	}
+}
+
+func (e *Engine) getLimits() (int64, chan struct{}) {
+	engineLimitsMu.RLock()
+	lim := engineLimitsMap[e]
+	engineLimitsMu.RUnlock()
+	if lim != nil {
+		return lim.maxImagePixels, lim.decodeSem
+	}
+	return 100_000_000, defaultDecodeSem
+}
+
+// decodeImage decodes an image with max_image_pixels validation and bounded decode concurrency.
+func (e *Engine) decodeImage(ctx context.Context, data []byte) (image.Image, ImageFormat, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, FormatUnknown, err
+		}
+	}
+	if len(data) == 0 {
+		return nil, FormatUnknown, fmt.Errorf("watermark: empty image data")
+	}
+	inFormat := SniffFormat(data)
+
+	// Step 1: image.DecodeConfig to check width * height <= max_image_pixels before full decoding
+	imgCfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, inFormat, fmt.Errorf("watermark: decode image config: %w", err)
+	}
+	pixels := int64(imgCfg.Width) * int64(imgCfg.Height)
+	maxPixels, sem := e.getLimits()
+	if maxPixels > 0 && pixels > maxPixels {
+		return nil, inFormat, fmt.Errorf("watermark: image dimensions %dx%d (%d pixels) exceed maximum allowed pixels %d", imgCfg.Width, imgCfg.Height, pixels, maxPixels)
+	}
+
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, inFormat, err
+		}
+	}
+
+	// Step 2: Bounded decode concurrency semaphore
+	if ctx != nil {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			return nil, inFormat, ctx.Err()
+		}
+	} else {
+		sem <- struct{}{}
+	}
+	defer func() { <-sem }()
+
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, inFormat, fmt.Errorf("watermark: decode image: %w", err)
+	}
+	return img, inFormat, nil
+}
 
 // getScanRegions returns all rectangular search boundaries based on Corner mode.
 func getScanRegions(w, h int, tmpl Template, corner Corner) []scanRegion {
@@ -59,12 +172,25 @@ func getScanRegions(w, h int, tmpl Template, corner Corner) []scanRegion {
 
 // findWatermark scans the image regions using normalized cross-correlation and verifies blend gain.
 func (e *Engine) findWatermark(img image.Image) matchResult {
+	return e.findWatermarkContext(context.Background(), img)
+}
+
+func (e *Engine) findWatermarkContext(ctx context.Context, img image.Image) matchResult {
 	bounds := img.Bounds()
 	w, h := bounds.Dx(), bounds.Dy()
 
 	best := matchResult{}
-	var lumaBuf []float64
+	var lumaBuf *[]float64
+	defer func() {
+		if lumaBuf != nil {
+			putFloatBuffer(lumaBuf)
+		}
+	}()
+
 	for _, tmpl := range e.cfg.Templates {
+		if ctx != nil && ctx.Err() != nil {
+			return best
+		}
 		sz := tmpl.Size
 		regions := getScanRegions(w, h, tmpl, e.cfg.Corner)
 		if len(regions) == 0 {
@@ -72,6 +198,9 @@ func (e *Engine) findWatermark(img image.Image) matchResult {
 		}
 
 		for _, reg := range regions {
+			if ctx != nil && ctx.Err() != nil {
+				return best
+			}
 			// Only extract the search rectangle touched by (reg.min..reg.max) + sz, avoiding whole-image conversion.
 			patchW, patchH := reg.maxX+sz-reg.minX, reg.maxY+sz-reg.minY
 			if patchW <= 0 || patchH <= 0 {
@@ -79,10 +208,13 @@ func (e *Engine) findWatermark(img image.Image) matchResult {
 			}
 
 			need := patchW * patchH
-			if cap(lumaBuf) < need {
-				lumaBuf = make([]float64, need)
+			if lumaBuf == nil || cap(*lumaBuf) < need {
+				if lumaBuf != nil {
+					putFloatBuffer(lumaBuf)
+				}
+				lumaBuf = getFloatBuffer(need)
 			}
-			luma := lumaBuf[:need]
+			luma := (*lumaBuf)[:need]
 			extractLumaRegion(img, bounds.Min.X+reg.minX, bounds.Min.Y+reg.minY, patchW, patchH, luma, true)
 
 			n := float64(sz * sz)
@@ -119,6 +251,9 @@ func (e *Engine) findWatermark(img image.Image) matchResult {
 
 			slices.SortFunc(candidates, func(a, b matchResult) int { return cmp.Compare(b.score, a.score) })
 			for _, c := range candidates[:min(len(candidates), e.cfg.MaxCandidates)] {
+				if ctx != nil && ctx.Err() != nil {
+					return best
+				}
 				if c.score <= best.score {
 					break
 				}
@@ -192,9 +327,14 @@ func extractLumaRegion(img image.Image, x0, y0, w, h int, dst []float64, weighte
 func (e *Engine) blendGain(img image.Image, match matchResult) (gain float64, ok bool) {
 	sz := match.size
 	alpha := match.template.Alpha
-	baseV := make([]float64, sz*sz)
+	baseBuf := getFloatBuffer(sz * sz)
+	defer putFloatBuffer(baseBuf)
+	baseV := *baseBuf
 	extractLumaRegion(img, match.x, match.y, sz, sz, baseV, false)
-	luma := make([]float64, sz*sz)
+
+	lumaBuf := getFloatBuffer(sz * sz)
+	defer putFloatBuffer(lumaBuf)
+	luma := *lumaBuf
 
 	residual := func(gain float64) float64 {
 		for i, v := range baseV {
@@ -232,14 +372,13 @@ func (e *Engine) fitsSurroundings(img image.Image, match matchResult, gain float
 	return ok && math.Abs(gap) <= e.cfg.MaxCoreGap
 }
 
-func extractCoreGapData(img image.Image, match matchResult) (luma []float64, peak float32) {
+func extractCoreGapData(img image.Image, match matchResult, luma []float64) (peak float32) {
 	sz := match.size
-	luma = make([]float64, sz*sz)
 	extractLumaRegion(img, match.x, match.y, sz, sz, luma, true)
 	for _, a := range match.template.Alpha {
 		peak = max(peak, a)
 	}
-	return luma, peak
+	return peak
 }
 
 func coreGapFromLuma(luma []float64, alpha []float32, peak float32, gain float64) (gap, spread float64, ok bool) {
@@ -265,13 +404,18 @@ func coreGapFromLuma(luma []float64, alpha []float32, peak float32, gain float64
 }
 
 func (e *Engine) coreGap(img image.Image, match matchResult, gain float64) (gap, spread float64, ok bool) {
-	luma, peak := extractCoreGapData(img, match)
-	return coreGapFromLuma(luma, match.template.Alpha, peak, gain)
+	buf := getFloatBuffer(match.size * match.size)
+	defer putFloatBuffer(buf)
+	peak := extractCoreGapData(img, match, *buf)
+	return coreGapFromLuma(*buf, match.template.Alpha, peak, gain)
 }
 
 func (e *Engine) refineGainOnFlat(img image.Image, match matchResult, gain float64) float64 {
-	luma, peak := extractCoreGapData(img, match)
+	buf := getFloatBuffer(match.size * match.size)
+	defer putFloatBuffer(buf)
+	peak := extractCoreGapData(img, match, *buf)
 	alpha := match.template.Alpha
+	luma := *buf
 	if _, spread, ok := coreGapFromLuma(luma, alpha, peak, gain); !ok || spread > e.cfg.FlatSpread {
 		return gain
 	}
@@ -294,17 +438,17 @@ func (e *Engine) refineGainOnFlat(img image.Image, match matchResult, gain float
 	return (lo + hi) / 2
 }
 
-// Detect checks if image data contains a watermark matching the engine rules.
-func (e *Engine) Detect(data []byte) (present bool, score float64, info Info, err error) {
-	if len(data) == 0 {
-		return false, 0, Info{}, fmt.Errorf("watermark: empty image data")
-	}
-	img, _, err := image.Decode(bytes.NewReader(data))
+// DetectContext checks if image data contains a watermark, supporting cancellation and max pixel guard.
+func (e *Engine) DetectContext(ctx context.Context, data []byte) (present bool, score float64, info Info, err error) {
+	img, _, err := e.decodeImage(ctx, data)
 	if err != nil {
-		return false, 0, Info{}, fmt.Errorf("watermark: decode image: %w", err)
+		return false, 0, Info{}, err
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return false, 0, Info{}, ctx.Err()
 	}
 
-	match := e.findWatermark(img)
+	match := e.findWatermarkContext(ctx, img)
 	if !match.found {
 		return false, match.score, Info{}, nil
 	}
@@ -312,6 +456,16 @@ func (e *Engine) Detect(data []byte) (present bool, score float64, info Info, er
 		Size:     match.size,
 		Position: image.Rect(match.x, match.y, match.x+match.size, match.y+match.size),
 	}, nil
+}
+
+// Detect checks if image data contains a watermark matching the engine rules.
+func (e *Engine) Detect(data []byte) (present bool, score float64, info Info, err error) {
+	return e.DetectContext(context.Background(), data)
+}
+
+// DetectContext checks if the image contains a watermark using the default Google Flow engine.
+func DetectContext(ctx context.Context, data []byte) (present bool, score float64, info Info, err error) {
+	return Default().DetectContext(ctx, data)
 }
 
 // Detect checks if the image contains a watermark using the default Google Flow engine.
