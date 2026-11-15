@@ -444,3 +444,133 @@ func TestMediaAndSubagentLimitConfig(t *testing.T) {
 		t.Errorf("MaxConcurrentSubagents = %d, want 8", c.Agent.MaxConcurrentSubagents)
 	}
 }
+
+func TestPhase3WaveAConfigFieldsAndAccessors(t *testing.T) {
+	// 1. Verify defaults
+	def := Default(ModeDesktop)
+	if def.Watermark.MaxWorkers != 4 {
+		t.Errorf("default Watermark.MaxWorkers = %d, want 4", def.Watermark.MaxWorkers)
+	}
+	if def.Watermark.MaxImagePixels != 100_000_000 {
+		t.Errorf("default Watermark.MaxImagePixels = %d, want 100000000", def.Watermark.MaxImagePixels)
+	}
+	if def.Watermark.DecodeConcurrency != 2 {
+		t.Errorf("default Watermark.DecodeConcurrency = %d, want 2", def.Watermark.DecodeConcurrency)
+	}
+	if !def.Binaries.DownloadResume {
+		t.Errorf("default Binaries.DownloadResume = %v, want true", def.Binaries.DownloadResume)
+	}
+	if def.Binaries.DownloadRetryMax != 3 {
+		t.Errorf("default Binaries.DownloadRetryMax = %d, want 3", def.Binaries.DownloadRetryMax)
+	}
+	if def.Binaries.DownloadRetryDelay != 1*time.Second {
+		t.Errorf("default Binaries.DownloadRetryDelay = %v, want 1s", def.Binaries.DownloadRetryDelay)
+	}
+	if def.Media.StagingTTL != 24*time.Hour {
+		t.Errorf("default Media.StagingTTL = %v, want 24h", def.Media.StagingTTL)
+	}
+	if def.Media.StagingGCInterval != 1*time.Hour {
+		t.Errorf("default Media.StagingGCInterval = %v, want 1h", def.Media.StagingGCInterval)
+	}
+
+	// 2. Accessors on valid defaults
+	if got := def.WatermarkMaxWorkers(); got != 4 {
+		t.Errorf("WatermarkMaxWorkers() = %d, want 4", got)
+	}
+	if got := def.WatermarkMaxImagePixels(); got != 100_000_000 {
+		t.Errorf("WatermarkMaxImagePixels() = %d, want 100000000", got)
+	}
+	if got := def.WatermarkDecodeConcurrency(); got != 2 {
+		t.Errorf("WatermarkDecodeConcurrency() = %d, want 2", got)
+	}
+	if got := def.BinariesDownloadResume(); !got {
+		t.Errorf("BinariesDownloadResume() = %v, want true", got)
+	}
+	if got := def.BinariesDownloadRetryMax(); got != 3 {
+		t.Errorf("BinariesDownloadRetryMax() = %d, want 3", got)
+	}
+	if got := def.BinariesDownloadRetryDelay(); got != 1*time.Second {
+		t.Errorf("BinariesDownloadRetryDelay() = %v, want 1s", got)
+	}
+	if got := def.MediaStagingTTL(); got != 24*time.Hour {
+		t.Errorf("MediaStagingTTL() = %v, want 24h", got)
+	}
+	if got := def.MediaStagingGCInterval(); got != 1*time.Hour {
+		t.Errorf("MediaStagingGCInterval() = %v, want 1h", got)
+	}
+
+	// 3. Accessors fallback on nil or zero/negative
+	var nilCfg *Config
+	if nilCfg.WatermarkMaxWorkers() != 4 ||
+		nilCfg.WatermarkMaxImagePixels() != 100_000_000 ||
+		nilCfg.WatermarkDecodeConcurrency() != 2 ||
+		!nilCfg.BinariesDownloadResume() ||
+		nilCfg.BinariesDownloadRetryMax() != 3 ||
+		nilCfg.BinariesDownloadRetryDelay() != 1*time.Second ||
+		nilCfg.MediaStagingTTL() != 24*time.Hour ||
+		nilCfg.MediaStagingGCInterval() != 1*time.Hour {
+		t.Error("nilCfg accessors failed to return safe fallback defaults")
+	}
+
+	zeroCfg := &Config{}
+	if zeroCfg.WatermarkMaxWorkers() != 4 ||
+		zeroCfg.WatermarkMaxImagePixels() != 100_000_000 ||
+		zeroCfg.WatermarkDecodeConcurrency() != 2 ||
+		zeroCfg.BinariesDownloadRetryMax() != 0 ||
+		zeroCfg.BinariesDownloadRetryDelay() != 1*time.Second ||
+		zeroCfg.MediaStagingTTL() != 24*time.Hour ||
+		zeroCfg.MediaStagingGCInterval() != 1*time.Hour {
+		t.Error("zeroCfg accessors failed to return safe fallback defaults")
+	}
+
+	// 4. Layer parsing (flags, env, file)
+	dir := t.TempDir()
+	writeFile(t, dir, FileName, `{
+		"watermark": {"max_workers": 8, "max_image_pixels": 50000000},
+		"binaries": {"download_resume": false, "download_retry_max": 5},
+		"media": {"staging_ttl": "48h"}
+	}`)
+
+	res, err := Load(Source{
+		Mode:      ModeDesktop,
+		ConfigDir: dir,
+		EnvPrefix: "T_",
+		LookupEnv: env(map[string]string{
+			"T_WATERMARK_DECODE_CONCURRENCY":  "6",
+			"T_BINARIES_DOWNLOAD_RETRY_DELAY": "2500ms",
+			"T_MEDIA_STAGING_GC_INTERVAL":     "30m",
+		}),
+		Args: []string{
+			"--watermark-max-workers=12",
+			"--binaries-download-retry-max=7",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	c := res.Config
+	if c.Watermark.MaxWorkers != 12 {
+		t.Errorf("Watermark.MaxWorkers = %d, want 12 (flag override)", c.Watermark.MaxWorkers)
+	}
+	if c.Watermark.MaxImagePixels != 50_000_000 {
+		t.Errorf("Watermark.MaxImagePixels = %d, want 50000000 (file)", c.Watermark.MaxImagePixels)
+	}
+	if c.Watermark.DecodeConcurrency != 6 {
+		t.Errorf("Watermark.DecodeConcurrency = %d, want 6 (env)", c.Watermark.DecodeConcurrency)
+	}
+	if c.Binaries.DownloadResume {
+		t.Errorf("Binaries.DownloadResume = true, want false (file)")
+	}
+	if c.Binaries.DownloadRetryMax != 7 {
+		t.Errorf("Binaries.DownloadRetryMax = %d, want 7 (flag override)", c.Binaries.DownloadRetryMax)
+	}
+	if c.Binaries.DownloadRetryDelay != 2500*time.Millisecond {
+		t.Errorf("Binaries.DownloadRetryDelay = %v, want 2500ms (env)", c.Binaries.DownloadRetryDelay)
+	}
+	if c.Media.StagingTTL != 48*time.Hour {
+		t.Errorf("Media.StagingTTL = %v, want 48h (file)", c.Media.StagingTTL)
+	}
+	if c.Media.StagingGCInterval != 30*time.Minute {
+		t.Errorf("Media.StagingGCInterval = %v, want 30m (env)", c.Media.StagingGCInterval)
+	}
+}

@@ -156,6 +156,23 @@ type ActionProgress struct {
 	MsgParams map[string]string `json:"msg_params,omitempty"`
 	// Heartbeat marks a keep-alive: it re-arms the request timeout and is not shown in the UI.
 	Heartbeat bool `json:"heartbeat,omitempty"`
+	// ResumedFromBytes indicates the byte offset from which a download was resumed (0 if fresh).
+	ResumedFromBytes int64 `json:"resumed_from_bytes,omitempty"`
+	// IsResume reports whether the current operation resumed an earlier partial transfer.
+	IsResume bool `json:"is_resume,omitempty"`
+	// BinaryProgress provides structured progress metrics when a binary download is running.
+	BinaryProgress *BinaryProgress `json:"binary_progress,omitempty"`
+}
+
+// BinaryProgress reports download progress details for managed external binaries.
+type BinaryProgress struct {
+	ID               binaries.BinaryID `json:"id"`
+	TotalBytes       int64             `json:"total_bytes"`
+	DownloadedBytes  int64             `json:"downloaded_bytes"`
+	ResumedFromBytes int64             `json:"resumed_from_bytes"`
+	IsResume         bool              `json:"is_resume"`
+	Percent          float64           `json:"percent"`
+	SpeedBPS         int64             `json:"speed_bps,omitempty"`
 }
 
 // ConnectionInfo tells the frontend how to reach the core (desktop bridge).

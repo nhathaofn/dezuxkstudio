@@ -79,6 +79,9 @@ export interface ActionProgress {
   msg_key?: string;
   msg_params?: Record<string, string>;
   heartbeat?: boolean;
+  resumed_from_bytes?: number;
+  is_resume?: boolean;
+  binary_progress?: BinaryProgress;
 }
 
 export interface AgentAllowedDirPayload {
@@ -318,6 +321,16 @@ export interface BinaryInfo {
 
 export interface BinaryListResult {
   binaries: BinaryInfo[];
+}
+
+export interface BinaryProgress {
+  id: BinaryID;
+  total_bytes: number;
+  downloaded_bytes: number;
+  resumed_from_bytes: number;
+  is_resume: boolean;
+  percent: number;
+  speed_bps?: number;
 }
 
 export interface BinarySetPathPayload {
@@ -1205,6 +1218,8 @@ export const Events = {
   PROVIDERS_CHANGED: "providers:changed",
   /** Media assets library content changed. */
   MEDIA_ASSETS_CHANGED: "media:assets_changed",
+  /** Download progress of an external binary. */
+  BINARIES_PROGRESS: "binaries:progress",
 } as const;
 export type EventName = (typeof Events)[keyof typeof Events];
 
@@ -1218,6 +1233,7 @@ export interface EventMap {
   "agent:customizations_changed": AgentCustomizationsResult;
   "providers:changed": ProvidersListResult;
   "media:assets_changed": Empty;
+  "binaries:progress": BinaryProgress;
 }
 
 export const NativeEvents = {

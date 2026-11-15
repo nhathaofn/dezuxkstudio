@@ -93,9 +93,28 @@ export const appConfig = {
   mediaUploadPath: "/api/media/upload",
   /** Authenticated HTTP media download endpoint (browser and remote client modes). */
   mediaDownloadPath: "/api/media/download",
-  /** Media tuning knobs (ticket auto-renewal and lifetime). */
+  /** Media tuning knobs (ticket auto-renewal, lifetime, and staging). */
   media: {
     ticketRenewSkewMs: 120_000,
     ticketTtlMs: 900_000,
+    stagingTtlMs: 24 * 60 * 60 * 1000,
+    stagingGcIntervalMs: 60 * 60 * 1000,
+  },
+  /** External tool binaries download and retry policies. */
+  binaries: {
+    downloadResume: true,
+    downloadRetryMax: 3,
+    downloadRetryDelayMs: 1_000,
+  },
+  /** Watermark detection and processing engine defaults. */
+  watermark: {
+    maxWorkers: 4,
+    maxImagePixels: 100_000_000,
+    decodeConcurrency: 2,
+  },
+  /** Virtual list and high-performance UI rendering tuning knobs. */
+  virtualization: {
+    defaultItemHeight: 48,
+    overscan: 5,
   },
 } as const;

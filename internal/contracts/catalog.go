@@ -114,6 +114,7 @@ const (
 	EventAgentLoginPrompt           = "agent:login_prompt"
 	EventAgentCustomizationsChanged = "agent:customizations_changed"
 	EventMediaAssetsChanged         = "media:assets_changed"
+	EventBinariesProgress           = "binaries:progress"
 )
 
 // Native event names emitted through the Wails runtime (desktop shell only).
@@ -243,6 +244,7 @@ func Events() []EventSpec {
 		{EventAgentCustomizationsChanged, "Shared agent skills or subagents changed.", t[AgentCustomizationsResult]()},
 		{EventProvidersChanged, "Provider credentials or custom providers changed.", t[ProvidersListResult]()},
 		{EventMediaAssetsChanged, "Media assets library content changed.", t[Empty]()},
+		{EventBinariesProgress, "Download progress of an external binary.", t[BinaryProgress]()},
 	}
 }
 

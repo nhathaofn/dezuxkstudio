@@ -55,6 +55,7 @@ type Config struct {
 	Providers   ProvidersConfig
 	MediaGen    MediaGenConfig
 	Media       MediaConfig
+	Watermark   WatermarkConfig
 	Network     NetworkConfig
 	Desktop     DesktopConfig
 	Agent       AgentConfig
@@ -140,9 +141,12 @@ type ProvidersConfig struct {
 	DefaultRequestGapMs int           // minimum pause between two requests to a provider (0 = none), unless set per provider
 }
 
-// BinariesConfig configures external tool (ffmpeg, yt-dlp...) inspection.
+// BinariesConfig configures external tool (ffmpeg, yt-dlp...) inspection and downloads.
 type BinariesConfig struct {
-	ProbeTimeout time.Duration // max duration of `<tool> -version`; a cold start under antivirus can take seconds
+	ProbeTimeout       time.Duration // max duration of `<tool> -version`; a cold start under antivirus can take seconds
+	DownloadResume     bool          // enable HTTP Range .part resumable downloads
+	DownloadRetryMax   int           // max retry attempts for network failures during download
+	DownloadRetryDelay time.Duration // backoff delay between download retries
 }
 
 // MediaGenConfig tunes image, video, and TTS media generation requests.
@@ -154,13 +158,22 @@ type MediaGenConfig struct {
 	MaxReferenceBytes int64         // max bytes allowed per local reference image
 }
 
-// MediaConfig tunes the media assets library and signed ticket streaming.
+// MediaConfig tunes the media assets library, signed ticket streaming, and staging GC.
 type MediaConfig struct {
 	LibraryMaxItems    int           // max items retained in the media library
 	LibraryRetention   time.Duration // retention duration before unreferenced media assets are pruned
 	TicketTTL          time.Duration // lifetime of a signed media download ticket
 	TicketRenewSkew    time.Duration // renewal window before ticket expiration
 	RegisteredRootsMax int           // max allowed registered root paths for media file inspection
+	StagingTTL         time.Duration // retention period before expired staging media files are pruned
+	StagingGCInterval  time.Duration // interval between background garbage collections of staging directories
+}
+
+// WatermarkConfig configures watermark detection and removal processing.
+type WatermarkConfig struct {
+	MaxWorkers        int   // max CPU worker threads for batch watermark processing
+	MaxImagePixels    int64 // max allowed image pixel area (width * height) before decode
+	DecodeConcurrency int   // max concurrent image decoding operations
 }
 
 // UpdateConfig configures release update checks.
@@ -271,7 +284,12 @@ func Default(mode Mode) *Config {
 			BusyTimeout:   5 * time.Second,
 		},
 		Diagnostics: DiagnosticsConfig{Keep: 5},
-		Binaries:    BinariesConfig{ProbeTimeout: 15 * time.Second},
+		Binaries: BinariesConfig{
+			ProbeTimeout:       15 * time.Second,
+			DownloadResume:     true,
+			DownloadRetryMax:   3,
+			DownloadRetryDelay: 1 * time.Second,
+		},
 		Providers: ProvidersConfig{TestTimeout: 15 * time.Second, CheckOnStartup: true, AutoCheck: true, CheckConcurrency: 4,
 			DefaultMaxWorkers: 2, DefaultRPM: 0, DefaultRequestGapMs: 0}, // ArcReel _CONNECTIVITY_CHECK_TIMEOUT
 		MediaGen: MediaGenConfig{
@@ -287,6 +305,13 @@ func Default(mode Mode) *Config {
 			TicketTTL:          15 * time.Minute,
 			TicketRenewSkew:    2 * time.Minute,
 			RegisteredRootsMax: 32,
+			StagingTTL:         24 * time.Hour,
+			StagingGCInterval:  1 * time.Hour,
+		},
+		Watermark: WatermarkConfig{
+			MaxWorkers:        4,
+			MaxImagePixels:    100_000_000,
+			DecodeConcurrency: 2,
 		},
 		Network: NetworkConfig{IdleConnTimeout: 90 * time.Second, MaxIdleConns: 100, MaxIdleConnsPerHost: 10},
 		Update: UpdateConfig{
@@ -346,4 +371,71 @@ func (c *Config) Redacted() map[string]string {
 		out[f.key] = v
 	}
 	return out
+}
+
+// WatermarkMaxWorkers returns the configured batch worker concurrency, or 4 if <= 0 or c is nil.
+func (c *Config) WatermarkMaxWorkers() int {
+	if c == nil || c.Watermark.MaxWorkers <= 0 {
+		return 4
+	}
+	return c.Watermark.MaxWorkers
+}
+
+// WatermarkMaxImagePixels returns the configured max pixel count (width*height) for decode, or 100_000_000 if <= 0 or c is nil.
+func (c *Config) WatermarkMaxImagePixels() int64 {
+	if c == nil || c.Watermark.MaxImagePixels <= 0 {
+		return 100_000_000
+	}
+	return c.Watermark.MaxImagePixels
+}
+
+// WatermarkDecodeConcurrency returns the configured concurrency limit for image decoding, or 2 if <= 0 or c is nil.
+func (c *Config) WatermarkDecodeConcurrency() int {
+	if c == nil || c.Watermark.DecodeConcurrency <= 0 {
+		return 2
+	}
+	return c.Watermark.DecodeConcurrency
+}
+
+// BinariesDownloadResume reports whether resumable downloads are enabled.
+func (c *Config) BinariesDownloadResume() bool {
+	if c == nil {
+		return true
+	}
+	return c.Binaries.DownloadResume
+}
+
+// BinariesDownloadRetryMax returns the max retry attempts for binary downloads, or 3 if c is nil.
+func (c *Config) BinariesDownloadRetryMax() int {
+	if c == nil {
+		return 3
+	}
+	if c.Binaries.DownloadRetryMax < 0 {
+		return 0
+	}
+	return c.Binaries.DownloadRetryMax
+}
+
+// BinariesDownloadRetryDelay returns the backoff delay between download retries, or 1s if <= 0 or c is nil.
+func (c *Config) BinariesDownloadRetryDelay() time.Duration {
+	if c == nil || c.Binaries.DownloadRetryDelay <= 0 {
+		return 1 * time.Second
+	}
+	return c.Binaries.DownloadRetryDelay
+}
+
+// MediaStagingTTL returns the retention duration for staging files, falling back to 24h if <= 0 or c is nil.
+func (c *Config) MediaStagingTTL() time.Duration {
+	if c == nil || c.Media.StagingTTL <= 0 {
+		return 24 * time.Hour
+	}
+	return c.Media.StagingTTL
+}
+
+// MediaStagingGCInterval returns the interval between staging directory GC passes, falling back to 1h if <= 0 or c is nil.
+func (c *Config) MediaStagingGCInterval() time.Duration {
+	if c == nil || c.Media.StagingGCInterval <= 0 {
+		return 1 * time.Hour
+	}
+	return c.Media.StagingGCInterval
 }
