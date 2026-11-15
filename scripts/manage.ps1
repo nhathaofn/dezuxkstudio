@@ -12,6 +12,26 @@ $ErrorActionPreference = "Stop"
 $TaskVersion = "v3.53.1"
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
+if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
+    $searchPaths = @(
+        [Environment]::GetEnvironmentVariable("Path", "User"),
+        [Environment]::GetEnvironmentVariable("Path", "Machine"),
+        "C:\msys64\mingw64\bin",
+        "C:\mingw64\bin"
+    )
+    foreach ($entry in $searchPaths) {
+        if (-not $entry) { continue }
+        foreach ($dir in ($entry -split ';')) {
+            $dir = $dir.Trim()
+            if ($dir -and (Test-Path (Join-Path $dir "gcc.exe"))) {
+                $env:PATH = "$dir;$env:PATH"
+                break
+            }
+        }
+        if (Get-Command gcc -ErrorAction SilentlyContinue) { break }
+    }
+}
+
 $taskCmd = Get-Command task -ErrorAction SilentlyContinue
 if ($taskCmd) {
     & $taskCmd.Source $Task @Rest
