@@ -594,3 +594,66 @@ func (s *Service) Statuses(ctx context.Context) ([]Status, error) {
 	}
 	return out, nil
 }
+
+// SetProviderLink sets an explicit opt-in link from an agent provider to an API provider credential.
+// CRITICAL DESIGN RULE: Validates compatibility before saving; rejects incompatible pairings.
+func (s *Service) SetProviderLink(ctx context.Context, agentProviderID, targetProviderID, credentialID string) error {
+	lr, ok := s.repo.(ProviderLinkRepository)
+	if !ok {
+		return errors.New("provider repository does not support agent provider links")
+	}
+	cred, err := s.repo.GetCredential(ctx, credentialID)
+	if err != nil {
+		return err
+	}
+	if cred.ProviderID != targetProviderID {
+		return apperr.Validation(fmt.Sprintf("credential %s does not belong to provider %s", credentialID, targetProviderID))
+	}
+	if !IsCompatible(agentProviderID, "", targetProviderID, "api_key") {
+		return apperr.Validation(fmt.Sprintf("target provider %q is not compatible with agent %q", targetProviderID, agentProviderID))
+	}
+	link := AgentProviderLink{
+		AgentProviderID: NormalizeAgentID(agentProviderID),
+		ProviderID:      targetProviderID,
+		CredentialID:    credentialID,
+		AuthMethod:      "api_key",
+		UpdatedAt:       time.Now(),
+	}
+	if err := lr.SetProviderLink(ctx, link); err != nil {
+		return err
+	}
+	s.changed()
+	return nil
+}
+
+// DeleteProviderLink removes the opt-in provider link for agentProviderID.
+func (s *Service) DeleteProviderLink(ctx context.Context, agentProviderID string) error {
+	lr, ok := s.repo.(ProviderLinkRepository)
+	if !ok {
+		return errors.New("provider repository does not support agent provider links")
+	}
+	if err := lr.DeleteProviderLink(ctx, NormalizeAgentID(agentProviderID)); err != nil {
+		return err
+	}
+	s.changed()
+	return nil
+}
+
+// GetProviderLink retrieves the opt-in provider link for agentProviderID.
+func (s *Service) GetProviderLink(ctx context.Context, agentProviderID string) (AgentProviderLink, error) {
+	lr, ok := s.repo.(ProviderLinkRepository)
+	if !ok {
+		return AgentProviderLink{}, errors.New("provider repository does not support agent provider links")
+	}
+	return lr.GetProviderLink(ctx, NormalizeAgentID(agentProviderID))
+}
+
+// ListProviderLinks returns all opt-in agent provider links.
+func (s *Service) ListProviderLinks(ctx context.Context) ([]AgentProviderLink, error) {
+	lr, ok := s.repo.(ProviderLinkRepository)
+	if !ok {
+		return nil, errors.New("provider repository does not support agent provider links")
+	}
+	return lr.ListProviderLinks(ctx)
+}
+

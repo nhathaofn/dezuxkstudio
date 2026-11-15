@@ -145,6 +145,10 @@ type skillReadToolInput struct {
 	Resource string `json:"resource,omitempty" jsonschema:"Optional companion file inside the skill directory; defaults to SKILL.md"`
 }
 
+type inspectAssetToolInput struct {
+	AssetID string `json:"asset_id" jsonschema:"Media asset ID to inspect"`
+}
+
 type subagentRunToolInput struct {
 	Name    string `json:"name" jsonschema:"Subagent slug listed in <subagents>"`
 	Task    string `json:"task" jsonschema:"Focused task brief for the subagent to execute in its isolated context"`
@@ -419,7 +423,15 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 
 	addMCPTool(server, "workspace_read_file",
 		"Open a text file (supports start_line/end_line chunked reads past 64 KiB), image, or media metadata.",
-		func(_ context.Context, in readFileToolInput) (*mcp.CallToolResult, any, error) {
+		func(ctx context.Context, in readFileToolInput) (*mcp.CallToolResult, any, error) {
+			trimmed := strings.TrimSpace(in.Path)
+			if strings.HasPrefix(trimmed, "asset:") {
+				meta, err := s.inspectMediaAsset(ctx, strings.TrimPrefix(trimmed, "asset:"))
+				if err != nil {
+					return mcpError(err.Error())
+				}
+				return mcpJSON(meta)
+			}
 			target, err := s.policy.ValidateRead(in.Path)
 			if err != nil {
 				return mcpError(err.Error())
@@ -551,6 +563,16 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 				"resources":   sk.Resources,
 				"content":     content,
 			})
+		})
+
+	addMCPTool(server, "media_inspect_asset",
+		"Inspect metadata (mime_type, dimensions, duration, size, registered_root) of a registered media asset by asset_id safely without exposing raw paths or signed tickets.",
+		func(ctx context.Context, in inspectAssetToolInput) (*mcp.CallToolResult, any, error) {
+			meta, err := s.inspectMediaAsset(ctx, in.AssetID)
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(meta)
 		})
 
 	addMCPTool(server, "subagent_run",
@@ -734,3 +756,38 @@ func (s *Service) queueApprovalRecord(ctx context.Context, tool, nodeType string
 func (s *Service) queueApproval(tool, title, summary string, execFn func(context.Context) (any, error)) (domainagent.ApprovalRequest, error) {
 	return s.queueApprovalRecord(context.Background(), tool, "", nil, title, summary, execFn)
 }
+
+// inspectMediaAsset looks up a media asset by ID and returns safe metadata,
+// strictly omitting raw filesystem paths and signed access tickets.
+func (s *Service) inspectMediaAsset(ctx context.Context, id string) (map[string]any, error) {
+	id = strings.TrimSpace(strings.TrimPrefix(id, "asset:"))
+	if id == "" {
+		return nil, fmt.Errorf("media asset ID is empty")
+	}
+
+	if insp := s.mediaInspectorService(); insp != nil {
+		meta, err := insp.InspectAsset(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if meta == nil {
+			return nil, fmt.Errorf("media asset %q not found", id)
+		}
+		return map[string]any{
+			"ok":              true,
+			"asset_id":        meta.AssetID,
+			"kind":            meta.Kind,
+			"source_node":     meta.SourceNode,
+			"registered_root": meta.RegisteredRoot,
+			"mime_type":       meta.MIMEType,
+			"size_bytes":      meta.SizeBytes,
+			"width":           meta.Width,
+			"height":          meta.Height,
+			"duration_sec":    meta.DurationSec,
+			"metadata":        meta.Metadata,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("media asset %q not found", id)
+}
+

@@ -10,6 +10,14 @@ import (
 	agentsvc "app/internal/service/agent"
 )
 
+// Realtime actions for agent provider link synergy.
+const (
+	ActionAgentLinkProvider        = "agent:link_provider"
+	ActionAgentUnlinkProvider      = "agent:unlink_provider"
+	ActionAgentListProviderLinks   = "agent:list_provider_links"
+	ActionAgentCompatibleProviders = "agent:compatible_providers"
+)
+
 // Agent exposes agent:* actions over realtime WebSocket.
 type Agent struct {
 	Service *agentsvc.Service
@@ -41,6 +49,34 @@ func (m Agent) customizationsLocked() error {
 func (Agent) Name() string { return "agent" }
 
 func (m Agent) Register(r *realtime.Registry) {
+	// Provider linking actions.
+	realtime.Handle(r, ActionAgentLinkProvider,
+		func(ctx context.Context, _ *realtime.Request, p contracts.AgentLinkProviderPayload) (contracts.Empty, error) {
+			err := m.Service.SetProviderLink(ctx, domainagent.ProviderID(p.AgentProviderID), p.ProviderID, p.CredentialID)
+			return contracts.Empty{}, err
+		})
+
+	realtime.Handle(r, ActionAgentUnlinkProvider,
+		func(ctx context.Context, _ *realtime.Request, p contracts.AgentProviderIDPayload) (contracts.Empty, error) {
+			err := m.Service.DeleteProviderLink(ctx, p.ID)
+			return contracts.Empty{}, err
+		})
+
+	realtime.Handle(r, ActionAgentListProviderLinks,
+		func(ctx context.Context, _ *realtime.Request, _ contracts.Empty) (any, error) {
+			links, err := m.Service.ListProviderLinks(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"links": links}, nil
+		})
+
+	realtime.Handle(r, ActionAgentCompatibleProviders,
+		func(_ context.Context, _ *realtime.Request, p contracts.AgentProviderIDPayload) (any, error) {
+			providers := m.Service.CompatibleProviders(p.ID)
+			return map[string]any{"compatible_providers": providers}, nil
+		})
+
 	realtime.Handle(r, contracts.ActionAgentList,
 		func(ctx context.Context, _ *realtime.Request, _ contracts.Empty) (contracts.AgentListResult, error) {
 			return m.listResult(ctx)
@@ -52,7 +88,7 @@ func (m Agent) Register(r *realtime.Registry) {
 			if err != nil {
 				return contracts.AgentProviderInfo{}, err
 			}
-			return contracts.NewAgentProviderInfo(info), nil
+			return m.toContractInfo(info), nil
 		})
 
 	realtime.Handle(r, contracts.ActionAgentSetPath,
@@ -64,16 +100,16 @@ func (m Agent) Register(r *realtime.Registry) {
 			if err != nil {
 				return contracts.AgentProviderInfo{}, err
 			}
-			return contracts.NewAgentProviderInfo(info), nil
+			return m.toContractInfo(info), nil
 		})
 
 	realtime.Handle(r, contracts.ActionAgentLogin,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentLoginPayload) (contracts.AgentProviderInfo, error) {
 			info, err := m.Service.Login(ctx, p.ID, p.APIKey)
 			if err != nil {
-				return contracts.NewAgentProviderInfo(info), err
+				return m.toContractInfo(info), err
 			}
-			return contracts.NewAgentProviderInfo(info), nil
+			return m.toContractInfo(info), nil
 		})
 
 	realtime.Handle(r, contracts.ActionAgentLoginCode,
@@ -91,9 +127,9 @@ func (m Agent) Register(r *realtime.Registry) {
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentProviderIDPayload) (contracts.AgentProviderInfo, error) {
 			info, err := m.Service.Logout(ctx, p.ID)
 			if err != nil {
-				return contracts.NewAgentProviderInfo(info), err
+				return m.toContractInfo(info), err
 			}
-			return contracts.NewAgentProviderInfo(info), nil
+			return m.toContractInfo(info), nil
 		})
 
 	realtime.Handle(r, contracts.ActionAgentSetModel,
@@ -102,16 +138,16 @@ func (m Agent) Register(r *realtime.Registry) {
 			if err != nil {
 				return contracts.AgentProviderInfo{}, err
 			}
-			return contracts.NewAgentProviderInfo(info), nil
+			return m.toContractInfo(info), nil
 		})
 
 	realtime.Handle(r, contracts.ActionAgentConnect,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentProviderIDPayload) (contracts.AgentProviderInfo, error) {
 			info, err := m.Service.Connect(ctx, p.ID)
 			if err != nil {
-				return contracts.NewAgentProviderInfo(info), err
+				return m.toContractInfo(info), err
 			}
-			return contracts.NewAgentProviderInfo(info), nil
+			return m.toContractInfo(info), nil
 		})
 
 	realtime.Handle(r, contracts.ActionAgentDisconnect,
@@ -338,7 +374,7 @@ func (m Agent) listResult(ctx context.Context) (contracts.AgentListResult, error
 	if err != nil {
 		return contracts.AgentListResult{}, err
 	}
-	return toContractAgentList(list, m.Service.DeveloperMode()), nil
+	return m.toContractAgentList(list, m.Service.DeveloperMode()), nil
 }
 
 func historyResult(id string, msgs []domainagent.ChatMessage) contracts.AgentHistoryResult {
@@ -349,10 +385,18 @@ func historyResult(id string, msgs []domainagent.ChatMessage) contracts.AgentHis
 	return contracts.AgentHistoryResult{ConversationID: id, Messages: out}
 }
 
-func toContractAgentList(in []domainagent.ProviderInfo, developerMode bool) contracts.AgentListResult {
+func (m Agent) toContractInfo(it domainagent.ProviderInfo) contracts.AgentProviderInfo {
+	info := contracts.NewAgentProviderInfo(it)
+	if m.Service != nil {
+		info.CompatibleProviders = m.Service.CompatibleProviders(it.ID)
+	}
+	return info
+}
+
+func (m Agent) toContractAgentList(in []domainagent.ProviderInfo, developerMode bool) contracts.AgentListResult {
 	items := make([]contracts.AgentProviderInfo, len(in))
 	for i, it := range in {
-		items[i] = contracts.NewAgentProviderInfo(it)
+		items[i] = m.toContractInfo(it)
 	}
 	return contracts.AgentListResult{Providers: items, DeveloperMode: developerMode}
 }
