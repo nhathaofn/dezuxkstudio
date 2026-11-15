@@ -14,11 +14,24 @@ export type WatermarkInput = NodeMap[typeof WATERMARK_NODE]["input"];
 export type WatermarkNodeResult = NodeMap[typeof WATERMARK_NODE]["output"];
 export type WatermarkItemResult = NonNullable<WatermarkNodeResult["results"]>[number];
 
+function safeRevokeObjectURL(url: string | null | undefined): void {
+  if (!url) return;
+  if (typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
+    try {
+      URL.revokeObjectURL(url);
+    } catch {
+      // Ignored: environments without full URL mock
+    }
+  }
+}
+
 interface WatermarkState {
   inputPath: string;
   inputPaths: string[];
   /** Browser/client File objects staged via HTTP upload when processed. */
   queuedFiles: File[];
+  /** Maps file identifiers to ephemeral ObjectURLs for fast local preview. */
+  objectUrls: Record<string, string>;
   /** Maps uploaded server staging paths back to original client filenames for display. */
   remoteNameMap: Record<string, string>;
   inPlace: boolean;
@@ -44,6 +57,10 @@ interface WatermarkState {
   setInputPath: (path: string) => void;
   setInputPaths: (paths: string[]) => void;
   setQueuedFiles: (files: File[]) => void;
+  removeQueuedFile: (fileName: string) => void;
+  createTrackedObjectURL: (key: string, blob: Blob | File) => string;
+  revokeTrackedObjectURL: (keyOrUrl: string) => void;
+  revokeAllObjectURLs: () => void;
   setInPlace: (inPlace: boolean) => void;
   setOutputDir: (dir: string) => void;
   setCopyClean: (copyClean: boolean) => void;
@@ -67,6 +84,7 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
   inputPath: "",
   inputPaths: [],
   queuedFiles: [],
+  objectUrls: {},
   remoteNameMap: {},
   inPlace: false,
   outputDir: "",
@@ -84,35 +102,132 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
   comparisonPan: { x: 0, y: 0 },
   comparisonSliderPos: 50,
 
-  setInputPath: (inputPath) =>
+  createTrackedObjectURL: (key: string, blob: Blob | File) => {
+    const existing = get().objectUrls[key];
+    if (existing) {
+      safeRevokeObjectURL(existing);
+    }
+    let url = "";
+    if (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") {
+      try {
+        url = URL.createObjectURL(blob);
+      } catch {
+        url = "";
+      }
+    }
+    set((s) => ({
+      objectUrls: { ...s.objectUrls, [key]: url },
+    }));
+    return url;
+  },
+
+  revokeTrackedObjectURL: (keyOrUrl: string) => {
+    const { objectUrls } = get();
+    let targetKey: string | null = null;
+    let targetUrl: string | null = null;
+
+    if (objectUrls[keyOrUrl]) {
+      targetKey = keyOrUrl;
+      targetUrl = objectUrls[keyOrUrl];
+    } else {
+      for (const [k, u] of Object.entries(objectUrls)) {
+        if (u === keyOrUrl) {
+          targetKey = k;
+          targetUrl = u;
+          break;
+        }
+      }
+    }
+
+    if (targetUrl) {
+      safeRevokeObjectURL(targetUrl);
+    } else if (keyOrUrl.startsWith("blob:")) {
+      safeRevokeObjectURL(keyOrUrl);
+    }
+
+    if (targetKey) {
+      set((s) => {
+        const next = { ...s.objectUrls };
+        delete next[targetKey!];
+        return { objectUrls: next };
+      });
+    }
+  },
+
+  revokeAllObjectURLs: () => {
+    const { objectUrls } = get();
+    for (const url of Object.values(objectUrls)) {
+      safeRevokeObjectURL(url);
+    }
+    set({ objectUrls: {} });
+  },
+
+  setInputPath: (inputPath) => {
+    get().revokeAllObjectURLs();
     set({
       inputPath,
       inputPaths: inputPath ? [inputPath] : [],
       queuedFiles: [],
+      objectUrls: {},
       remoteNameMap: {},
       error: null,
       result: null,
-    }),
+    });
+  },
 
-  setInputPaths: (inputPaths) =>
+  setInputPaths: (inputPaths) => {
+    get().revokeAllObjectURLs();
     set({
       inputPaths,
       inputPath: inputPaths[0] || "",
       queuedFiles: [],
+      objectUrls: {},
       remoteNameMap: {},
       error: null,
       result: null,
-    }),
+    });
+  },
 
-  setQueuedFiles: (queuedFiles) =>
+  setQueuedFiles: (queuedFiles) => {
+    get().revokeAllObjectURLs();
+    const newObjectUrls: Record<string, string> = {};
+    if (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") {
+      for (const file of queuedFiles) {
+        try {
+          const url = URL.createObjectURL(file);
+          newObjectUrls[file.name] = url;
+        } catch {
+          // Ignored in test/node environments
+        }
+      }
+    }
     set({
       queuedFiles,
       inputPaths: queuedFiles.map((f) => f.name),
       inputPath: queuedFiles[0]?.name || "",
+      objectUrls: newObjectUrls,
       remoteNameMap: {},
       error: null,
       result: null,
-    }),
+    });
+  },
+
+  removeQueuedFile: (fileName: string) => {
+    const { queuedFiles, objectUrls } = get();
+    const url = objectUrls[fileName];
+    if (url) {
+      safeRevokeObjectURL(url);
+    }
+    const nextUrls = { ...objectUrls };
+    delete nextUrls[fileName];
+    const nextFiles = queuedFiles.filter((f) => f.name !== fileName);
+    set({
+      queuedFiles: nextFiles,
+      inputPaths: nextFiles.map((f) => f.name),
+      inputPath: nextFiles[0]?.name || "",
+      objectUrls: nextUrls,
+    });
+  },
 
   setInPlace: (inPlace) => set({ inPlace }),
   setOutputDir: (outputDir) => set({ outputDir }),
@@ -120,13 +235,23 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
   setPreserveTree: (preserveTree) => set({ preserveTree }),
   setWorkers: (workers) => set({ workers }),
   setCorner: (corner) => set({ corner }),
-  setComparisonItem: (comparisonItem) =>
+  setComparisonItem: (comparisonItem) => {
+    const prev = get().comparisonItem;
+    if (prev) {
+      if (prev.beforeUrl?.startsWith("blob:") && prev.beforeUrl !== comparisonItem?.beforeUrl) {
+        safeRevokeObjectURL(prev.beforeUrl);
+      }
+      if (prev.afterUrl?.startsWith("blob:") && prev.afterUrl !== comparisonItem?.afterUrl) {
+        safeRevokeObjectURL(prev.afterUrl);
+      }
+    }
     set({
       comparisonItem,
       comparisonZoom: 1.0,
       comparisonPan: { x: 0, y: 0 },
       comparisonSliderPos: 50,
-    }),
+    });
+  },
   setComparisonZoom: (zoom) =>
     set((s) => ({
       comparisonZoom: typeof zoom === "function" ? zoom(s.comparisonZoom) : zoom,
@@ -136,13 +261,19 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
       comparisonPan: typeof pan === "function" ? pan(s.comparisonPan) : pan,
     })),
   setComparisonSliderPos: (comparisonSliderPos) => set({ comparisonSliderPos }),
-  resetComparison: () =>
+  resetComparison: () => {
+    const prev = get().comparisonItem;
+    if (prev) {
+      if (prev.beforeUrl?.startsWith("blob:")) safeRevokeObjectURL(prev.beforeUrl);
+      if (prev.afterUrl?.startsWith("blob:")) safeRevokeObjectURL(prev.afterUrl);
+    }
     set({
       comparisonItem: null,
       comparisonZoom: 1.0,
       comparisonPan: { x: 0, y: 0 },
       comparisonSliderPos: 50,
-    }),
+    });
+  },
   dismissError: () => set({ error: null }),
 
   removeWatermark: async (pathsOverride?: string[] | string) => {
@@ -219,11 +350,18 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
     }
   },
 
-  reset: () =>
+  reset: () => {
+    get().revokeAllObjectURLs();
+    const prevComp = get().comparisonItem;
+    if (prevComp) {
+      if (prevComp.beforeUrl?.startsWith("blob:")) safeRevokeObjectURL(prevComp.beforeUrl);
+      if (prevComp.afterUrl?.startsWith("blob:")) safeRevokeObjectURL(prevComp.afterUrl);
+    }
     set({
       inputPath: "",
       inputPaths: [],
       queuedFiles: [],
+      objectUrls: {},
       remoteNameMap: {},
       downloadingPath: null,
       result: null,
@@ -234,5 +372,6 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
       comparisonZoom: 1.0,
       comparisonPan: { x: 0, y: 0 },
       comparisonSliderPos: 50,
-    }),
+    });
+  },
 }));

@@ -15,12 +15,22 @@ import {
 } from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
+import { VirtualList } from "../../components/ui/VirtualList";
 import type { MediaAssetItem } from "../../contracts/generated";
 import { useSignedMediaURL } from "../../lib/hooks/useSignedMediaURL";
 import { mediaBasename } from "../../lib/rtClient/media";
 import { useT, type MessageKey } from "../../lib/i18n";
 import { askAgentAboutMediaAsset } from "../agent/screenContext";
 import { useMediaLibraryStore } from "./useMediaLibraryStore";
+
+function safeRevokeObjectURL(url: string | null | undefined): void {
+  if (!url || typeof URL === "undefined" || typeof URL.revokeObjectURL !== "function") return;
+  try {
+    URL.revokeObjectURL(url);
+  } catch (_err) {
+    void _err;
+  }
+}
 
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -39,8 +49,29 @@ const RouterNavigateBridge: React.FC<{
   return null;
 };
 
-const MediaAssetPreview: React.FC<{ asset: MediaAssetItem }> = ({ asset }) => {
+const MediaAssetPreview: React.FC<{
+  asset: MediaAssetItem;
+  registerObjectURL?: (url: string) => void;
+}> = ({ asset, registerObjectURL }) => {
   const { url, loading, handleMediaError, mediaRef } = useSignedMediaURL(asset.id, "preview");
+
+  const previewUrlsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const urls = previewUrlsRef.current;
+    return () => {
+      urls.forEach((u) => {
+        safeRevokeObjectURL(u);
+      });
+      urls.clear();
+    };
+  }, [asset.id]);
+
+  useEffect(() => {
+    if (url && url.startsWith("blob:")) {
+      previewUrlsRef.current.add(url);
+      registerObjectURL?.(url);
+    }
+  }, [url, registerObjectURL]);
 
   const isImg = asset.kind === "image" || asset.mime_type.startsWith("image/");
   const isVid = asset.kind === "video" || asset.mime_type.startsWith("video/");
@@ -141,6 +172,26 @@ export const MediaLibraryDrawer: React.FC = () => {
     fetchAssets,
     deleteAsset,
   } = useMediaLibraryStore();
+
+  const drawerObjectURLsRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    const urlsMap = drawerObjectURLsRef.current;
+    return () => {
+      urlsMap.forEach((u) => {
+        safeRevokeObjectURL(u);
+      });
+      urlsMap.clear();
+    };
+  }, []);
+
+  const handleDeleteAsset = (id: string) => {
+    const existing = drawerObjectURLsRef.current.get(id);
+    if (existing) {
+      safeRevokeObjectURL(existing);
+      drawerObjectURLsRef.current.delete(id);
+    }
+    void deleteAsset(id);
+  };
 
   if (!drawerOpen) return null;
 
@@ -282,11 +333,9 @@ export const MediaLibraryDrawer: React.FC = () => {
       <div
         style={{
           flex: 1,
-          overflowY: "auto",
-          padding: "var(--space-3)",
+          overflow: "hidden",
           display: "flex",
           flexDirection: "column",
-          gap: "var(--space-2)",
         }}
       >
         {loading && assets.length === 0 && (
@@ -329,91 +378,109 @@ export const MediaLibraryDrawer: React.FC = () => {
           </div>
         )}
 
-        {assets.map((asset) => (
-          <div
-            key={asset.id}
+        {assets.length > 0 && (
+          <VirtualList
+            items={assets}
+            height="100%"
+            itemHeight={80}
+            getItemKey={(asset) => asset.id}
+            className="media-library-virtual-list"
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "var(--space-3)",
-              padding: "var(--space-2)",
-              background: "var(--bg-surface-elevated)",
-              border: "var(--border-width) solid var(--border-default)",
-              borderRadius: "var(--radius-md)",
+              flex: 1,
+              padding: "var(--space-3)",
             }}
-          >
-            <MediaAssetPreview asset={asset} />
-
-            <div style={{ flex: 1, minWidth: 0 }}>
+            renderItem={(asset) => (
               <div
-                style={{
-                  fontWeight: "var(--weight-semibold)",
-                  fontSize: "var(--text-sm)",
-                  color: "var(--text-primary)",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-                title={asset.file_path}
-              >
-                {mediaBasename(asset.file_path)}
-              </div>
-              <div
+                key={asset.id}
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  gap: "var(--space-2)",
-                  fontSize: "var(--text-xs)",
-                  color: "var(--text-secondary)",
-                  marginTop: "2px",
+                  gap: "var(--space-3)",
+                  padding: "var(--space-2)",
+                  background: "var(--bg-surface-elevated)",
+                  border: "var(--border-width) solid var(--border-default)",
+                  borderRadius: "var(--radius-md)",
+                  height: "72px",
+                  boxSizing: "border-box",
                 }}
               >
-                <span>{asset.kind}</span>
-                <span>•</span>
-                <span>{formatBytes(asset.size_bytes)}</span>
+                <MediaAssetPreview
+                  asset={asset}
+                  registerObjectURL={(u) => drawerObjectURLsRef.current.set(asset.id, u)}
+                />
+
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontWeight: "var(--weight-semibold)",
+                      fontSize: "var(--text-sm)",
+                      color: "var(--text-primary)",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                    title={asset.file_path}
+                  >
+                    {mediaBasename(asset.file_path)}
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "var(--space-2)",
+                      fontSize: "var(--text-xs)",
+                      color: "var(--text-secondary)",
+                      marginTop: "2px",
+                    }}
+                  >
+                    <span>{asset.kind}</span>
+                    <span>•</span>
+                    <span>{formatBytes(asset.size_bytes)}</span>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--space-1)" }}>
+                  {(asset.kind === "image" || asset.mime_type.startsWith("image/")) && (
+                    <button
+                      type="button"
+                      className="watermark-icon-btn"
+                      onClick={() => handleSendToWatermark(asset)}
+                      title={t("cross.sendToWatermark" as MessageKey) || "Send to Watermark"}
+                      aria-label="Send to Watermark"
+                    >
+                      <Sparkles size={12} />
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    className="watermark-icon-btn"
+                    onClick={() => handleAskAgent(asset)}
+                    title={t("cross.askAgent" as MessageKey) || "Ask Agent about this file"}
+                    aria-label="Ask Agent about this file"
+                  >
+                    <Bot size={12} />
+                  </button>
+
+                  <button
+                    type="button"
+                    className="watermark-icon-btn"
+                    onClick={() => handleDeleteAsset(asset.id)}
+                    disabled={deletingId === asset.id}
+                    title={t("tools.delete" as MessageKey) || "Delete"}
+                    aria-label="Delete media asset"
+                  >
+                    {deletingId === asset.id ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <Trash2 size={12} />
+                    )}
+                  </button>
+                </div>
               </div>
-            </div>
-
-            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-1)" }}>
-              {(asset.kind === "image" || asset.mime_type.startsWith("image/")) && (
-                <button
-                  type="button"
-                  className="watermark-icon-btn"
-                  onClick={() => handleSendToWatermark(asset)}
-                  title={t("cross.sendToWatermark" as MessageKey) || "Send to Watermark"}
-                  aria-label="Send to Watermark"
-                >
-                  <Sparkles size={12} />
-                </button>
-              )}
-
-              <button
-                type="button"
-                className="watermark-icon-btn"
-                onClick={() => handleAskAgent(asset)}
-                title={t("cross.askAgent" as MessageKey) || "Ask Agent about this file"}
-                aria-label="Ask Agent about this file"
-              >
-                <Bot size={12} />
-              </button>
-
-              <button
-                type="button"
-                className="watermark-icon-btn"
-                onClick={() => void deleteAsset(asset.id)}
-                disabled={deletingId === asset.id}
-                title={t("tools.delete" as MessageKey) || "Delete"}
-                aria-label="Delete media asset"
-              >
-                {deletingId === asset.id ? (
-                  <Loader2 size={12} className="animate-spin" />
-                ) : (
-                  <Trash2 size={12} />
-                )}
-              </button>
-            </div>
-          </div>
-        ))}
+            )}
+          />
+        )}
       </div>
     </aside>
   );

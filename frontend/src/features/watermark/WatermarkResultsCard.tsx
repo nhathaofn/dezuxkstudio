@@ -1,5 +1,5 @@
 import { appConfig } from "../../config/appConfig";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useFlash } from "../../lib/hooks/useFlash";
 import {
   Layers,
@@ -21,30 +21,46 @@ import {
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
+import { VirtualList } from "../../components/ui/VirtualList";
 import { translateServerMessage, useT, type MessageKey } from "../../lib/i18n";
 import { downloadMediaBlob, mediaBasename } from "../../lib/rtClient";
 import { askAgentAboutMediaAsset } from "../agent/screenContext";
 import { useConnectionStore } from "../connection/useConnectionStore";
 import { useWatermarkStore } from "./useWatermarkStore";
 
+function safeRevokeObjectURL(url: string | null | undefined): void {
+  if (!url || typeof URL === "undefined" || typeof URL.revokeObjectURL !== "function") return;
+  try {
+    URL.revokeObjectURL(url);
+  } catch (_err) {
+    void _err;
+  }
+}
+
 function usePreviewUrl(path: string): string | null {
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
-    if (!path || typeof URL.createObjectURL !== "function") return;
+    if (!path || typeof URL === "undefined" || typeof URL.createObjectURL !== "function") {
+      return;
+    }
     let cancelled = false;
-    let objUrl: string | null = null;
+    let activeObjUrl: string | null = null;
     void downloadMediaBlob(path)
       .then(({ blob }) => {
         if (cancelled) return;
-        objUrl = URL.createObjectURL(blob);
-        setUrl(objUrl);
+        activeObjUrl = URL.createObjectURL(blob);
+        setUrl(activeObjUrl);
       })
       .catch(() => {
         if (!cancelled) setUrl(null);
       });
     return () => {
       cancelled = true;
-      if (objUrl) URL.revokeObjectURL(objUrl);
+      if (activeObjUrl) {
+        safeRevokeObjectURL(activeObjUrl);
+        activeObjUrl = null;
+      }
+      setUrl(null);
     };
   }, [path]);
   return url;
@@ -326,6 +342,17 @@ export const WatermarkResultsCard: React.FC = () => {
     setInputPath,
   } = useWatermarkStore();
 
+  const ephemeralUrlsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const urls = ephemeralUrlsRef.current;
+    return () => {
+      urls.forEach((u) => {
+        safeRevokeObjectURL(u);
+      });
+      urls.clear();
+    };
+  }, []);
+
   const displayName = (rawPath: string) =>
     remoteNameMap[rawPath] || (isRemoteMode ? mediaBasename(rawPath) : rawPath);
 
@@ -577,9 +604,17 @@ export const WatermarkResultsCard: React.FC = () => {
 
           {/* Multiple Items Results List */}
           {result.results && result.results.length > 1 && (
-            <div className="watermark-scroll-list">
-              {result.results.map((item, idx) => (
-                <div key={`${item.path}-${idx}`} className="watermark-file-row">
+            <VirtualList
+              items={result.results}
+              className="watermark-scroll-list"
+              style={{ display: "block" }}
+              height={Math.min(380, Math.max(160, result.results.length * 52))}
+              itemHeight={(_idx, item) =>
+                item.error ? 68 : item.out_path && item.out_path !== item.path ? 54 : 48
+              }
+              getItemKey={(item, idx) => `${item.path}-${idx}`}
+              renderItem={(item) => (
+                <div className="watermark-file-row">
                   <div className="watermark-file-meta">
                     <div className="watermark-file-path" title={item.path}>
                       {displayName(item.path)}
@@ -673,8 +708,8 @@ export const WatermarkResultsCard: React.FC = () => {
                       ))}
                   </div>
                 </div>
-              ))}
-            </div>
+              )}
+            />
           )}
         </div>
       )}
