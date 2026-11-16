@@ -19,22 +19,22 @@ func (s *Service) GenerateTTS(ctx context.Context, req domainmedia.TTSRequest) (
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
+	releaseLeases := s.leaseInputs()
+	defer releaseLeases()
 
 	target, limits, err := s.resolveTarget(ctx, domainprovider.PurposeTTS, norm.ModelRef)
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
 
-	release, err := s.limiter.acquire(ctx, target.ownerID, domainprovider.CapabilityTTS, limits)
+	release, err := s.acquireLimit(ctx, target, domainprovider.CapabilityTTS, limits)
 	if err != nil {
-		return domainmedia.Result{}, apperr.From(err)
+		return domainmedia.Result{}, err
 	}
 	defer release()
 
-	callCtx, cancel := s.requestTimeoutCtx(ctx, false)
-	defer cancel()
-	stopKA := progress.KeepAlive(callCtx)
-	defer stopKA()
+	callCtx, cleanup := s.prepareJobContext(ctx, false)
+	defer cleanup()
 
 	progress.Report(callCtx, progress.Update{
 		Percent: 15,

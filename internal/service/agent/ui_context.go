@@ -25,6 +25,8 @@ type UIContext struct {
 	Feature string `json:"feature,omitempty"`
 	// SelectedFiles are the files/folders currently loaded or selected on the screen.
 	SelectedFiles []string `json:"selected_files,omitempty"`
+	// SelectedAssetIDs are the media asset IDs currently selected or attached in context.
+	SelectedAssetIDs []string `json:"selected_asset_ids,omitempty"`
 	// Settings are the screen's current settings, keyed by the feature's param names.
 	Settings map[string]string `json:"settings,omitempty"`
 	// LastResult is a short summary of the latest run on this screen.
@@ -33,7 +35,7 @@ type UIContext struct {
 
 func (ui UIContext) empty() bool {
 	return ui.Route == "" && ui.Note == "" && ui.Screen == "" && ui.Feature == "" &&
-		len(ui.SelectedFiles) == 0 && len(ui.Settings) == 0 && ui.LastResult == ""
+		len(ui.SelectedFiles) == 0 && len(ui.SelectedAssetIDs) == 0 && len(ui.Settings) == 0 && ui.LastResult == ""
 }
 
 // sanitizeUIValue flattens untrusted UI text (file names, notes) into one bounded line so it cannot
@@ -64,6 +66,11 @@ func (ui UIContext) normalized() UIContext {
 	for _, f := range ui.SelectedFiles {
 		if f = sanitizeUIValue(f, maxUIContextValueLen); f != "" {
 			out.SelectedFiles = append(out.SelectedFiles, f)
+		}
+	}
+	for _, a := range ui.SelectedAssetIDs {
+		if a = sanitizeUIValue(a, 64); a != "" {
+			out.SelectedAssetIDs = append(out.SelectedAssetIDs, a)
 		}
 	}
 	if len(ui.Settings) > 0 {
@@ -109,6 +116,17 @@ func (ui UIContext) promptBlock() string {
 		}
 	} else if ui.Feature != "" {
 		sb.WriteString("Files loaded on this screen: none\n")
+	}
+	if n := len(ui.SelectedAssetIDs); n > 0 {
+		fmt.Fprintf(&sb, "Media assets attached on this screen (%d):\n", n)
+		for i, a := range ui.SelectedAssetIDs {
+			if i == maxUIContextFiles {
+				fmt.Fprintf(&sb, "- … and %d more\n", n-maxUIContextFiles)
+				break
+			}
+			fmt.Fprintf(&sb, "- asset_id: %s\n", a)
+		}
+		sb.WriteString("To inspect metadata of an asset by ID, use media_inspect_asset. Raw filesystem paths and access tickets are private and never exposed.\n")
 	}
 	if len(ui.Settings) > 0 {
 		keys := make([]string, 0, len(ui.Settings))

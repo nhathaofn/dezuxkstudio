@@ -9,25 +9,32 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"app/internal/apperr"
 	"app/internal/config"
+	"app/internal/contracts"
 	domainmedia "app/internal/domain/mediagen"
 	domainprovider "app/internal/domain/provider"
 	"app/internal/fsutil"
 	"app/internal/httpclient"
 	"app/internal/progress"
+	"app/internal/service/media"
 )
 
 const (
@@ -35,6 +42,11 @@ const (
 	maxErrorSnippetBytes  = 512
 	defaultPollPercentCap = 90.0
 )
+
+// MediaRegistrar registers newly produced media files into the media library.
+type MediaRegistrar interface {
+	RegisterAsset(ctx context.Context, params media.RegisterAssetParams) (*contracts.MediaAssetItem, error)
+}
 
 // ProviderResolver resolves configured models/credentials (satisfied by service/provider.Service).
 type ProviderResolver interface {
@@ -44,11 +56,16 @@ type ProviderResolver interface {
 
 // Options configures Service construction.
 type Options struct {
-	Providers  ProviderResolver
-	HTTPClient *http.Client
-	MediaDir   string
-	Config     config.MediaGenConfig
-	Logger     *slog.Logger
+	Providers         ProviderResolver
+	HTTPClient        *http.Client
+	MediaDir          string
+	Registrar         MediaRegistrar
+	MediaRepo         MediaRegistrar
+	Config            config.MediaGenConfig
+	Logger            *slog.Logger
+	Leases            *LeaseRegistry
+	StagingTTL        time.Duration
+	StagingGCInterval time.Duration
 }
 
 type cachedVertexToken struct {
@@ -59,15 +76,22 @@ type cachedVertexToken struct {
 
 // Service unifies media generation across built-in providers and custom provider endpoints.
 type Service struct {
-	providers  ProviderResolver
-	httpClient *http.Client
-	mediaDir   string
-	cfg        config.MediaGenConfig
-	log        *slog.Logger
-	limiter    *rateLimiter
+	providers         ProviderResolver
+	httpClient        *http.Client
+	mediaDir          string
+	registrar         MediaRegistrar
+	cfg               config.MediaGenConfig
+	log               *slog.Logger
+	limiter           *rateLimiter
+	leases            *LeaseRegistry
+	stagingTTL        time.Duration
+	stagingGCInterval time.Duration
 
 	vertexMu    sync.Mutex
 	vertexCache map[string]cachedVertexToken
+
+	assetsMu sync.RWMutex
+	assets   map[string]string // map[path]assetID
 }
 
 // New constructs a unified media generation service.
@@ -85,14 +109,37 @@ func New(o Options) *Service {
 		log = slog.Default()
 	}
 
+	reg := o.Registrar
+	if reg == nil {
+		reg = o.MediaRepo
+	}
+
+	leases := o.Leases
+	if leases == nil {
+		leases = defaultLeaseRegistry
+	}
+	stagingTTL := o.StagingTTL
+	if stagingTTL <= 0 {
+		stagingTTL = 24 * time.Hour
+	}
+	stagingGCInterval := o.StagingGCInterval
+	if stagingGCInterval <= 0 {
+		stagingGCInterval = 1 * time.Hour
+	}
+
 	return &Service{
-		providers:   o.Providers,
-		httpClient:  clientCopy,
-		mediaDir:    o.MediaDir,
-		cfg:         cfg,
-		log:         log,
-		limiter:     newRateLimiter(),
-		vertexCache: make(map[string]cachedVertexToken),
+		providers:         o.Providers,
+		httpClient:        clientCopy,
+		mediaDir:          o.MediaDir,
+		registrar:         reg,
+		cfg:               cfg,
+		log:               log,
+		limiter:           newRateLimiter(),
+		leases:            leases,
+		stagingTTL:        stagingTTL,
+		stagingGCInterval: stagingGCInterval,
+		vertexCache:       make(map[string]cachedVertexToken),
+		assets:            make(map[string]string),
 	}
 }
 
@@ -463,7 +510,7 @@ func (s *Service) doMultipart(ctx context.Context, targetURL string, headers map
 		return apperr.Internal(err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, &buf)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(buf.Bytes()))
 	if err != nil {
 		return apperr.Internal(err)
 	}
@@ -546,26 +593,260 @@ func (s *Service) downloadURL(ctx context.Context, rawURL string, headers map[st
 	return raw, ct, nil
 }
 
-func (s *Service) execHTTP(req *http.Request, maxBytes int64) ([]byte, string, int, error) {
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		if req.Context().Err() != nil {
-			return nil, "", 0, apperr.From(req.Context().Err())
+// RetryConfig tunes transient HTTP retry behavior.
+type RetryConfig struct {
+	MaxRetries    int           // maximum retry attempts (default 3)
+	InitialDelay  time.Duration // initial backoff delay (default 100ms)
+	MaxDelay      time.Duration // maximum backoff delay cap (default 2s)
+	BackoffFactor float64       // exponential factor (default 2.0)
+}
+
+// DefaultRetryConfig returns standard production defaults for mediagen requests.
+func DefaultRetryConfig() RetryConfig {
+	return RetryConfig{
+		MaxRetries:    3,
+		InitialDelay:  100 * time.Millisecond,
+		MaxDelay:      2 * time.Second,
+		BackoffFactor: 2.0,
+	}
+}
+
+// IsRetryableStatus reports whether an HTTP status code represents a transient, retryable error.
+func IsRetryableStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, // 429
+		http.StatusServiceUnavailable, // 503
+		http.StatusBadGateway,         // 502
+		http.StatusGatewayTimeout:     // 504
+		return true
+	default:
+		return false
+	}
+}
+
+// isSyscallReset checks if an error represents a connection reset or peer disconnect.
+func isSyscallReset(err error) bool {
+	if err == nil {
+		return false
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		switch errno {
+		case syscall.ECONNRESET, syscall.ECONNREFUSED, syscall.EPIPE:
+			return true
+		default:
+			const (
+				wsaeconnreset   syscall.Errno = 10054
+				wsaeconnrefused syscall.Errno = 10061
+			)
+			if errno == wsaeconnreset || errno == wsaeconnrefused {
+				return true
+			}
 		}
-		return nil, "", 0, apperr.Wrap(apperr.CodeUnavailable, "Provider HTTP request failed", err).
+	}
+	return false
+}
+
+// IsTransientNetErr reports whether err represents a transient network or socket error.
+func IsTransientNetErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return true
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return true
+		}
+	}
+
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		if opErr.Timeout() {
+			return true
+		}
+		var sysErr *os.SyscallError
+		if errors.As(opErr.Err, &sysErr) {
+			if isSyscallReset(sysErr.Err) {
+				return true
+			}
+		}
+		if isSyscallReset(opErr.Err) {
+			return true
+		}
+	}
+
+	msg := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"connection reset",
+		"connection refused",
+		"broken pipe",
+		"wsarecv",
+		"wsasend",
+		"wsaeconnreset",
+		"wsaeconnrefused",
+		"unexpected eof",
+		"tls handshake timeout",
+		"i/o timeout",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseRetryAfter(header string) (time.Duration, bool) {
+	if header == "" {
+		return 0, false
+	}
+	if sec, err := strconv.Atoi(strings.TrimSpace(header)); err == nil && sec >= 0 {
+		return time.Duration(sec) * time.Second, true
+	}
+	if t, err := http.ParseTime(strings.TrimSpace(header)); err == nil {
+		d := time.Until(t)
+		if d > 0 {
+			return d, true
+		}
+		return 0, true
+	}
+	return 0, false
+}
+
+func computeDelay(attempt int, cfg RetryConfig, retryAfter string) time.Duration {
+	if d, ok := parseRetryAfter(retryAfter); ok {
+		if d > cfg.MaxDelay {
+			return cfg.MaxDelay
+		}
+		return d
+	}
+	delay := cfg.InitialDelay
+	for i := 0; i < attempt; i++ {
+		delay = time.Duration(float64(delay) * cfg.BackoffFactor)
+		if delay > cfg.MaxDelay {
+			delay = cfg.MaxDelay
+			break
+		}
+	}
+	return delay
+}
+
+// ExecHTTPWithRetry executes an HTTP request with bounded body streaming and transient retry with backoff.
+// It retries on HTTP 503, 429, and transient network errors (such as connection reset).
+func ExecHTTPWithRetry(ctx context.Context, client *http.Client, req *http.Request, maxBytes int64, cfg RetryConfig) ([]byte, string, int, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	if cfg.MaxRetries < 0 {
+		cfg.MaxRetries = 0
+	}
+	if cfg.InitialDelay <= 0 {
+		cfg.InitialDelay = 50 * time.Millisecond
+	}
+	if cfg.MaxDelay <= 0 {
+		cfg.MaxDelay = 2 * time.Second
+	}
+	if cfg.BackoffFactor <= 0 {
+		cfg.BackoffFactor = 2.0
+	}
+
+	var lastErr error
+	var lastStatus int
+	var lastRaw []byte
+	var lastCT string
+
+	for attempt := 0; attempt <= cfg.MaxRetries; attempt++ {
+		if attempt > 0 {
+			if req.GetBody != nil {
+				rc, err := req.GetBody()
+				if err != nil {
+					return nil, "", 0, apperr.Internal(err)
+				}
+				req.Body = rc
+			}
+		}
+
+		if ctx.Err() != nil {
+			return nil, "", 0, apperr.From(ctx.Err())
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			lastStatus = 0
+			if ctx.Err() != nil {
+				return nil, "", 0, apperr.From(ctx.Err())
+			}
+			if attempt < cfg.MaxRetries && IsTransientNetErr(err) {
+				delay := computeDelay(attempt, cfg, "")
+				select {
+				case <-ctx.Done():
+					return nil, "", 0, apperr.From(ctx.Err())
+				case <-time.After(delay):
+					continue
+				}
+			}
+			return nil, "", 0, apperr.Wrap(apperr.CodeUnavailable, "Provider HTTP request failed", err).
+				WithMsg("errors.mediagen.request_failed", nil)
+		}
+
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+		_ = resp.Body.Close()
+		lastStatus = resp.StatusCode
+		lastRaw = raw
+		lastCT = resp.Header.Get("Content-Type")
+
+		if readErr != nil {
+			lastErr = readErr
+			if attempt < cfg.MaxRetries && (IsRetryableStatus(resp.StatusCode) || IsTransientNetErr(readErr)) {
+				delay := computeDelay(attempt, cfg, resp.Header.Get("Retry-After"))
+				select {
+				case <-ctx.Done():
+					return nil, "", 0, apperr.From(ctx.Err())
+				case <-time.After(delay):
+					continue
+				}
+			}
+			return nil, "", resp.StatusCode, apperr.Wrap(apperr.CodeUnavailable, "Failed reading provider response", readErr)
+		}
+
+		if int64(len(raw)) > maxBytes {
+			return nil, "", resp.StatusCode, apperr.New(apperr.CodeUnavailable, "Provider response exceeded size limit").
+				WithMsg("errors.mediagen.output_too_large", nil)
+		}
+
+		if attempt < cfg.MaxRetries && IsRetryableStatus(resp.StatusCode) {
+			delay := computeDelay(attempt, cfg, resp.Header.Get("Retry-After"))
+			select {
+			case <-ctx.Done():
+				return nil, "", 0, apperr.From(ctx.Err())
+			case <-time.After(delay):
+				continue
+			}
+		}
+
+		return raw, lastCT, resp.StatusCode, nil
+	}
+
+	if lastErr != nil {
+		return nil, "", lastStatus, apperr.Wrap(apperr.CodeUnavailable, "Provider HTTP request failed after retries", lastErr).
 			WithMsg("errors.mediagen.request_failed", nil)
 	}
-	defer resp.Body.Close()
+	return lastRaw, lastCT, lastStatus, nil
+}
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
-	if err != nil {
-		return nil, "", resp.StatusCode, apperr.Wrap(apperr.CodeUnavailable, "Failed reading provider response", err)
-	}
-	if int64(len(raw)) > maxBytes {
-		return nil, "", resp.StatusCode, apperr.New(apperr.CodeUnavailable, "Provider response exceeded size limit").
-			WithMsg("errors.mediagen.output_too_large", nil)
-	}
-	return raw, resp.Header.Get("Content-Type"), resp.StatusCode, nil
+func (s *Service) execHTTP(req *http.Request, maxBytes int64) ([]byte, string, int, error) {
+	return ExecHTTPWithRetry(req.Context(), s.httpClient, req, maxBytes, DefaultRetryConfig())
+}
+
+func (s *Service) execHTTPWithRetry(req *http.Request, maxBytes int64, cfg RetryConfig) ([]byte, string, int, error) {
+	return ExecHTTPWithRetry(req.Context(), s.httpClient, req, maxBytes, cfg)
 }
 
 func mapAPIError(status int, body []byte) error {
@@ -750,6 +1031,38 @@ func (s *Service) saveOutput(kind domainmedia.Kind, outputDir, prefix, mimeType,
 		return domainmedia.Result{}, apperr.Internal(err)
 	}
 
+	if s.registrar != nil {
+		sourceNode := "mediagen"
+		switch kind {
+		case domainmedia.KindImage:
+			sourceNode = "tool.generate_image"
+		case domainmedia.KindVideo:
+			sourceNode = "tool.generate_video"
+		case domainmedia.KindTTS:
+			sourceNode = "tool.generate_tts"
+		}
+		regRoot := s.mediaDir
+		if strings.TrimSpace(outputDir) != "" {
+			regRoot = outputDir
+		}
+		if regRoot == "" {
+			regRoot = dir
+		}
+		asset, err := s.registrar.RegisterAsset(context.Background(), media.RegisterAssetParams{
+			Kind:           string(kind),
+			SourceNode:     sourceNode,
+			FilePath:       fullPath,
+			RegisteredRoot: regRoot,
+			MIMEType:       mimeType,
+			SizeBytes:      int64(len(data)),
+		})
+		if err != nil {
+			s.log.Warn("failed to register generated media asset", "path", fullPath, "err", err)
+		} else if asset != nil {
+			s.setAssetID(fullPath, asset.ID)
+		}
+	}
+
 	return domainmedia.Result{
 		Kind:      kind,
 		Path:      fullPath,
@@ -759,6 +1072,30 @@ func (s *Service) saveOutput(kind domainmedia.Kind, outputDir, prefix, mimeType,
 		Model:     t.modelID,
 		SizeBytes: int64(len(data)),
 	}, nil
+}
+
+func (s *Service) setAssetID(path, assetID string) {
+	s.assetsMu.Lock()
+	defer s.assetsMu.Unlock()
+	if s.assets == nil {
+		s.assets = make(map[string]string)
+	}
+	s.assets[path] = assetID
+}
+
+// AssetID returns the registered asset ID for a generated media file path, or empty string if not found.
+func (s *Service) AssetID(path string) string {
+	s.assetsMu.RLock()
+	defer s.assetsMu.RUnlock()
+	if s.assets == nil {
+		return ""
+	}
+	return s.assets[path]
+}
+
+// SetRegistrar sets or updates the media asset registrar.
+func (s *Service) SetRegistrar(r MediaRegistrar) {
+	s.registrar = r
 }
 
 func uniqueFilename(prefix, ext string) string {
@@ -800,4 +1137,451 @@ func (s *Service) pollUntil(ctx context.Context, msgKey string, fallbackMsg stri
 		case <-t.C:
 		}
 	}
+}
+
+// StagingDir returns the absolute path to the active staging directory under mediaDir.
+func (s *Service) StagingDir() string {
+	base := s.mediaDir
+	if strings.TrimSpace(base) == "" {
+		base = os.TempDir()
+	}
+	return filepath.Join(base, "staging")
+}
+
+// StageFile writes data to a unique file in the staging directory and acquires an active lease on it.
+// The caller must invoke the returned release function when the job completes.
+func (s *Service) StageFile(subDir, name string, data []byte) (string, func(), error) {
+	stagingDir := s.StagingDir()
+	if strings.TrimSpace(subDir) != "" {
+		stagingDir = filepath.Join(stagingDir, subDir)
+	}
+	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
+		return "", nil, apperr.Internal(err)
+	}
+	if strings.TrimSpace(name) == "" {
+		name = uniqueFilename("staged", ".bin")
+	}
+	stagedPath := filepath.Join(stagingDir, name)
+	if err := fsutil.WriteFileAtomic(stagedPath, data, 0o600); err != nil {
+		return "", nil, apperr.Internal(err)
+	}
+	release := s.LeaseFile(stagedPath)
+	return stagedPath, release, nil
+}
+
+// StageStream streams bounded content from reader r into a staging file and acquires an active lease on it.
+func (s *Service) StageStream(subDir, name string, r io.Reader, maxBytes int64) (string, func(), error) {
+	stagingDir := s.StagingDir()
+	if strings.TrimSpace(subDir) != "" {
+		stagingDir = filepath.Join(stagingDir, subDir)
+	}
+	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
+		return "", nil, apperr.Internal(err)
+	}
+	if strings.TrimSpace(name) == "" {
+		name = uniqueFilename("staged", ".bin")
+	}
+	stagedPath := filepath.Join(stagingDir, name)
+	tmpPath := stagedPath + ".tmp"
+
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return "", nil, apperr.Internal(err)
+	}
+
+	lr := io.LimitReader(r, maxBytes+1)
+	n, copyErr := io.Copy(f, lr)
+	_ = f.Close()
+
+	if copyErr != nil {
+		_ = os.Remove(tmpPath)
+		return "", nil, apperr.Wrap(apperr.CodeUnavailable, "Failed streaming staged data", copyErr)
+	}
+	if n > maxBytes {
+		_ = os.Remove(tmpPath)
+		return "", nil, apperr.New(apperr.CodeUnavailable, "Staged media payload exceeded size limit").
+			WithMsg("errors.mediagen.output_too_large", nil)
+	}
+
+	if err := os.Rename(tmpPath, stagedPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", nil, apperr.Internal(err)
+	}
+
+	release := s.LeaseFile(stagedPath)
+	return stagedPath, release, nil
+}
+
+// leaseInputs acquires active leases on all provided file paths and returns a combined release function.
+func (s *Service) leaseInputs(paths ...string) func() {
+	var releases []func()
+	for _, p := range paths {
+		if strings.TrimSpace(p) != "" {
+			releases = append(releases, s.LeaseFile(p))
+		}
+	}
+	return func() {
+		for _, rel := range releases {
+			if rel != nil {
+				rel()
+			}
+		}
+	}
+}
+
+// prepareJobContext sets up timeout context and progress KeepAlive for image/video/TTS generation.
+func (s *Service) prepareJobContext(ctx context.Context, isVideo bool) (context.Context, func()) {
+	callCtx, cancel := s.requestTimeoutCtx(ctx, isVideo)
+	stopKA := progress.KeepAlive(callCtx)
+	cleanup := func() {
+		stopKA()
+		cancel()
+	}
+	return callCtx, cleanup
+}
+
+// readReferenceImages reads and encodes multiple local reference images.
+func (s *Service) readReferenceImages(paths []string) ([]localImageData, error) {
+	refs := make([]localImageData, 0, len(paths))
+	for _, p := range paths {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		img, err := s.readReferenceImage(p)
+		if err != nil {
+			return nil, err
+		}
+		refs = append(refs, img)
+	}
+	return refs, nil
+}
+
+// LeaseRegistry tracks active job leases on files/directories to protect them from background GC.
+type LeaseRegistry struct {
+	mu     sync.RWMutex
+	leases map[string]int // normalized absolute path -> active lease refcount
+}
+
+// NewLeaseRegistry creates a new active lease registry.
+func NewLeaseRegistry() *LeaseRegistry {
+	return &LeaseRegistry{
+		leases: make(map[string]int),
+	}
+}
+
+var defaultLeaseRegistry = NewLeaseRegistry()
+
+func normalizeLeasePath(p string) string {
+	if strings.TrimSpace(p) == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(p)
+	if err == nil {
+		p = abs
+	}
+	p = filepath.Clean(p)
+	return strings.ToLower(p)
+}
+
+// Acquire registers an active lease on path and returns a release callback.
+// Releasing is idempotent.
+func (r *LeaseRegistry) Acquire(path string) func() {
+	key := normalizeLeasePath(path)
+	if key == "" {
+		return func() {}
+	}
+	r.mu.Lock()
+	r.leases[key]++
+	r.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			r.leases[key]--
+			if r.leases[key] <= 0 {
+				delete(r.leases, key)
+			}
+			r.mu.Unlock()
+		})
+	}
+}
+
+// Release drops one lease reference on path.
+func (r *LeaseRegistry) Release(path string) {
+	key := normalizeLeasePath(path)
+	if key == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.leases[key]--
+	if r.leases[key] <= 0 {
+		delete(r.leases, key)
+	}
+}
+
+// IsLeased reports whether path or any file within/enclosing path has an active lease.
+func (r *LeaseRegistry) IsLeased(path string) bool {
+	key := normalizeLeasePath(path)
+	if key == "" {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Direct match
+	if r.leases[key] > 0 {
+		return true
+	}
+
+	// Check if any leased file is inside this directory: key + separator prefix
+	prefix := key + string(filepath.Separator)
+	for leasedPath := range r.leases {
+		if strings.HasPrefix(leasedPath, prefix) {
+			return true
+		}
+	}
+
+	// Check if this path is inside a leased directory: leasedPath + separator prefix
+	for leasedPath := range r.leases {
+		if strings.HasPrefix(key, leasedPath+string(filepath.Separator)) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ActiveLeases returns all normalized paths currently holding an active lease.
+func (r *LeaseRegistry) ActiveLeases() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]string, 0, len(r.leases))
+	for k := range r.leases {
+		out = append(out, k)
+	}
+	return out
+}
+
+// Count returns the number of unique active lease paths.
+func (r *LeaseRegistry) Count() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.leases)
+}
+
+// Prune scans dir and removes unleased files whose modTime is older than ttl.
+// Expired files WITH an active lease are strictly preserved.
+func (r *LeaseRegistry) Prune(dir string, ttl time.Duration, now ...time.Time) (int, error) {
+	if strings.TrimSpace(dir) == "" {
+		return 0, nil
+	}
+	if _, err := os.Stat(dir); err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if ttl <= 0 {
+		ttl = 24 * time.Hour
+	}
+	cur := time.Now()
+	if len(now) > 0 && !now[0].IsZero() {
+		cur = now[0]
+	}
+	cutoff := cur.Add(-ttl)
+
+	type item struct {
+		path    string
+		isDir   bool
+		modTime time.Time
+	}
+	var files []item
+	var dirs []item
+
+	err := filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if p == dir {
+			return nil
+		}
+		if info.IsDir() {
+			dirs = append(dirs, item{path: p, isDir: true, modTime: info.ModTime()})
+		} else {
+			files = append(files, item{path: p, isDir: false, modTime: info.ModTime()})
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	pruned := 0
+	// 1. Prune expired unleased files
+	for _, f := range files {
+		if r.IsLeased(f.path) {
+			continue // strictly protected
+		}
+		if f.modTime.Before(cutoff) {
+			if err := os.Remove(f.path); err == nil {
+				pruned++
+			}
+		}
+	}
+
+	// 2. Prune empty unleased directories (deepest first)
+	sort.Slice(dirs, func(i, j int) bool {
+		return len(dirs[i].path) > len(dirs[j].path)
+	})
+	for _, d := range dirs {
+		if r.IsLeased(d.path) {
+			continue
+		}
+		entries, err := os.ReadDir(d.path)
+		if err == nil && len(entries) == 0 {
+			_ = os.Remove(d.path)
+		}
+	}
+
+	return pruned, nil
+}
+
+// Package-level lease functions delegating to defaultLeaseRegistry:
+
+// LeaseFile registers an active lease on path and returns a release callback.
+func LeaseFile(path string) func() {
+	return defaultLeaseRegistry.Acquire(path)
+}
+
+// AcquireLease registers an active lease on path and returns a release callback.
+func AcquireLease(path string) func() {
+	return defaultLeaseRegistry.Acquire(path)
+}
+
+// ReleaseLease drops one lease reference for path.
+func ReleaseLease(path string) {
+	defaultLeaseRegistry.Release(path)
+}
+
+// IsLeased reports whether path is protected by an active lease.
+func IsLeased(path string) bool {
+	return defaultLeaseRegistry.IsLeased(path)
+}
+
+// PruneStaging scans dir and deletes unleased files older than ttl.
+// Any file with an active lease is strictly protected.
+func PruneStaging(dir string, ttl time.Duration, now ...time.Time) (int, error) {
+	return defaultLeaseRegistry.Prune(dir, ttl, now...)
+}
+
+// StartStagingGC runs periodic background staging garbage collection until ctx is canceled.
+// It executes an initial scan immediately, then ticks at the given interval.
+func StartStagingGC(ctx context.Context, dir string, ttl, interval time.Duration) {
+	if ttl <= 0 {
+		ttl = 24 * time.Hour
+	}
+	if interval <= 0 {
+		interval = 1 * time.Hour
+	}
+	_, _ = PruneStaging(dir, ttl)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_, _ = PruneStaging(dir, ttl)
+		}
+	}
+}
+
+// Service methods delegating to the service's LeaseRegistry:
+
+// LeaseFile registers an active lease on path for this service instance.
+func (s *Service) LeaseFile(path string) func() {
+	if s.leases == nil {
+		return defaultLeaseRegistry.Acquire(path)
+	}
+	return s.leases.Acquire(path)
+}
+
+// AcquireLease registers an active lease on path for this service instance.
+func (s *Service) AcquireLease(path string) func() {
+	return s.LeaseFile(path)
+}
+
+// ReleaseLease drops one lease reference for path.
+func (s *Service) ReleaseLease(path string) {
+	if s.leases == nil {
+		defaultLeaseRegistry.Release(path)
+		return
+	}
+	s.leases.Release(path)
+}
+
+// IsLeased reports whether path is protected by an active lease.
+func (s *Service) IsLeased(path string) bool {
+	if s.leases == nil {
+		return defaultLeaseRegistry.IsLeased(path)
+	}
+	return s.leases.IsLeased(path)
+}
+
+// ActiveLeases returns currently held active leases for this service instance.
+func (s *Service) ActiveLeases() []string {
+	if s.leases == nil {
+		return defaultLeaseRegistry.ActiveLeases()
+	}
+	return s.leases.ActiveLeases()
+}
+
+// PruneStaging scans dir (or s.StagingDir() if empty) and deletes unleased expired files.
+func (s *Service) PruneStaging(dir string, ttl time.Duration, now ...time.Time) (int, error) {
+	if strings.TrimSpace(dir) == "" {
+		dir = s.StagingDir()
+	}
+	if ttl <= 0 {
+		ttl = s.stagingTTL
+	}
+	reg := s.leases
+	if reg == nil {
+		reg = defaultLeaseRegistry
+	}
+	return reg.Prune(dir, ttl, now...)
+}
+
+// StartStagingGC runs periodic background staging garbage collection until ctx is canceled.
+func (s *Service) StartStagingGC(ctx context.Context, dir string, ttl, interval time.Duration) {
+	if strings.TrimSpace(dir) == "" {
+		dir = s.StagingDir()
+	}
+	if ttl <= 0 {
+		ttl = s.stagingTTL
+	}
+	if interval <= 0 {
+		interval = s.stagingGCInterval
+	}
+	_, _ = s.PruneStaging(dir, ttl)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_, _ = s.PruneStaging(dir, ttl)
+		}
+	}
+}
+
+// StartStagingGCAuto runs staging GC with configured defaults on the service.
+func (s *Service) StartStagingGCAuto(ctx context.Context) {
+	s.StartStagingGC(ctx, "", s.stagingTTL, s.stagingGCInterval)
 }

@@ -36,10 +36,12 @@ export function SecretInput({
         <input
           id={id}
           className="input-control"
-          type={visible ? "text" : "password"}
+          type={visible && Boolean(value) ? "text" : "password"}
           autoComplete="new-password"
+          spellCheck={false}
           value={value}
           required={required}
+          disabled={cleared}
           aria-invalid={invalid}
           placeholder={hint ? t("providers.keepSecret", { hint }) : undefined}
           onChange={(e) => onChange(e.target.value)}
@@ -47,12 +49,15 @@ export function SecretInput({
         <Button
           type="button"
           iconOnly
-          title={t(visible ? "providers.hideSecret" : "providers.showSecret")}
-          aria-label={t(visible ? "providers.hideSecret" : "providers.showSecret")}
-          aria-pressed={visible}
+          disabled={!value || cleared}
+          title={t(visible && Boolean(value) ? "providers.hideSecret" : "providers.showSecret")}
+          aria-label={t(
+            visible && Boolean(value) ? "providers.hideSecret" : "providers.showSecret"
+          )}
+          aria-pressed={visible && Boolean(value)}
           onClick={() => setVisible(!visible)}
         >
-          {visible ? <EyeOff size={14} /> : <Eye size={14} />}
+          {visible && Boolean(value) ? <EyeOff size={14} /> : <Eye size={14} />}
         </Button>
         {hint && (
           <Button type="button" aria-pressed={!!cleared} onClick={onClear}>

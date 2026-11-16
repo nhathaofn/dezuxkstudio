@@ -211,7 +211,12 @@ func (s *Service) run(ctx context.Context, secretVals []string, probe func(conte
 	defer progress.KeepAlive(ctx)()
 	start := time.Now()
 	models, err := probe(ctx)
-	res := TestResult{LatencyMs: time.Since(start).Milliseconds(), Models: models}
+	elapsed := time.Since(start)
+	latencyMs := elapsed.Milliseconds()
+	if latencyMs == 0 && elapsed > 0 {
+		latencyMs = 1
+	}
+	res := TestResult{LatencyMs: latencyMs, Models: models}
 	if err == nil {
 		res.Outcome = OutcomeOK
 		return res, nil

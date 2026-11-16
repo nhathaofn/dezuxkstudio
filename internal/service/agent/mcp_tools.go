@@ -9,13 +9,17 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
+	"app/internal/contracts"
 	domainagent "app/internal/domain/agent"
 	domainbinaries "app/internal/domain/binaries"
 	domainprefs "app/internal/domain/preferences"
 	"app/internal/engine"
 	"app/internal/fsutil"
+	"app/internal/storage/sqlite"
 
+	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -141,6 +145,10 @@ type skillReadToolInput struct {
 	Resource string `json:"resource,omitempty" jsonschema:"Optional companion file inside the skill directory; defaults to SKILL.md"`
 }
 
+type inspectAssetToolInput struct {
+	AssetID string `json:"asset_id" jsonschema:"Media asset ID to inspect"`
+}
+
 type subagentRunToolInput struct {
 	Name    string `json:"name" jsonschema:"Subagent slug listed in <subagents>"`
 	Task    string `json:"task" jsonschema:"Focused task brief for the subagent to execute in its isolated context"`
@@ -190,7 +198,7 @@ func addMCPTool[I any](ts *mcpToolset, name, description string, fn func(context
 
 // needsApproval queues an action for the user's decision and returns the standard tool response.
 // Inside a subagent, actions requiring interactive user approval are blocked rather than queued.
-func (s *Service) needsApproval(ctx context.Context, tool, title, summary string, exec func(context.Context) (any, error)) (*mcp.CallToolResult, any, error) {
+func (s *Service) needsApproval(ctx context.Context, tool, nodeType string, rawInput any, title, summary string, exec func(context.Context) (any, error)) (*mcp.CallToolResult, any, error) {
 	if marker, isSub := subagentFromContext(ctx); isSub {
 		return mcpJSON(map[string]any{
 			"status":   "approval_blocked_in_subagent",
@@ -200,7 +208,7 @@ func (s *Service) needsApproval(ctx context.Context, tool, title, summary string
 			"message":  "This action requires user approval and cannot be executed or queued inside a subagent. Report this recommendation and parameters back to the root agent so it can propose approval to the user.",
 		})
 	}
-	req, err := s.queueApproval(tool, title, summary, exec)
+	req, err := s.queueApprovalRecord(ctx, tool, nodeType, rawInput, title, summary, exec)
 	if err != nil {
 		return mcpError(err.Error())
 	}
@@ -296,7 +304,7 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 				return s.workflow.RunNode(execCtx, nodeType, raw)
 			}
 			if len(prep.Destructive) > 0 {
-				return s.needsApproval(ctx, "workflow_run_node", "Run "+spec.Label, prep.summary(spec), run)
+				return s.needsApproval(ctx, "workflow_run_node", nodeType, prep.Input, "Run "+spec.Label, prep.summary(spec), run)
 			}
 			res, err := run(ctx)
 			if err != nil {
@@ -334,7 +342,7 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 				return s.workflow.RunGraph(execCtx, g)
 			}
 			if destructive {
-				return s.needsApproval(ctx, "workflow_run_graph", "Run workflow", summary, run)
+				return s.needsApproval(ctx, "workflow_run_graph", "graph", g, "Run workflow", summary, run)
 			}
 			res, err := run(ctx)
 			if err != nil {
@@ -366,7 +374,7 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 			if err := domainbinaries.ValidateID(id); err != nil {
 				return mcpError(err.Error())
 			}
-			return s.needsApproval(ctx, "binaries_download",
+			return s.needsApproval(ctx, "binaries_download", "binary", in,
 				fmt.Sprintf("Download binary %s", id),
 				fmt.Sprintf("Download and install official binary %q into DezuxkStudio tools directory.", id),
 				func(execCtx context.Context) (any, error) { return s.binaries.Download(execCtx, id) })
@@ -415,7 +423,15 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 
 	addMCPTool(server, "workspace_read_file",
 		"Open a text file (supports start_line/end_line chunked reads past 64 KiB), image, or media metadata.",
-		func(_ context.Context, in readFileToolInput) (*mcp.CallToolResult, any, error) {
+		func(ctx context.Context, in readFileToolInput) (*mcp.CallToolResult, any, error) {
+			trimmed := strings.TrimSpace(in.Path)
+			if strings.HasPrefix(trimmed, "asset:") {
+				meta, err := s.inspectMediaAsset(ctx, strings.TrimPrefix(trimmed, "asset:"))
+				if err != nil {
+					return mcpError(err.Error())
+				}
+				return mcpJSON(meta)
+			}
 			target, err := s.policy.ValidateRead(in.Path)
 			if err != nil {
 				return mcpError(err.Error())
@@ -549,6 +565,16 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 			})
 		})
 
+	addMCPTool(server, "media_inspect_asset",
+		"Inspect metadata (mime_type, dimensions, duration, size, registered_root) of a registered media asset by asset_id safely without exposing raw paths or signed tickets.",
+		func(ctx context.Context, in inspectAssetToolInput) (*mcp.CallToolResult, any, error) {
+			meta, err := s.inspectMediaAsset(ctx, in.AssetID)
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(meta)
+		})
+
 	addMCPTool(server, "subagent_run",
 		"Delegate a focused sub-task to a specialized isolated subagent worker (supports parallel calls).",
 		func(ctx context.Context, in subagentRunToolInput) (*mcp.CallToolResult, any, error) {
@@ -657,16 +683,110 @@ func (s *Service) toolNames() []string {
 	return names
 }
 
-func (s *Service) queueApproval(tool, title, summary string, execFn func(context.Context) (any, error)) (domainagent.ApprovalRequest, error) {
+func (s *Service) queueApprovalRecord(ctx context.Context, tool, nodeType string, rawInput any, title, summary string, execFn func(context.Context) (any, error)) (domainagent.ApprovalRequest, error) {
 	s.mu.Lock()
 	pid := s.activeID
+	convID := s.conversationID
+	depth := s.continuationDepth
 	s.mu.Unlock()
-	req, ok := s.approvals.queue(pid, tool, title, summary, execFn)
-	if !ok {
+
+	canonJSON, err := CanonicalJSON(rawInput)
+	if err != nil {
+		canonJSON = []byte("{}")
+	}
+	inputHash := CalculateInputHash(canonJSON)
+	appID := uuid.NewString()
+	now := time.Now()
+
+	req := domainagent.ApprovalRequest{
+		ID:         appID,
+		ProviderID: pid,
+		Tool:       tool,
+		Title:      title,
+		Summary:    summary,
+		CreatedAt:  now.UTC().Format(time.RFC3339),
+	}
+
+	if s.approvalRepo != nil {
+		record := &sqlite.AgentApproval{
+			ID:                appID,
+			ConversationID:    convID,
+			ToolName:          tool,
+			NodeType:          nodeType,
+			InputJSON:         string(canonJSON),
+			InputHash:         inputHash,
+			Status:            contracts.ApprovalStatusPending,
+			Decision:          "",
+			ResultJSON:        "",
+			ErrorText:         "",
+			ContinuationDepth: depth,
+			CreatedAt:         now.UnixMilli(),
+			UpdatedAt:         now.UnixMilli(),
+		}
+		if insErr := s.approvalRepo.InsertApproval(ctx, record); insErr != nil {
+			return req, fmt.Errorf("agent: failed to persist approval: %w", insErr)
+		}
+	}
+
+	item := pendingApproval{
+		id:                appID,
+		conversationID:    convID,
+		providerID:        pid,
+		tool:              tool,
+		nodeType:          nodeType,
+		title:             title,
+		summary:           summary,
+		inputJSON:         string(canonJSON),
+		inputHash:         inputHash,
+		continuationDepth: depth,
+		createdAt:         now,
+		exec:              execFn,
+	}
+
+	if !s.approvals.queueItem(item) {
 		max := strconv.Itoa(s.limits.MaxPendingApprovals)
 		return req, localize(fmt.Errorf("too many actions are waiting for approval (%s); ask the user to approve or reject them first", max),
 			msgTooManyApprovals, map[string]string{"max": max})
 	}
+
 	s.emitApprovals()
 	return req, nil
+}
+
+func (s *Service) queueApproval(tool, title, summary string, execFn func(context.Context) (any, error)) (domainagent.ApprovalRequest, error) {
+	return s.queueApprovalRecord(context.Background(), tool, "", nil, title, summary, execFn)
+}
+
+// inspectMediaAsset looks up a media asset by ID and returns safe metadata,
+// strictly omitting raw filesystem paths and signed access tickets.
+func (s *Service) inspectMediaAsset(ctx context.Context, id string) (map[string]any, error) {
+	id = strings.TrimSpace(strings.TrimPrefix(id, "asset:"))
+	if id == "" {
+		return nil, fmt.Errorf("media asset ID is empty")
+	}
+
+	if insp := s.mediaInspectorService(); insp != nil {
+		meta, err := insp.InspectAsset(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if meta == nil {
+			return nil, fmt.Errorf("media asset %q not found", id)
+		}
+		return map[string]any{
+			"ok":              true,
+			"asset_id":        meta.AssetID,
+			"kind":            meta.Kind,
+			"source_node":     meta.SourceNode,
+			"registered_root": meta.RegisteredRoot,
+			"mime_type":       meta.MIMEType,
+			"size_bytes":      meta.SizeBytes,
+			"width":           meta.Width,
+			"height":          meta.Height,
+			"duration_sec":    meta.DurationSec,
+			"metadata":        meta.Metadata,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("media asset %q not found", id)
 }

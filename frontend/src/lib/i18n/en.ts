@@ -255,7 +255,14 @@ export const en = {
   "settings.language.desc": "Select the display language for the application.",
 
   "overview.welcome": "DezuxkStudio Dashboard",
+  "overview.subtitle": "Next-generation multimedia creative studio & AI processing suite",
   "overview.quickActions": "Quick shortcuts",
+  "overview.studioSection": "Media & AI Studio",
+  "overview.systemSection": "System & Management",
+  "overview.tag.watermark": "Batch Alpha",
+  "overview.tag.image": "Text-to-Image",
+  "overview.tag.video": "Keyframe & Motion",
+  "overview.tag.tts": "Voice Synthesis",
   "overview.action.watermark": "Watermark Remover",
   "overview.action.watermarkDesc": "Batch-remove watermarks with multi-threaded alpha analysis.",
   "overview.action.image": "Image Generator",
@@ -297,6 +304,7 @@ export const en = {
   "system.open.config": "Config",
   "system.open.diagnostics": "Diagnostics",
   "system.open.agent_customizations": "Agent Skills",
+  "system.foldersTitle": "Application Directories",
 
   "update.title": "Updates",
   "update.check": "Check now",
@@ -396,6 +404,7 @@ export const en = {
   "watermark.stat.total": "Total Images",
   "watermark.stat.detected": "Watermark Removed",
   "watermark.stat.clean": "Already Clean",
+  "watermark.removeFile": "Remove from queue",
 
   "errors.ERR_BAD_REQUEST": "The request was malformed.",
   "errors.ERR_VALIDATION": "Some input is invalid.",
@@ -793,6 +802,72 @@ export const en = {
     "This model requires at least one reference image for editing.",
   "errors.mediagen.reference_not_supported":
     "This model or endpoint does not accept reference images.",
+
+  "agent.code.copy": "Copy code",
+  "agent.code.copied": "Copied",
+  "agent.errors.approval_busy": "The approval request is currently executing.",
+  "agent.errors.approval_ambiguous":
+    "Approval execution state is ambiguous and requires confirmation.",
+  "agent.errors.approval_already_resolved": "The approval request has already been resolved.",
+  "agent.errors.approval_hash_mismatch":
+    "Input parameters were modified after approval was requested. Approval has been invalidated.",
+  "agent.errors.approval_concurrent": "Approval request was modified by another concurrent action.",
+  "agent.errors.approval_expired": "Approval request has expired.",
+
+  "watermark.copyClean.label": "Copy clean images to destination",
+  "watermark.copyClean.desc": "Copy clean original images directly to output folder",
+  "watermark.preserveTree.label": "Preserve directory structure",
+  "watermark.preserveTree.desc": "Maintain subfolder tree when relative paths are used",
+  "watermark.status.processed": "Processed",
+  "watermark.status.copied": "Copied",
+  "watermark.status.skipped": "Skipped",
+  "watermark.status.failed": "Failed",
+  "watermark.compare": "Compare",
+
+  "system.desktopOnly": "This action is only available in desktop mode",
+
+  "mediagen.action.retry": "Retry",
+
+  "cross.sendToWatermark": "Send to Watermark",
+  "cross.askAgent": "Ask Agent about this file",
+
+  "media.library.title": "Media Library",
+  "media.filter.all": "All",
+  "media.filter.images": "Images",
+  "media.filter.videos": "Videos",
+  "media.filter.audio": "Audio",
+  "media.search.placeholder": "Search registered assets...",
+  "media.loading": "Loading media assets...",
+  "media.empty.title": "No media assets",
+  "media.empty.desc": "Generated and imported media files will appear here.",
+  "media.action.refresh": "Refresh",
+  "media.action.delete": "Delete",
+
+  "agent.connections.billing": "Billing",
+  "agent.connections.billingSource": "Billing Source",
+  "agent.connections.linkedCredential": "Credential Link",
+  "agent.connections.oauthDefault": "OAuth / Subscription (Default)",
+  "agent.connections.activeSource": "Active Connection & Billing",
+
+  "tools.delete": "Delete",
+
+  "mediaoutput.copyPrompt": "Copy Prompt",
+  "mediaoutput.copiedPrompt": "Prompt copied",
+  "mediaoutput.copyPath": "Copy Path",
+  "mediaoutput.copiedPath": "Path copied",
+  "mediaoutput.compare": "Compare Before / After",
+  "mediaoutput.closeCompare": "Close comparison",
+  "mediaoutput.download": "Download",
+  "mediaoutput.sendToWatermark": "Send to Watermark",
+  "mediaoutput.askAgent": "Ask AI Agent",
+  "mediaoutput.retry": "Retry",
+  "mediaoutput.dismissError": "Dismiss error",
+  "mediaoutput.zoomIn": "Zoom in",
+  "mediaoutput.zoomOut": "Zoom out",
+  "mediaoutput.zoomReset": "Reset zoom",
+  "mediaoutput.before": "Before",
+  "mediaoutput.after": "After",
+  "mediaoutput.previewFailed": "Unable to load media preview",
 } as const;
 
 export type MessageKey = keyof typeof en;

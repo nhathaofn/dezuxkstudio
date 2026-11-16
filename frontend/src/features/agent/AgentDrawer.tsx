@@ -20,6 +20,7 @@ import { useConnectionStore } from "../connection/useConnectionStore";
 import { AgentChatTab } from "./AgentChatTab";
 import { AgentCustomizationsTab } from "./AgentCustomizationsTab";
 import { AgentProviderCard } from "./AgentProviderCard";
+import { getActiveBillingSource } from "./screenContext";
 import { useSystemStore } from "../system/useSystemStore";
 import { useAgentCustomizationsStore } from "./useAgentCustomizationsStore";
 import { useAgentDrawerStore } from "./useAgentDrawerStore";
@@ -126,6 +127,11 @@ export const AgentDrawer: React.FC = () => {
           <Badge className={activeProvider ? "agent-badge-online" : ""}>
             {activeProvider ? activeProvider.name : t("agent.status.disconnected")}
           </Badge>
+          {activeProvider && (
+            <Badge title="Active Billing Source">
+              {getActiveBillingSource(activeProvider.id, activeProvider.compatible_providers)}
+            </Badge>
+          )}
           {developerMode && <Badge className="agent-badge-dev">{t("agent.mode.developer")}</Badge>}
         </div>
 

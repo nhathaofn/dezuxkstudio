@@ -16,6 +16,7 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { getBridge, isDesktop } from "../../lib/bridge";
 import { translateServerMessage, useT, type MessageKey } from "../../lib/i18n";
+import { useSystemStore } from "../system/useSystemStore";
 import { useBinariesStore } from "./useBinariesStore";
 
 function getStatusBadge(status: BinaryStatus, t: (k: MessageKey) => string) {
@@ -67,12 +68,14 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
   const storeProbe = useBinariesStore((s) => s.probe);
   const storeDownload = useBinariesStore((s) => s.download);
   const storeSetCustomPath = useBinariesStore((s) => s.setCustomPath);
+  const storeProgress = useBinariesStore((s) => s.activeProgress[binary.id]);
 
   const [isProbing, setIsProbing] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<ActionProgress | null>(null);
   const [customPathDraft, setCustomPathDraft] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  const activeProgress = downloadProgress ?? storeProgress ?? null;
   const customPathInput = customPathDraft ?? (binary.custom_path || "");
 
   useEffect(() => {
@@ -81,9 +84,72 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
     };
   }, []);
 
-  const isDownloading = downloadProgress !== null;
+  const isDownloading = activeProgress !== null;
   const isDirty = customPathDraft !== null && customPathDraft !== (binary.custom_path || "");
   const badge = getStatusBadge(binary.status, t);
+
+  const systemInfo = useSystemStore((s) => s.info) ?? useSystemStore.getState().info;
+  const isRemote = systemInfo?.mode === "server" || systemInfo?.mode === "client";
+  const desktopOnlyTooltip = t("system.desktopOnly");
+  const canBrowse = isDesktop() && !isRemote;
+
+  const isResume = Boolean(
+    activeProgress?.is_resume ||
+    activeProgress?.binary_progress?.is_resume ||
+    activeProgress?.msg_params?.is_resume === "true"
+  );
+
+  const resumedFromBytes =
+    activeProgress?.resumed_from_bytes ||
+    activeProgress?.binary_progress?.resumed_from_bytes ||
+    (activeProgress?.msg_params?.resumed_from ? Number(activeProgress.msg_params.resumed_from) : 0);
+
+  const resumedFromMB = (() => {
+    if (activeProgress?.msg_params?.resumed_from_mb) {
+      return activeProgress.msg_params.resumed_from_mb;
+    }
+    if (resumedFromBytes > 0) {
+      return (resumedFromBytes / (1024 * 1024)).toFixed(1);
+    }
+    return null;
+  })();
+
+  const getPathWarning = (): string | null => {
+    if (customPathDraft !== null) {
+      const trimmed = customPathDraft.trim();
+      if (trimmed.length === 0) {
+        return "Custom binary path cannot be empty. Enter an executable path or click Reset.";
+      }
+      const pathWithoutDrive = trimmed.replace(/^[a-zA-Z]:/, "");
+      if (/[<>"|?*]/.test(pathWithoutDrive)) {
+        return 'Path contains invalid characters (< > " | ? *).';
+      }
+      if (
+        !trimmed.toLowerCase().endsWith(".exe") &&
+        !trimmed.toLowerCase().endsWith(binary.executable.toLowerCase())
+      ) {
+        return `Expected an executable file (${binary.executable}).`;
+      }
+      return null;
+    }
+    if (binary.custom_path && binary.status === "invalid") {
+      return "The configured custom executable path is invalid or not executable.";
+    }
+    return null;
+  };
+
+  const pathWarning = getPathWarning();
+
+  const mbText = (() => {
+    if (activeProgress?.msg_params?.done) {
+      if (activeProgress.msg_params.total) {
+        return `${activeProgress.msg_params.done} / ${activeProgress.msg_params.total} MB`;
+      }
+      return `${activeProgress.msg_params.done} MB`;
+    }
+    const match = activeProgress?.message?.match(/(\d+(?:\.\d+)?(?:\s*\/\s*\d+(?:\.\d+)?)?\s*MB)/i);
+    return match ? match[1] : null;
+  })();
 
   const handleProbe = async () => {
     setIsProbing(true);
@@ -120,6 +186,7 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
 
   const handleSaveCustomPath = async () => {
     const customPath = customPathInput.trim();
+    if (!customPath || (pathWarning && customPathDraft !== null)) return;
     setIsProbing(true);
     try {
       const runner = onSetCustomPath ?? storeSetCustomPath;
@@ -206,21 +273,45 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
       </div>
 
       {/* Progress bar during download */}
-      {isDownloading && downloadProgress && (
+      {isDownloading && activeProgress && (
         <div className="binary-progress-wrap">
           <div className="binary-progress-meta">
-            <span>
-              {translateServerMessage(t, downloadProgress.msg_key, downloadProgress.msg_params) ||
-                downloadProgress.message ||
+            <span className="binary-progress-status">
+              {translateServerMessage(t, activeProgress.msg_key, activeProgress.msg_params) ||
+                activeProgress.message ||
                 t("tools.downloading")}
+              {isResume && (
+                <Badge
+                  className="binary-resumed-badge"
+                  style={{
+                    marginLeft: "var(--space-2)",
+                    fontSize: "var(--text-xs)",
+                    color: "var(--status-connecting)",
+                  }}
+                >
+                  {resumedFromMB ? `Resumed from ${resumedFromMB} MB` : "Resumed"}
+                </Badge>
+              )}
             </span>
-            <span>{downloadProgress.percent.toFixed(1)}%</span>
+            <span className="binary-progress-metrics">
+              {mbText && (
+                <span className="binary-progress-mb" style={{ marginRight: "var(--space-2)" }}>
+                  {mbText}
+                </span>
+              )}
+              <span
+                className="binary-progress-pct"
+                style={{ fontWeight: "var(--weight-semibold)" }}
+              >
+                {activeProgress.percent.toFixed(1)}%
+              </span>
+            </span>
           </div>
           <div className="progress">
             <div
               className="progress__bar"
               style={{
-                width: `${Math.min(100, Math.max(0, downloadProgress.percent))}%`,
+                width: `${Math.min(100, Math.max(0, activeProgress.percent))}%`,
               }}
             />
           </div>
@@ -247,24 +338,24 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
           onChange={(e) => setCustomPathDraft(e.target.value)}
           placeholder={t("tools.customPathPlaceholder")}
           disabled={isDownloading || isProbing || disabled}
+          aria-invalid={Boolean(pathWarning)}
         />
-        {isDesktop() && (
-          <Button
-            size="sm"
-            onClick={() => void handleBrowse()}
-            disabled={isDownloading || isProbing || disabled}
-            title={t("tools.browse")}
-          >
-            <FolderOpen size={12} />
-            {t("tools.browse")}
-          </Button>
-        )}
+        <Button
+          size="sm"
+          onClick={() => void handleBrowse()}
+          disabled={isDownloading || isProbing || disabled || !canBrowse}
+          title={!canBrowse ? desktopOnlyTooltip : t("tools.browse")}
+          aria-disabled={!canBrowse}
+        >
+          <FolderOpen size={12} />
+          {t("tools.browse")}
+        </Button>
         {isDirty && (
           <Button
             variant="primary"
             size="sm"
             onClick={() => void handleSaveCustomPath()}
-            disabled={isDownloading || isProbing || disabled}
+            disabled={isDownloading || isProbing || disabled || Boolean(pathWarning)}
             title={t("tools.savePath")}
           >
             <Save size={12} />
@@ -283,6 +374,23 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
           </Button>
         )}
       </div>
+      {pathWarning && (
+        <div
+          className="binary-path-warning"
+          role="alert"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "var(--space-1)",
+            marginTop: "var(--space-1)",
+            fontSize: "var(--text-xs)",
+            color: "var(--status-disconnected)",
+          }}
+        >
+          <XCircle size={12} style={{ flexShrink: 0 }} />
+          <span>{pathWarning}</span>
+        </div>
+      )}
     </div>
   );
 };

@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { appConfig } from "../../config/appConfig";
 import { useWatermarkStore } from "./useWatermarkStore";
 import { WatermarkView } from "./WatermarkView";
 import WatermarkViewDefault from "./WatermarkView";
@@ -421,6 +422,8 @@ describe("useWatermarkStore Actions & Edge Case Robustness", () => {
           images: [{ localUrl: "C:/target.png", kind: "image" }],
           inplace: true,
           output_dir: "",
+          copy_clean: true,
+          preserve_tree: false,
           workers: 4,
           corner: "top-right",
         },
@@ -551,6 +554,8 @@ describe("useWatermarkStore Actions & Edge Case Robustness", () => {
           images: [{ localUrl: "/srv/media/staging/job1/photo.png", kind: "image" }],
           inplace: false,
           output_dir: "",
+          copy_clean: true,
+          preserve_tree: false,
         },
       },
       expect.any(Object)
@@ -616,6 +621,190 @@ describe("useWatermarkStore Actions & Edge Case Robustness", () => {
     } finally {
       useConnectionStore.setState({ endpoint: prevEndpoint });
     }
+  });
+});
+
+describe("Phase 1 Wave B Watermark Policy & Compare UX Enhancement", () => {
+  beforeEach(() => {
+    useWatermarkStore.getState().reset();
+    useWatermarkStore.setState({
+      inPlace: false,
+      outputDir: "",
+      workers: null,
+      corner: null,
+      copyClean: true,
+      preserveTree: false,
+      comparisonItem: null,
+      comparisonZoom: 1.0,
+      comparisonPan: { x: 0, y: 0 },
+      comparisonSliderPos: 50,
+    });
+  });
+
+  it("toggles CopyClean and PreserveTree in store and includes them in removeWatermark payload", async () => {
+    const store = useWatermarkStore.getState();
+    expect(store.copyClean).toBe(true);
+    expect(store.preserveTree).toBe(false);
+
+    store.setCopyClean(false);
+    store.setPreserveTree(true);
+
+    expect(useWatermarkStore.getState().copyClean).toBe(false);
+    expect(useWatermarkStore.getState().preserveTree).toBe(true);
+
+    const requestSpy = vi.spyOn(rtClient, "request").mockResolvedValueOnce({
+      output: { images: [], total_count: 1, detected_count: 0 },
+    } as never);
+
+    useWatermarkStore.getState().setInputPath("C:/test.png");
+    await useWatermarkStore.getState().removeWatermark();
+
+    expect(requestSpy).toHaveBeenCalledWith(
+      Actions.WORKFLOW_RUN_NODE,
+      expect.objectContaining({
+        input: expect.objectContaining({
+          copy_clean: false,
+          preserve_tree: true,
+        }),
+      }),
+      expect.any(Object)
+    );
+    requestSpy.mockRestore();
+  });
+
+  it("renders status badges for processed, copied, skipped, and failed items", () => {
+    useWatermarkStore.setState({
+      inputPaths: ["C:/1.png", "C:/2.png", "C:/3.png", "C:/4.png"],
+      result: {
+        images: [],
+        image: { localUrl: "C:/1_nowm.png", kind: "image/png" },
+        detected: true,
+        total_count: 4,
+        detected_count: 1,
+        results: [
+          {
+            path: "C:/1.png",
+            out_path: "C:/1_nowm.png",
+            detected: true,
+            score: 0.92,
+            status: "processed",
+          },
+          {
+            path: "C:/2.png",
+            out_path: "C:/out/2.png",
+            detected: false,
+            score: 0.0,
+            status: "copied",
+          },
+          {
+            path: "C:/3.png",
+            out_path: "C:/out/3.png",
+            detected: false,
+            score: 0.0,
+            status: "skipped",
+            reason: "output already exists with identical parameters",
+          },
+          {
+            path: "C:/4.png",
+            out_path: "",
+            detected: false,
+            score: 0.0,
+            status: "failed",
+            error: "corrupted image data",
+          },
+        ],
+      },
+    });
+
+    const html = renderToStaticMarkup(React.createElement(WatermarkResultsCard));
+    expect(html).toContain("watermark-badge-connected");
+    expect(html).toContain("Removed (92%)");
+    expect(html).toContain("watermark-badge-copied");
+    expect(html).toContain("Copied");
+    expect(html).toContain("watermark-badge-skipped");
+    expect(html).toContain("Skipped");
+    expect(html).toContain("output already exists with identical parameters");
+    expect(html).toContain("watermark-badge-error");
+    expect(html).toContain("Error");
+  });
+
+  it("manages comparison state and respects appConfig.ui.watermarkCompare limits", () => {
+    const store = useWatermarkStore.getState();
+    const { zoomMax, zoomStep } = appConfig.ui.watermarkCompare;
+
+    store.setComparisonItem({
+      beforeUrl: "C:/input.png",
+      afterUrl: "C:/output_nowm.png",
+      title: "Comparison Sample",
+    });
+
+    expect(useWatermarkStore.getState().comparisonItem).toEqual({
+      beforeUrl: "C:/input.png",
+      afterUrl: "C:/output_nowm.png",
+      title: "Comparison Sample",
+    });
+    expect(useWatermarkStore.getState().comparisonZoom).toBe(1.0);
+    expect(useWatermarkStore.getState().comparisonSliderPos).toBe(50);
+
+    // Zoom in
+    store.setComparisonZoom((z) => Math.min(zoomMax, +(z + zoomStep).toFixed(2)));
+    expect(useWatermarkStore.getState().comparisonZoom).toBe(+(1.0 + zoomStep).toFixed(2));
+
+    // Pan
+    store.setComparisonPan({ x: 25, y: -10 });
+    expect(useWatermarkStore.getState().comparisonPan).toEqual({ x: 25, y: -10 });
+
+    // Slider pos
+    store.setComparisonSliderPos(75);
+    expect(useWatermarkStore.getState().comparisonSliderPos).toBe(75);
+
+    // Reset comparison
+    store.resetComparison();
+    expect(useWatermarkStore.getState().comparisonItem).toBeNull();
+    expect(useWatermarkStore.getState().comparisonZoom).toBe(1.0);
+    expect(useWatermarkStore.getState().comparisonPan).toEqual({ x: 0, y: 0 });
+    expect(useWatermarkStore.getState().comparisonSliderPos).toBe(50);
+  });
+
+  it("renders ComparisonViewer when comparisonItem is active in results card", () => {
+    useWatermarkStore.setState({
+      inputPath: "C:/photo.png",
+      comparisonItem: {
+        beforeUrl: "C:/photo.png",
+        afterUrl: "C:/photo_nowm.png",
+        title: "photo.png",
+      },
+      result: {
+        images: [],
+        image: { localUrl: "C:/photo_nowm.png", kind: "image/png" },
+        detected: true,
+        total_count: 1,
+        detected_count: 1,
+      },
+    });
+
+    const html = renderToStaticMarkup(React.createElement(WatermarkResultsCard));
+    expect(html).toContain("watermark-comparison-viewer");
+    expect(html).toContain('aria-label="Before/After split slider"');
+    expect(html).toContain('aria-label="Zoom in"');
+    expect(html).toContain('aria-label="Zoom out"');
+    expect(html).toContain('aria-label="Close comparison"');
+  });
+
+  it("dismisses error when dismiss button is triggered or dismissError action called", () => {
+    useWatermarkStore.setState({
+      error: new ActionError("ERR_VALIDATION", "Test dismissable error"),
+    });
+
+    let html = renderToStaticMarkup(React.createElement(WatermarkView));
+    expect(html).toContain("Test dismissable error");
+    expect(html).toContain('aria-label="Dismiss error"');
+
+    useWatermarkStore.getState().dismissError();
+    expect(useWatermarkStore.getState().error).toBeNull();
+
+    html = renderToStaticMarkup(React.createElement(WatermarkView));
+    expect(html).not.toContain("Test dismissable error");
   });
 });
 

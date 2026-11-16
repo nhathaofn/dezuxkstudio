@@ -25,7 +25,11 @@ export const UpdateCard: React.FC = () => {
       }
     >
       {update && !update.available && (
-        <p className="muted-text">{t("update.upToDate", { version: update.current_version })}</p>
+        <div className="update-status-row">
+          <span className="update-status-tag">
+            ✓ {t("update.upToDate", { version: update.current_version })}
+          </span>
+        </div>
       )}
       {update?.available && (
         <div className="row row--wrap">

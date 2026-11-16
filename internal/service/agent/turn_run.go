@@ -270,6 +270,7 @@ func (s *Service) endTurn(t *turn, err error) {
 		s.mu.Lock()
 		if s.turn == t {
 			s.turn = nil
+			s.continuationDepth = 0
 		}
 		current = current && s.connSeq.Load() == t.connToken // a disconnect may have happened while storing
 		if err != nil && isAuthError(err) && current {
@@ -419,4 +420,32 @@ func (s *Service) flushGuard(t *turn, emit bool) {
 	if t.guard.blocked() {
 		s.log.Warn("agent: output guard blocked source code in assistant reply", "provider", t.providerID, "message_id", t.id)
 	}
+}
+
+// triggerContinuationTurn executes an asynchronous continuation prompt in the conversation with incremented continuation depth.
+func (s *Service) triggerContinuationTurn(conversationID, feedback string, nextDepth int) {
+	safego.Go("agent.continuation", func() {
+		// Bounded wait if the previous turn is finishing its endTurn cleanup
+		for i := 0; i < 40; i++ {
+			s.mu.Lock()
+			busy := s.turn != nil
+			s.mu.Unlock()
+			if !busy {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		s.mu.Lock()
+		s.continuationDepth = nextDepth
+		if conversationID != "" {
+			s.conversationID = conversationID
+		}
+		s.mu.Unlock()
+
+		_, _, err := s.SendPrompt(context.Background(), feedback)
+		if err != nil {
+			s.log.Warn("agent: failed to trigger continuation turn", "error", err, "conversation_id", conversationID)
+		}
+	})
 }

@@ -2,6 +2,7 @@ import React, { Suspense, useEffect } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { LoadingSkeleton } from "../components/ui/LoadingSkeleton";
 import { AgentDrawer } from "../features/agent/AgentDrawer";
+import { MediaLibraryDrawer } from "../features/media/MediaLibraryDrawer";
 import { useAgentDrawerStore } from "../features/agent/useAgentDrawerStore";
 import { useScreenContextStore } from "../features/agent/screenContext";
 import { useT } from "../lib/i18n";
@@ -44,6 +45,7 @@ export const MainLayout: React.FC = () => {
           </Suspense>
         </main>
         <AgentDrawer />
+        <MediaLibraryDrawer />
       </div>
     </div>
   );

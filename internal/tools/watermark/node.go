@@ -13,22 +13,31 @@ import (
 	"sync"
 
 	"app/internal/apperr"
+	"app/internal/config"
 	"app/internal/contracts"
 	"app/internal/engine"
 	"app/internal/fsutil"
 	"app/internal/progress"
 	"app/internal/safego"
+	"app/internal/service/media"
 	"app/pkg/watermark"
 )
 
 // NodeType is the unique identifier for the watermark remover node.
 const NodeType = contracts.NodeTypeWatermarkRemover
 
+// MediaRegistrar registers newly created or copied media assets into the library.
+type MediaRegistrar interface {
+	RegisterAsset(ctx context.Context, params media.RegisterAssetParams) (*contracts.MediaAssetItem, error)
+}
+
 // Options configures default directories for the node.
 type Options struct {
 	MediaDir  string // Application media storage directory
 	OutputDir string // Default folder to save cleaned images
 	Templates []watermark.Template
+	Registrar MediaRegistrar
+	Config    *config.Config
 }
 
 // RemoverImage accepts either an engine.MediaRef object or a plain string path.
@@ -73,6 +82,8 @@ func NewNode(opts Options) engine.Node {
 				},
 				Default: string(watermark.CornerBottomRight),
 			},
+			{Name: "copy_clean", Label: "Copy clean images to destination", Kind: engine.ParamToggle, Default: "true"},
+			{Name: "preserve_tree", Label: "Preserve directory structure", Kind: engine.ParamToggle, Default: "false"},
 		},
 	}
 
@@ -91,15 +102,25 @@ func NewNode(opts Options) engine.Node {
 			return RemoverOutput{}, engine.Invalid("Watermark Remover input port 'image' or 'images' received no file path")
 		}
 
+		maxWorkers := opts.Config.WatermarkMaxWorkers()
+		maxPixels := opts.Config.WatermarkMaxImagePixels()
+		decodeConcurrency := opts.Config.WatermarkDecodeConcurrency()
+
+		workers := in.Workers
+		if workers <= 0 {
+			workers = maxWorkers
+		}
+
 		cfg := watermark.Config{
 			Corner:    watermark.Corner(in.Corner),
-			Workers:   in.Workers,
+			Workers:   workers,
 			MinScore:  in.MinScore,
 			MinGain:   in.MinGain,
 			MaxGain:   in.MaxGain,
 			Templates: opts.Templates,
 		}
 		eng := watermark.New(cfg)
+		eng.SetLimits(maxPixels, decodeConcurrency)
 
 		if ctx.Err() != nil {
 			return RemoverOutput{}, ctx.Err()
@@ -155,7 +176,7 @@ func NewNode(opts Options) engine.Node {
 					if streamCtx.Err() != nil {
 						return
 					}
-					itemResults[i] = RemoverItem{Path: p, Error: err.Error()}
+					itemResults[i] = RemoverItem{Path: p, Status: watermark.StatusFailed, Error: err.Error()}
 					reportDone()
 					continue
 				}
@@ -167,12 +188,15 @@ func NewNode(opts Options) engine.Node {
 			}
 		})
 
-		for br := range eng.ProcessStream(streamCtx, itemsCh, in.Workers) {
+		for br := range eng.ProcessStream(streamCtx, itemsCh, workers) {
+			if ctx.Err() != nil {
+				return RemoverOutput{}, ctx.Err()
+			}
 			i, err := strconv.Atoi(br.ID)
 			if err != nil || i < 0 || i >= total {
 				continue
 			}
-			itemResults[i], outPaths[i] = finishItem(ctx, in, targetDir, rawPaths[i], resolvedPaths[i], br)
+			itemResults[i], outPaths[i] = finishItem(ctx, in, targetDir, rawPaths[i], resolvedPaths[i], br, opts)
 			reportDone()
 		}
 		if ctx.Err() != nil {
@@ -231,20 +255,125 @@ func readInput(ctx context.Context, raw, mediaDir string) (string, []byte, error
 	return resPath, data, nil
 }
 
-// finishItem writes one processed image (when a watermark was found) and returns its result and
-// output path ("" when the item failed).
-func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPath string, br watermark.BatchResult) (RemoverItem, string) {
-	if br.Err != nil {
-		return RemoverItem{Path: rawPath, Error: fmt.Sprintf("processing failed: %v", br.Err)}, ""
+// finishItem writes one processed image (when a watermark was found) or handles CopyClean (when clean)
+// and returns its result and output path ("" when the item failed).
+func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPath string, br watermark.BatchResult, nodeOpts ...Options) (RemoverItem, string) {
+	if err := ctx.Err(); err != nil {
+		return RemoverItem{
+			Path:   rawPath,
+			Status: watermark.StatusFailed,
+			Error:  err.Error(),
+		}, ""
 	}
-	res := RemoverItem{Path: rawPath, Detected: br.Detected, Score: br.Score, Size: br.Info.Size}
-	if !br.Detected {
-		res.OutPath = resPath
-		return res, resPath
+
+	if br.Err != nil {
+		return RemoverItem{
+			Path:   rawPath,
+			Status: watermark.StatusFailed,
+			Error:  fmt.Sprintf("processing failed: %v", br.Err),
+		}, ""
+	}
+
+	taskParams := watermark.TaskParams{
+		InputPath: resPath,
+		Corner:    in.Corner,
+		MinScore:  in.MinScore,
+		MinGain:   in.MinGain,
+		MaxGain:   in.MaxGain,
+	}
+
+	// Determine destDir taking PreserveTree into account when relative paths are supplied
+	destDir := targetDir
+	if destDir == "" {
+		destDir = filepath.Dir(resPath)
+	} else if in.PreserveTree != nil && *in.PreserveTree && !filepath.IsAbs(rawPath) {
+		cleanRel := filepath.Clean(rawPath)
+		if !strings.HasPrefix(cleanRel, "..") {
+			dir := filepath.Dir(cleanRel)
+			if dir != "." && dir != string(filepath.Separator) {
+				destDir = filepath.Join(targetDir, dir)
+			}
+		}
+	}
+
+	copyClean := targetDir != ""
+	if in.CopyClean != nil {
+		copyClean = *in.CopyClean
+	}
+	if in.InPlace {
+		copyClean = false
 	}
 
 	ext := filepath.Ext(resPath)
 	base := strings.TrimSuffix(filepath.Base(resPath), ext)
+
+	// Case 1: No watermark detected
+	if !br.Detected {
+		res := RemoverItem{
+			Path:     rawPath,
+			Detected: false,
+			Score:    br.Score,
+			Size:     br.Info.Size,
+		}
+
+		if !copyClean {
+			res.Status = watermark.StatusSkipped
+			res.Reason = watermark.ReasonNoWatermark
+			res.OutPath = resPath
+			return res, resPath
+		}
+
+		// Copy clean original image to destination folder
+		if err := engine.CheckFile(ctx, destDir, true); err != nil {
+			res.Status = watermark.StatusFailed
+			res.Error = formatPathError("create directory", destDir, err)
+			return res, ""
+		}
+		if err := os.MkdirAll(destDir, 0o755); err != nil {
+			res.Status = watermark.StatusFailed
+			res.Error = formatPathError("create directory", destDir, err)
+			return res, ""
+		}
+
+		outPath, isIdempotent := watermark.ResolveOutputPath(destDir, base, "", ext, taskParams, nil)
+		if isIdempotent {
+			res.Status = watermark.StatusSkipped
+			res.Reason = watermark.ReasonIdempotentSkip
+			res.OutPath = outPath
+			res.AssetID = registerWatermarkAsset(ctx, nodeOpts, destDir, outPath)
+			return res, outPath
+		}
+
+		if err := engine.CheckFile(ctx, outPath, true); err != nil {
+			res.Status = watermark.StatusFailed
+			res.Error = formatPathError("write file", outPath, err)
+			return res, ""
+		}
+
+		perm := os.FileMode(0o644)
+		if fi, err := os.Stat(resPath); err == nil {
+			perm = fi.Mode().Perm()
+		}
+		if err := watermark.CopyFileAtomicContext(ctx, resPath, outPath, perm); err != nil {
+			res.Status = watermark.StatusFailed
+			res.Error = formatPathError("write file", outPath, err)
+			return res, ""
+		}
+		watermark.DefaultProvenance.Record(outPath, taskParams)
+		res.Status = watermark.StatusCopied
+		res.OutPath = outPath
+		res.AssetID = registerWatermarkAsset(ctx, nodeOpts, destDir, outPath)
+		return res, outPath
+	}
+
+	// Case 2: Watermark detected and removed
+	res := RemoverItem{
+		Path:     rawPath,
+		Detected: true,
+		Score:    br.Score,
+		Size:     br.Info.Size,
+	}
+
 	// WebP re-encoded as PNG must use .png; anything re-encoded as JPEG must use .jpg.
 	outExt := ext
 	if br.OutputFormat == watermark.FormatPNG && (strings.EqualFold(ext, ".webp") || ext == "") {
@@ -256,32 +385,42 @@ func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPat
 	var outPath string
 	if in.InPlace {
 		outPath = filepath.Join(filepath.Dir(resPath), base+outExt)
-	} else {
-		destDir := targetDir
-		if destDir == "" {
-			destDir = filepath.Dir(resPath)
+		if !strings.EqualFold(outPath, resPath) {
+			if _, err := os.Stat(outPath); err == nil {
+				res.Status = watermark.StatusFailed
+				res.Error = fmt.Sprintf("target file %q already exists", filepath.Base(outPath))
+				return res, ""
+			} else if !os.IsNotExist(err) {
+				res.Status = watermark.StatusFailed
+				res.Error = formatPathError("inspect target", outPath, err)
+				return res, ""
+			}
 		}
+	} else {
 		if err := engine.CheckFile(ctx, destDir, true); err != nil {
+			res.Status = watermark.StatusFailed
 			res.Error = formatPathError("create directory", destDir, err)
 			return res, ""
 		}
 		if err := os.MkdirAll(destDir, 0o755); err != nil {
+			res.Status = watermark.StatusFailed
 			res.Error = formatPathError("create directory", destDir, err)
 			return res, ""
 		}
-		outPath = filepath.Join(destDir, base+"_nowm"+outExt)
-	}
-	if in.InPlace && !strings.EqualFold(outPath, resPath) {
-		if _, err := os.Stat(outPath); err == nil {
-			res.Error = fmt.Sprintf("target file %q already exists", filepath.Base(outPath))
-			return res, ""
-		} else if !os.IsNotExist(err) {
-			res.Error = formatPathError("inspect target", outPath, err)
-			return res, ""
+
+		var isIdempotent bool
+		outPath, isIdempotent = watermark.ResolveOutputPath(destDir, base, "_nowm", outExt, taskParams, nil)
+		if isIdempotent {
+			res.Status = watermark.StatusSkipped
+			res.Reason = watermark.ReasonIdempotentSkip
+			res.OutPath = outPath
+			res.AssetID = registerWatermarkAsset(ctx, nodeOpts, destDir, outPath)
+			return res, outPath
 		}
 	}
 
 	if err := engine.CheckFile(ctx, outPath, true); err != nil {
+		res.Status = watermark.StatusFailed
 		res.Error = formatPathError("write file", outPath, err)
 		return res, ""
 	}
@@ -292,15 +431,52 @@ func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPat
 			perm = fi.Mode().Perm()
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		res.Status = watermark.StatusFailed
+		res.Error = err.Error()
+		return res, ""
+	}
 	if err := fsutil.WriteFileAtomic(outPath, br.Output, perm); err != nil {
+		res.Status = watermark.StatusFailed
 		res.Error = formatPathError("write file", outPath, err)
 		return res, ""
 	}
 	if in.InPlace && !strings.EqualFold(outPath, resPath) {
 		_ = os.Remove(resPath)
 	}
+
+	watermark.DefaultProvenance.Record(outPath, taskParams)
+	res.Status = watermark.StatusProcessed
 	res.OutPath = outPath
+	res.AssetID = registerWatermarkAsset(ctx, nodeOpts, destDir, outPath)
 	return res, outPath
+}
+
+func registerWatermarkAsset(ctx context.Context, nodeOpts []Options, destDir, outPath string) string {
+	if len(nodeOpts) == 0 || nodeOpts[0].Registrar == nil || strings.TrimSpace(outPath) == "" {
+		return ""
+	}
+	opts := nodeOpts[0]
+	root := opts.MediaDir
+	if strings.TrimSpace(destDir) != "" {
+		root = destDir
+	}
+	if root == "" {
+		root = filepath.Dir(outPath)
+	}
+	if adder, ok := opts.Registrar.(interface{ AddAllowedRoot(string) }); ok && root != "" {
+		adder.AddAllowedRoot(root)
+	}
+	asset, err := opts.Registrar.RegisterAsset(ctx, media.RegisterAssetParams{
+		Kind:           "image",
+		SourceNode:     NodeType,
+		FilePath:       outPath,
+		RegisteredRoot: root,
+	})
+	if err != nil || asset == nil {
+		return ""
+	}
+	return asset.ID
 }
 
 func formatPathError(action, targetPath string, err error) string {

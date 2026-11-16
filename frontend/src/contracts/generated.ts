@@ -79,6 +79,9 @@ export interface ActionProgress {
   msg_key?: string;
   msg_params?: Record<string, string>;
   heartbeat?: boolean;
+  resumed_from_bytes?: number;
+  is_resume?: boolean;
+  binary_progress?: BinaryProgress;
 }
 
 export interface AgentAllowedDirPayload {
@@ -100,6 +103,9 @@ export interface AgentApprovalRequest {
   title: string;
   summary: string;
   created_at: string;
+  input_hash?: string;
+  status?: string;
+  continuation_depth?: number;
 }
 
 export interface AgentChatEvent {
@@ -126,6 +132,10 @@ export interface AgentChatMessage {
   subagents?: SubagentInvocation[];
   created_at: number;
   conversation_id?: string;
+}
+
+export interface AgentCompatibleProvidersResult {
+  compatible_providers: string[];
 }
 
 export interface AgentConversation {
@@ -159,6 +169,12 @@ export interface AgentCustomizationsResult {
 export interface AgentHistoryResult {
   conversation_id: string;
   messages: AgentChatMessage[];
+}
+
+export interface AgentLinkProviderPayload {
+  agent_provider_id: string;
+  provider_id: string;
+  credential_id: string;
 }
 
 export interface AgentListResult {
@@ -223,6 +239,18 @@ export interface AgentProviderInfo {
   revision: number;
   installing: boolean;
   install_percent: number;
+  compatible_providers?: string[];
+}
+
+export interface AgentProviderLinkItem {
+  agent_provider_id: string;
+  provider_id: string;
+  credential_id: string;
+  updated_at?: number;
+}
+
+export interface AgentProviderLinksResult {
+  links: AgentProviderLinkItem[];
 }
 
 export interface AgentResolveApprovalPayload {
@@ -293,6 +321,16 @@ export interface BinaryInfo {
 
 export interface BinaryListResult {
   binaries: BinaryInfo[];
+}
+
+export interface BinaryProgress {
+  id: BinaryID;
+  total_bytes: number;
+  downloaded_bytes: number;
+  resumed_from_bytes: number;
+  is_resume: boolean;
+  percent: number;
+  speed_bps?: number;
 }
 
 export interface BinarySetPathPayload {
@@ -473,6 +511,7 @@ export interface ImageGenerateOutput {
   provider: string;
   model: string;
   sizeBytes: number;
+  asset_id?: string;
 }
 
 export interface ImageInputRef {
@@ -481,10 +520,63 @@ export interface ImageInputRef {
   mimeType?: string;
 }
 
+export interface MediaAssetItem {
+  id: string;
+  kind: string;
+  source_node: string;
+  file_path: string;
+  registered_root: string;
+  mime_type: string;
+  size_bytes: number;
+  width?: number;
+  height?: number;
+  duration_sec?: number;
+  metadata_json?: string;
+  created_at: number;
+  last_verified_at: number;
+}
+
+export interface MediaDeletePayload {
+  id: string;
+  delete_file?: boolean;
+}
+
+export interface MediaListPayload {
+  kind?: string;
+  limit?: number;
+  offset?: number;
+  search?: string;
+}
+
+export interface MediaListResult {
+  assets: MediaAssetItem[];
+  total: number;
+}
+
 export interface MediaRef {
   localUrl: string;
   kind: string;
   mimeType?: string;
+}
+
+export interface MediaRegisterInputPayload {
+  file_path: string;
+  kind?: string;
+  source_node?: string;
+}
+
+export interface MediaSignURLPayload {
+  asset_id: string;
+  purpose?: string;
+  ttl_seconds?: number;
+}
+
+export interface MediaSignedURLResult {
+  asset_id: string;
+  url: string;
+  ticket: string;
+  expires_at: number;
+  purpose: string;
 }
 
 export interface ModelCandidate {
@@ -658,6 +750,8 @@ export interface RemoverInput {
   min_score?: number;
   min_gain?: number;
   max_gain?: number;
+  copy_clean?: boolean;
+  preserve_tree?: boolean;
 }
 
 export interface RemoverItem {
@@ -667,6 +761,9 @@ export interface RemoverItem {
   score: number;
   size?: number;
   error?: string;
+  status?: string;
+  reason?: string;
+  asset_id?: string;
 }
 
 export interface RemoverOutput {
@@ -784,6 +881,7 @@ export interface TTSGenerateOutput {
   provider: string;
   model: string;
   sizeBytes: number;
+  asset_id?: string;
 }
 
 export interface UpdateCredentialPayload {
@@ -832,6 +930,7 @@ export interface VideoGenerateOutput {
   model: string;
   duration: number;
   sizeBytes: number;
+  asset_id?: string;
 }
 
 export interface WorkflowRunGraphPayload {
@@ -980,6 +1079,24 @@ export const Actions = {
   PROVIDERS_DEFAULTS: "providers:defaults",
   /** Sets the default model of a purpose (provider/model, or empty for auto). */
   PROVIDERS_SET_DEFAULT: "providers:set_default",
+  /** Lists registered media assets with filtering. */
+  MEDIA_LIST: "media:list",
+  /** Deletes a media asset record (and optionally backing file). */
+  MEDIA_DELETE: "media:delete",
+  /** Generates a signed scoped download/streaming URL for a media asset. */
+  MEDIA_SIGN_URL: "media:sign_url",
+  /** Registers an existing local media file as an asset. */
+  MEDIA_REGISTER_INPUT: "media:register_input",
+  /** Sets the opt-in provider credential link for an agent provider. */
+  AGENT_SET_PROVIDER_LINK: "agent:set_provider_link",
+  /** Sets the opt-in provider credential link for an agent provider. */
+  AGENT_LINK_PROVIDER: "agent:link_provider",
+  /** Removes the opt-in provider link for an agent provider. */
+  AGENT_UNLINK_PROVIDER: "agent:unlink_provider",
+  /** Lists all configured agent provider links. */
+  AGENT_LIST_PROVIDER_LINKS: "agent:list_provider_links",
+  /** Lists allowed target providers for an agent provider. */
+  AGENT_COMPATIBLE_PROVIDERS: "agent:compatible_providers",
 } as const;
 export type ActionName = (typeof Actions)[keyof typeof Actions];
 
@@ -1055,6 +1172,15 @@ export interface ActionMap {
   "providers:update_settings": { payload: UpdateSettingsPayload; result: ProviderSettingsResult };
   "providers:defaults": { payload: Empty; result: ProviderDefaultsResult };
   "providers:set_default": { payload: SetDefaultPayload; result: ProviderDefaultsResult };
+  "media:list": { payload: MediaListPayload; result: MediaListResult };
+  "media:delete": { payload: MediaDeletePayload; result: Empty };
+  "media:sign_url": { payload: MediaSignURLPayload; result: MediaSignedURLResult };
+  "media:register_input": { payload: MediaRegisterInputPayload; result: MediaAssetItem };
+  "agent:set_provider_link": { payload: AgentLinkProviderPayload; result: Empty };
+  "agent:link_provider": { payload: AgentLinkProviderPayload; result: Empty };
+  "agent:unlink_provider": { payload: AgentProviderIDPayload; result: Empty };
+  "agent:list_provider_links": { payload: Empty; result: AgentProviderLinksResult };
+  "agent:compatible_providers": { payload: AgentProviderIDPayload; result: AgentCompatibleProvidersResult };
 }
 
 /** Built-in workflow node types (contracts.Nodes). Settings come from workflow:specs. */
@@ -1090,6 +1216,10 @@ export const Events = {
   AGENT_CUSTOMIZATIONS_CHANGED: "agent:customizations_changed",
   /** Provider credentials or custom providers changed. */
   PROVIDERS_CHANGED: "providers:changed",
+  /** Media assets library content changed. */
+  MEDIA_ASSETS_CHANGED: "media:assets_changed",
+  /** Download progress of an external binary. */
+  BINARIES_PROGRESS: "binaries:progress",
 } as const;
 export type EventName = (typeof Events)[keyof typeof Events];
 
@@ -1102,6 +1232,8 @@ export interface EventMap {
   "agent:approvals": AgentApprovalListResult;
   "agent:customizations_changed": AgentCustomizationsResult;
   "providers:changed": ProvidersListResult;
+  "media:assets_changed": Empty;
+  "binaries:progress": BinaryProgress;
 }
 
 export const NativeEvents = {

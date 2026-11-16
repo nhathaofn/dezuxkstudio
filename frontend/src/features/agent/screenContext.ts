@@ -1,6 +1,10 @@
 import { useEffect } from "react";
 import { create } from "zustand";
 import type { AgentUIContextPayload } from "../../contracts/generated";
+import { safeStorage } from "../../lib/storage";
+import { useProvidersStore } from "../providers/useProvidersStore";
+import { useAgentDrawerStore } from "./useAgentDrawerStore";
+import { useAgentStore } from "./useAgentStore";
 
 /**
  * What the current screen tells the agent about itself. Every screen uses the same shape, so adding a
@@ -30,4 +34,57 @@ export function useAgentScreenContext(ctx: AgentScreenContext): void {
     useScreenContextStore.getState().setContext(JSON.parse(key) as AgentScreenContext);
   }, [key]);
   useEffect(() => () => useScreenContextStore.getState().setContext(null), []);
+}
+
+export interface AskAgentAssetParams {
+  assetId?: string;
+  filePath?: string;
+  fileName?: string;
+  mimeType?: string;
+}
+
+/**
+ * 1-click cross action helper:
+ * Opens the Agent drawer, switches to the chat tab, and attaches structured asset context
+ * into the prompt composer.
+ */
+export function askAgentAboutMediaAsset(params: AskAgentAssetParams): void {
+  const drawer = useAgentDrawerStore.getState();
+  drawer.openPanel();
+  drawer.setActiveTab("chat");
+  drawer.setChatView("chat");
+
+  const tag = params.assetId
+    ? `[media_asset asset_id="${params.assetId}"]`
+    : params.filePath
+      ? `[media_asset path="${params.filePath}"]`
+      : "[media_asset]";
+
+  const currentPrompt = useAgentStore.getState().prompt;
+  const promptAddition = `${tag}\nPlease inspect this media asset.`;
+  const nextPrompt = currentPrompt.trim()
+    ? `${currentPrompt}\n\n${promptAddition}`
+    : promptAddition;
+
+  useAgentStore.getState().setPrompt(nextPrompt);
+}
+
+/** Returns the active billing source display string for an external agent provider. */
+export function getActiveBillingSource(providerId: string, compatibleProviders?: string[]): string {
+  const linkedKey = safeStorage.get(`agent_provider_link:${providerId}`);
+  if (!linkedKey) return "OAuth / Subscription";
+  const builtins = useProvidersStore.getState().data?.builtins ?? [];
+  const [targetProviderId, credId] = linkedKey.split(":");
+  if (compatibleProviders && !compatibleProviders.includes(targetProviderId)) {
+    return "OAuth / Subscription";
+  }
+  for (const b of builtins) {
+    if (b.id === targetProviderId) {
+      const cred = b.credentials?.find((c) => c.id === credId);
+      if (cred) {
+        return `Linked API Key: ${cred.name}`;
+      }
+    }
+  }
+  return "OAuth / Subscription";
 }

@@ -6,6 +6,9 @@ package core
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -28,12 +31,14 @@ import (
 	"app/internal/realtime/modules"
 	"app/internal/safego"
 	"app/internal/secrets"
+	"app/internal/security"
 	"app/internal/server"
 	"app/internal/server/handlers"
 	agentsvc "app/internal/service/agent"
 	agentclisvc "app/internal/service/agentcli"
 	binariessvc "app/internal/service/binaries"
 	"app/internal/service/diagnostics"
+	mediasvc "app/internal/service/media"
 	mediagensvc "app/internal/service/mediagen"
 	"app/internal/service/preferences"
 	providersvc "app/internal/service/provider"
@@ -72,6 +77,7 @@ type Core struct {
 	srv      *server.Server
 	agentSvc *agentsvc.Service
 	provSvc  *providersvc.Service
+	mediaSvc *mediasvc.Service
 	// background work tied to the core lifetime (e.g. the start-up provider key check)
 	bgCtx     context.Context
 	bgCancel  context.CancelFunc
@@ -126,7 +132,19 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 		return nil, err
 	}
 
-	mods, err := c.modules(o)
+	var ticketSecret []byte
+	if o.AuthToken != "" {
+		h := sha256.Sum256([]byte("ticket-signing-secret:" + o.AuthToken))
+		ticketSecret = h[:]
+	} else {
+		ticketSecret = make([]byte, 32)
+		if _, err := rand.Read(ticketSecret); err != nil {
+			return nil, fmt.Errorf("core: ticket secret: %w", err)
+		}
+	}
+	ticketSigner := security.NewTicketSigner(ticketSecret)
+
+	mods, err := c.modules(o, ticketSigner)
 	if err != nil {
 		return nil, err
 	}
@@ -162,6 +180,8 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 			},
 			MediaDir:       o.Paths.Media(),
 			MaxUploadBytes: cfg.Server.MaxMediaUploadBytes,
+			TicketSigner:   ticketSigner,
+			AssetResolver:  c.mediaSvc,
 		}),
 	})
 	if err != nil {
@@ -176,7 +196,7 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 }
 
 // modules is the single list of feature modules mounted into the hub.
-func (c *Core) modules(o Options) ([]realtime.Module, error) {
+func (c *Core) modules(o Options, ticketSigner *security.TicketSigner) ([]realtime.Module, error) {
 	cfg := o.Config
 	// One secret store for every service: OS keyring, else an encrypted file in the data dir, else memory.
 	secretStore := o.Secrets
@@ -216,7 +236,11 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 	}
 
 	binSvc := binariessvc.New(sqlite.NewBinariesRepository(c.db), o.Paths.Tools(), o.Logger,
-		binariessvc.WithProbeTimeout(cfg.Binaries.ProbeTimeout), binariessvc.WithHTTPClient(o.HTTPClient))
+		binariessvc.WithProbeTimeout(cfg.Binaries.ProbeTimeout),
+		binariessvc.WithHTTPClient(o.HTTPClient),
+		binariessvc.WithEventPublisher(c.hub),
+		binariessvc.WithConfig(cfg),
+	)
 
 	var provSvc *providersvc.Service
 	provSvc, err = providersvc.New(providersvc.Options{
@@ -245,19 +269,53 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 		})
 	}
 
-	mediaGenSvc := mediagensvc.New(mediagensvc.Options{
-		Providers:  provSvc,
-		HTTPClient: o.HTTPClient,
-		MediaDir:   o.Paths.Media(),
-		Config:     cfg.MediaGen,
-		Logger:     o.Logger,
+	workDir := o.Paths.AgentWorkspace()
+	if customWS := strings.TrimSpace(cfg.Agent.WorkspaceDir); customWS != "" {
+		if !filepath.IsAbs(customWS) {
+			workDir = filepath.Join(o.Paths.Data, customWS)
+		} else {
+			workDir = filepath.Clean(customWS)
+		}
+	}
+
+	mediaRepo := sqlite.NewMediaRepository(c.db)
+	allowedRoots := []string{o.Paths.Media(), workDir}
+	mediaSvc := mediasvc.New(mediasvc.Options{
+		Repo:         mediaRepo,
+		Signer:       ticketSigner,
+		Config:       cfg.Media,
+		MediaDir:     o.Paths.Media(),
+		AllowedRoots: allowedRoots,
+		Logger:       o.Logger,
+		OnChanged: func() {
+			c.hub.Publish(contracts.EventMediaAssetsChanged, contracts.Empty{})
+		},
 	})
+	c.mediaSvc = mediaSvc
+
+	mediaGenSvc := mediagensvc.New(mediagensvc.Options{
+		Providers:         provSvc,
+		HTTPClient:        o.HTTPClient,
+		MediaDir:          o.Paths.Media(),
+		Registrar:         mediaSvc,
+		Config:            cfg.MediaGen,
+		Logger:            o.Logger,
+		StagingTTL:        cfg.MediaStagingTTL(),
+		StagingGCInterval: cfg.MediaStagingGCInterval(),
+	})
+	if mediaDir := o.Paths.Media(); mediaDir != "" {
+		stagedDir := mediaGenSvc.StagingDir()
+		c.background("mediagen-staging-gc", func(ctx context.Context) {
+			mediagensvc.StartStagingGC(ctx, stagedDir, cfg.MediaStagingTTL(), cfg.MediaStagingGCInterval())
+		})
+	}
 
 	wfSvc, err := workflow.New(workflow.Options{
 		Paths:     o.Paths,
 		Logger:    o.Logger,
 		Providers: provSvc,
 		MediaGen:  mediaGenSvc,
+		Registrar: mediaSvc,
 	})
 	if err != nil {
 		return nil, err
@@ -267,15 +325,6 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 	agentCLIs := agentclisvc.New(agentclisvc.Options{
 		Dir: o.Paths.AgentCLIs(), Client: o.HTTPClient, Logger: o.Logger, UserAgent: buildinfo.ProductName + "/" + buildinfo.Version,
 	})
-
-	workDir := o.Paths.AgentWorkspace()
-	if customWS := strings.TrimSpace(cfg.Agent.WorkspaceDir); customWS != "" {
-		if !filepath.IsAbs(customWS) {
-			workDir = filepath.Join(o.Paths.Data, customWS)
-		} else {
-			workDir = filepath.Clean(customWS)
-		}
-	}
 
 	agentSvc, err := agentsvc.New(agentsvc.Options{
 		Repo:              sqlite.NewAgentRepository(c.db),
@@ -316,6 +365,8 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 	if err != nil {
 		return nil, err
 	}
+	agentSvc.SetProviderLinks(sqlite.NewProviderRepository(c.db))
+	agentSvc.SetMediaInspector(&mediaInspectorAdapter{svc: mediaSvc})
 	c.agentSvc = agentSvc
 	c.background("agent-provision-clis", agentSvc.ProvisionCLIs)
 	if cfg.Agent.RestoreConnection {
@@ -337,6 +388,7 @@ func (c *Core) modules(o Options) ([]realtime.Module, error) {
 			LockCustomizations: lockRemoteHost,
 		},
 		modules.Providers{Service: provSvc},
+		modules.Media{Service: mediaSvc},
 	}, nil
 }
 
@@ -406,4 +458,34 @@ func (c *Core) Close() error {
 		c.srv.Stop(),
 		c.db.Close(),
 	)
+}
+
+type mediaInspectorAdapter struct {
+	svc *mediasvc.Service
+}
+
+func (m *mediaInspectorAdapter) InspectAsset(ctx context.Context, assetID string) (*agentsvc.MediaAssetMetadata, error) {
+	item, err := m.svc.GetAsset(ctx, assetID)
+	if err != nil {
+		return nil, err
+	}
+	if item == nil {
+		return nil, fmt.Errorf("media asset %q not found", assetID)
+	}
+	var metaMap map[string]any
+	if strings.TrimSpace(item.MetadataJSON) != "" {
+		_ = json.Unmarshal([]byte(item.MetadataJSON), &metaMap)
+	}
+	return &agentsvc.MediaAssetMetadata{
+		AssetID:        item.ID,
+		Kind:           item.Kind,
+		SourceNode:     item.SourceNode,
+		RegisteredRoot: item.RegisteredRoot,
+		MIMEType:       item.MIMEType,
+		SizeBytes:      item.SizeBytes,
+		Width:          item.Width,
+		Height:         item.Height,
+		DurationSec:    item.DurationSec,
+		Metadata:       metaMap,
+	}, nil
 }

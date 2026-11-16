@@ -478,3 +478,82 @@ func (r *ProviderRepository) SetCustomHealth(ctx context.Context, id string, h p
 	}
 	return affected(res, id)
 }
+
+// AgentProviderLink maps an agent provider to an API provider credential without storing raw secrets.
+type AgentProviderLink struct {
+	AgentProviderID string    `json:"agent_provider_id"`
+	ProviderID      string    `json:"provider_id"`
+	CredentialID    string    `json:"credential_id"`
+	AuthMethod      string    `json:"auth_method"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// GetProviderLink retrieves the opt-in provider link for agentProviderID.
+func (r *ProviderRepository) GetProviderLink(ctx context.Context, agentProviderID string) (AgentProviderLink, error) {
+	row := r.db.read().QueryRowContext(ctx,
+		`SELECT agent_provider_id, provider_id, credential_id, auth_method, updated_at
+		 FROM agent_provider_links WHERE agent_provider_id = ?`, agentProviderID)
+	var l AgentProviderLink
+	var updated int64
+	if err := row.Scan(&l.AgentProviderID, &l.ProviderID, &l.CredentialID, &l.AuthMethod, &updated); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return AgentProviderLink{}, provider.ErrNotFound(agentProviderID)
+		}
+		return AgentProviderLink{}, fmt.Errorf("sqlite: get agent provider link: %w", err)
+	}
+	l.UpdatedAt = time.UnixMilli(updated)
+	return l, nil
+}
+
+// ListProviderLinks returns all opt-in agent provider links.
+func (r *ProviderRepository) ListProviderLinks(ctx context.Context) ([]AgentProviderLink, error) {
+	rows, err := r.db.read().QueryContext(ctx,
+		`SELECT agent_provider_id, provider_id, credential_id, auth_method, updated_at
+		 FROM agent_provider_links ORDER BY agent_provider_id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list agent provider links: %w", err)
+	}
+	defer rows.Close()
+	var out []AgentProviderLink
+	for rows.Next() {
+		var l AgentProviderLink
+		var updated int64
+		if err := rows.Scan(&l.AgentProviderID, &l.ProviderID, &l.CredentialID, &l.AuthMethod, &updated); err != nil {
+			return nil, fmt.Errorf("sqlite: scan agent provider link: %w", err)
+		}
+		l.UpdatedAt = time.UnixMilli(updated)
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// SetProviderLink saves or updates the opt-in provider link for an agent provider.
+func (r *ProviderRepository) SetProviderLink(ctx context.Context, link AgentProviderLink) error {
+	now := time.Now().UnixMilli()
+	if !link.UpdatedAt.IsZero() {
+		now = link.UpdatedAt.UnixMilli()
+	}
+	_, err := r.db.sql.ExecContext(ctx,
+		`INSERT INTO agent_provider_links (agent_provider_id, provider_id, credential_id, auth_method, updated_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(agent_provider_id) DO UPDATE SET
+		   provider_id = excluded.provider_id,
+		   credential_id = excluded.credential_id,
+		   auth_method = excluded.auth_method,
+		   updated_at = excluded.updated_at`,
+		link.AgentProviderID, link.ProviderID, link.CredentialID, link.AuthMethod, now)
+	if err != nil {
+		return fmt.Errorf("sqlite: set agent provider link: %w", err)
+	}
+	return nil
+}
+
+// DeleteProviderLink removes the opt-in provider link for agentProviderID.
+func (r *ProviderRepository) DeleteProviderLink(ctx context.Context, agentProviderID string) error {
+	_, err := r.db.sql.ExecContext(ctx,
+		`DELETE FROM agent_provider_links WHERE agent_provider_id = ?`, agentProviderID)
+	if err != nil {
+		return fmt.Errorf("sqlite: delete agent provider link: %w", err)
+	}
+	return nil
+}

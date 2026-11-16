@@ -13,9 +13,12 @@ import (
 
 // contentSecurityPolicy builds the CSP for the webview. connect-src is derived
 // from the mode so client mode can reach its configured remote server and nothing else.
+// img-src and media-src are matched to the allowed HTTP origins from connect-src
+// according to app mode to allow streaming and previewing media assets.
 func contentSecurityPolicy(cfg *config.Config) string {
 	connect := []string{"'self'"}
 	script := []string{"'self'"}
+	mediaOrigins := []string{}
 
 	switch cfg.Mode {
 	case config.ModeClient:
@@ -23,14 +26,18 @@ func contentSecurityPolicy(cfg *config.Config) string {
 			switch strings.ToLower(u.Scheme) {
 			case "wss", "https":
 				connect = append(connect, "wss://"+u.Host, "https://"+u.Host)
+				mediaOrigins = append(mediaOrigins, "https://"+u.Host)
 			case "ws", "http":
 				connect = append(connect, "ws://"+u.Host, "http://"+u.Host)
+				mediaOrigins = append(mediaOrigins, "http://"+u.Host)
 			default:
 				connect = append(connect, u.Scheme+"://"+u.Host)
+				mediaOrigins = append(mediaOrigins, u.Scheme+"://"+u.Host)
 			}
 		}
 	default:
 		connect = append(connect, "ws://127.0.0.1:*", "ws://localhost:*", "http://127.0.0.1:*", "http://localhost:*")
+		mediaOrigins = append(mediaOrigins, "http://127.0.0.1:*", "http://localhost:*")
 	}
 	if buildinfo.IsDev() {
 		// Vite dev server: HMR socket and the inline React-refresh preamble.
@@ -38,12 +45,18 @@ func contentSecurityPolicy(cfg *config.Config) string {
 		script = append(script, "'unsafe-inline'")
 	}
 
+	imgSrc := []string{"'self'", "data:", "blob:"}
+	imgSrc = append(imgSrc, mediaOrigins...)
+
+	mediaSrc := []string{"'self'", "data:", "blob:"}
+	mediaSrc = append(mediaSrc, mediaOrigins...)
+
 	directives := []string{
 		"default-src 'self'",
 		"script-src " + strings.Join(script, " "),
 		"style-src 'self' 'unsafe-inline'",
-		"img-src 'self' data: blob:",
-		"media-src 'self' data: blob:",
+		"img-src " + strings.Join(imgSrc, " "),
+		"media-src " + strings.Join(mediaSrc, " "),
 		"font-src 'self' data:",
 		"connect-src " + strings.Join(connect, " "),
 		"object-src 'none'",

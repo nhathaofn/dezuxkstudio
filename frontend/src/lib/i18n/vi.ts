@@ -257,7 +257,14 @@ export const vi: Record<MessageKey, string> = {
   "settings.language.desc": "Chọn ngôn ngữ hiển thị cho ứng dụng.",
 
   "overview.welcome": "DezuxkStudio Dashboard",
+  "overview.subtitle": "Bộ công cụ sáng tạo đa phương tiện và xử lý AI thế hệ mới",
   "overview.quickActions": "Lối tắt nhanh",
+  "overview.studioSection": "Công cụ Sáng tạo AI",
+  "overview.systemSection": "Hệ thống & Tiện ích",
+  "overview.tag.watermark": "Xử lý hàng loạt",
+  "overview.tag.image": "Mô tả sang Ảnh",
+  "overview.tag.video": "Chuyển động & Khung hình",
+  "overview.tag.tts": "Tổng hợp giọng nói",
   "overview.action.watermark": "Xóa Watermark",
   "overview.action.watermarkDesc": "Xóa watermark hàng loạt với phân tích alpha đa luồng.",
   "overview.action.image": "Tạo Ảnh AI",
@@ -300,6 +307,7 @@ export const vi: Record<MessageKey, string> = {
   "system.open.config": "Cấu hình",
   "system.open.diagnostics": "Chẩn đoán",
   "system.open.agent_customizations": "Kỹ năng Agent",
+  "system.foldersTitle": "Thư mục ứng dụng",
 
   "update.title": "Cập nhật",
   "update.check": "Kiểm tra",
@@ -398,6 +406,7 @@ export const vi: Record<MessageKey, string> = {
   "watermark.stat.total": "Tổng số ảnh",
   "watermark.stat.detected": "Đã xóa Watermark",
   "watermark.stat.clean": "Nguyên bản sạch",
+  "watermark.removeFile": "Xóa khỏi hàng đợi",
 
   "errors.ERR_BAD_REQUEST": "Yêu cầu không đúng định dạng.",
   "errors.ERR_VALIDATION": "Dữ liệu nhập không hợp lệ.",
@@ -793,4 +802,71 @@ export const vi: Record<MessageKey, string> = {
   "errors.mediagen.reference_required":
     "Model này yêu cầu ít nhất một ảnh tham chiếu để chỉnh sửa.",
   "errors.mediagen.reference_not_supported": "Model hoặc endpoint này không hỗ trợ ảnh tham chiếu.",
+
+  "agent.code.copy": "Sao chép mã",
+  "agent.code.copied": "Đã sao chép",
+  "agent.errors.approval_busy": "Yêu cầu phê duyệt đang được thực thi.",
+  "agent.errors.approval_ambiguous": "Trạng thái phê duyệt bất định, cần người dùng xác nhận lại.",
+  "agent.errors.approval_already_resolved": "Yêu cầu phê duyệt này đã được xử lý trước đó.",
+  "agent.errors.approval_hash_mismatch":
+    "Tham số đầu vào đã bị sửa đổi sau khi yêu cầu phê duyệt. Yêu cầu đã mất hiệu lực.",
+  "agent.errors.approval_concurrent":
+    "Yêu cầu phê duyệt đã được thao tác bởi một tiến trình đồng thời khác.",
+  "agent.errors.approval_expired": "Yêu cầu phê duyệt đã hết hạn.",
+
+  "watermark.copyClean.label": "Sao chép ảnh sạch sang thư mục đích",
+  "watermark.copyClean.desc":
+    "Tự động sao chép ảnh nguyên bản không có watermark sang thư mục xuất",
+  "watermark.preserveTree.label": "Giữ nguyên cấu trúc thư mục",
+  "watermark.preserveTree.desc": "Bảo tồn phân cấp thư mục con khi sử dụng đường dẫn tương đối",
+  "watermark.status.processed": "Đã xử lý",
+  "watermark.status.copied": "Đã sao chép",
+  "watermark.status.skipped": "Đã bỏ qua",
+  "watermark.status.failed": "Thất bại",
+  "watermark.compare": "So sánh",
+
+  "system.desktopOnly": "Thao tác này chỉ khả dụng ở chế độ ứng dụng desktop",
+
+  "mediagen.action.retry": "Thử lại",
+
+  "cross.sendToWatermark": "Đưa sang Watermark",
+  "cross.askAgent": "Hỏi Agent về tệp này",
+
+  "media.library.title": "Thư viện Đa phương tiện",
+  "media.filter.all": "Tất cả",
+  "media.filter.images": "Hình ảnh",
+  "media.filter.videos": "Video",
+  "media.filter.audio": "Âm thanh",
+  "media.search.placeholder": "Tìm kiếm tài sản đã đăng ký...",
+  "media.loading": "Đang tải tài sản đa phương tiện...",
+  "media.empty.title": "Chưa có tài sản nào",
+  "media.empty.desc": "Các tệp tạo ra hoặc nhập vào sẽ xuất hiện tại đây.",
+  "media.action.refresh": "Làm mới",
+  "media.action.delete": "Xóa",
+
+  "agent.connections.billing": "Tính phí",
+  "agent.connections.billingSource": "Nguồn tính phí",
+  "agent.connections.linkedCredential": "Liên kết khóa API",
+  "agent.connections.oauthDefault": "OAuth / Gói thuê bao (Mặc định)",
+  "agent.connections.activeSource": "Kết nối & Nguồn tính phí hoạt động",
+
+  "tools.delete": "Xóa",
+
+  "mediaoutput.copyPrompt": "Sao chép prompt",
+  "mediaoutput.copiedPrompt": "Đã sao chép prompt",
+  "mediaoutput.copyPath": "Sao chép đường dẫn",
+  "mediaoutput.copiedPath": "Đã sao chép đường dẫn",
+  "mediaoutput.compare": "So sánh Trước / Sau",
+  "mediaoutput.closeCompare": "Đóng so sánh",
+  "mediaoutput.download": "Tải xuống",
+  "mediaoutput.sendToWatermark": "Chuyển sang Xóa Watermark",
+  "mediaoutput.askAgent": "Hỏi AI Agent",
+  "mediaoutput.retry": "Thử lại",
+  "mediaoutput.dismissError": "Đóng thông báo lỗi",
+  "mediaoutput.zoomIn": "Phóng to",
+  "mediaoutput.zoomOut": "Thu nhỏ",
+  "mediaoutput.zoomReset": "Đặt lại thu phóng",
+  "mediaoutput.before": "Trước",
+  "mediaoutput.after": "Sau",
+  "mediaoutput.previewFailed": "Không thể tải ảnh xem trước",
 };

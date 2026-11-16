@@ -400,3 +400,159 @@ func (r *AgentRepository) SetRememberedConnection(ctx context.Context, id agent.
 	}
 	return nil
 }
+
+// AgentApproval records a persistent approval request for high-impact actions.
+type AgentApproval struct {
+	ID                string `json:"id"`
+	ConversationID    string `json:"conversation_id"`
+	ToolName          string `json:"tool_name"`
+	NodeType          string `json:"node_type"`
+	InputJSON         string `json:"input_json"`
+	InputHash         string `json:"input_hash"`
+	Status            string `json:"status"`
+	Decision          string `json:"decision"`
+	ResultJSON        string `json:"result_json"`
+	ErrorText         string `json:"error_text"`
+	ContinuationDepth int    `json:"continuation_depth"`
+	CreatedAt         int64  `json:"created_at"`
+	UpdatedAt         int64  `json:"updated_at"`
+}
+
+// InsertApproval persists an approval request record into agent_approvals table.
+func (r *AgentRepository) InsertApproval(ctx context.Context, app *AgentApproval) error {
+	if app == nil {
+		return fmt.Errorf("sqlite: cannot insert nil approval")
+	}
+	now := time.Now().UnixMilli()
+	if app.CreatedAt == 0 {
+		app.CreatedAt = now
+	}
+	if app.UpdatedAt == 0 {
+		app.UpdatedAt = now
+	}
+	_, err := r.db.sql.ExecContext(ctx, `
+		INSERT INTO agent_approvals (
+			id, conversation_id, tool_name, node_type, input_json, input_hash,
+			status, decision, result_json, error_text, continuation_depth,
+			created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			status = excluded.status,
+			decision = excluded.decision,
+			result_json = excluded.result_json,
+			error_text = excluded.error_text,
+			updated_at = excluded.updated_at;`,
+		app.ID, app.ConversationID, app.ToolName, app.NodeType, app.InputJSON, app.InputHash,
+		app.Status, app.Decision, app.ResultJSON, app.ErrorText, app.ContinuationDepth,
+		app.CreatedAt, app.UpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("sqlite: insert approval %q: %w", app.ID, err)
+	}
+	return nil
+}
+
+// GetApproval retrieves an approval request by its unique identifier.
+func (r *AgentRepository) GetApproval(ctx context.Context, id string) (*AgentApproval, error) {
+	row := r.db.read().QueryRowContext(ctx, `
+		SELECT id, conversation_id, tool_name, node_type, input_json, input_hash,
+		       status, decision, result_json, error_text, continuation_depth,
+		       created_at, updated_at
+		FROM agent_approvals
+		WHERE id = ?;`, id)
+	var a AgentApproval
+	err := row.Scan(
+		&a.ID, &a.ConversationID, &a.ToolName, &a.NodeType, &a.InputJSON, &a.InputHash,
+		&a.Status, &a.Decision, &a.ResultJSON, &a.ErrorText, &a.ContinuationDepth,
+		&a.CreatedAt, &a.UpdatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: get approval %q: %w", id, err)
+	}
+	return &a, nil
+}
+
+// ListPendingApprovals lists all approvals in "pending" status, optionally filtered by conversationID.
+func (r *AgentRepository) ListPendingApprovals(ctx context.Context, conversationID string) ([]*AgentApproval, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if conversationID != "" {
+		rows, err = r.db.read().QueryContext(ctx, `
+			SELECT id, conversation_id, tool_name, node_type, input_json, input_hash,
+			       status, decision, result_json, error_text, continuation_depth,
+			       created_at, updated_at
+			FROM agent_approvals
+			WHERE status = 'pending' AND conversation_id = ?
+			ORDER BY created_at ASC, id ASC;`, conversationID)
+	} else {
+		rows, err = r.db.read().QueryContext(ctx, `
+			SELECT id, conversation_id, tool_name, node_type, input_json, input_hash,
+			       status, decision, result_json, error_text, continuation_depth,
+			       created_at, updated_at
+			FROM agent_approvals
+			WHERE status = 'pending'
+			ORDER BY created_at ASC, id ASC;`)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list pending approvals: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*AgentApproval
+	for rows.Next() {
+		var a AgentApproval
+		if err := rows.Scan(
+			&a.ID, &a.ConversationID, &a.ToolName, &a.NodeType, &a.InputJSON, &a.InputHash,
+			&a.Status, &a.Decision, &a.ResultJSON, &a.ErrorText, &a.ContinuationDepth,
+			&a.CreatedAt, &a.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("sqlite: scan approval: %w", err)
+		}
+		out = append(out, &a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: iterate pending approvals: %w", err)
+	}
+	return out, nil
+}
+
+// UpdateApprovalStatus atomically updates an approval record's status using compare-and-swap (WHERE id = ? AND status = ?).
+// Returns true if the status transition succeeded, or false if the record had already transitioned.
+func (r *AgentRepository) UpdateApprovalStatus(ctx context.Context, id string, oldStatus, newStatus string, decision string, resultJSON string, errorText string) (bool, error) {
+	now := time.Now().UnixMilli()
+	res, err := r.db.sql.ExecContext(ctx, `
+		UPDATE agent_approvals
+		SET status = ?, decision = ?, result_json = ?, error_text = ?, updated_at = ?
+		WHERE id = ? AND status = ?;`,
+		newStatus, decision, resultJSON, errorText, now, id, oldStatus,
+	)
+	if err != nil {
+		return false, fmt.Errorf("sqlite: update approval status %q: %w", id, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("sqlite: rows affected for approval %q: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
+// RecoverAmbiguousApprovals transitions any records left in 'executing' status (e.g. following an abnormal shutdown)
+// to 'ambiguous', preventing unconfirmed or blind reruns.
+func (r *AgentRepository) RecoverAmbiguousApprovals(ctx context.Context) error {
+	now := time.Now().UnixMilli()
+	_, err := r.db.sql.ExecContext(ctx, `
+		UPDATE agent_approvals
+		SET status = 'ambiguous', updated_at = ?
+		WHERE status = 'executing';`,
+		now,
+	)
+	if err != nil {
+		return fmt.Errorf("sqlite: recover ambiguous approvals: %w", err)
+	}
+	return nil
+}

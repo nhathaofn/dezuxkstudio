@@ -61,6 +61,7 @@ interface AgentState {
   providers: AgentProviderInfo[];
   developerMode: boolean;
   approvals: AgentApprovalRequest[];
+  resolvingApprovalIds: Record<string, boolean>;
   allowedDirs: string[];
   loadingProviders: boolean;
   busyAction: boolean;
@@ -134,6 +135,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   providers: [],
   developerMode: false,
   approvals: [],
+  resolvingApprovalIds: {},
   allowedDirs: [],
   loadingProviders: false,
   busyAction: false,
@@ -462,11 +464,42 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   resolveApproval: async (id, approve) => {
-    set({ error: null });
+    const { resolvingApprovalIds, approvals } = get();
+    // Anti-double-click guard: reject concurrent clicks on the same approval
+    if (resolvingApprovalIds[id]) {
+      return;
+    }
+    const current = approvals.find((a) => a.id === id);
+    if (current?.status && current.status !== "pending") {
+      return;
+    }
+
+    // Optimistically update status to executing or rejected
+    const targetStatus = approve ? "executing" : "rejected";
+    set((s) => ({
+      error: null,
+      resolvingApprovalIds: { ...s.resolvingApprovalIds, [id]: true },
+      approvals: s.approvals.map((a) => (a.id === id ? { ...a, status: targetStatus } : a)),
+    }));
+
     try {
       await rtClient.request(Actions.AGENT_RESOLVE_APPROVAL, { id, approve });
+      // On success: remove resolved approval from pending list
+      set((s) => ({
+        approvals: s.approvals.filter((a) => a.id !== id),
+      }));
     } catch (err) {
-      set({ error: toActionError(err) });
+      // On failure: revert optimistic status back to pending
+      set((s) => ({
+        error: toActionError(err),
+        approvals: s.approvals.map((a) => (a.id === id ? { ...a, status: "pending" } : a)),
+      }));
+    } finally {
+      set((s) => {
+        const nextResolving = { ...s.resolvingApprovalIds };
+        delete nextResolving[id];
+        return { resolvingApprovalIds: nextResolving };
+      });
     }
   },
 

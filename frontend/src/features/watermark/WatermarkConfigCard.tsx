@@ -1,36 +1,35 @@
-import React, { useEffect, useRef, useState } from "react";
-import { Sparkles, UploadCloud, Crosshair, Cpu, FolderOpen } from "lucide-react";
+import React from "react";
+import { Sparkles, Crosshair, Cpu, FolderOpen } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
-import { getBridge, isDesktop, onFileDrop } from "../../lib/bridge";
+import { Switch } from "../../components/ui/Switch";
+import { MediaInputNode } from "../../components/ui/MediaDropZone";
+import { getBridge } from "../../lib/bridge";
 import { isMessageKey, useT } from "../../lib/i18n";
 import { useConnectionStore } from "../connection/useConnectionStore";
 import { findParam, integerChoices, useNodeSpec } from "../workflow/useNodeSpecs";
 import { WATERMARK_NODE, useWatermarkStore } from "./useWatermarkStore";
 
-const isImageFile = (name: string, mime?: string) =>
-  /\.(png|jpe?g|webp)$/i.test(name) || /^image\/(png|jpeg|webp)$/i.test(mime || "");
-
 export const WatermarkConfigCard: React.FC = () => {
   const t = useT();
   const endpointMode = useConnectionStore((s) => s.endpoint?.mode);
   const isRemoteMode = endpointMode === "browser" || endpointMode === "client";
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const dropzoneRef = useRef<HTMLDivElement>(null);
-  const [dragActive, setDragActive] = useState(false);
 
   const {
     inputPath,
     inputPaths,
     inPlace,
     outputDir,
+    copyClean,
+    preserveTree,
     workers,
     corner,
-    setInputPath,
     setInputPaths,
     setQueuedFiles,
     setInPlace,
     setOutputDir,
+    setCopyClean,
+    setPreserveTree,
     setWorkers,
     setCorner,
   } = useWatermarkStore();
@@ -47,63 +46,6 @@ export const WatermarkConfigCard: React.FC = () => {
     return isMessageKey(key) ? t(key) : option;
   };
 
-  useEffect(() => {
-    if (isRemoteMode) return;
-
-    const unsub = onFileDrop((x, y, paths) => {
-      setDragActive(false);
-      const target = document.elementFromPoint(x, y);
-      const rect = dropzoneRef.current?.getBoundingClientRect();
-      const isInsideRect =
-        rect !== undefined &&
-        x >= rect.left &&
-        x <= rect.right &&
-        y >= rect.top &&
-        y <= rect.bottom;
-      const isInsideDropzone =
-        isInsideRect ||
-        (dropzoneRef.current !== null &&
-          target !== null &&
-          (dropzoneRef.current === target || dropzoneRef.current.contains(target)));
-
-      if (isInsideDropzone) {
-        const validPaths = paths.filter((p) => isImageFile(p));
-        if (validPaths.length > 0) {
-          setInputPaths(validPaths);
-        }
-      }
-    }, false);
-
-    return () => {
-      unsub();
-    };
-  }, [isRemoteMode, setInputPaths]);
-
-  const handleBrowse = async () => {
-    const bridge = getBridge();
-    if (!isRemoteMode && bridge?.BrowseImages) {
-      try {
-        const selected = await bridge.BrowseImages(t("watermark.browse.title"));
-        if (selected && selected.length > 0) {
-          setInputPaths(selected);
-        }
-      } catch (err) {
-        console.error("BrowseImages failed", err);
-      }
-    } else if (!isRemoteMode && bridge?.BrowseImage) {
-      try {
-        const selected = await bridge.BrowseImage(t("watermark.browse.title"));
-        if (selected) {
-          setInputPath(selected);
-        }
-      } catch (err) {
-        console.error("BrowseImage failed", err);
-      }
-    } else {
-      fileInputRef.current?.click();
-    }
-  };
-
   const handleBrowseOutputDir = async () => {
     const bridge = getBridge();
     if (bridge?.BrowseDirectory) {
@@ -118,90 +60,29 @@ export const WatermarkConfigCard: React.FC = () => {
     }
   };
 
-  const applySelectedFiles = (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    const accepted = Array.from(files).filter((f) => isImageFile(f.name, f.type));
-    if (accepted.length === 0) return;
-
-    const nativePaths = accepted
-      .map((f) => (f as unknown as { path?: string }).path)
-      .filter((p): p is string => Boolean(p));
-
-    if (!isRemoteMode && nativePaths.length === accepted.length) {
-      setInputPaths(nativePaths);
-      return;
-    }
-    setQueuedFiles(accepted);
-  };
-
-  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    applySelectedFiles(e.target.files);
-    e.target.value = "";
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragActive(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragActive(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragActive(false);
-    if (isDesktop() && !isRemoteMode) {
-      // In standalone desktop mode (Windows WebView2), DOM DragEvent loses absolute paths.
-      // Native Wails onFileDrop handles setting input paths with absolute paths.
-      return;
-    }
-    applySelectedFiles(e.dataTransfer.files);
-  };
-
-  const handleDropzoneKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      void handleBrowse();
-    }
-  };
-
   const totalFiles = inputPaths.length > 0 ? inputPaths.length : inputPath ? 1 : 0;
 
   return (
     <Card icon={Sparkles} title={t("watermark.card.input")} className="card--flex-fill">
       <div className="watermark-config-stack">
-        {/* Compact Dropzone */}
-        <div
-          ref={dropzoneRef}
-          role="button"
-          tabIndex={0}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          onClick={handleBrowse}
-          onKeyDown={handleDropzoneKeyDown}
-          className={`watermark-dropzone${dragActive ? " watermark-dropzone--active" : ""}`}
-        >
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            accept="image/png,image/jpeg,image/webp"
-            className="watermark-dropzone__input"
-            onChange={handleFileInputChange}
-          />
-          <UploadCloud size={22} className="watermark-dropzone__icon" />
-          <div className="watermark-dropzone__title">
-            {totalFiles > 0
-              ? t("watermark.readyFiles", { count: totalFiles })
-              : t("watermark.dragOrClick")}
-          </div>
-          <div className="watermark-dropzone__desc">
-            {totalFiles > 0 ? t("watermark.changeFiles") : t("watermark.dragOrClickDesc")}
-          </div>
-        </div>
+        {/* Universal Media Input Node */}
+        <MediaInputNode
+          multiple
+          label={t("watermark.browse.title")}
+          title={t("watermark.dragOrClick")}
+          description={t("watermark.dragOrClickDesc")}
+          selectedCount={totalFiles}
+          selectedSummary={
+            totalFiles > 0 ? t("watermark.readyFiles", { count: totalFiles }) : undefined
+          }
+          onSelected={(files, paths) => {
+            if (paths && paths.length > 0) {
+              setInputPaths(paths);
+            } else if (files && files.length > 0) {
+              setQueuedFiles(files);
+            }
+          }}
+        />
 
         {/* Config Fields */}
         <div className="watermark-config-stack">
@@ -292,6 +173,43 @@ export const WatermarkConfigCard: React.FC = () => {
                 >
                   <FolderOpen size={14} />
                 </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Copy Clean & Preserve Tree Options (only when not in-place) */}
+          {!inPlace && (
+            <div className="watermark-config-stack">
+              <div className="watermark-toggle-row">
+                <div>
+                  <div className="field-label" style={{ marginBottom: 0 }}>
+                    {t("watermark.copyClean.label")}
+                  </div>
+                  <div className="muted-text" style={{ fontSize: "var(--text-xs)" }}>
+                    {t("watermark.copyClean.desc")}
+                  </div>
+                </div>
+                <Switch
+                  checked={copyClean}
+                  onCheckedChange={setCopyClean}
+                  aria-label={t("watermark.copyClean.label")}
+                />
+              </div>
+
+              <div className="watermark-toggle-row">
+                <div>
+                  <div className="field-label" style={{ marginBottom: 0 }}>
+                    {t("watermark.preserveTree.label")}
+                  </div>
+                  <div className="muted-text" style={{ fontSize: "var(--text-xs)" }}>
+                    {t("watermark.preserveTree.desc")}
+                  </div>
+                </div>
+                <Switch
+                  checked={preserveTree}
+                  onCheckedChange={setPreserveTree}
+                  aria-label={t("watermark.preserveTree.label")}
+                />
               </div>
             </div>
           )}

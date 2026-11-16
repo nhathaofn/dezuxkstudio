@@ -199,3 +199,89 @@ func TestCore_PreferencesAndWatermarkWiring(t *testing.T) {
 		t.Fatalf("workflow:run_node returned failure: %+v", runResp.Error)
 	}
 }
+
+func TestCore_StagingGCAndBinariesWiring(t *testing.T) {
+	tempDir := t.TempDir()
+	p, err := paths.Resolve("core_test_staging", paths.Overrides{
+		DataDir: filepath.Join(tempDir, "data"),
+		LogDir:  filepath.Join(tempDir, "logs"),
+	})
+	if err != nil {
+		t.Fatalf("resolve paths: %v", err)
+	}
+	p.Config = filepath.Join(tempDir, "config")
+	if err := p.Ensure(); err != nil {
+		t.Fatalf("ensure paths: %v", err)
+	}
+
+	stagingDir := filepath.Join(p.Media(), "staging")
+	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+		t.Fatalf("mkdir staging: %v", err)
+	}
+
+	staleFile := filepath.Join(stagingDir, "stale_mediagen.tmp")
+	if err := os.WriteFile(staleFile, []byte("stale content"), 0o644); err != nil {
+		t.Fatalf("write stale file: %v", err)
+	}
+	oldTime := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(staleFile, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes stale file: %v", err)
+	}
+
+	freshFile := filepath.Join(stagingDir, "fresh_mediagen.tmp")
+	if err := os.WriteFile(freshFile, []byte("fresh content"), 0o644); err != nil {
+		t.Fatalf("write fresh file: %v", err)
+	}
+
+	cfg := config.Default(config.ModeDesktop)
+	cfg.Agent.AutoInstallCLI, cfg.Agent.AutoUpdateCLI = false, false
+	cfg.Server.Host = "127.0.0.1"
+	cfg.Server.Port = 0
+	cfg.Media.StagingTTL = 24 * time.Hour
+	cfg.Media.StagingGCInterval = 50 * time.Millisecond
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	token, _ := security.NewToken()
+
+	c, err := core.New(context.Background(), core.Options{
+		Config:        cfg,
+		Paths:         p,
+		Logger:        logger,
+		AuthToken:     token,
+		OpenDirectory: func(string) error { return nil },
+		HTTPClient:    http.DefaultClient,
+	})
+	if err != nil {
+		t.Fatalf("core.New: %v", err)
+	}
+	if err := c.Start(); err != nil {
+		t.Fatalf("core.Start: %v", err)
+	}
+
+	// Verify that staleFile was deleted during StartStagingGC initial prune
+	deadline := time.Now().Add(3 * time.Second)
+	pruned := false
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(staleFile); os.IsNotExist(err) {
+			pruned = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !pruned {
+		t.Errorf("expected staleFile to be pruned by staging GC, but it still exists")
+	}
+
+	// Verify freshFile is retained
+	if _, err := os.Stat(freshFile); err != nil {
+		t.Errorf("expected freshFile to exist, got err: %v", err)
+	}
+
+	// Verify clean shutdown
+	closeStart := time.Now()
+	if err := c.Close(); err != nil {
+		t.Errorf("core.Close error: %v", err)
+	}
+	if time.Since(closeStart) > 3*time.Second {
+		t.Errorf("core.Close took longer than expected: %v", time.Since(closeStart))
+	}
+}

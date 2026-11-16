@@ -23,13 +23,12 @@ func (s *Service) GenerateImage(ctx context.Context, req domainmedia.ImageReques
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
-	refs := make([]localImageData, 0, len(norm.ReferenceImages))
-	for _, p := range norm.ReferenceImages {
-		img, err := s.readReferenceImage(p)
-		if err != nil {
-			return domainmedia.Result{}, err
-		}
-		refs = append(refs, img)
+	releaseLeases := s.leaseInputs(norm.ReferenceImages...)
+	defer releaseLeases()
+
+	refs, err := s.readReferenceImages(norm.ReferenceImages)
+	if err != nil {
+		return domainmedia.Result{}, err
 	}
 
 	target, limits, err := s.resolveTarget(ctx, domainprovider.PurposeImage, norm.ModelRef)
@@ -37,16 +36,14 @@ func (s *Service) GenerateImage(ctx context.Context, req domainmedia.ImageReques
 		return domainmedia.Result{}, err
 	}
 
-	release, err := s.limiter.acquire(ctx, target.ownerID, domainprovider.CapabilityImage, limits)
+	release, err := s.acquireLimit(ctx, target, domainprovider.CapabilityImage, limits)
 	if err != nil {
-		return domainmedia.Result{}, apperr.From(err)
+		return domainmedia.Result{}, err
 	}
 	defer release()
 
-	callCtx, cancel := s.requestTimeoutCtx(ctx, false)
-	defer cancel()
-	stopKA := progress.KeepAlive(callCtx)
-	defer stopKA()
+	callCtx, cleanup := s.prepareJobContext(ctx, false)
+	defer cleanup()
 
 	progress.Report(callCtx, progress.Update{
 		Percent: 10,

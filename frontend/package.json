@@ -1,6 +1,7 @@
 {
   "dependencies": {
     "@tanstack/react-virtual": "^3.14.23",
+    "highlight.js": "^11.12.0",
     "lucide-react": "^1.64.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -30,6 +31,7 @@
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\"",
     "lint": "eslint . --max-warnings 0 && node scripts/check-styles.mjs",
+    "check-styles": "node scripts/check-styles.mjs",
     "test": "vitest run",
     "test:run": "vitest run",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json"

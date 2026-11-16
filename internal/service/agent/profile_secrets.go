@@ -1,14 +1,141 @@
 package agent
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"os"
 	"strings"
+	"sync"
 
 	"app/internal/secrets"
+	providersvc "app/internal/service/provider"
+	"app/internal/storage/sqlite"
 )
+
+// ProviderLinkStore defines persistence operations for agent provider links.
+type ProviderLinkStore interface {
+	GetProviderLink(ctx context.Context, agentProviderID string) (sqlite.AgentProviderLink, error)
+	ListProviderLinks(ctx context.Context) ([]sqlite.AgentProviderLink, error)
+	SetProviderLink(ctx context.Context, link sqlite.AgentProviderLink) error
+	DeleteProviderLink(ctx context.Context, agentProviderID string) error
+}
+
+// MediaAssetMetadata holds safe metadata of a media asset without raw paths or tickets.
+type MediaAssetMetadata struct {
+	AssetID        string         `json:"asset_id"`
+	Kind           string         `json:"kind"`
+	SourceNode     string         `json:"source_node,omitempty"`
+	RegisteredRoot string         `json:"registered_root,omitempty"`
+	MIMEType       string         `json:"mime_type"`
+	SizeBytes      int64          `json:"size_bytes"`
+	Width          int            `json:"width,omitempty"`
+	Height         int            `json:"height,omitempty"`
+	DurationSec    float64        `json:"duration_sec,omitempty"`
+	Metadata       map[string]any `json:"metadata,omitempty"`
+}
+
+// MediaAssetInspector safely inspects metadata of a media asset by asset ID.
+type MediaAssetInspector interface {
+	InspectAsset(ctx context.Context, assetID string) (*MediaAssetMetadata, error)
+}
+
+var (
+	serviceLinksMu      sync.RWMutex
+	serviceLinks        = make(map[*Service]ProviderLinkStore)
+	mediaInspectMu      sync.RWMutex
+	mediaInspectors     = make(map[*Service]MediaAssetInspector)
+	activeLinkSecretsMu sync.RWMutex
+	activeLinkSecrets   = make(map[*Service]*providersvc.ResolvedLink)
+)
+
+// SetProviderLinks assigns the provider link store for an agent service.
+func (s *Service) SetProviderLinks(store ProviderLinkStore) {
+	serviceLinksMu.Lock()
+	defer serviceLinksMu.Unlock()
+	if store == nil {
+		delete(serviceLinks, s)
+	} else {
+		serviceLinks[s] = store
+	}
+}
+
+func (s *Service) providerLinksStore() ProviderLinkStore {
+	serviceLinksMu.RLock()
+	st := serviceLinks[s]
+	serviceLinksMu.RUnlock()
+	if st != nil {
+		return st
+	}
+	if pls, ok := s.repo.(ProviderLinkStore); ok {
+		return pls
+	}
+	return nil
+}
+
+// SetMediaInspector assigns the media asset inspector for safe metadata reading.
+func (s *Service) SetMediaInspector(inspector MediaAssetInspector) {
+	mediaInspectMu.Lock()
+	defer mediaInspectMu.Unlock()
+	if inspector == nil {
+		delete(mediaInspectors, s)
+	} else {
+		mediaInspectors[s] = inspector
+	}
+}
+
+func (s *Service) mediaInspectorService() MediaAssetInspector {
+	mediaInspectMu.RLock()
+	defer mediaInspectMu.RUnlock()
+	return mediaInspectors[s]
+}
+
+func (s *Service) setActiveLinkedSecret(link *providersvc.ResolvedLink) {
+	activeLinkSecretsMu.Lock()
+	defer activeLinkSecretsMu.Unlock()
+	if link == nil {
+		delete(activeLinkSecrets, s)
+	} else {
+		activeLinkSecrets[s] = link
+	}
+}
+
+func (s *Service) activeLinkedSecret() *providersvc.ResolvedLink {
+	activeLinkSecretsMu.RLock()
+	defer activeLinkSecretsMu.RUnlock()
+	return activeLinkSecrets[s]
+}
+
+// RedactSecret replaces every occurrence of secret in text with "[REDACTED]".
+func RedactSecret(text, secret string) string {
+	secret = strings.TrimSpace(secret)
+	if len(secret) < 6 || text == "" {
+		return text
+	}
+	return strings.ReplaceAll(text, secret, "[REDACTED]")
+}
+
+// RedactSecrets replaces every occurrence of any secret in text with "[REDACTED]".
+func RedactSecrets(text string, secrets ...string) string {
+	for _, sec := range secrets {
+		text = RedactSecret(text, sec)
+	}
+	return text
+}
+
+// RedactError scrubs known secret values from an error's message.
+func RedactError(err error, secrets ...string) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	scrubbed := RedactSecrets(msg, secrets...)
+	if scrubbed == msg {
+		return err
+	}
+	return errors.New(scrubbed)
+}
 
 // API keys the user enters for an isolated provider profile (Anthropic, Gemini) are kept in the OS
 // credential store, following internal/secrets' rule that secrets never sit in files. Each secret is

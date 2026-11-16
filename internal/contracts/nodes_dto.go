@@ -20,15 +20,17 @@ const (
 
 // RemoverInput is the input payload for the watermark remover node.
 type RemoverInput struct {
-	Image     engine.ImageInputRef  `json:"image,omitempty"`
-	Images    engine.ImageInputRefs `json:"images,omitempty"`
-	InPlace   bool                  `json:"inplace,omitempty"`
-	OutputDir string                `json:"output_dir,omitempty"`
-	Workers   int                   `json:"workers,omitempty"`
-	Corner    string                `json:"corner,omitempty"`
-	MinScore  float64               `json:"min_score,omitempty"`
-	MinGain   float64               `json:"min_gain,omitempty"`
-	MaxGain   float64               `json:"max_gain,omitempty"`
+	Image        engine.ImageInputRef  `json:"image,omitempty"`
+	Images       engine.ImageInputRefs `json:"images,omitempty"`
+	InPlace      bool                  `json:"inplace,omitempty"`
+	OutputDir    string                `json:"output_dir,omitempty"`
+	Workers      int                   `json:"workers,omitempty"`
+	Corner       string                `json:"corner,omitempty"`
+	MinScore     float64               `json:"min_score,omitempty"`
+	MinGain      float64               `json:"min_gain,omitempty"`
+	MaxGain      float64               `json:"max_gain,omitempty"`
+	CopyClean    *bool                 `json:"copy_clean,omitempty"`
+	PreserveTree *bool                 `json:"preserve_tree,omitempty"`
 }
 
 // RemoverItem provides execution details for each processed image.
@@ -39,6 +41,9 @@ type RemoverItem struct {
 	Score    float64 `json:"score"`
 	Size     int     `json:"size,omitempty"`
 	Error    string  `json:"error,omitempty"`
+	Status   string  `json:"status,omitempty"`
+	Reason   string  `json:"reason,omitempty"`
+	AssetID  string  `json:"asset_id,omitempty"`
 }
 
 // RemoverOutput is the output payload produced by the watermark remover node.
@@ -70,6 +75,7 @@ type ImageGenerateOutput struct {
 	Provider  string          `json:"provider"`
 	Model     string          `json:"model"`
 	SizeBytes int64           `json:"sizeBytes"`
+	AssetID   string          `json:"asset_id,omitempty"`
 }
 
 // VideoGenerateInput is the merged input+params contract for tool.generate_video.
@@ -96,6 +102,7 @@ type VideoGenerateOutput struct {
 	Model     string          `json:"model"`
 	Duration  float64         `json:"duration"`
 	SizeBytes int64           `json:"sizeBytes"`
+	AssetID   string          `json:"asset_id,omitempty"`
 }
 
 // TTSGenerateInput is the merged input+params contract for tool.generate_tts.
@@ -153,4 +160,5 @@ type TTSGenerateOutput struct {
 	Provider  string          `json:"provider"`
 	Model     string          `json:"model"`
 	SizeBytes int64           `json:"sizeBytes"`
+	AssetID   string          `json:"asset_id,omitempty"`
 }

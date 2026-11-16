@@ -1,18 +1,41 @@
-import React from "react";
-import { Sparkles, Loader2, RotateCcw } from "lucide-react";
+import React, { useEffect } from "react";
+import { useInRouterContext, useLocation } from "react-router-dom";
+import { Sparkles, Loader2, RotateCcw, X } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Badge } from "../../components/ui/Badge";
-import { ErrorText } from "../../components/ui/ErrorText";
-import { useT } from "../../lib/i18n";
+import { describeError, useT } from "../../lib/i18n";
 import { useAgentScreenContext } from "../agent/screenContext";
 import { WATERMARK_NODE, useWatermarkStore, type WatermarkNodeResult } from "./useWatermarkStore";
 import { WatermarkConfigCard } from "./WatermarkConfigCard";
 import { WatermarkResultsCard } from "./WatermarkResultsCard";
 
+/**
+ * Handles incoming navigation parameters (e.g. 1-click cross action from MediaGen or MediaLibrary).
+ * Safely isolated to avoid router context errors in standalone test harnesses.
+ */
+const WatermarkNavigationListener: React.FC = () => {
+  const location = useLocation();
+  const setInputPath = useWatermarkStore((s) => s.setInputPath);
+
+  useEffect(() => {
+    const state = location.state as { asset_id?: string; path?: string } | null;
+    const searchParams = new URLSearchParams(location.search);
+    const incomingAssetId = state?.asset_id || searchParams.get("asset_id");
+    const incomingPath = state?.path || searchParams.get("path");
+    const target = incomingPath || incomingAssetId;
+    if (target) {
+      setInputPath(target);
+    }
+  }, [location.state, location.search, setInputPath]);
+
+  return null;
+};
+
 export const WatermarkView: React.FC = () => {
   const t = useT();
+  const inRouter = useInRouterContext();
 
-  const { inputPath, inputPaths, loading, result, error, removeWatermark, reset } =
+  const { inputPath, inputPaths, loading, result, error, removeWatermark, reset, dismissError } =
     useWatermarkStore();
 
   const totalFiles = inputPaths.length > 0 ? inputPaths.length : inputPath ? 1 : 0;
@@ -34,10 +57,17 @@ export const WatermarkView: React.FC = () => {
 
   return (
     <div className="dashboard-layout watermark-layout">
+      {inRouter && <WatermarkNavigationListener />}
+
       {/* Header Bar */}
       <div className="dashboard-hero watermark-hero">
         <div className="watermark-hero-title-group">
-          <h1 className="dashboard-hero-title watermark-hero-title">{t("watermark.title")}</h1>
+          <div className="watermark-hero-brand">
+            <span className="watermark-hero-icon" aria-hidden="true">
+              <Sparkles size={16} />
+            </span>
+            <h1 className="dashboard-hero-title watermark-hero-title">{t("watermark.title")}</h1>
+          </div>
           <div className="dashboard-hero-meta">
             <Badge>{t("watermark.badge.model")}</Badge>
             <Badge>{t("watermark.badge.multiThreaded")}</Badge>
@@ -74,7 +104,30 @@ export const WatermarkView: React.FC = () => {
         </div>
       </div>
 
-      <ErrorText error={error} />
+      {error && (
+        <div
+          className="alert-box"
+          role="alert"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "var(--space-2)",
+          }}
+        >
+          <div style={{ flex: 1 }}>{describeError(t, error)}</div>
+          <button
+            type="button"
+            onClick={dismissError}
+            aria-label="Dismiss error"
+            title="Dismiss error"
+            className="watermark-icon-btn"
+            style={{ flexShrink: 0 }}
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       {/* Main 2-Column Responsive Workspace */}
       <div className="watermark-grid">

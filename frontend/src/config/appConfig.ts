@@ -55,6 +55,17 @@ export const appConfig = {
     composerMaxHeight: 200,
     /** Quiet time before the current screen is sent to the agent (typing does not spam the backend). */
     screenContextDebounceMs: 300,
+    /** Code block syntax highlighting, plain text fallback cap, and copy feedback. */
+    codeBlock: {
+      maxPlainCharacters: 20_000,
+      copyFeedbackMs: 1_500,
+    },
+    /** Watermark comparison slider and zoom controls. */
+    watermarkCompare: {
+      zoomMin: 0.5,
+      zoomMax: 4.0,
+      zoomStep: 0.25,
+    },
   },
   /** How often the header status pill pings the server. */
   latencyProbeIntervalMs: 5_000,
@@ -82,4 +93,28 @@ export const appConfig = {
   mediaUploadPath: "/api/media/upload",
   /** Authenticated HTTP media download endpoint (browser and remote client modes). */
   mediaDownloadPath: "/api/media/download",
+  /** Media tuning knobs (ticket auto-renewal, lifetime, and staging). */
+  media: {
+    ticketRenewSkewMs: 120_000,
+    ticketTtlMs: 900_000,
+    stagingTtlMs: 24 * 60 * 60 * 1000,
+    stagingGcIntervalMs: 60 * 60 * 1000,
+  },
+  /** External tool binaries download and retry policies. */
+  binaries: {
+    downloadResume: true,
+    downloadRetryMax: 3,
+    downloadRetryDelayMs: 1_000,
+  },
+  /** Watermark detection and processing engine defaults. */
+  watermark: {
+    maxWorkers: 4,
+    maxImagePixels: 100_000_000,
+    decodeConcurrency: 2,
+  },
+  /** Virtual list and high-performance UI rendering tuning knobs. */
+  virtualization: {
+    defaultItemHeight: 48,
+    overscan: 5,
+  },
 } as const;

@@ -153,6 +153,70 @@ describe("useBinariesStore (R3)", () => {
       const ffmpeg = state.binaries.find((b) => b.id === "ffmpeg");
       expect(ffmpeg?.status).toBe("available");
     });
+
+    it("tracks resumed download progress and updates activeProgress in store", async () => {
+      useBinariesStore.setState({ binaries: [...mockBinaries] });
+
+      const downloadedFfmpeg: BinaryInfo = {
+        ...mockBinaries[0],
+        status: "available",
+        version: "7.1",
+        source: "tools",
+      };
+
+      const progressEvents: ActionProgress[] = [];
+      const onProgress = (p: ActionProgress) => progressEvents.push(p);
+
+      vi.spyOn(rtClient, "request").mockImplementationOnce(async (_action, _payload, opts) => {
+        opts?.onProgress?.({
+          percent: 50,
+          message: "Downloaded 5.0 / 10.0 MB",
+          is_resume: true,
+          resumed_from_bytes: 5242880,
+          msg_params: { done: "5.0", total: "10.0", is_resume: "true", resumed_from_mb: "5.0" },
+        });
+        const currentProgress = useBinariesStore.getState().activeProgress["ffmpeg"];
+        expect(currentProgress?.is_resume).toBe(true);
+        expect(currentProgress?.resumed_from_bytes).toBe(5242880);
+
+        opts?.onProgress?.({
+          percent: 100,
+          message: "Installed",
+          is_resume: true,
+          resumed_from_bytes: 5242880,
+        });
+        return downloadedFfmpeg;
+      });
+
+      const ctrl = new AbortController();
+      const { download } = useBinariesStore.getState();
+      await download("ffmpeg", ctrl.signal, onProgress);
+
+      expect(progressEvents).toHaveLength(2);
+      expect(progressEvents[0].is_resume).toBe(true);
+      expect(progressEvents[0].resumed_from_bytes).toBe(5242880);
+
+      // Once finished, activeProgress should be cleared
+      expect(useBinariesStore.getState().activeProgress["ffmpeg"]).toBeNull();
+    });
+
+    it("updates progress via setProgress for realtime broadcast events", () => {
+      const { setProgress } = useBinariesStore.getState();
+      setProgress("ffmpeg", {
+        percent: 65,
+        message: "Downloading...",
+        is_resume: true,
+        resumed_from_bytes: 1048576,
+      });
+
+      const progress = useBinariesStore.getState().activeProgress["ffmpeg"];
+      expect(progress?.percent).toBe(65);
+      expect(progress?.is_resume).toBe(true);
+      expect(progress?.resumed_from_bytes).toBe(1048576);
+
+      setProgress("ffmpeg", null);
+      expect(useBinariesStore.getState().activeProgress["ffmpeg"]).toBeNull();
+    });
   });
 
   describe("Tier 2 — Boundary & Corner Cases", () => {

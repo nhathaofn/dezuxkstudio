@@ -66,6 +66,16 @@ const (
 	ActionAgentSaveSubagent         = "agent:save_subagent"
 	ActionAgentDeleteSubagent       = "agent:delete_subagent"
 	ActionAgentRestoreSubagent      = "agent:restore_subagent"
+	ActionAgentSetProviderLink      = "agent:set_provider_link"
+	ActionAgentLinkProvider         = "agent:link_provider"
+	ActionAgentUnlinkProvider       = "agent:unlink_provider"
+	ActionAgentListProviderLinks    = "agent:list_provider_links"
+	ActionAgentCompatibleProviders  = "agent:compatible_providers"
+
+	ActionMediaList          = "media:list"
+	ActionMediaDelete        = "media:delete"
+	ActionMediaSignURL       = "media:sign_url"
+	ActionMediaRegisterInput = "media:register_input"
 )
 
 // LongActions lists actions whose idle timeout is realtime.long_action_timeout instead of
@@ -103,6 +113,8 @@ const (
 	EventAgentApprovals             = "agent:approvals"
 	EventAgentLoginPrompt           = "agent:login_prompt"
 	EventAgentCustomizationsChanged = "agent:customizations_changed"
+	EventMediaAssetsChanged         = "media:assets_changed"
+	EventBinariesProgress           = "binaries:progress"
 )
 
 // Native event names emitted through the Wails runtime (desktop shell only).
@@ -208,6 +220,15 @@ func Actions() []ActionSpec {
 		{ActionProvidersUpdateSettings, "Patches a provider's concurrency / rate settings; an empty value resets a key.", t[UpdateSettingsPayload](), t[ProviderSettingsResult]()},
 		{ActionProvidersDefaults, "Default model per purpose (text, image, video, tts) with the usable candidates.", t[Empty](), t[ProviderDefaultsResult]()},
 		{ActionProvidersSetDefault, "Sets the default model of a purpose (provider/model, or empty for auto).", t[SetDefaultPayload](), t[ProviderDefaultsResult]()},
+		{ActionMediaList, "Lists registered media assets with filtering.", t[MediaListPayload](), t[MediaListResult]()},
+		{ActionMediaDelete, "Deletes a media asset record (and optionally backing file).", t[MediaDeletePayload](), t[Empty]()},
+		{ActionMediaSignURL, "Generates a signed scoped download/streaming URL for a media asset.", t[MediaSignURLPayload](), t[MediaSignedURLResult]()},
+		{ActionMediaRegisterInput, "Registers an existing local media file as an asset.", t[MediaRegisterInputPayload](), t[MediaAssetItem]()},
+		{ActionAgentSetProviderLink, "Sets the opt-in provider credential link for an agent provider.", t[AgentLinkProviderPayload](), t[Empty]()},
+		{ActionAgentLinkProvider, "Sets the opt-in provider credential link for an agent provider.", t[AgentLinkProviderPayload](), t[Empty]()},
+		{ActionAgentUnlinkProvider, "Removes the opt-in provider link for an agent provider.", t[AgentProviderIDPayload](), t[Empty]()},
+		{ActionAgentListProviderLinks, "Lists all configured agent provider links.", t[Empty](), t[AgentProviderLinksResult]()},
+		{ActionAgentCompatibleProviders, "Lists allowed target providers for an agent provider.", t[AgentProviderIDPayload](), t[AgentCompatibleProvidersResult]()},
 	}
 }
 
@@ -222,6 +243,8 @@ func Events() []EventSpec {
 		{EventAgentApprovals, "Pending agent approval queue changed.", t[AgentApprovalListResult]()},
 		{EventAgentCustomizationsChanged, "Shared agent skills or subagents changed.", t[AgentCustomizationsResult]()},
 		{EventProvidersChanged, "Provider credentials or custom providers changed.", t[ProvidersListResult]()},
+		{EventMediaAssetsChanged, "Media assets library content changed.", t[Empty]()},
+		{EventBinariesProgress, "Download progress of an external binary.", t[BinaryProgress]()},
 	}
 }
 

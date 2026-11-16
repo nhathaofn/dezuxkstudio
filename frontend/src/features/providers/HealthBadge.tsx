@@ -5,9 +5,11 @@ import { healthStatus, relativeTestTime } from "./health";
 export function HealthBadge({
   health,
   checking = false,
+  latencyMs,
 }: {
   health: ProviderHealth;
   checking?: boolean;
+  latencyMs?: number;
 }) {
   const t = useT();
   const language = usePreferencesStore((s) => s.prefs.language);
@@ -28,6 +30,7 @@ export function HealthBadge({
       : status === "untested"
         ? ""
         : t(`providers.outcome.${health.outcome}`);
+  const hasLatency = latencyMs != null && latencyMs > 0;
   return (
     <span
       className={`providers-health providers-health--${status}`}
@@ -36,6 +39,7 @@ export function HealthBadge({
         status === "untested" || status === "unknown" ? t(`providers.health.${status}`) : "",
         health.detail,
         health.tested_at,
+        hasLatency ? `${latencyMs}ms` : "",
       ]
         .filter(Boolean)
         .join(" · ")}
@@ -44,6 +48,15 @@ export function HealthBadge({
       <span className="providers-truncate">
         {label}
         {detail && ` ${status === "ok" ? "·" : "—"} ${detail}`}
+        {hasLatency && (
+          <span
+            className="providers-latency"
+            style={{ opacity: 0.85, fontWeight: "var(--weight-medium, 500)" }}
+          >
+            {" "}
+            ({latencyMs}ms)
+          </span>
+        )}
       </span>
     </span>
   );

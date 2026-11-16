@@ -33,6 +33,8 @@ func (s *Service) GenerateVideo(ctx context.Context, req domainmedia.VideoReques
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
+	releaseLeases := s.leaseInputs(append([]string{norm.StartImage, norm.EndImage}, norm.ReferenceImages...)...)
+	defer releaseLeases()
 
 	var inputs videoInputs
 	if norm.StartImage != "" {
@@ -49,13 +51,11 @@ func (s *Service) GenerateVideo(ctx context.Context, req domainmedia.VideoReques
 		}
 		inputs.end = &img
 	}
-	for _, p := range norm.ReferenceImages {
-		img, err := s.readReferenceImage(p)
-		if err != nil {
-			return domainmedia.Result{}, err
-		}
-		inputs.refs = append(inputs.refs, img)
+	refs, err := s.readReferenceImages(norm.ReferenceImages)
+	if err != nil {
+		return domainmedia.Result{}, err
 	}
+	inputs.refs = refs
 
 	target, limits, err := s.resolveTarget(ctx, domainprovider.PurposeVideo, norm.ModelRef)
 	if err != nil {
@@ -70,16 +70,14 @@ func (s *Service) GenerateVideo(ctx context.Context, req domainmedia.VideoReques
 		}
 	}
 
-	release, err := s.limiter.acquire(ctx, target.ownerID, domainprovider.CapabilityVideo, limits)
+	release, err := s.acquireLimit(ctx, target, domainprovider.CapabilityVideo, limits)
 	if err != nil {
-		return domainmedia.Result{}, apperr.From(err)
+		return domainmedia.Result{}, err
 	}
 	defer release()
 
-	callCtx, cancel := s.requestTimeoutCtx(ctx, true)
-	defer cancel()
-	stopKA := progress.KeepAlive(callCtx)
-	defer stopKA()
+	callCtx, cleanup := s.prepareJobContext(ctx, true)
+	defer cleanup()
 
 	progress.Report(callCtx, progress.Update{
 		Percent: 10,

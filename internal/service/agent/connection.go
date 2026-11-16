@@ -7,10 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"app/internal/apperr"
 	domainagent "app/internal/domain/agent"
 	"app/internal/progress"
+	providersvc "app/internal/service/provider"
+	"app/internal/storage/sqlite"
 )
 
 func (s *Service) acpArgsFor(spec domainagent.ProviderSpec) []string {
@@ -73,13 +76,35 @@ func (s *Service) Connect(ctx context.Context, id domainagent.ProviderID) (domai
 		return domainagent.ProviderInfo{}, apperr.Validation(fmt.Sprintf("%s cannot be connected", spec.Name))
 	}
 
-	// The isolated profile must be signed in before the ACP process is spawned.
-	authState, accountInfo := sd.probeAuth(ctx, resolved)
+	// Check if an opt-in provider link is configured.
+	var linkedSecret *providersvc.ResolvedLink
+	if store := s.providerLinksStore(); store != nil {
+		var lErr error
+		linkedSecret, lErr = providersvc.ResolveLinkedSecret(ctx, string(id), "acp", store, s.secrets.store)
+		if lErr != nil {
+			// CRITICAL DESIGN RULE: NO AUTO-FALLBACK.
+			// When an opt-in link is configured but is incompatible or secret is missing,
+			// fail immediately with the error and NEVER silently fall back to OAuth.
+			return s.failConnect(id, spec, resolved, source, customPath, domainagent.StateError, lErr), lErr
+		}
+	}
+
+	var authState domainagent.AuthState
+	var accountInfo string
+	if linkedSecret != nil {
+		authState = domainagent.AuthAuthenticated
+		accountInfo = fmt.Sprintf("Linked API Key: %s", linkedSecret.ProviderID)
+	} else {
+		// The isolated profile must be signed in before the ACP process is spawned.
+		authState, accountInfo = sd.probeAuth(ctx, resolved)
+	}
 	s.mu.Lock()
 	s.authStates[id] = authState
 	s.accountInfos[id] = accountInfo
 	s.mu.Unlock()
 	if authState != domainagent.AuthAuthenticated {
+		// CRITICAL DESIGN RULE: NO AUTO-FALLBACK.
+		// Absolutely NEVER automatically fallback from OAuth/Subscription to API key.
 		err := localize(fmt.Errorf("isolated %s profile is not signed in; click Sign in or enter an API key first", spec.Name), msgNotSignedIn, map[string]string{"name": spec.Name})
 		return s.failConnect(id, spec, resolved, source, customPath, domainagent.StateUnauthenticated, err), toUserError(apperr.CodeUnauthorized, err)
 	}
@@ -97,6 +122,12 @@ func (s *Service) Connect(ctx context.Context, id domainagent.ProviderID) (domai
 	if err != nil {
 		return s.failConnect(id, spec, resolved, source, customPath, domainagent.StateError, err), apperr.Unavailable(err.Error())
 	}
+	if linkedSecret != nil {
+		for k, v := range linkedSecret.EnvOverrides {
+			procEnv = isolatedEnv(procEnv, map[string]string{k: v})
+		}
+	}
+	s.setActiveLinkedSecret(linkedSecret)
 
 	transport, err := s.spawnTransport(
 		ctx,
@@ -183,15 +214,38 @@ func (s *Service) connectPerTurnCLI(
 	source domainagent.Source,
 	customPath string,
 ) (domainagent.ProviderInfo, error) {
-	authState, accountInfo := s.probeProviderAuth(ctx, id, spec, resolved)
+	// Check if an opt-in provider link is configured.
+	var linkedSecret *providersvc.ResolvedLink
+	if store := s.providerLinksStore(); store != nil {
+		var lErr error
+		linkedSecret, lErr = providersvc.ResolveLinkedSecret(ctx, string(id), "cli", store, s.secrets.store)
+		if lErr != nil {
+			// CRITICAL DESIGN RULE: NO AUTO-FALLBACK.
+			// When an opt-in link is configured but is incompatible or secret is missing,
+			// fail immediately with the error and NEVER silently fall back to OAuth.
+			return s.failConnect(id, spec, resolved, source, customPath, domainagent.StateError, lErr), lErr
+		}
+	}
+
+	var authState domainagent.AuthState
+	var accountInfo string
+	if linkedSecret != nil {
+		authState = domainagent.AuthAuthenticated
+		accountInfo = fmt.Sprintf("Linked API Key: %s", linkedSecret.ProviderID)
+	} else {
+		authState, accountInfo = s.probeProviderAuth(ctx, id, spec, resolved)
+	}
 	s.mu.Lock()
 	s.authStates[id] = authState
 	s.accountInfos[id] = accountInfo
 	s.mu.Unlock()
 	if authState != domainagent.AuthAuthenticated {
+		// CRITICAL DESIGN RULE: NO AUTO-FALLBACK.
+		// Absolutely NEVER automatically fallback from OAuth/Subscription to API key.
 		err := localize(fmt.Errorf("isolated %s profile is not signed in; click Sign in first", spec.Name), msgNotSignedIn, map[string]string{"name": spec.Name})
 		return s.failConnect(id, spec, resolved, source, customPath, domainagent.StateUnauthenticated, err), toUserError(apperr.CodeUnauthorized, err)
 	}
+	s.setActiveLinkedSecret(linkedSecret)
 	if prepErr := drv.prepare(); prepErr != nil {
 		return s.failConnect(id, spec, resolved, source, customPath, domainagent.StateError, prepErr), apperr.Unavailable(prepErr.Error())
 	}
@@ -330,6 +384,7 @@ func (s *Service) clearConnectionLocked() {
 	s.activeInit = nil
 	s.activeVersion = ""
 	s.turn = nil
+	s.setActiveLinkedSecret(nil)
 }
 
 func (s *Service) handleSessionUpdate(connToken int64, upd SessionUpdate) {
@@ -341,17 +396,27 @@ func (s *Service) handleSessionUpdate(connToken int64, upd SessionUpdate) {
 		return // updates outside a turn (or of a replaced connection) are not shown
 	}
 	evt := domainagent.ChatEvent{ProviderID: t.providerID, MessageID: t.id}
+	activeSecret := s.activeLinkedSecret()
 	switch upd.Kind {
 	case "agent_message_chunk":
 		evt.Type, evt.Text = domainagent.ChatEventDelta, upd.Text
+		if activeSecret != nil && activeSecret.Secret != "" {
+			evt.Text = RedactSecret(evt.Text, activeSecret.Secret)
+		}
 		s.emitChat(evt)
 	case "agent_thought_chunk", "thought_message_chunk":
 		evt.Type, evt.Text = domainagent.ChatEventThought, upd.Text
+		if activeSecret != nil && activeSecret.Secret != "" {
+			evt.Text = RedactSecret(evt.Text, activeSecret.Secret)
+		}
 		s.emitChat(evt)
 	case "tool_call", "tool_call_update":
 		evt.Tool = t.trackACPTool(upd)
 		if evt.Tool == "" {
 			return
+		}
+		if activeSecret != nil && activeSecret.Secret != "" {
+			evt.Tool = RedactSecret(evt.Tool, activeSecret.Secret)
 		}
 		if upd.Kind == "tool_call" {
 			evt.Type, evt.Text = domainagent.ChatEventToolCall, evt.Tool
@@ -378,8 +443,12 @@ func (s *Service) handleProcessExit(connToken int64, id domainagent.ProviderID, 
 	}
 	t := s.turn
 	s.clearConnectionLocked()
+	activeSecret := s.activeLinkedSecret()
 	var turnErr error
 	if exitErr != nil {
+		if activeSecret != nil && activeSecret.Secret != "" {
+			exitErr = RedactError(exitErr, activeSecret.Secret)
+		}
 		turnErr = localize(fmt.Errorf("agent process exited: %w", exitErr), msgProcessExited, map[string]string{"detail": exitErr.Error()})
 		s.states[id] = domainagent.StateError
 		s.lastErrors[id] = turnErr
@@ -398,6 +467,88 @@ func (s *Service) handleProcessExit(connToken int64, id domainagent.ProviderID, 
 		s.emitApprovals()
 	}
 	s.emitStatusOf(context.Background(), id)
+}
+
+// SetProviderLink sets an explicit opt-in provider link for agentProviderID.
+// CRITICAL: Rejects incompatible combinations. Never auto-fallbacks.
+func (s *Service) SetProviderLink(ctx context.Context, agentProviderID domainagent.ProviderID, targetProviderID, credentialID string) error {
+	store := s.providerLinksStore()
+	if store == nil {
+		return errors.New("agent provider link storage is unavailable")
+	}
+	runnerDriver := "cli"
+	if _, ok := s.driver(agentProviderID).(sessionDriver); ok {
+		runnerDriver = "acp"
+	}
+	if !providersvc.IsCompatible(string(agentProviderID), runnerDriver, targetProviderID, "api_key") {
+		return apperr.Validation(fmt.Sprintf(
+			"target provider %q is not compatible with agent %q (runner driver: %s)",
+			targetProviderID, agentProviderID, runnerDriver,
+		))
+	}
+	link := sqlite.AgentProviderLink{
+		AgentProviderID: string(agentProviderID),
+		ProviderID:      targetProviderID,
+		CredentialID:    credentialID,
+		AuthMethod:      "api_key",
+		UpdatedAt:       time.Now(),
+	}
+	if err := store.SetProviderLink(ctx, link); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	delete(s.authProbes, agentProviderID)
+	s.mu.Unlock()
+	s.emitStatusOf(ctx, agentProviderID)
+	return nil
+}
+
+// DeleteProviderLink removes the opt-in provider link for agentProviderID.
+// CRITICAL: Immediately resets to the isolated profile's native auth state without falling back to any key.
+func (s *Service) DeleteProviderLink(ctx context.Context, agentProviderID domainagent.ProviderID) error {
+	store := s.providerLinksStore()
+	if store == nil {
+		return errors.New("agent provider link storage is unavailable")
+	}
+	if err := store.DeleteProviderLink(ctx, string(agentProviderID)); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	delete(s.authProbes, agentProviderID)
+	s.mu.Unlock()
+	s.emitStatusOf(ctx, agentProviderID)
+	return nil
+}
+
+// GetProviderLink returns the opt-in link for agentProviderID, if any.
+func (s *Service) GetProviderLink(ctx context.Context, agentProviderID domainagent.ProviderID) (*sqlite.AgentProviderLink, error) {
+	store := s.providerLinksStore()
+	if store == nil {
+		return nil, nil
+	}
+	l, err := store.GetProviderLink(ctx, string(agentProviderID))
+	if err != nil {
+		return nil, nil
+	}
+	return &l, nil
+}
+
+// ListProviderLinks returns all configured agent provider links.
+func (s *Service) ListProviderLinks(ctx context.Context) ([]sqlite.AgentProviderLink, error) {
+	store := s.providerLinksStore()
+	if store == nil {
+		return []sqlite.AgentProviderLink{}, nil
+	}
+	return store.ListProviderLinks(ctx)
+}
+
+// CompatibleProviders returns the allowed target providers for agentProviderID.
+func (s *Service) CompatibleProviders(agentProviderID domainagent.ProviderID) []string {
+	runnerDriver := "cli"
+	if _, ok := s.driver(agentProviderID).(sessionDriver); ok {
+		runnerDriver = "acp"
+	}
+	return providersvc.ResolveCompatibleProviders(string(agentProviderID), runnerDriver)
 }
 
 func (s *Service) failConnect(id domainagent.ProviderID, spec domainagent.ProviderSpec, resolved string, source domainagent.Source, customPath string, state domainagent.ConnectionState, err error) domainagent.ProviderInfo {

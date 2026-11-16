@@ -1,6 +1,7 @@
 import React from "react";
 import { openExternal } from "../../lib/bridge";
 import { translateServerMessage, useT } from "../../lib/i18n";
+import { CodeBlock } from "../../components/ui/CodeBlock";
 import { parseBlocks } from "./markdownParse";
 
 /**
@@ -11,8 +12,8 @@ import { parseBlocks } from "./markdownParse";
  * output cannot inject markup. It is tolerant of partial input, because replies are re-rendered on every
  * streamed chunk (an unterminated ``` fence simply renders as a code block so far).
  *
- * Supported: paragraphs (single line breaks kept), #–#### headings, - * + and 1. lists, > quotes, ---,
- * ``` fences, `code`, **bold**, *italic* / _italic_, ~~strike~~ and [links](https://…).
+ * Supported: paragraphs (single line breaks kept), #–#### headings, - * + and 1. lists, > quotes, tables,
+ * ---, ``` fences with syntax highlighting, `code`, **bold**, *italic* / _italic_, ~~strike~~ and [links](https://…).
  */
 
 // Inline tokens, earliest match wins: `code`, [text](url), **bold**, ~~strike~~, *italic* / _italic_.
@@ -120,10 +121,45 @@ export const Markdown: React.FC<{ text: string; className?: string }> = React.me
             case "quote":
               return <blockquote key={key}>{renderLines(b.text, key)}</blockquote>;
             case "code":
+              return <CodeBlock key={key} code={b.text} lang={b.lang} closed={b.closed} />;
+            case "table":
               return (
-                <pre key={key} className="md-pre" data-lang={b.lang || undefined}>
-                  <code>{b.text}</code>
-                </pre>
+                <div key={key} className="md-table-wrap">
+                  <table className="md-table">
+                    <thead>
+                      <tr>
+                        {b.headers.map((h, colIdx) => (
+                          <th
+                            key={colIdx}
+                            style={
+                              b.alignments[colIdx] ? { textAlign: b.alignments[colIdx] } : undefined
+                            }
+                          >
+                            {renderInline(h, `${key}-th-${colIdx}`)}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {b.rows.map((row, rowIdx) => (
+                        <tr key={rowIdx}>
+                          {row.map((cell, colIdx) => (
+                            <td
+                              key={colIdx}
+                              style={
+                                b.alignments[colIdx]
+                                  ? { textAlign: b.alignments[colIdx] }
+                                  : undefined
+                              }
+                            >
+                              {renderInline(cell, `${key}-td-${rowIdx}-${colIdx}`)}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               );
             case "hr":
               return <hr key={key} />;

@@ -54,6 +54,8 @@ type Config struct {
 	Binaries    BinariesConfig
 	Providers   ProvidersConfig
 	MediaGen    MediaGenConfig
+	Media       MediaConfig
+	Watermark   WatermarkConfig
 	Network     NetworkConfig
 	Desktop     DesktopConfig
 	Agent       AgentConfig
@@ -139,9 +141,12 @@ type ProvidersConfig struct {
 	DefaultRequestGapMs int           // minimum pause between two requests to a provider (0 = none), unless set per provider
 }
 
-// BinariesConfig configures external tool (ffmpeg, yt-dlp...) inspection.
+// BinariesConfig configures external tool (ffmpeg, yt-dlp...) inspection and downloads.
 type BinariesConfig struct {
-	ProbeTimeout time.Duration // max duration of `<tool> -version`; a cold start under antivirus can take seconds
+	ProbeTimeout       time.Duration // max duration of `<tool> -version`; a cold start under antivirus can take seconds
+	DownloadResume     bool          // enable HTTP Range .part resumable downloads
+	DownloadRetryMax   int           // max retry attempts for network failures during download
+	DownloadRetryDelay time.Duration // backoff delay between download retries
 }
 
 // MediaGenConfig tunes image, video, and TTS media generation requests.
@@ -153,6 +158,24 @@ type MediaGenConfig struct {
 	MaxReferenceBytes int64         // max bytes allowed per local reference image
 }
 
+// MediaConfig tunes the media assets library, signed ticket streaming, and staging GC.
+type MediaConfig struct {
+	LibraryMaxItems    int           // max items retained in the media library
+	LibraryRetention   time.Duration // retention duration before unreferenced media assets are pruned
+	TicketTTL          time.Duration // lifetime of a signed media download ticket
+	TicketRenewSkew    time.Duration // renewal window before ticket expiration
+	RegisteredRootsMax int           // max allowed registered root paths for media file inspection
+	StagingTTL         time.Duration // retention period before expired staging media files are pruned
+	StagingGCInterval  time.Duration // interval between background garbage collections of staging directories
+}
+
+// WatermarkConfig configures watermark detection and removal processing.
+type WatermarkConfig struct {
+	MaxWorkers        int   // max CPU worker threads for batch watermark processing
+	MaxImagePixels    int64 // max allowed image pixel area (width * height) before decode
+	DecodeConcurrency int   // max concurrent image decoding operations
+}
+
 // UpdateConfig configures release update checks.
 type UpdateConfig struct {
 	FeedURL        string
@@ -162,23 +185,24 @@ type UpdateConfig struct {
 
 // AgentConfig tunes the external AI agent integration (timeouts, caches, workspace mode).
 type AgentConfig struct {
-	RestoreConnection      bool          // reconnect the agent left connected when the app last ran
-	TurnTimeout            time.Duration // max silence (no streamed output or tool activity) in one chat turn
-	InitializeTimeout      time.Duration // max wait for an ACP agent handshake
-	VersionProbeTimeout    time.Duration // max duration of `<cli> --version`
-	AuthProbeTimeout       time.Duration // max duration of a CLI auth status check
-	LoginTimeout           time.Duration // max duration of an interactive sign-in (browser OAuth)
-	ModelCatalogTimeout    time.Duration // max duration of reading a CLI's model catalog
-	InterruptWait          time.Duration // how long a cancelled turn waits for the CLI to report what it produced
-	StatusCacheTTL         time.Duration // how long CLI auth/version probe results are reused
-	AutoInstallCLI         bool          // download the agent CLIs into the app's own folder when they are missing
-	AutoUpdateCLI          bool          // check once at startup to keep the app's own agent CLIs on the newest official release
-	ApprovalTTL            time.Duration // pending approvals expire after this long
-	HistoryLimit           int           // messages returned to the chat UI
-	MaxPendingApprovals    int           // agent actions waiting for approval at most
-	MaxConcurrentSubagents int           // max parallel subagent_run invocations per turn
-	Mode                   string        // "assistant" (default, restricted) or "developer" (opt-in coding/tools)
-	WorkspaceDir           string        // optional directory override for the agent workspace
+	RestoreConnection        bool          // reconnect the agent left connected when the app last ran
+	TurnTimeout              time.Duration // max silence (no streamed output or tool activity) in one chat turn
+	InitializeTimeout        time.Duration // max wait for an ACP agent handshake
+	VersionProbeTimeout      time.Duration // max duration of `<cli> --version`
+	AuthProbeTimeout         time.Duration // max duration of a CLI auth status check
+	LoginTimeout             time.Duration // max duration of an interactive sign-in (browser OAuth)
+	ModelCatalogTimeout      time.Duration // max duration of reading a CLI's model catalog
+	InterruptWait            time.Duration // how long a cancelled turn waits for the CLI to report what it produced
+	StatusCacheTTL           time.Duration // how long CLI auth/version probe results are reused
+	AutoInstallCLI           bool          // download the agent CLIs into the app's own folder when they are missing
+	AutoUpdateCLI            bool          // check once at startup to keep the app's own agent CLIs on the newest official release
+	ApprovalTTL              time.Duration // pending approvals expire after this long
+	MaxApprovalContinuations int           // max chained continuation turns after approval
+	HistoryLimit             int           // messages returned to the chat UI
+	MaxPendingApprovals      int           // agent actions waiting for approval at most
+	MaxConcurrentSubagents   int           // max parallel subagent_run invocations per turn
+	Mode                     string        // "assistant" (default, restricted) or "developer" (opt-in coding/tools)
+	WorkspaceDir             string        // optional directory override for the agent workspace
 }
 
 // DeveloperMode reports whether the agent runs in opt-in developer mode (not remote server mode).
@@ -260,7 +284,12 @@ func Default(mode Mode) *Config {
 			BusyTimeout:   5 * time.Second,
 		},
 		Diagnostics: DiagnosticsConfig{Keep: 5},
-		Binaries:    BinariesConfig{ProbeTimeout: 15 * time.Second},
+		Binaries: BinariesConfig{
+			ProbeTimeout:       15 * time.Second,
+			DownloadResume:     true,
+			DownloadRetryMax:   3,
+			DownloadRetryDelay: 1 * time.Second,
+		},
 		Providers: ProvidersConfig{TestTimeout: 15 * time.Second, CheckOnStartup: true, AutoCheck: true, CheckConcurrency: 4,
 			DefaultMaxWorkers: 2, DefaultRPM: 0, DefaultRequestGapMs: 0}, // ArcReel _CONNECTIVITY_CHECK_TIMEOUT
 		MediaGen: MediaGenConfig{
@@ -270,6 +299,20 @@ func Default(mode Mode) *Config {
 			MaxOutputBytes:    256 << 20, // 256 MiB
 			MaxReferenceBytes: 20 << 20,  // 20 MiB
 		},
+		Media: MediaConfig{
+			LibraryMaxItems:    1000,
+			LibraryRetention:   30 * 24 * time.Hour,
+			TicketTTL:          15 * time.Minute,
+			TicketRenewSkew:    2 * time.Minute,
+			RegisteredRootsMax: 32,
+			StagingTTL:         24 * time.Hour,
+			StagingGCInterval:  1 * time.Hour,
+		},
+		Watermark: WatermarkConfig{
+			MaxWorkers:        4,
+			MaxImagePixels:    100_000_000,
+			DecodeConcurrency: 2,
+		},
 		Network: NetworkConfig{IdleConnTimeout: 90 * time.Second, MaxIdleConns: 100, MaxIdleConnsPerHost: 10},
 		Update: UpdateConfig{
 			FeedURL:        buildinfo.UpdateFeedURL,
@@ -277,22 +320,23 @@ func Default(mode Mode) *Config {
 			CheckOnStartup: releaseBuild,
 		},
 		Agent: AgentConfig{
-			RestoreConnection:      true,
-			TurnTimeout:            10 * time.Minute,
-			InitializeTimeout:      15 * time.Second,
-			VersionProbeTimeout:    5 * time.Second, // Node-based CLI shims cold-start slowly on Windows
-			AuthProbeTimeout:       10 * time.Second,
-			LoginTimeout:           3 * time.Minute,
-			ModelCatalogTimeout:    30 * time.Second,
-			InterruptWait:          5 * time.Second,
-			StatusCacheTTL:         5 * time.Minute,
-			AutoInstallCLI:         true,
-			AutoUpdateCLI:          releaseBuild,
-			ApprovalTTL:            30 * time.Minute,
-			HistoryLimit:           200,
-			MaxPendingApprovals:    20,
-			MaxConcurrentSubagents: 4,
-			Mode:                   "assistant",
+			RestoreConnection:        true,
+			TurnTimeout:              10 * time.Minute,
+			InitializeTimeout:        15 * time.Second,
+			VersionProbeTimeout:      5 * time.Second, // Node-based CLI shims cold-start slowly on Windows
+			AuthProbeTimeout:         10 * time.Second,
+			LoginTimeout:             3 * time.Minute,
+			ModelCatalogTimeout:      30 * time.Second,
+			InterruptWait:            5 * time.Second,
+			StatusCacheTTL:           5 * time.Minute,
+			AutoInstallCLI:           true,
+			AutoUpdateCLI:            releaseBuild,
+			ApprovalTTL:              24 * time.Hour,
+			MaxApprovalContinuations: 5,
+			HistoryLimit:             200,
+			MaxPendingApprovals:      20,
+			MaxConcurrentSubagents:   4,
+			Mode:                     "assistant",
 		},
 		Desktop: DesktopConfig{
 			Width:        0, // 0 = auto (80% of primary screen)
@@ -327,4 +371,71 @@ func (c *Config) Redacted() map[string]string {
 		out[f.key] = v
 	}
 	return out
+}
+
+// WatermarkMaxWorkers returns the configured batch worker concurrency, or 4 if <= 0 or c is nil.
+func (c *Config) WatermarkMaxWorkers() int {
+	if c == nil || c.Watermark.MaxWorkers <= 0 {
+		return 4
+	}
+	return c.Watermark.MaxWorkers
+}
+
+// WatermarkMaxImagePixels returns the configured max pixel count (width*height) for decode, or 100_000_000 if <= 0 or c is nil.
+func (c *Config) WatermarkMaxImagePixels() int64 {
+	if c == nil || c.Watermark.MaxImagePixels <= 0 {
+		return 100_000_000
+	}
+	return c.Watermark.MaxImagePixels
+}
+
+// WatermarkDecodeConcurrency returns the configured concurrency limit for image decoding, or 2 if <= 0 or c is nil.
+func (c *Config) WatermarkDecodeConcurrency() int {
+	if c == nil || c.Watermark.DecodeConcurrency <= 0 {
+		return 2
+	}
+	return c.Watermark.DecodeConcurrency
+}
+
+// BinariesDownloadResume reports whether resumable downloads are enabled.
+func (c *Config) BinariesDownloadResume() bool {
+	if c == nil {
+		return true
+	}
+	return c.Binaries.DownloadResume
+}
+
+// BinariesDownloadRetryMax returns the max retry attempts for binary downloads, or 3 if c is nil.
+func (c *Config) BinariesDownloadRetryMax() int {
+	if c == nil {
+		return 3
+	}
+	if c.Binaries.DownloadRetryMax < 0 {
+		return 0
+	}
+	return c.Binaries.DownloadRetryMax
+}
+
+// BinariesDownloadRetryDelay returns the backoff delay between download retries, or 1s if <= 0 or c is nil.
+func (c *Config) BinariesDownloadRetryDelay() time.Duration {
+	if c == nil || c.Binaries.DownloadRetryDelay <= 0 {
+		return 1 * time.Second
+	}
+	return c.Binaries.DownloadRetryDelay
+}
+
+// MediaStagingTTL returns the retention duration for staging files, falling back to 24h if <= 0 or c is nil.
+func (c *Config) MediaStagingTTL() time.Duration {
+	if c == nil || c.Media.StagingTTL <= 0 {
+		return 24 * time.Hour
+	}
+	return c.Media.StagingTTL
+}
+
+// MediaStagingGCInterval returns the interval between staging directory GC passes, falling back to 1h if <= 0 or c is nil.
+func (c *Config) MediaStagingGCInterval() time.Duration {
+	if c == nil || c.Media.StagingGCInterval <= 0 {
+		return 1 * time.Hour
+	}
+	return c.Media.StagingGCInterval
 }

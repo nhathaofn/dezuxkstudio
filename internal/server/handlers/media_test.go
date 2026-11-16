@@ -3,10 +3,15 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +21,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"app/internal/security"
+	"app/internal/server/middleware"
 )
 
 func makeTestPNG(t *testing.T) []byte {
@@ -329,5 +337,326 @@ func TestRunStagingCleanupFallbackDefaults(t *testing.T) {
 
 	if _, err := os.Stat(kept); err != nil {
 		t.Fatalf("staging dir younger than default 24h TTL must be kept: %v", err)
+	}
+}
+
+func setupTestAsset(t *testing.T, mediaDir, filename string, data []byte) string {
+	t.Helper()
+	p := filepath.Join(mediaDir, filename)
+	if err := os.WriteFile(p, data, 0o600); err != nil {
+		t.Fatalf("write test asset %s: %v", filename, err)
+	}
+	return p
+}
+
+func makeExpiredTicket(secret []byte, assetID, purpose string) string {
+	claims := security.TicketClaims{
+		AssetID:   assetID,
+		Purpose:   purpose,
+		ExpiresAt: time.Now().Unix() - 60,
+		Nonce:     "1234567890abcdef",
+	}
+	payloadBytes, _ := json.Marshal(claims)
+	payloadPart := base64.RawURLEncoding.EncodeToString(payloadBytes)
+
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(payloadPart))
+	sigPart := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+
+	return payloadPart + "." + sigPart
+}
+
+func TestMediaDownloadRangeRequest(t *testing.T) {
+	mediaDir := t.TempDir()
+	data := []byte("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()_+-=[]{}|;':,./<>?`~0123456789")
+	setupTestAsset(t, mediaDir, "sample.mp4", data)
+
+	secret := []byte("media-signing-secret-key-32bytes")
+	signer := security.NewTicketSigner(secret)
+	assetID := "sample.mp4"
+
+	ticket, err := signer.SignTicket(assetID, security.PurposeDownload, 10*time.Minute)
+	if err != nil {
+		t.Fatalf("sign ticket failed: %v", err)
+	}
+
+	handler := MediaDownload(mediaDir, WithTicketSigner(signer))
+
+	// Sub-test 1: Middle range [10-25] -> 16 bytes
+	req1 := httptest.NewRequest(http.MethodGet, "/api/media/download?asset_id="+url.QueryEscape(assetID)+"&ticket="+url.QueryEscape(ticket), nil)
+	req1.Header.Set("Range", "bytes=10-25")
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusPartialContent {
+		t.Fatalf("expected 206 Partial Content, got %d (%s)", rec1.Code, rec1.Body.String())
+	}
+	expectedCR1 := fmt.Sprintf("bytes 10-25/%d", len(data))
+	if rec1.Header().Get("Content-Range") != expectedCR1 {
+		t.Fatalf("expected Content-Range %s, got %q", expectedCR1, rec1.Header().Get("Content-Range"))
+	}
+	expectedBody1 := data[10:26]
+	if !bytes.Equal(rec1.Body.Bytes(), expectedBody1) {
+		t.Fatalf("body mismatch for range 10-25:\nwant: %s\ngot:  %s", expectedBody1, rec1.Body.Bytes())
+	}
+
+	// Sub-test 2: Open-ended range [50-] -> from 50 to end
+	req2 := httptest.NewRequest(http.MethodGet, "/api/media/download?asset_id="+url.QueryEscape(assetID)+"&ticket="+url.QueryEscape(ticket), nil)
+	req2.Header.Set("Range", "bytes=50-")
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusPartialContent {
+		t.Fatalf("expected 206 Partial Content, got %d", rec2.Code)
+	}
+	expectedCR2 := fmt.Sprintf("bytes 50-%d/%d", len(data)-1, len(data))
+	if rec2.Header().Get("Content-Range") != expectedCR2 {
+		t.Fatalf("expected Content-Range %s, got %q", expectedCR2, rec2.Header().Get("Content-Range"))
+	}
+	expectedBody2 := data[50:]
+	if !bytes.Equal(rec2.Body.Bytes(), expectedBody2) {
+		t.Fatalf("body mismatch for range 50-:\nwant: %s\ngot:  %s", expectedBody2, rec2.Body.Bytes())
+	}
+
+	// Sub-test 3: Suffix range [-20] -> last 20 bytes
+	req3 := httptest.NewRequest(http.MethodGet, "/api/media/download?asset_id="+url.QueryEscape(assetID)+"&ticket="+url.QueryEscape(ticket), nil)
+	req3.Header.Set("Range", "bytes=-20")
+	rec3 := httptest.NewRecorder()
+	handler.ServeHTTP(rec3, req3)
+
+	if rec3.Code != http.StatusPartialContent {
+		t.Fatalf("expected 206 Partial Content, got %d", rec3.Code)
+	}
+	expectedCR3 := fmt.Sprintf("bytes %d-%d/%d", len(data)-20, len(data)-1, len(data))
+	if rec3.Header().Get("Content-Range") != expectedCR3 {
+		t.Fatalf("expected Content-Range %s, got %q", expectedCR3, rec3.Header().Get("Content-Range"))
+	}
+	expectedBody3 := data[len(data)-20:]
+	if !bytes.Equal(rec3.Body.Bytes(), expectedBody3) {
+		t.Fatalf("body mismatch for range -20:\nwant: %s\ngot:  %s", expectedBody3, rec3.Body.Bytes())
+	}
+}
+
+func TestMediaDownloadExpiredTicket(t *testing.T) {
+	mediaDir := t.TempDir()
+	setupTestAsset(t, mediaDir, "sample.png", makeTestPNG(t))
+
+	secret := []byte("media-signing-secret-key-32bytes")
+	signer := security.NewTicketSigner(secret)
+	assetID := "sample.png"
+
+	expiredTicket := makeExpiredTicket(secret, assetID, security.PurposeDownload)
+
+	handler := MediaDownload(mediaDir, WithTicketSigner(signer))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/media/download?asset_id="+url.QueryEscape(assetID)+"&ticket="+url.QueryEscape(expiredTicket), nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	// Per requirement: Reject expired or invalid tickets with 401/403
+	if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 401 or 403 for expired ticket, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMediaDownloadTamperedTicket(t *testing.T) {
+	mediaDir := t.TempDir()
+	setupTestAsset(t, mediaDir, "sample.png", makeTestPNG(t))
+
+	secret := []byte("media-signing-secret-key-32bytes")
+	signer := security.NewTicketSigner(secret)
+	assetID := "sample.png"
+
+	validTicket, err := signer.SignTicket(assetID, security.PurposePreview, 10*time.Minute)
+	if err != nil {
+		t.Fatalf("sign ticket failed: %v", err)
+	}
+
+	handler := MediaDownload(mediaDir, WithTicketSigner(signer))
+
+	// Test 1: Tampered signature
+	parts := strings.Split(validTicket, ".")
+	tamperedSig := parts[1][:len(parts[1])-2] + "XX"
+	tamperedTicket := parts[0] + "." + tamperedSig
+
+	req1 := httptest.NewRequest(http.MethodGet, "/api/media/download?asset_id="+url.QueryEscape(assetID)+"&ticket="+url.QueryEscape(tamperedTicket), nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusUnauthorized && rec1.Code != http.StatusForbidden {
+		t.Fatalf("expected 401 or 403 for tampered ticket signature, got %d (%s)", rec1.Code, rec1.Body.String())
+	}
+
+	// Test 2: Tampered payload (mismatched asset_id in claims)
+	tamperedPayload := base64.RawURLEncoding.EncodeToString([]byte(`{"asset_id":"evil","purpose":"preview","exp":9999999999,"nonce":"1234"}`))
+	tamperedPayloadTicket := tamperedPayload + "." + parts[1]
+
+	req2 := httptest.NewRequest(http.MethodGet, "/api/media/download?asset_id="+url.QueryEscape(assetID)+"&ticket="+url.QueryEscape(tamperedPayloadTicket), nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusUnauthorized && rec2.Code != http.StatusForbidden {
+		t.Fatalf("expected 401 or 403 for tampered payload, got %d (%s)", rec2.Code, rec2.Body.String())
+	}
+}
+
+func TestMediaDownloadTokenQueryParameterRejected(t *testing.T) {
+	mediaDir := t.TempDir()
+	setupTestAsset(t, mediaDir, "sample.png", makeTestPNG(t))
+
+	secret := []byte("media-signing-secret-key-32bytes")
+	signer := security.NewTicketSigner(secret)
+	assetID := "sample.png"
+
+	ticket, _ := signer.SignTicket(assetID, security.PurposeDownload, time.Hour)
+
+	handler := MediaDownload(mediaDir, WithTicketSigner(signer), WithAuth("master-secret", false))
+
+	// Rejection case 1: ?token= with asset_id
+	req1 := httptest.NewRequest(http.MethodGet, "/api/media/download?asset_id="+url.QueryEscape(assetID)+"&token=master-secret", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+
+	if rec1.Code < 400 {
+		t.Fatalf("expected rejection for ?token= query parameter, got %d", rec1.Code)
+	}
+
+	// Rejection case 2: ?token= combined with valid ticket
+	req2 := httptest.NewRequest(http.MethodGet, "/api/media/download?asset_id="+url.QueryEscape(assetID)+"&ticket="+url.QueryEscape(ticket)+"&token=leak", nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if rec2.Code < 400 {
+		t.Fatalf("expected rejection for ?token= query even with valid ticket, got %d", rec2.Code)
+	}
+
+	// Rejection case 3: ?token= combined with path
+	req3 := httptest.NewRequest(http.MethodGet, "/api/media/download?path=sample.png&token=master-secret", nil)
+	rec3 := httptest.NewRecorder()
+	handler.ServeHTTP(rec3, req3)
+
+	if rec3.Code < 400 {
+		t.Fatalf("expected rejection for ?token= query on path download, got %d", rec3.Code)
+	}
+}
+
+func TestMediaDownloadLoggerRedactsTicket(t *testing.T) {
+	mediaDir := t.TempDir()
+	setupTestAsset(t, mediaDir, "sample.png", makeTestPNG(t))
+
+	secret := []byte("media-signing-secret-key-32bytes")
+	signer := security.NewTicketSigner(secret)
+	assetID := "sample.png"
+
+	ticket, err := signer.SignTicket(assetID, security.PurposePreview, 10*time.Minute)
+	if err != nil {
+		t.Fatalf("sign ticket failed: %v", err)
+	}
+
+	var logBuf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	baseHandler := MediaDownload(mediaDir, WithTicketSigner(signer))
+	loggedHandler := middleware.RequestLogger(logger)(baseHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/media/download?asset_id="+url.QueryEscape(assetID)+"&ticket="+url.QueryEscape(ticket)+"&purpose=preview", nil)
+	rec := httptest.NewRecorder()
+	loggedHandler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("download expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	logOutput := logBuf.String()
+	if strings.Contains(logOutput, ticket) {
+		t.Fatalf("logger leaked signed ticket string into logs: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "ticket=[REDACTED]") {
+		t.Fatalf("logger did not contain redacted ticket placeholder: %s", logOutput)
+	}
+}
+
+func TestMediaDownloadBearerAuthWithAssetID(t *testing.T) {
+	mediaDir := t.TempDir()
+	assetData := makeTestPNG(t)
+	setupTestAsset(t, mediaDir, "asset123.png", assetData)
+
+	resolver := AssetResolverFunc(func(ctx context.Context, id string) (string, string, error) {
+		if id == "asset-custom-id" {
+			return filepath.Join(mediaDir, "asset123.png"), mediaDir, nil
+		}
+		return "", "", os.ErrNotExist
+	})
+
+	handler := MediaDownload(mediaDir, WithAssetResolver(resolver), WithAuth("master-bearer-token", false))
+
+	// Request with valid Bearer auth
+	reqAuth := httptest.NewRequest(http.MethodGet, "/api/media/download?asset_id=asset-custom-id", nil)
+	reqAuth.Header.Set("Authorization", "Bearer master-bearer-token")
+	recAuth := httptest.NewRecorder()
+	handler.ServeHTTP(recAuth, reqAuth)
+
+	if recAuth.Code != http.StatusOK {
+		t.Fatalf("expected 200 with valid Bearer auth, got %d (%s)", recAuth.Code, recAuth.Body.String())
+	}
+	if !bytes.Equal(recAuth.Body.Bytes(), assetData) {
+		t.Fatal("content mismatch on Bearer download")
+	}
+
+	// Request with invalid Bearer auth
+	reqBadAuth := httptest.NewRequest(http.MethodGet, "/api/media/download?asset_id=asset-custom-id", nil)
+	reqBadAuth.Header.Set("Authorization", "Bearer invalid-token")
+	recBadAuth := httptest.NewRecorder()
+	handler.ServeHTTP(recBadAuth, reqBadAuth)
+
+	if recBadAuth.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with invalid Bearer auth, got %d", recBadAuth.Code)
+	}
+
+	// Request with missing Bearer auth
+	reqNoAuth := httptest.NewRequest(http.MethodGet, "/api/media/download?asset_id=asset-custom-id", nil)
+	recNoAuth := httptest.NewRecorder()
+	handler.ServeHTTP(recNoAuth, reqNoAuth)
+
+	if recNoAuth.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with missing Bearer auth, got %d", recNoAuth.Code)
+	}
+}
+
+func TestMediaDownloadPurposePreviewVsDownload(t *testing.T) {
+	mediaDir := t.TempDir()
+	setupTestAsset(t, mediaDir, "photo.jpg", []byte("fake-jpeg-data"))
+
+	secret := []byte("media-signing-secret-key-32bytes")
+	signer := security.NewTicketSigner(secret)
+	assetID := "photo.jpg"
+
+	previewTicket, _ := signer.SignTicket(assetID, security.PurposePreview, 10*time.Minute)
+	downloadTicket, _ := signer.SignTicket(assetID, security.PurposeDownload, 10*time.Minute)
+
+	handler := MediaDownload(mediaDir, WithTicketSigner(signer))
+
+	// Preview ticket -> Content-Disposition: inline
+	reqPrev := httptest.NewRequest(http.MethodGet, "/api/media/download?asset_id="+url.QueryEscape(assetID)+"&ticket="+url.QueryEscape(previewTicket), nil)
+	recPrev := httptest.NewRecorder()
+	handler.ServeHTTP(recPrev, reqPrev)
+
+	if recPrev.Code != http.StatusOK {
+		t.Fatalf("preview expected 200, got %d", recPrev.Code)
+	}
+	if !strings.HasPrefix(recPrev.Header().Get("Content-Disposition"), "inline") {
+		t.Fatalf("preview expected inline disposition, got %q", recPrev.Header().Get("Content-Disposition"))
+	}
+
+	// Download ticket -> Content-Disposition: attachment
+	reqDl := httptest.NewRequest(http.MethodGet, "/api/media/download?asset_id="+url.QueryEscape(assetID)+"&ticket="+url.QueryEscape(downloadTicket), nil)
+	recDl := httptest.NewRecorder()
+	handler.ServeHTTP(recDl, reqDl)
+
+	if recDl.Code != http.StatusOK {
+		t.Fatalf("download expected 200, got %d", recDl.Code)
+	}
+	if !strings.HasPrefix(recDl.Header().Get("Content-Disposition"), "attachment") {
+		t.Fatalf("download expected attachment disposition, got %q", recDl.Header().Get("Content-Disposition"))
 	}
 }
