@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -217,6 +218,15 @@ func TestLinkResolver_StrictNoAutoFallback(t *testing.T) {
 	// Inject a fake driver for Antigravity that reports AuthUnauthenticated (OAuth missing / expired)
 	fakeAgy := &fakeDriver{cheap: true, authState: domainagent.AuthUnauthenticated, account: ""}
 	svc.drivers[domainagent.ProviderAntigravity] = fakeAgy
+
+	// Provide a dummy executable so resolveExecutable succeeds in hermetic / CI environments
+	dummyAgy := filepath.Join(t.TempDir(), "agy.exe")
+	if err := os.WriteFile(dummyAgy, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetCustomPath(ctx, domainagent.ProviderAntigravity, dummyAgy); err != nil {
+		t.Fatal(err)
+	}
 
 	// Also simulate an active API key existing in Settings > Providers (cred-123)
 	// Even though an API key exists in provider store, agent MUST NOT automatically fall back to it!
