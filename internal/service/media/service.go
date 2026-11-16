@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -160,6 +161,29 @@ func (s *Service) isRootAuthorized(realRoot string) bool {
 
 	for _, allowed := range s.allowedRoots {
 		if isSubpath(allowed, realRoot) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsPathAuthorized reports whether target file or directory is inside any authorized root.
+func (s *Service) IsPathAuthorized(target string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if len(s.allowedRoots) == 0 {
+		return true
+	}
+
+	cleanTarget := filepath.Clean(target)
+	realTarget, err := filepath.EvalSymlinks(cleanTarget)
+	if err == nil {
+		cleanTarget = realTarget
+	}
+
+	for _, allowed := range s.allowedRoots {
+		if isSubpath(allowed, cleanTarget) {
 			return true
 		}
 	}
@@ -537,6 +561,10 @@ func evalSubpath(targetPath, rootPath string) (realTarget, realRoot string, err 
 func isSubpath(root, target string) bool {
 	r := filepath.Clean(root)
 	t := filepath.Clean(target)
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		r = strings.ToLower(r)
+		t = strings.ToLower(t)
+	}
 
 	rel, err := filepath.Rel(r, t)
 	if err != nil {

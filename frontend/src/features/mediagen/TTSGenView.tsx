@@ -218,6 +218,7 @@ export const TTSGenView: React.FC = () => {
           loading={loading}
           progress={progress}
           error={error}
+          prompt={text}
           result={
             result
               ? {
@@ -226,6 +227,7 @@ export const TTSGenView: React.FC = () => {
                   provider: result.provider,
                   model: result.model,
                   sizeBytes: result.sizeBytes,
+                  asset_id: result.asset_id,
                 }
               : null
           }

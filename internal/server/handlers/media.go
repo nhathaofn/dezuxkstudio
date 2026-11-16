@@ -355,8 +355,14 @@ func MediaDownload(mediaDir string, opts ...MediaDownloadOption) http.Handler {
 		}
 
 		if !isStrictSubPath(realRoot, realTarget) {
-			writeError(w, http.StatusForbidden, apperr.New(apperr.CodeUnauthorized, "access denied outside media folder"))
-			return
+			authorized := false
+			if auth, ok := cfg.assetResolver.(interface{ IsPathAuthorized(string) bool }); ok {
+				authorized = auth.IsPathAuthorized(realTarget)
+			}
+			if !authorized {
+				writeError(w, http.StatusForbidden, apperr.New(apperr.CodeUnauthorized, "access denied outside media folder"))
+				return
+			}
 		}
 
 		info, err := os.Stat(realTarget)

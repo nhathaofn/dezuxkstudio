@@ -101,10 +101,19 @@ export async function uploadMediaFile(
 /** Downloads a media file from the core server via authenticated HTTP GET. */
 export async function downloadMediaBlob(
   path: string,
-  endpoint?: Endpoint | null
+  endpoint?: Endpoint | null,
+  assetId?: string
 ): Promise<{ blob: Blob; filename: string }> {
   const ep = resolveActiveEndpoint(endpoint);
-  const url = `${httpBaseUrl(ep.url)}${appConfig.mediaDownloadPath}?path=${encodeURIComponent(path)}`;
+  const effectiveAssetId =
+    assetId ||
+    (path && !path.includes("/") && !path.includes("\\") && path.startsWith("asset-")
+      ? path
+      : undefined);
+  const param = effectiveAssetId
+    ? `asset_id=${encodeURIComponent(effectiveAssetId)}`
+    : `path=${encodeURIComponent(path)}`;
+  const url = `${httpBaseUrl(ep.url)}${appConfig.mediaDownloadPath}?${param}`;
   const res = await fetch(url, {
     method: "GET",
     headers: authHeaders(ep.token),

@@ -311,6 +311,8 @@ export const VideoGenView: React.FC = () => {
           loading={loading}
           progress={progress}
           error={error}
+          prompt={prompt}
+          sourcePath={startImage?.localPath || refs[0]?.localPath}
           result={
             result
               ? {
@@ -320,6 +322,7 @@ export const VideoGenView: React.FC = () => {
                   model: result.model,
                   sizeBytes: result.sizeBytes,
                   duration: result.duration,
+                  asset_id: result.asset_id,
                 }
               : null
           }

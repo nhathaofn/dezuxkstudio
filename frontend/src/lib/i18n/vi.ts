@@ -257,7 +257,14 @@ export const vi: Record<MessageKey, string> = {
   "settings.language.desc": "Chọn ngôn ngữ hiển thị cho ứng dụng.",
 
   "overview.welcome": "DezuxkStudio Dashboard",
+  "overview.subtitle": "Bộ công cụ sáng tạo đa phương tiện và xử lý AI thế hệ mới",
   "overview.quickActions": "Lối tắt nhanh",
+  "overview.studioSection": "Công cụ Sáng tạo AI",
+  "overview.systemSection": "Hệ thống & Tiện ích",
+  "overview.tag.watermark": "Xử lý hàng loạt",
+  "overview.tag.image": "Mô tả sang Ảnh",
+  "overview.tag.video": "Chuyển động & Khung hình",
+  "overview.tag.tts": "Tổng hợp giọng nói",
   "overview.action.watermark": "Xóa Watermark",
   "overview.action.watermarkDesc": "Xóa watermark hàng loạt với phân tích alpha đa luồng.",
   "overview.action.image": "Tạo Ảnh AI",
@@ -300,6 +307,7 @@ export const vi: Record<MessageKey, string> = {
   "system.open.config": "Cấu hình",
   "system.open.diagnostics": "Chẩn đoán",
   "system.open.agent_customizations": "Kỹ năng Agent",
+  "system.foldersTitle": "Thư mục ứng dụng",
 
   "update.title": "Cập nhật",
   "update.check": "Kiểm tra",
@@ -398,6 +406,7 @@ export const vi: Record<MessageKey, string> = {
   "watermark.stat.total": "Tổng số ảnh",
   "watermark.stat.detected": "Đã xóa Watermark",
   "watermark.stat.clean": "Nguyên bản sạch",
+  "watermark.removeFile": "Xóa khỏi hàng đợi",
 
   "errors.ERR_BAD_REQUEST": "Yêu cầu không đúng định dạng.",
   "errors.ERR_VALIDATION": "Dữ liệu nhập không hợp lệ.",
@@ -842,4 +851,22 @@ export const vi: Record<MessageKey, string> = {
   "agent.connections.activeSource": "Kết nối & Nguồn tính phí hoạt động",
 
   "tools.delete": "Xóa",
+
+  "mediaoutput.copyPrompt": "Sao chép prompt",
+  "mediaoutput.copiedPrompt": "Đã sao chép prompt",
+  "mediaoutput.copyPath": "Sao chép đường dẫn",
+  "mediaoutput.copiedPath": "Đã sao chép đường dẫn",
+  "mediaoutput.compare": "So sánh Trước / Sau",
+  "mediaoutput.closeCompare": "Đóng so sánh",
+  "mediaoutput.download": "Tải xuống",
+  "mediaoutput.sendToWatermark": "Chuyển sang Xóa Watermark",
+  "mediaoutput.askAgent": "Hỏi AI Agent",
+  "mediaoutput.retry": "Thử lại",
+  "mediaoutput.dismissError": "Đóng thông báo lỗi",
+  "mediaoutput.zoomIn": "Phóng to",
+  "mediaoutput.zoomOut": "Thu nhỏ",
+  "mediaoutput.zoomReset": "Đặt lại thu phóng",
+  "mediaoutput.before": "Trước",
+  "mediaoutput.after": "Sau",
+  "mediaoutput.previewFailed": "Không thể tải ảnh xem trước",
 };

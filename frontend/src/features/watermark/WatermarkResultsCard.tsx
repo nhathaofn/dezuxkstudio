@@ -19,8 +19,8 @@ import {
   X,
 } from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
-import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
+import { MediaOutputNode } from "../../components/ui/MediaOutputNode";
 import { VirtualList } from "../../components/ui/VirtualList";
 import { translateServerMessage, useT, type MessageKey } from "../../lib/i18n";
 import { downloadMediaBlob, mediaBasename } from "../../lib/rtClient";
@@ -340,6 +340,7 @@ export const WatermarkResultsCard: React.FC = () => {
     setComparisonItem,
     resetComparison,
     setInputPath,
+    setInputPaths,
   } = useWatermarkStore();
 
   const ephemeralUrlsRef = useRef<Set<string>>(new Set());
@@ -420,7 +421,7 @@ export const WatermarkResultsCard: React.FC = () => {
       className="card--flex-fill"
       actions={
         result ? (
-          <Badge className="watermark-badge-connected">
+          <Badge className={detectedCount > 0 ? "watermark-badge-connected" : ""}>
             {t("watermark.stat.detected")}: {detectedCount}/{totalProcessed}
           </Badge>
         ) : totalFiles > 0 ? (
@@ -447,7 +448,24 @@ export const WatermarkResultsCard: React.FC = () => {
                 <span className="watermark-file-path" title={p}>
                   {p}
                 </span>
-                <Badge>{t("watermark.status.ready")}</Badge>
+                <div className="watermark-file-actions">
+                  <Badge>{t("watermark.status.ready")}</Badge>
+                  <button
+                    type="button"
+                    className="watermark-icon-btn"
+                    title={t("watermark.removeFile")}
+                    aria-label={t("watermark.removeFile")}
+                    onClick={() => {
+                      if (inputPaths.length > 0) {
+                        setInputPaths(inputPaths.filter((_, i) => i !== idx));
+                      } else {
+                        setInputPath("");
+                      }
+                    }}
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -487,12 +505,18 @@ export const WatermarkResultsCard: React.FC = () => {
               <div className="watermark-kpi-value">{totalProcessed}</div>
             </div>
 
-            <div className="watermark-kpi-card watermark-kpi-card--accent">
+            <div
+              className={`watermark-kpi-card ${
+                detectedCount > 0 ? "watermark-kpi-card--accent" : ""
+              }`}
+            >
               <div className="watermark-kpi-label">{t("watermark.stat.detected")}</div>
               <div className="watermark-kpi-value">{detectedCount}</div>
             </div>
 
-            <div className="watermark-kpi-card">
+            <div
+              className={`watermark-kpi-card ${cleanCount > 0 ? "watermark-kpi-card--clean" : ""}`}
+            >
               <div className="watermark-kpi-label">{t("watermark.stat.clean")}</div>
               <div className="watermark-kpi-value">{cleanCount}</div>
             </div>
@@ -510,96 +534,32 @@ export const WatermarkResultsCard: React.FC = () => {
 
           {/* Single File Result Display */}
           {(!result.results || result.results.length <= 1) && result.image && (
-            <div className="watermark-file-row">
-              <div className="watermark-file-meta">
-                <div className="muted-text">{t("watermark.result.path")}</div>
-                <div className="watermark-file-path" title={result.image.localUrl}>
-                  {displayName(result.image.localUrl)}
-                </div>
-              </div>
-
-              <div className="watermark-file-actions">
-                {result.results && result.results[0] && renderItemStatusBadge(result.results[0])}
-
-                {inputPath && result.image.localUrl && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setComparisonItem({
-                        beforeUrl: inputPath,
-                        afterUrl: result.image.localUrl,
-                        title: displayName(result.image.localUrl),
-                      })
-                    }
-                    className="watermark-icon-btn"
-                    title={t("watermark.compare")}
-                    aria-label={t("watermark.compare")}
-                  >
-                    <Eye size={12} />
-                  </button>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => setInputPath(result.image.localUrl)}
-                  className="watermark-icon-btn"
-                  title={t("cross.sendToWatermark" as MessageKey) || "Send to Watermark"}
-                  aria-label="Send to Watermark"
-                >
-                  <Sparkles size={12} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    askAgentAboutMediaAsset({
-                      assetId: result.results?.[0]?.asset_id,
-                      filePath: result.image.localUrl,
-                    })
-                  }
-                  className="watermark-icon-btn"
-                  title={t("cross.askAgent" as MessageKey) || "Ask Agent about this file"}
-                  aria-label="Ask Agent about this file"
-                >
-                  <Bot size={12} />
-                </button>
-
-                {isRemoteMode ? (
-                  <Button
-                    size="sm"
-                    iconOnly
-                    disabled={downloadingPath === result.image.localUrl}
-                    onClick={() =>
+            <MediaOutputNode
+              kind="image"
+              item={{
+                outputPath: result.image.localUrl,
+                sourcePath: inputPath || undefined,
+                mimeType: result.image.kind,
+                asset_id: result.results?.[0]?.asset_id,
+              }}
+              downloading={downloadingPath === result.image.localUrl}
+              onDownload={
+                isRemoteMode
+                  ? () =>
                       void downloadOutput(
                         result.image.localUrl,
                         mediaBasename(result.image.localUrl)
                       )
-                    }
-                    title={t("watermark.download")}
-                    aria-label={t("watermark.download")}
-                  >
-                    {downloadingPath === result.image.localUrl ? (
-                      <Loader2 size={12} className="animate-spin" />
-                    ) : (
-                      <Download size={12} />
-                    )}
-                  </Button>
-                ) : (
-                  <Button
-                    size="sm"
-                    iconOnly
-                    onClick={() => handleCopy(result.image.localUrl)}
-                    title={t("watermark.copyPath")}
-                    aria-label={t("watermark.copyPath")}
-                  >
-                    {copiedPath === result.image.localUrl ? (
-                      <Check size={12} />
-                    ) : (
-                      <Copy size={12} />
-                    )}
-                  </Button>
-                )}
-              </div>
-            </div>
+                  : undefined
+              }
+              onSendToWatermark={() => setInputPath(result.image.localUrl)}
+              onAskAgent={(meta) =>
+                askAgentAboutMediaAsset({
+                  assetId: meta.assetId,
+                  filePath: meta.filePath,
+                })
+              }
+            />
           )}
 
           {/* Multiple Items Results List */}

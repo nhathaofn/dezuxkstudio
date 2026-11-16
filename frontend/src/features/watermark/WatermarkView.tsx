@@ -3,7 +3,6 @@ import { useInRouterContext, useLocation } from "react-router-dom";
 import { Sparkles, Loader2, RotateCcw, X } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Badge } from "../../components/ui/Badge";
-import { MediaDropZone } from "../../components/ui/MediaDropZone";
 import { describeError, useT } from "../../lib/i18n";
 import { useAgentScreenContext } from "../agent/screenContext";
 import { WATERMARK_NODE, useWatermarkStore, type WatermarkNodeResult } from "./useWatermarkStore";
@@ -36,29 +35,11 @@ export const WatermarkView: React.FC = () => {
   const t = useT();
   const inRouter = useInRouterContext();
 
-  const {
-    inputPath,
-    inputPaths,
-    loading,
-    result,
-    error,
-    setInputPaths,
-    setQueuedFiles,
-    removeWatermark,
-    reset,
-    dismissError,
-  } = useWatermarkStore();
+  const { inputPath, inputPaths, loading, result, error, removeWatermark, reset, dismissError } =
+    useWatermarkStore();
 
   const totalFiles = inputPaths.length > 0 ? inputPaths.length : inputPath ? 1 : 0;
   const { inPlace, outputDir, workers, corner } = useWatermarkStore();
-
-  const handleDropZoneSelected = (files: File[], paths?: string[]) => {
-    if (paths && paths.length > 0) {
-      setInputPaths(paths);
-    } else if (files.length > 0) {
-      setQueuedFiles(files);
-    }
-  };
 
   // Let the agent see this screen: loaded images, current settings (keyed by the node's param names), last run.
   useAgentScreenContext({
@@ -81,7 +62,12 @@ export const WatermarkView: React.FC = () => {
       {/* Header Bar */}
       <div className="dashboard-hero watermark-hero">
         <div className="watermark-hero-title-group">
-          <h1 className="dashboard-hero-title watermark-hero-title">{t("watermark.title")}</h1>
+          <div className="watermark-hero-brand">
+            <span className="watermark-hero-icon" aria-hidden="true">
+              <Sparkles size={16} />
+            </span>
+            <h1 className="dashboard-hero-title watermark-hero-title">{t("watermark.title")}</h1>
+          </div>
           <div className="dashboard-hero-meta">
             <Badge>{t("watermark.badge.model")}</Badge>
             <Badge>{t("watermark.badge.multiThreaded")}</Badge>
@@ -140,19 +126,6 @@ export const WatermarkView: React.FC = () => {
           >
             <X size={14} />
           </button>
-        </div>
-      )}
-
-      {/* Shared Dropzone for fast onboarding when no files are loaded */}
-      {totalFiles === 0 && !result && (
-        <div style={{ marginBottom: "var(--space-4)" }}>
-          <MediaDropZone
-            multiple
-            label={t("watermark.browse.title")}
-            title={t("watermark.dragOrClick")}
-            description={t("watermark.dragOrClickDesc")}
-            onSelected={handleDropZoneSelected}
-          />
         </div>
       )}
 

@@ -464,6 +464,9 @@ func registerWatermarkAsset(ctx context.Context, nodeOpts []Options, destDir, ou
 	if root == "" {
 		root = filepath.Dir(outPath)
 	}
+	if adder, ok := opts.Registrar.(interface{ AddAllowedRoot(string) }); ok && root != "" {
+		adder.AddAllowedRoot(root)
+	}
 	asset, err := opts.Registrar.RegisterAsset(ctx, media.RegisterAssetParams{
 		Kind:           "image",
 		SourceNode:     NodeType,

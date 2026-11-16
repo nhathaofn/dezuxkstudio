@@ -255,7 +255,14 @@ export const en = {
   "settings.language.desc": "Select the display language for the application.",
 
   "overview.welcome": "DezuxkStudio Dashboard",
+  "overview.subtitle": "Next-generation multimedia creative studio & AI processing suite",
   "overview.quickActions": "Quick shortcuts",
+  "overview.studioSection": "Media & AI Studio",
+  "overview.systemSection": "System & Management",
+  "overview.tag.watermark": "Batch Alpha",
+  "overview.tag.image": "Text-to-Image",
+  "overview.tag.video": "Keyframe & Motion",
+  "overview.tag.tts": "Voice Synthesis",
   "overview.action.watermark": "Watermark Remover",
   "overview.action.watermarkDesc": "Batch-remove watermarks with multi-threaded alpha analysis.",
   "overview.action.image": "Image Generator",
@@ -297,6 +304,7 @@ export const en = {
   "system.open.config": "Config",
   "system.open.diagnostics": "Diagnostics",
   "system.open.agent_customizations": "Agent Skills",
+  "system.foldersTitle": "Application Directories",
 
   "update.title": "Updates",
   "update.check": "Check now",
@@ -396,6 +404,7 @@ export const en = {
   "watermark.stat.total": "Total Images",
   "watermark.stat.detected": "Watermark Removed",
   "watermark.stat.clean": "Already Clean",
+  "watermark.removeFile": "Remove from queue",
 
   "errors.ERR_BAD_REQUEST": "The request was malformed.",
   "errors.ERR_VALIDATION": "Some input is invalid.",
@@ -841,6 +850,24 @@ export const en = {
   "agent.connections.activeSource": "Active Connection & Billing",
 
   "tools.delete": "Delete",
+
+  "mediaoutput.copyPrompt": "Copy Prompt",
+  "mediaoutput.copiedPrompt": "Prompt copied",
+  "mediaoutput.copyPath": "Copy Path",
+  "mediaoutput.copiedPath": "Path copied",
+  "mediaoutput.compare": "Compare Before / After",
+  "mediaoutput.closeCompare": "Close comparison",
+  "mediaoutput.download": "Download",
+  "mediaoutput.sendToWatermark": "Send to Watermark",
+  "mediaoutput.askAgent": "Ask AI Agent",
+  "mediaoutput.retry": "Retry",
+  "mediaoutput.dismissError": "Dismiss error",
+  "mediaoutput.zoomIn": "Zoom in",
+  "mediaoutput.zoomOut": "Zoom out",
+  "mediaoutput.zoomReset": "Reset zoom",
+  "mediaoutput.before": "Before",
+  "mediaoutput.after": "After",
+  "mediaoutput.previewFailed": "Unable to load media preview",
 } as const;
 
 export type MessageKey = keyof typeof en;

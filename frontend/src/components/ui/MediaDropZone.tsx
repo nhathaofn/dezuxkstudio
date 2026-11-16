@@ -1,6 +1,7 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { UploadCloud } from "lucide-react";
-import { getBridge, isDesktop, onFileDrop } from "../../lib/bridge";
+import { isDesktop, onFileDrop } from "../../lib/bridge";
+import { pickMediaFiles } from "../../lib/filePicker";
 
 export interface MediaDropZoneHandle {
   browse: () => void;
@@ -40,6 +41,15 @@ export interface MediaDropZoneProps {
 
 const DEFAULT_IMAGE_ACCEPT = "image/png,image/jpeg,image/webp,image/*";
 
+/**
+ * MediaInputNode (MediaDropZone)
+ *
+ * Universal input node for media and file ingestion across DezuxkStudio.
+ * Encapsulates:
+ * 1. Safe desktop native file picker dialogs (no focus collisions or WebView2 crashes).
+ * 2. Cross-platform drag and drop (native Wails onFileDrop + browser Drag & Drop).
+ * 3. Graceful fallback for browser/remote client mode.
+ */
 export const MediaDropZone = forwardRef<MediaDropZoneHandle, MediaDropZoneProps>(
   (
     {
@@ -66,29 +76,23 @@ export const MediaDropZone = forwardRef<MediaDropZoneHandle, MediaDropZoneProps>
 
     const handleBrowse = async () => {
       if (disabled) return;
-      const bridge = getBridge();
-      if (isDesktop() && bridge) {
-        try {
-          if (multiple && bridge.BrowseImages) {
-            const picked = await bridge.BrowseImages(label);
-            if (picked && picked.length > 0) {
-              onPathsSelected?.(picked);
-              onSelected?.([], picked);
-              return;
-            }
-          }
-          if (bridge.BrowseImage) {
-            const picked = await bridge.BrowseImage(label);
-            if (picked) {
-              onPathsSelected?.([picked]);
-              onSelected?.([], [picked]);
-              return;
-            }
-          }
-        } catch (err) {
-          console.error("Native file picker failed:", err);
+
+      if (isDesktop()) {
+        const res = await pickMediaFiles({
+          title: label,
+          multiple,
+          accept,
+          kind: "image",
+        });
+
+        if (res.paths.length > 0) {
+          onPathsSelected?.(res.paths);
+          onSelected?.([], res.paths);
         }
+        return;
       }
+
+      // Browser / remote mode: trigger the local input element directly
       fileInputRef.current?.click();
     };
 
@@ -145,6 +149,7 @@ export const MediaDropZone = forwardRef<MediaDropZoneHandle, MediaDropZoneProps>
       setIsDragging(false);
       if (disabled) return;
 
+      // In desktop mode, native Wails onFileDrop handles absolute path delivery
       if (isDesktop()) return;
 
       const files = Array.from(e.dataTransfer.files || []);
@@ -217,6 +222,7 @@ export const MediaDropZone = forwardRef<MediaDropZoneHandle, MediaDropZoneProps>
           disabled={disabled}
           className="watermark-dropzone__input"
           onChange={handleInputChange}
+          onClick={(e) => e.stopPropagation()}
         />
 
         {typeof children === "function" ? (
@@ -240,3 +246,6 @@ export const MediaDropZone = forwardRef<MediaDropZoneHandle, MediaDropZoneProps>
 );
 
 MediaDropZone.displayName = "MediaDropZone";
+
+/** Alias reflecting its architectural role as DezuxkStudio's Input Node for media. */
+export const MediaInputNode = MediaDropZone;

@@ -230,6 +230,8 @@ export const ImageGenView: React.FC = () => {
           loading={loading}
           progress={progress}
           error={error}
+          prompt={prompt}
+          sourcePath={refs[0]?.localPath}
           result={
             result
               ? {
@@ -238,6 +240,7 @@ export const ImageGenView: React.FC = () => {
                   provider: result.provider,
                   model: result.model,
                   sizeBytes: result.sizeBytes,
+                  asset_id: result.asset_id,
                 }
               : null
           }
