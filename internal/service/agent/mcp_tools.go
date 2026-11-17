@@ -304,7 +304,7 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 			}
 			run := func(execCtx context.Context) (any, error) {
 				defer s.scrubSecretParams(context.WithoutCancel(execCtx), spec, prep.Input)
-				return s.workflow.RunNode(execCtx, nodeType, raw)
+				return s.workflow.RunNode(engine.WithFileGuard(execCtx, s.CheckTrustedFile), nodeType, raw)
 			}
 			if len(prep.Destructive) > 0 {
 				if s.canAutoApproveNode(nodeType, prep) {
@@ -349,7 +349,7 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 						s.scrubSecretParams(context.WithoutCancel(execCtx), spec, p.Input)
 					}
 				}()
-				return s.workflow.RunGraph(execCtx, g)
+				return s.workflow.RunGraph(engine.WithFileGuard(execCtx, s.CheckTrustedFile), g)
 			}
 			canAutoApprove := s.skipTrustedApproval()
 			if canAutoApprove {

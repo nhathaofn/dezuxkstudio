@@ -14,6 +14,7 @@ import (
 
 	"app/internal/contracts"
 	studiosvc "app/internal/service/studio"
+	"app/internal/service/workflow"
 	"app/internal/storage/sqlite"
 )
 
@@ -280,5 +281,162 @@ func TestStudioPhase3MCPTimelineToolsAndEditTimelineSkill(t *testing.T) {
 	_ = json.Unmarshal([]byte(resRedo.Content[0].(*mcp.TextContent).Text), &tlRedo)
 	if tlRedo.Revision != 2 || len(tlRedo.Timeline.Tracks[0].Clips) != 2 {
 		t.Fatalf("expected revision 2 after redo, got %+v", tlRedo)
+	}
+}
+
+func TestPhase3AgentWorkflowRunNode_RealSpecsAndFileGuard(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	ws := filepath.Join(base, "ws")
+	mediaDir := filepath.Join(base, "media")
+	_ = os.MkdirAll(ws, 0o755)
+	_ = os.MkdirAll(mediaDir, 0o755)
+
+	shotVid := filepath.Join(ws, "projects", "film", "ep01", "media", "videos", "shot1.mp4")
+	outsideBGM := filepath.Join(base, "outside", "bgm.mp3")
+	exportsDir := filepath.Join(ws, "projects", "film", "ep01", "exports")
+	_ = os.MkdirAll(filepath.Dir(shotVid), 0o755)
+	_ = os.MkdirAll(filepath.Dir(outsideBGM), 0o755)
+	_ = os.MkdirAll(exportsDir, 0o755)
+	_ = os.WriteFile(shotVid, []byte("MP4DATA"), 0o600)
+	_ = os.WriteFile(outsideBGM, []byte("MP3OUTSIDE"), 0o600)
+
+	wf, err := workflow.New(workflow.Options{
+		Logger: slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc, err := New(Options{
+		Repo:         newFakeRepo(),
+		DataDir:      filepath.Join(base, "data"),
+		WorkspaceDir: ws,
+		MediaDir:     mediaDir,
+		Workflow:     wf,
+		Logger:       slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = svc.Close() }()
+
+	sT, cT := mcp.NewInMemoryTransports()
+	ss, err := svc.buildMCPServer().Connect(ctx, sT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ss.Close() }()
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "p3-wf-test"}, nil).Connect(ctx, cT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cs.Close() }()
+
+	// 1. All 4 Phase 3 nodes appear in workflow_list_specs
+	specsRes, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "workflow_list_specs"})
+	if err != nil || specsRes.IsError {
+		t.Fatalf("workflow_list_specs failed: err=%v res=%+v", err, specsRes)
+	}
+	specText := specsRes.Content[0].(*mcp.TextContent).Text
+	for _, want := range []string{
+		contracts.NodeTypeTimelineAutoAssem,
+		contracts.NodeTypeMediaPeaksThumbs,
+		contracts.NodeTypeRenderTimeline,
+		contracts.NodeTypeExportNLEDraft,
+	} {
+		if !strings.Contains(specText, want) {
+			t.Fatalf("missing Phase 3 node %q in workflow_list_specs", want)
+		}
+	}
+
+	// 2. Trusted workflow_run_node(tool.timeline_auto_assemble) succeeds with Spec param defaults
+	assemRes, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name: "workflow_run_node",
+		Arguments: map[string]any{
+			"type": contracts.NodeTypeTimelineAutoAssem,
+			"input": map[string]any{
+				"shots_json": `[{"id":"s1","seq":1,"title":"Shot 1","duration_sec":4,"video_path":"` + filepath.ToSlash(shotVid) + `","narration_text":"Xin chào Việt Nam"}]`,
+			},
+		},
+	})
+	if err != nil || assemRes.IsError {
+		t.Fatalf("workflow_run_node(tool.timeline_auto_assemble) failed: err=%v res=%+v", err, assemRes)
+	}
+	var assemWrap map[string]any
+	_ = json.Unmarshal([]byte(assemRes.Content[0].(*mcp.TextContent).Text), &assemWrap)
+	outObj, _ := assemWrap["result"].(map[string]any)
+	tlJSON, _ := outObj["timeline_json"].(string)
+	if !strings.Contains(tlJSON, "Xin chào Việt Nam") {
+		t.Fatalf("expected assembled timeline_json with subtitle cue, got %+v", assemWrap)
+	}
+
+	// 3. Untrusted outside BGM file rejected by AccessPolicy CheckTrustedFile
+	badBGMRes, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name: "workflow_run_node",
+		Arguments: map[string]any{
+			"type": contracts.NodeTypeTimelineAutoAssem,
+			"input": map[string]any{
+				"shots_json": `[{"id":"s1","seq":1,"title":"Shot 1","duration_sec":4,"video_path":"` + filepath.ToSlash(shotVid) + `"}]`,
+				"bgm_path":   outsideBGM,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !badBGMRes.IsError {
+		t.Fatalf("expected untrusted bgm_path to be denied by FileGuard, got %+v", badBGMRes)
+	}
+
+	// 4. Trusted workflow_run_node(tool.export_nle_draft) creates CapCut draft zip under exportsDir
+	expRes, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name: "workflow_run_node",
+		Arguments: map[string]any{
+			"type": contracts.NodeTypeExportNLEDraft,
+			"input": map[string]any{
+				"timeline_json": tlJSON,
+				"format":        "capcut",
+				"output_dir":    exportsDir,
+				"project_name":  "Review Test",
+			},
+		},
+	})
+	if err != nil || expRes.IsError {
+		t.Fatalf("workflow_run_node(tool.export_nle_draft) failed: err=%v res=%+v", err, expRes)
+	}
+	var expWrap map[string]any
+	_ = json.Unmarshal([]byte(expRes.Content[0].(*mcp.TextContent).Text), &expWrap)
+	expOut, _ := expWrap["result"].(map[string]any)
+	expPath, _ := expOut["export_path"].(string)
+	if !strings.HasSuffix(expPath, ".zip") {
+		t.Fatalf("expected .zip NLE draft path, got %+v", expWrap)
+	}
+
+	// 5. Untrusted clip inside timeline_json rejected by tool.export_nle_draft FileGuard
+	var badTLObj map[string]any
+	if err := json.Unmarshal([]byte(tlJSON), &badTLObj); err != nil {
+		t.Fatal(err)
+	}
+	tracks := badTLObj["tracks"].([]any)
+	clips := tracks[0].(map[string]any)["clips"].([]any)
+	clips[0].(map[string]any)["file_path"] = outsideBGM
+	badTLBytes, _ := json.Marshal(badTLObj)
+	badExpRes, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name: "workflow_run_node",
+		Arguments: map[string]any{
+			"type": contracts.NodeTypeExportNLEDraft,
+			"input": map[string]any{
+				"timeline_json": string(badTLBytes),
+				"format":        "capcut",
+				"output_dir":    exportsDir,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !badExpRes.IsError {
+		t.Fatalf("expected untrusted media inside timeline_json to be denied by FileGuard, got %+v", badExpRes)
 	}
 }
