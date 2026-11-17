@@ -94,11 +94,11 @@ describe("Watermark UI Components Runtime Rendering & State Bindings", () => {
 
   it("properly renders output directory controls according to inPlace state", () => {
     let html = renderToStaticMarkup(React.createElement(WatermarkConfigCard));
-    expect(html).toContain("Same directory as source files");
+    expect(html).toContain("Default: workspace watermark folder");
 
     useWatermarkStore.getState().setInPlace(true);
     html = renderToStaticMarkup(React.createElement(WatermarkConfigCard));
-    expect(html).not.toContain("Same directory as source files");
+    expect(html).not.toContain("Default: workspace watermark folder");
   });
 
   it("renders corner and workers select bindings accurately", () => {
@@ -610,7 +610,7 @@ describe("useWatermarkStore Actions & Edge Case Robustness", () => {
 
     try {
       const cfgHtml = renderToStaticMarkup(React.createElement(WatermarkConfigCard));
-      expect(cfgHtml).not.toContain("Same directory as source files");
+      expect(cfgHtml).not.toContain("Default: workspace watermark folder");
 
       const resHtml = renderToStaticMarkup(React.createElement(WatermarkResultsCard));
       expect(resHtml).toContain('aria-label="Download"');
