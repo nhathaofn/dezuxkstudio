@@ -715,7 +715,8 @@ func TestSSRFMetadataBlockedAndSecurity(t *testing.T) {
 }
 
 func TestRateLimiterCancellation(t *testing.T) {
-	l := newRateLimiter()
+	def := config.Default(config.ModeDesktop)
+	l := newRateLimiter(def.MediaGen.LimiterPollInterval, def.Providers.DefaultMaxWorkers)
 	lim := domainprovider.Limits{
 		MaxWorkers: map[domainprovider.Capability]int{domainprovider.CapabilityImage: 1},
 	}

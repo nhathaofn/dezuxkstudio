@@ -130,8 +130,8 @@ func (n *qcReviewNode) Run(ctx context.Context, raw json.RawMessage) (any, error
 			}
 			if isVideo && pOut.HasAudio && pOut.DurationSec > 0 {
 				if ffmpegExe, ferr := resolveBinary(ctx, n.opts.Binaries, domainbinaries.IDFFmpeg); ferr == nil {
-					silentRatio := detectSilenceRatio(probeCtx, ffmpegExe, mediaPath, pOut.DurationSec)
-					if silentRatio > 0.90 {
+					silentRatio := detectSilenceRatio(probeCtx, ffmpegExe, mediaPath, pOut.DurationSec, n.opts.StudioConfig)
+					if silentRatio > n.opts.StudioConfig.QCSilenceWarnRatio {
 						out.Issues = append(out.Issues, contracts.QCReviewIssue{
 							Severity: "warn", Category: "audio", Message: fmt.Sprintf("Audio track is %.0f%% silent", silentRatio*100),
 						})
@@ -250,13 +250,14 @@ func (n *qcReviewNode) extractQCSampleFrames(ctx context.Context, mediaPath stri
 		return nil, nil, "", err
 	}
 	count := clampInt(reqCount, 3, 1, 6)
+	endPad := n.opts.StudioConfig.ExtractFrameEndPadSec
 	var stamps []float64
-	if !probed || dur <= 0.1 {
+	if !probed || dur <= endPad*2 {
 		stamps = []float64{0}
 	} else {
 		step := dur / float64(count+1)
 		for i := 1; i <= count; i++ {
-			stamps = append(stamps, math.Min(dur-0.05, step*float64(i)))
+			stamps = append(stamps, math.Min(dur-endPad, step*float64(i)))
 		}
 	}
 	ffCtx, cancel := context.WithTimeout(ctx, n.opts.StudioConfig.FFmpegTimeout)

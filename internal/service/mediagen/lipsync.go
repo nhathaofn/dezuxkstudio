@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"app/internal/apperr"
+	"app/internal/config"
 	domainmedia "app/internal/domain/mediagen"
 	domainprovider "app/internal/domain/provider"
 	"app/internal/progress"
@@ -29,7 +30,7 @@ func (s *Service) readBinaryInput(path, fallbackMime string) ([]byte, string, er
 
 	maxBytes := s.cfg.MaxOutputBytes
 	if maxBytes <= 0 {
-		maxBytes = 250 << 20
+		maxBytes = config.ResolveMediaGenConfig(s.cfg).MaxOutputBytes
 	}
 	raw, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
 	if err != nil {

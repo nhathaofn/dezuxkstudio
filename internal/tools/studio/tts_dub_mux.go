@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"app/internal/apperr"
+	"app/internal/config"
 	"app/internal/contracts"
 	domainbinaries "app/internal/domain/binaries"
 	domainmedia "app/internal/domain/mediagen"
@@ -120,7 +121,7 @@ func (n *ttsDubMuxNode) Run(ctx context.Context, raw json.RawMessage) (any, erro
 		return nil, err
 	}
 
-	args, targetDur, adjRatio := buildDubMuxArgs(in, n.opts.StudioConfig.FFmpegPreset, n.opts.StudioConfig.FFmpegCRF, vidPath, audioPath, outPath, vInfo, aInfo)
+	args, targetDur, adjRatio := buildDubMuxArgs(in, n.opts.StudioConfig, vidPath, audioPath, outPath, vInfo, aInfo)
 
 	ffCtx, cancelFF := context.WithTimeout(ctx, n.opts.StudioConfig.FFmpegTimeout)
 	defer cancelFF()
@@ -153,11 +154,13 @@ func (n *ttsDubMuxNode) Run(ctx context.Context, raw json.RawMessage) (any, erro
 
 func buildDubMuxArgs(
 	in contracts.TTSDubMuxInput,
-	preset string,
-	crf int,
+	cfg config.StudioConfig,
 	vidPath, audioPath, outPath string,
 	vInfo, aInfo contracts.ProbeMediaOutput,
 ) (args []string, outDur float64, ratio float64) {
+	cfg = withStudioDefaults(cfg)
+	preset := cfg.FFmpegPreset
+	crf := cfg.FFmpegCRF
 	mode := strings.ToLower(strings.TrimSpace(in.OverflowMode))
 	if mode == "" {
 		mode = "freeze_last_frame"
@@ -167,14 +170,14 @@ func buildDubMuxArgs(
 	aDur := aInfo.DurationSec
 	outDur = math.Max(vDur, aDur)
 	if outDur <= 0 {
-		outDur = 5
+		outDur = float64(cfg.DefaultShotDurationSec)
 	}
 	ratio = 1.0
 
 	var vFilters []string
 	var aFilters []string
 
-	if vDur > 0 && aDur > vDur+0.05 {
+	if vDur > 0 && aDur > vDur+cfg.ExtractFrameEndPadSec {
 		switch mode {
 		case "speed_up":
 			ratio = math.Min(4.0, aDur/vDur)
@@ -202,13 +205,13 @@ func buildDubMuxArgs(
 
 	origVol := in.OriginalVolume
 	if origVol <= 0 {
-		origVol = 0.35
+		origVol = cfg.TimelineAudioDuckOrigVol
 	}
 	if vInfo.HasAudio && in.DuckOriginal {
 		fc = append(fc,
 			fmt.Sprintf("[0:a]volume=%.2f[bg]", origVol),
 			fmt.Sprintf("%sasplit=2[sc][dub]", dubLabel),
-			"[bg][sc]sidechaincompress=threshold=0.05:ratio=6:attack=20:release=250[ducked]",
+			fmt.Sprintf("[bg][sc]sidechaincompress=threshold=%.3f:ratio=6:attack=20:release=250[ducked]", cfg.TimelineAudioDuckThreshold),
 			"[ducked][dub]amix=inputs=2:duration=longest:normalize=0[aout]",
 		)
 	} else if vInfo.HasAudio && in.OriginalVolume > 0 {
@@ -222,7 +225,7 @@ func buildDubMuxArgs(
 	if len(fc) > 0 {
 		args = append(args, "-filter_complex", strings.Join(fc, ";"))
 		if len(vFilters) > 0 {
-			args = append(args, "-map", "[vout]", "-c:v", "libx264", "-preset", preset, "-crf", fmt.Sprintf("%d", crf), "-pix_fmt", "yuv420p")
+			args = append(args, "-map", "[vout]", "-c:v", cfg.FFmpegVideoCodec, "-preset", preset, "-crf", fmt.Sprintf("%d", crf), "-pix_fmt", cfg.FFmpegPixelFormat)
 		} else {
 			args = append(args, "-map", "0:v", "-c:v", "copy")
 		}
@@ -235,7 +238,7 @@ func buildDubMuxArgs(
 		args = append(args, "-map", "0:v", "-map", "1:a", "-c:v", "copy")
 	}
 
-	args = append(args, "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", outPath)
+	args = append(args, "-c:a", cfg.FFmpegAudioCodec, "-b:a", cfg.FFmpegAudioBitrate, "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", outPath)
 	return args, outDur, ratio
 }
 

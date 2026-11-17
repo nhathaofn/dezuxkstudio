@@ -205,57 +205,50 @@ func (s *Service) RunBatchPreflight(ctx context.Context, p contracts.StudioBatch
 			}
 		}
 	}
-	unit := "image"
-	switch capName {
-	case "video":
-		unit = "second"
-	case "tts":
-		unit = "1k_chars"
-	case "lipsync":
-		unit = "second"
-	case "llm":
-		unit = "1k_tokens"
-	}
-	provID, modelID := splitModelRefForPricing(modelRef)
-	price, _, _ := s.EstimateUnitPriceUSD(ctx, provID, modelID, capName, unit)
+	spec := domainstudio.PreflightSpecForCapability(capName)
+	provID, modelID := domainstudio.SplitModelRefForPricing(modelRef)
+	price, _, _ := s.EstimateUnitPriceUSD(ctx, provID, modelID, capName, spec.Unit)
 	if price <= 0 {
-		price = 0.04
+		price = spec.FallbackUnitPriceUSD
 	}
+	workers := s.cfg.MaxConcurrentBatch
+	batches := (itemCount + workers - 1) / workers
 	return contracts.BatchPreflightOutput{
 		Ready:        true,
 		ProviderID:   provID,
 		ModelID:      modelID,
 		Capability:   capName,
 		ItemCount:    itemCount,
-		Unit:         unit,
-		UnitPriceUSD: price,
+		Unit:         spec.Unit,
+		UnitPriceUSD: math.Round(price*10000) / 10000,
 		EstimatedUSD: math.Round(float64(itemCount)*unitsPerItem*price*10000) / 10000,
-		EstimatedSec: itemCount * 15,
+		EstimatedSec: batches * spec.EstimatedSecPerItem,
 	}, nil
 }
 
 func (s *Service) resolvePreflightParams(ctx context.Context, proj domainstudio.Project, p contracts.StudioBatchPreflightPayload) (capName, modelRef string, itemCount int, unitsPerItem float64) {
 	itemCount = p.ItemCount
-	unitsPerItem = 1
 	switch strings.ToLower(strings.TrimSpace(p.Stage)) {
 	case "generate_assets":
-		capName = "image"
+		capName = string(domainprovider.CapabilityImage)
 		modelRef = firstNonEmpty(p.Model, proj.DefaultImageModel)
+		unitsPerItem = domainstudio.PreflightSpecForCapability(capName).DefaultUnitsPerItem
 		if itemCount <= 0 {
 			assets, _ := s.repo.ListAssets(ctx, proj.ID)
 			itemCount = len(assets)
 		}
 	case "generate_keyframes":
-		capName = "image"
+		capName = string(domainprovider.CapabilityImage)
 		modelRef = firstNonEmpty(p.Model, proj.DefaultImageModel)
+		unitsPerItem = domainstudio.PreflightSpecForCapability(capName).DefaultUnitsPerItem
 		if itemCount <= 0 && p.EpisodeID != "" {
 			shots, _ := s.repo.ListShots(ctx, p.EpisodeID)
 			itemCount = len(shots)
 		}
 	case "generate_videos":
-		capName = "video"
+		capName = string(domainprovider.CapabilityVideo)
 		modelRef = firstNonEmpty(p.Model, proj.DefaultVideoModel)
-		unitsPerItem = 5
+		unitsPerItem = float64(s.cfg.DefaultShotDurationSec)
 		if p.EpisodeID != "" {
 			shots, _ := s.repo.ListShots(ctx, p.EpisodeID)
 			if itemCount <= 0 {
@@ -270,44 +263,28 @@ func (s *Service) resolvePreflightParams(ctx context.Context, proj domainstudio.
 			}
 		}
 	case "generate_tts":
-		capName = "tts"
+		capName = string(domainprovider.CapabilityTTS)
 		modelRef = firstNonEmpty(p.Model, proj.DefaultTTSModel)
-		unitsPerItem = 0.5
+		unitsPerItem = domainstudio.PreflightSpecForCapability(capName).DefaultUnitsPerItem
 		if itemCount <= 0 && p.EpisodeID != "" {
 			shots, _ := s.repo.ListShots(ctx, p.EpisodeID)
 			itemCount = len(shots)
 		}
 	case "lipsync":
-		capName = "lipsync"
+		capName = string(domainprovider.CapabilityLipSync)
 		modelRef = p.Model
-		unitsPerItem = 5
+		unitsPerItem = float64(s.cfg.DefaultShotDurationSec)
 		if itemCount <= 0 && p.EpisodeID != "" {
 			shots, _ := s.repo.ListShots(ctx, p.EpisodeID)
 			itemCount = len(shots)
 		}
 	default:
-		capName = "llm"
+		capName = string(domainprovider.CapabilityLLM)
 		modelRef = firstNonEmpty(p.Model, proj.DefaultTextModel)
-		unitsPerItem = 2
+		unitsPerItem = domainstudio.PreflightSpecForCapability(capName).DefaultUnitsPerItem
 	}
 	if itemCount <= 0 {
 		itemCount = 1
 	}
 	return capName, modelRef, itemCount, unitsPerItem
-}
-
-func splitModelRefForPricing(ref string) (provID, modelID string) {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return "*", "*"
-	}
-	parts := strings.SplitN(ref, "/", 2)
-	if len(parts) == 2 {
-		return strings.ToLower(strings.TrimSpace(parts[0])), strings.TrimSpace(parts[1])
-	}
-	partsColon := strings.SplitN(ref, ":", 2)
-	if len(partsColon) == 2 {
-		return strings.ToLower(strings.TrimSpace(partsColon[0])), strings.TrimSpace(partsColon[1])
-	}
-	return "*", ref
 }

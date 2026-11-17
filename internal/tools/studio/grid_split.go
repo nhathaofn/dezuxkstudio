@@ -32,6 +32,10 @@ func NewGridSplitNode(opts Options) engine.Node {
 }
 
 func (n *gridSplitNode) Spec() engine.Spec {
+	maxGrid := n.opts.StudioConfig.GridSplitMaxCount
+	if maxGrid < 1 {
+		maxGrid = 8
+	}
 	return engine.Spec{
 		Type:        NodeTypeGridSplit,
 		Provider:    "studio",
@@ -44,8 +48,8 @@ func (n *gridSplitNode) Spec() engine.Spec {
 			{Name: "panels", Label: "Panel Images", Type: engine.PortImage, Multiple: true},
 		},
 		Params: []engine.Param{
-			{Name: "rows", Label: "Rows", Kind: engine.ParamInteger, Min: 1, Max: 8, Default: "2"},
-			{Name: "cols", Label: "Columns", Kind: engine.ParamInteger, Min: 1, Max: 8, Default: "2"},
+			{Name: "rows", Label: "Rows", Kind: engine.ParamInteger, Min: 1, Max: maxGrid, Default: "2"},
+			{Name: "cols", Label: "Columns", Kind: engine.ParamInteger, Min: 1, Max: maxGrid, Default: "2"},
 			{Name: "margin_px", Label: "Outer Margin (px)", Kind: engine.ParamInteger, Min: 0, Max: 512, Default: "0"},
 			{Name: "gutter_px", Label: "Panel Gutter (px)", Kind: engine.ParamInteger, Min: 0, Max: 256, Default: "0"},
 			{Name: "output_dir", Label: "Output Folder", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
@@ -66,13 +70,14 @@ func (n *gridSplitNode) Run(ctx context.Context, raw json.RawMessage) (any, erro
 		return nil, apperr.Validation("image_path is required")
 	}
 
-	rows := clampInt(in.Rows, 2, 1, 8)
-	cols := clampInt(in.Cols, 2, 1, 8)
+	maxGrid := n.opts.StudioConfig.GridSplitMaxCount
+	rows := clampInt(in.Rows, 2, 1, maxGrid)
+	cols := clampInt(in.Cols, 2, 1, maxGrid)
 	if len(in.RowWeights) > 0 {
-		rows = clampInt(len(in.RowWeights), rows, 1, 8)
+		rows = clampInt(len(in.RowWeights), rows, 1, maxGrid)
 	}
 	if len(in.ColWeights) > 0 {
-		cols = clampInt(len(in.ColWeights), cols, 1, 8)
+		cols = clampInt(len(in.ColWeights), cols, 1, maxGrid)
 	}
 	margin := max(0, in.MarginPx)
 	gutter := max(0, in.GutterPx)

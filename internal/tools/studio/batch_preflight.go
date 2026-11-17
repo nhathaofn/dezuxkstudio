@@ -10,6 +10,7 @@ import (
 	"app/internal/apperr"
 	"app/internal/contracts"
 	domainprovider "app/internal/domain/provider"
+	domainstudio "app/internal/domain/studio"
 	"app/internal/engine"
 )
 
@@ -57,10 +58,11 @@ func (n *batchPreflightNode) Run(ctx context.Context, raw json.RawMessage) (any,
 		in.ItemCount = 1
 	}
 
-	unit, defaultUnits, secPerItem := preflightUnitForCapability(capName)
+	spec := domainstudio.PreflightSpecForCapability(capName)
+	unit := spec.Unit
 	unitsPerItem := in.UnitsPerItem
 	if unitsPerItem <= 0 {
-		unitsPerItem = defaultUnits
+		unitsPerItem = spec.DefaultUnitsPerItem
 	}
 
 	out := contracts.BatchPreflightOutput{
@@ -83,7 +85,7 @@ func (n *batchPreflightNode) Run(ctx context.Context, raw json.RawMessage) (any,
 		out.Warnings = append(out.Warnings, "Provider checker unavailable; skipping credential verification")
 	}
 
-	unitPrice := defaultFallbackUnitPrice(capName)
+	unitPrice := spec.FallbackUnitPriceUSD
 	usedWildcard := true
 	if n.opts.CostEstimator != nil {
 		p, wc, err := n.opts.CostEstimator.EstimateUnitPriceUSD(ctx, out.ProviderID, out.ModelID, capName, unit)
@@ -101,45 +103,8 @@ func (n *batchPreflightNode) Run(ctx context.Context, raw json.RawMessage) (any,
 
 	out.UnitPriceUSD = math.Round(unitPrice*10000) / 10000
 	out.EstimatedUSD = math.Round(float64(in.ItemCount)*unitsPerItem*unitPrice*10000) / 10000
-	workers := n.opts.StudioConfig.MaxConcurrentBatch
-	if workers <= 0 {
-		workers = 2
-	}
+	workers := withStudioDefaults(n.opts.StudioConfig).MaxConcurrentBatch
 	batches := (in.ItemCount + workers - 1) / workers
-	out.EstimatedSec = batches * secPerItem
+	out.EstimatedSec = batches * spec.EstimatedSecPerItem
 	return out, nil
-}
-
-func preflightUnitForCapability(capName string) (unit string, unitsPerItem float64, secPerItem int) {
-	switch domainprovider.Capability(capName) {
-	case domainprovider.CapabilityLLM:
-		return "1k_tokens", 2.0, 4
-	case domainprovider.CapabilityImage:
-		return "image", 1.0, 8
-	case domainprovider.CapabilityVideo:
-		return "second", 5.0, 35
-	case domainprovider.CapabilityTTS:
-		return "1k_chars", 0.5, 4
-	case domainprovider.CapabilityLipSync:
-		return "second", 5.0, 45
-	default:
-		return "request", 1.0, 10
-	}
-}
-
-func defaultFallbackUnitPrice(capName string) float64 {
-	switch domainprovider.Capability(capName) {
-	case domainprovider.CapabilityLLM:
-		return 0.005
-	case domainprovider.CapabilityImage:
-		return 0.04
-	case domainprovider.CapabilityVideo:
-		return 0.08
-	case domainprovider.CapabilityTTS:
-		return 0.015
-	case domainprovider.CapabilityLipSync:
-		return 0.12
-	default:
-		return 0.01
-	}
 }

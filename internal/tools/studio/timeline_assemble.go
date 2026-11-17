@@ -53,9 +53,9 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 			{Name: "resolution", Label: "Resolution (WxH)", Kind: engine.ParamText, Default: defaultRes},
 			{Name: "fps", Label: "Frame Rate (FPS)", Kind: engine.ParamInteger, Min: 1, Max: 120, Default: strconv.Itoa(defaultFPS)},
 			{Name: "transition_default", Label: "Default Transition", Kind: engine.ParamSelect, Options: optionStrings(domainstudio.TransitionTypes()), Default: string(domainstudio.TransitionCrossfade)},
-			{Name: "transition_ms", Label: "Transition Duration (ms)", Kind: engine.ParamInteger, Min: 0, Max: 5000, Default: "400"},
+			{Name: "transition_ms", Label: "Transition Duration (ms)", Kind: engine.ParamInteger, Min: 0, Max: 5000, Default: strconv.Itoa(opts.StudioConfig.TimelineDefaultTransitionMs)},
 			{Name: "bgm_path", Label: "Background Music File", Kind: engine.ParamText},
-			{Name: "bgm_volume", Label: "BGM Volume (0..2)", Kind: engine.ParamText, Default: "0.22"},
+			{Name: "bgm_volume", Label: "BGM Volume (0..2)", Kind: engine.ParamText, Default: fmt.Sprintf("%.2f", opts.StudioConfig.TimelineDefaultBGMVolume)},
 			{Name: "project_dir", Label: "Episode Directory", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
 		},
 	}
@@ -74,7 +74,7 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 		if resStr == "" {
 			resStr = defaultRes
 		}
-		width, height, err := parseResolutionWxH(resStr)
+		width, height, err := parseResolutionWxH(resStr, opts.StudioConfig.MaxVideoDimension)
 		if err != nil {
 			return contracts.TimelineAutoAssembleOutput{}, err
 		}
@@ -100,7 +100,7 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 
 		bgmVol := in.BGMVolume
 		if bgmVol <= 0 {
-			bgmVol = 0.22
+			bgmVol = opts.StudioConfig.TimelineDefaultBGMVolume
 		}
 		if bgmVol > 2.0 {
 			bgmVol = 2.0
@@ -147,7 +147,7 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 			if fallbackSec > 0 {
 				return int64(fallbackSec) * 1000
 			}
-			return 5000
+			return int64(opts.StudioConfig.DefaultShotDurationSec) * 1000
 		}
 
 		tl := domainstudio.EditTimeline{

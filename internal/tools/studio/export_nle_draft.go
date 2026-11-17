@@ -16,11 +16,18 @@ import (
 	"github.com/google/uuid"
 
 	"app/internal/apperr"
+	"app/internal/config"
 	"app/internal/contracts"
 	domainstudio "app/internal/domain/studio"
 	"app/internal/engine"
 	"app/internal/fsutil"
 	"app/internal/progress"
+)
+
+const (
+	// CapCut / Jianying draft schema version identifier required by desktop draft_content.json importers.
+	capCutDraftSchemaVersion = 360000
+	capCutSubtitleFontSize   = 8.0
 )
 
 // NewExportNLEDraftNode builds tool.export_nle_draft supporting CapCut/Jianying Draft (.zip), FCPXML v1.10, and OpenTimelineIO (.otio).
@@ -180,7 +187,7 @@ func exportCapCutJianyingZip(
 	maxZipBytes int64,
 ) (fileCount int, totalBytes int64, err error) {
 	if maxZipBytes <= 0 {
-		maxZipBytes = 512 << 20
+		maxZipBytes = withStudioDefaults(config.StudioConfig{}).ExportMaxZipBytes
 	}
 
 	draftID := strings.ToUpper(uuid.NewString())
@@ -316,7 +323,7 @@ func exportCapCutJianyingZip(
 				"type":      "subtitle",
 				"content":   sub.Text,
 				"speaker":   sub.Speaker,
-				"font_size": 8.0,
+				"font_size": capCutSubtitleFontSize,
 			})
 			textSegs = append(textSegs, map[string]any{
 				"id":          strings.ToUpper(uuid.NewString()),
@@ -338,7 +345,7 @@ func exportCapCutJianyingZip(
 	draftContent := map[string]any{
 		"id":       draftID,
 		"name":     projectName,
-		"version":  360000,
+		"version":  capCutDraftSchemaVersion,
 		"fps":      float64(tl.FPS),
 		"duration": durationUs,
 		"canvas_config": map[string]any{

@@ -38,7 +38,6 @@ import (
 )
 
 const (
-	maxJSONResponseBytes  = 16 << 20 // 16 MiB handles inline base64 images/audio inside JSON payloads
 	maxErrorSnippetBytes  = 512
 	defaultPollPercentCap = 90.0
 )
@@ -125,22 +124,19 @@ func New(o Options) *Service {
 	if leases == nil {
 		leases = defaultLeaseRegistry
 	}
+	def := config.Default(config.ModeDesktop)
 	stagingTTL := o.StagingTTL
 	if stagingTTL <= 0 {
-		stagingTTL = 24 * time.Hour
+		stagingTTL = def.Media.StagingTTL
 	}
 	stagingGCInterval := o.StagingGCInterval
 	if stagingGCInterval <= 0 {
-		stagingGCInterval = 1 * time.Hour
+		stagingGCInterval = def.Media.StagingGCInterval
 	}
 
 	stagingDir := strings.TrimSpace(o.StagingDir)
-	if stagingDir == "" {
-		if strings.TrimSpace(o.MediaDir) != "" {
-			stagingDir = filepath.Join(o.MediaDir, "staging")
-		} else {
-			stagingDir = filepath.Join(os.TempDir(), "staging")
-		}
+	if stagingDir == "" && strings.TrimSpace(o.MediaDir) != "" {
+		stagingDir = filepath.Join(o.MediaDir, "staging")
 	}
 
 	return &Service{
@@ -151,7 +147,7 @@ func New(o Options) *Service {
 		registrar:         reg,
 		cfg:               cfg,
 		log:               log,
-		limiter:           newRateLimiter(),
+		limiter:           newRateLimiter(cfg.LimiterPollInterval, def.Providers.DefaultMaxWorkers),
 		leases:            leases,
 		stagingTTL:        stagingTTL,
 		stagingGCInterval: stagingGCInterval,
@@ -198,32 +194,7 @@ func (s *Service) emitUsage(ctx context.Context, ev domainmedia.UsageEvent) {
 }
 
 func withMediaGenDefaults(cfg config.MediaGenConfig) config.MediaGenConfig {
-	def := config.Default(config.ModeDesktop).MediaGen
-	if cfg.RequestTimeout <= 0 {
-		cfg.RequestTimeout = def.RequestTimeout
-	}
-	if cfg.VideoTimeout <= 0 {
-		cfg.VideoTimeout = def.VideoTimeout
-	}
-	if cfg.VideoPollInterval <= 0 {
-		cfg.VideoPollInterval = def.VideoPollInterval
-	}
-	if cfg.MaxOutputBytes <= 0 {
-		cfg.MaxOutputBytes = def.MaxOutputBytes
-	}
-	if cfg.MaxReferenceBytes <= 0 {
-		cfg.MaxReferenceBytes = def.MaxReferenceBytes
-	}
-	if cfg.TextTimeout <= 0 {
-		cfg.TextTimeout = def.TextTimeout
-	}
-	if cfg.TextMaxTokens <= 0 {
-		cfg.TextMaxTokens = def.TextMaxTokens
-		if cfg.TextTemperature == 0 {
-			cfg.TextTemperature = def.TextTemperature
-		}
-	}
-	return cfg
+	return config.ResolveMediaGenConfig(cfg)
 }
 
 type targetSpec struct {
@@ -594,7 +565,7 @@ func (s *Service) doJSON(ctx context.Context, method, targetURL string, headers 
 		req.Header.Set(k, v)
 	}
 
-	raw, _, status, err := s.execHTTP(req, maxJSONResponseBytes)
+	raw, _, status, err := s.execHTTP(req, s.cfg.MaxJSONResponseBytes)
 	if err != nil {
 		return err
 	}
@@ -631,7 +602,7 @@ func (s *Service) doMultipart(ctx context.Context, targetURL string, headers map
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	raw, _, status, err := s.execHTTP(req, maxJSONResponseBytes)
+	raw, _, status, err := s.execHTTP(req, s.cfg.MaxJSONResponseBytes)
 	if err != nil {
 		return err
 	}
@@ -713,13 +684,14 @@ type RetryConfig struct {
 	BackoffFactor float64       // exponential factor (default 2.0)
 }
 
-// DefaultRetryConfig returns standard production defaults for mediagen requests.
+// DefaultRetryConfig returns standard production defaults for mediagen requests from config.Default.
 func DefaultRetryConfig() RetryConfig {
+	def := config.Default(config.ModeDesktop).MediaGen
 	return RetryConfig{
-		MaxRetries:    3,
-		InitialDelay:  100 * time.Millisecond,
-		MaxDelay:      2 * time.Second,
-		BackoffFactor: 2.0,
+		MaxRetries:    def.RetryMax,
+		InitialDelay:  def.RetryInitialDelay,
+		MaxDelay:      def.RetryMaxDelay,
+		BackoffFactor: def.RetryBackoffFactor,
 	}
 }
 
@@ -953,8 +925,17 @@ func ExecHTTPWithRetry(ctx context.Context, client *http.Client, req *http.Reque
 	return lastRaw, lastCT, lastStatus, nil
 }
 
+func (s *Service) retryConfig() RetryConfig {
+	return RetryConfig{
+		MaxRetries:    s.cfg.RetryMax,
+		InitialDelay:  s.cfg.RetryInitialDelay,
+		MaxDelay:      s.cfg.RetryMaxDelay,
+		BackoffFactor: s.cfg.RetryBackoffFactor,
+	}
+}
+
 func (s *Service) execHTTP(req *http.Request, maxBytes int64) ([]byte, string, int, error) {
-	return ExecHTTPWithRetry(req.Context(), s.httpClient, req, maxBytes, DefaultRetryConfig())
+	return ExecHTTPWithRetry(req.Context(), s.httpClient, req, maxBytes, s.retryConfig())
 }
 
 func (s *Service) execHTTPWithRetry(req *http.Request, maxBytes int64, cfg RetryConfig) ([]byte, string, int, error) {
@@ -1270,24 +1251,26 @@ func (s *Service) getMediaDir() string {
 	return s.mediaDir
 }
 
-// StagingDir returns the absolute path to the active staging directory.
+// StagingDir returns the active staging directory path, or empty if neither StagingDir nor MediaDir was configured.
 func (s *Service) StagingDir() string {
 	s.mediaMu.RLock()
 	defer s.mediaMu.RUnlock()
 	if strings.TrimSpace(s.stagingDir) != "" {
 		return s.stagingDir
 	}
-	base := s.mediaDir
-	if strings.TrimSpace(base) == "" {
-		base = os.TempDir()
+	if strings.TrimSpace(s.mediaDir) != "" {
+		return filepath.Join(s.mediaDir, "staging")
 	}
-	return filepath.Join(base, "staging")
+	return ""
 }
 
 // StageFile writes data to a unique file in the staging directory and acquires an active lease on it.
 // The caller must invoke the returned release function when the job completes.
 func (s *Service) StageFile(subDir, name string, data []byte) (string, func(), error) {
 	stagingDir := s.StagingDir()
+	if stagingDir == "" {
+		return "", nil, apperr.Validation("mediagen: StagingDir or MediaDir must be configured before staging files")
+	}
 	if strings.TrimSpace(subDir) != "" {
 		stagingDir = filepath.Join(stagingDir, subDir)
 	}
@@ -1308,6 +1291,9 @@ func (s *Service) StageFile(subDir, name string, data []byte) (string, func(), e
 // StageStream streams bounded content from reader r into a staging file and acquires an active lease on it.
 func (s *Service) StageStream(subDir, name string, r io.Reader, maxBytes int64) (string, func(), error) {
 	stagingDir := s.StagingDir()
+	if stagingDir == "" {
+		return "", nil, apperr.Validation("mediagen: StagingDir or MediaDir must be configured before staging files")
+	}
 	if strings.TrimSpace(subDir) != "" {
 		stagingDir = filepath.Join(stagingDir, subDir)
 	}
@@ -1520,7 +1506,7 @@ func (r *LeaseRegistry) Prune(dir string, ttl time.Duration, now ...time.Time) (
 		return 0, err
 	}
 	if ttl <= 0 {
-		ttl = 24 * time.Hour
+		ttl = config.Default(config.ModeDesktop).Media.StagingTTL
 	}
 	cur := time.Now()
 	if len(now) > 0 && !now[0].IsZero() {
@@ -1615,11 +1601,12 @@ func PruneStaging(dir string, ttl time.Duration, now ...time.Time) (int, error) 
 // StartStagingGC runs periodic background staging garbage collection until ctx is canceled.
 // It executes an initial scan immediately, then ticks at the given interval.
 func StartStagingGC(ctx context.Context, dir string, ttl, interval time.Duration) {
+	defMedia := config.Default(config.ModeDesktop).Media
 	if ttl <= 0 {
-		ttl = 24 * time.Hour
+		ttl = defMedia.StagingTTL
 	}
 	if interval <= 0 {
-		interval = 1 * time.Hour
+		interval = defMedia.StagingGCInterval
 	}
 	_, _ = PruneStaging(dir, ttl)
 

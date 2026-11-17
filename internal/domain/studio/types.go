@@ -6,12 +6,65 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 
 	"app/internal/apperr"
 	domainmedia "app/internal/domain/mediagen"
 )
+
+const (
+	// MinShotDurationSec and MaxShotDurationSec define domain bounds for shot durations when no runtime StudioConfig override is supplied.
+	MinShotDurationSec = 1
+	MaxShotDurationSec = 60
+
+	// BaselineVideoWidth, BaselineVideoHeight, and BaselineVideoFPS represent default 1080p/24fps studio domain geometry when caller dimensions are omitted.
+	BaselineVideoWidth  = 1920
+	BaselineVideoHeight = 1080
+	BaselineVideoFPS    = 24
+	DefaultBGMVolume    = 0.3
+)
+
+var aspectRatioResolutionMap = map[string]string{
+	"9:16": "1080x1920",
+	"1:1":  "1080x1080",
+	"4:3":  "1440x1080",
+	"3:4":  "1080x1440",
+	"16:9": "1920x1080",
+}
+
+// ResolutionForAspectRatio maps a studio aspect ratio token (e.g. "9:16") to its standard WxH export resolution, falling back to fallback (or 1920x1080 if empty).
+func ResolutionForAspectRatio(aspect, fallback string) string {
+	key := strings.ToLower(strings.TrimSpace(aspect))
+	if res, ok := aspectRatioResolutionMap[key]; ok {
+		return res
+	}
+	if strings.TrimSpace(fallback) != "" {
+		return strings.TrimSpace(fallback)
+	}
+	return fmt.Sprintf("%dx%d", BaselineVideoWidth, BaselineVideoHeight)
+}
+
+// ParseResolutionDims parses "WxH" pixels, falling back to fallbackWidth/fallbackHeight (or BaselineVideoWidth x BaselineVideoHeight).
+func ParseResolutionDims(res string, fallbackWidth, fallbackHeight int) (int, int) {
+	if fallbackWidth <= 0 {
+		fallbackWidth = BaselineVideoWidth
+	}
+	if fallbackHeight <= 0 {
+		fallbackHeight = BaselineVideoHeight
+	}
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(res)), "x")
+	if len(parts) != 2 {
+		return fallbackWidth, fallbackHeight
+	}
+	w, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+	h, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err1 != nil || err2 != nil || w <= 0 || h <= 0 {
+		return fallbackWidth, fallbackHeight
+	}
+	return w, h
+}
 
 // Genre identifies the storytelling format of a film studio project.
 type Genre string
@@ -452,8 +505,16 @@ func (s *Shot) Normalize() {
 	s.RefAssetTags = cleanTags(s.RefAssetTags)
 }
 
-// Validate normalizes and verifies Shot invariants.
+// Validate normalizes and verifies Shot invariants using default domain duration limits.
 func (s *Shot) Validate() error {
+	return s.ValidateWithMaxDuration(MaxShotDurationSec)
+}
+
+// ValidateWithMaxDuration normalizes and verifies Shot invariants with a configurable maxDurationSec bound.
+func (s *Shot) ValidateWithMaxDuration(maxDurationSec int) error {
+	if maxDurationSec < MinShotDurationSec {
+		maxDurationSec = MaxShotDurationSec
+	}
 	s.Normalize()
 	if s.EpisodeID == "" {
 		return apperr.Validation("episode_id is required")
@@ -461,8 +522,8 @@ func (s *Shot) Validate() error {
 	if s.Seq < 0 {
 		return apperr.Validation("shot seq must be >= 0")
 	}
-	if s.DurationSec < 1 || s.DurationSec > 60 {
-		return apperr.Validation("shot duration_sec must be between 1 and 60")
+	if s.DurationSec < MinShotDurationSec || s.DurationSec > maxDurationSec {
+		return apperr.Validation(fmt.Sprintf("shot duration_sec must be between %d and %d", MinShotDurationSec, maxDurationSec))
 	}
 	if err := ValidateShotMode(s.ShotMode); err != nil {
 		return err

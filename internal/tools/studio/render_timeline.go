@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"app/internal/apperr"
+	"app/internal/config"
 	"app/internal/contracts"
 	domainbinaries "app/internal/domain/binaries"
 	domainstudio "app/internal/domain/studio"
@@ -193,7 +194,7 @@ func NewRenderTimelineNode(opts Options) engine.Node {
 		if in.BurnSubtitles && assPath != "" {
 			burnPath = assPath
 		}
-		args, expectedDurSec := buildRenderTimelineArgs(tl, resolved, burnPath, lufs, preset, crf, tmpOut)
+		args, expectedDurSec := buildRenderTimelineArgs(tl, resolved, burnPath, lufs, preset, crf, opts.StudioConfig, tmpOut)
 
 		runCtx, cancelRun := context.WithTimeout(ctx, opts.StudioConfig.FFmpegTimeout)
 		defer cancelRun()
@@ -272,8 +273,10 @@ func buildRenderTimelineArgs(
 	lufs float64,
 	preset string,
 	crf int,
+	cfg config.StudioConfig,
 	outPath string,
 ) (args []string, totalDurSec float64) {
+	cfg = withStudioDefaults(cfg)
 	args = []string{"-y", "-hide_banner", "-progress", "pipe:1", "-nostats"}
 
 	for _, rc := range resolved {
@@ -325,7 +328,7 @@ func buildRenderTimelineArgs(
 	// 1. Build normalized video segments and sequence/xfade chain.
 	vOutLabel := "[vbase]"
 	if len(videoClips) == 0 {
-		fc = append(fc, fmt.Sprintf("color=c=black:s=%dx%d:r=%d:d=%.3f,settb=AVTB,format=yuv420p[vbase]", tl.Width, tl.Height, tl.FPS, totalDurSec))
+		fc = append(fc, fmt.Sprintf("color=c=black:s=%dx%d:r=%d:d=%.3f,settb=AVTB,format=%s[vbase]", tl.Width, tl.Height, tl.FPS, totalDurSec, cfg.FFmpegPixelFormat))
 	} else {
 		for i, rc := range videoClips {
 			durSec := float64(rc.clip.TimelineSpanMs()) / 1000.0
@@ -337,11 +340,11 @@ func buildRenderTimelineArgs(
 			}
 			var seg string
 			if rc.isImage {
-				seg = fmt.Sprintf("[%d:v]scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=%d%s,settb=AVTB,format=yuv420p[vseg%d]",
-					rc.inputIndex, tl.Width, tl.Height, tl.Width, tl.Height, tl.FPS, kenBurnsFilter(rc.clip.KenBurnsPreset, tl.Width, tl.Height, tl.FPS, durSec), i)
+				seg = fmt.Sprintf("[%d:v]scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=%d%s,settb=AVTB,format=%s[vseg%d]",
+					rc.inputIndex, tl.Width, tl.Height, tl.Width, tl.Height, tl.FPS, kenBurnsFilter(rc.clip.KenBurnsPreset, tl.Width, tl.Height, tl.FPS, durSec), cfg.FFmpegPixelFormat, i)
 			} else {
-				seg = fmt.Sprintf("[%d:v]trim=start=%.3f:end=%.3f,setpts=(PTS-STARTPTS)/%.4f,scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=%d,settb=AVTB,format=yuv420p[vseg%d]",
-					rc.inputIndex, inSec, outSec, spd, tl.Width, tl.Height, tl.Width, tl.Height, tl.FPS, i)
+				seg = fmt.Sprintf("[%d:v]trim=start=%.3f:end=%.3f,setpts=(PTS-STARTPTS)/%.4f,scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=%d,settb=AVTB,format=%s[vseg%d]",
+					rc.inputIndex, inSec, outSec, spd, tl.Width, tl.Height, tl.Width, tl.Height, tl.FPS, cfg.FFmpegPixelFormat, i)
 			}
 			fc = append(fc, seg)
 		}
@@ -353,7 +356,7 @@ func buildRenderTimelineArgs(
 		if first.clip.TimelineStartMs > 0 {
 			gapSec := float64(first.clip.TimelineStartMs) / 1000.0
 			fc = append(fc,
-				fmt.Sprintf("color=c=black:s=%dx%d:r=%d:d=%.3f,settb=AVTB,format=yuv420p[vgap0]", tl.Width, tl.Height, tl.FPS, gapSec),
+				fmt.Sprintf("color=c=black:s=%dx%d:r=%d:d=%.3f,settb=AVTB,format=%s[vgap0]", tl.Width, tl.Height, tl.FPS, gapSec, cfg.FFmpegPixelFormat),
 				"[vgap0][vseg0]concat=n=2:v=1:a=0[vc0]",
 			)
 			curLabel = "[vc0]"
@@ -421,7 +424,7 @@ func buildRenderTimelineArgs(
 				gapSec := float64(cur.clip.TimelineStartMs-prevEndMs) / 1000.0
 				gapLbl := fmt.Sprintf("[vgap%d]", i)
 				fc = append(fc,
-					fmt.Sprintf("color=c=black:s=%dx%d:r=%d:d=%.3f,settb=AVTB,format=yuv420p%s", tl.Width, tl.Height, tl.FPS, gapSec, gapLbl),
+					fmt.Sprintf("color=c=black:s=%dx%d:r=%d:d=%.3f,settb=AVTB,format=%s%s", tl.Width, tl.Height, tl.FPS, gapSec, cfg.FFmpegPixelFormat, gapLbl),
 					fmt.Sprintf("%s%s%sconcat=n=3:v=1:a=0%s", curLabel, gapLbl, segLabel, nextLabel),
 				)
 				accumSec += gapSec + curDurSec
@@ -445,7 +448,7 @@ func buildRenderTimelineArgs(
 	// 2. Build multi-track audio mix + loudnorm (-14 LUFS default).
 	aOutLabel := "[aout]"
 	if len(audioClips) == 0 {
-		fc = append(fc, fmt.Sprintf("anullsrc=r=48000:cl=stereo,atrim=duration=%.3f,loudnorm=I=%.1f:TP=-1.5:LRA=11[aout]", totalDurSec, lufs))
+		fc = append(fc, fmt.Sprintf("anullsrc=r=%d:cl=stereo,atrim=duration=%.3f,loudnorm=I=%.1f:TP=-1.5:LRA=11[aout]", cfg.FFmpegAudioSampleRate, totalDurSec, lufs))
 	} else {
 		var mixLabels []string
 		for i, rc := range audioClips {
@@ -468,7 +471,7 @@ func buildRenderTimelineArgs(
 			}
 			filters = append(filters,
 				fmt.Sprintf("volume=%.3f", gain),
-				"aformat=sample_rates=48000:channel_layouts=stereo",
+				fmt.Sprintf("aformat=sample_rates=%d:channel_layouts=stereo", cfg.FFmpegAudioSampleRate),
 			)
 			if rc.clip.TimelineStartMs > 0 {
 				filters = append(filters, fmt.Sprintf("adelay=%d|%d", rc.clip.TimelineStartMs, rc.clip.TimelineStartMs))
@@ -489,12 +492,12 @@ func buildRenderTimelineArgs(
 		"-filter_complex", strings.Join(fc, ";"),
 		"-map", vOutLabel,
 		"-map", aOutLabel,
-		"-c:v", "libx264",
+		"-c:v", cfg.FFmpegVideoCodec,
 		"-preset", preset,
 		"-crf", strconv.Itoa(crf),
-		"-pix_fmt", "yuv420p",
-		"-c:a", "aac",
-		"-b:a", "192k",
+		"-pix_fmt", cfg.FFmpegPixelFormat,
+		"-c:a", cfg.FFmpegAudioCodec,
+		"-b:a", cfg.FFmpegAudioBitrate,
 		"-movflags", "+faststart",
 		outPath,
 	)

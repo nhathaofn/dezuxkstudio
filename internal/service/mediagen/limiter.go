@@ -23,22 +23,32 @@ type bucketState struct {
 // rateLimiter enforces per-(provider, capability) MaxWorkers, RPM, and RequestGapMs
 // configured in Settings -> Providers.
 type rateLimiter struct {
-	mu      sync.Mutex
-	notify  chan struct{}
-	buckets map[limiterKey]*bucketState
+	mu               sync.Mutex
+	notify           chan struct{}
+	buckets          map[limiterKey]*bucketState
+	pollInterval     time.Duration
+	defaultMaxWorker int
 }
 
-func newRateLimiter() *rateLimiter {
+func newRateLimiter(pollInterval time.Duration, defaultMaxWorkers int) *rateLimiter {
+	if pollInterval <= 0 {
+		pollInterval = 250 * time.Millisecond
+	}
+	if defaultMaxWorkers <= 0 {
+		defaultMaxWorkers = 2
+	}
 	return &rateLimiter{
-		notify:  make(chan struct{}),
-		buckets: make(map[limiterKey]*bucketState),
+		notify:           make(chan struct{}),
+		buckets:          make(map[limiterKey]*bucketState),
+		pollInterval:     pollInterval,
+		defaultMaxWorker: defaultMaxWorkers,
 	}
 }
 
 func (l *rateLimiter) acquire(ctx context.Context, owner string, cap domainprovider.Capability, limits domainprovider.Limits) (func(), error) {
 	maxWorkers := limits.MaxWorkers[cap]
 	if maxWorkers <= 0 {
-		maxWorkers = 2
+		maxWorkers = l.defaultMaxWorker
 	}
 	rpm := limits.RPM[cap]
 	gap := time.Duration(limits.RequestGapMs) * time.Millisecond
@@ -63,7 +73,7 @@ func (l *rateLimiter) acquire(ctx context.Context, owner string, cap domainprovi
 
 		var wait time.Duration
 		if b.inFlight >= maxWorkers {
-			wait = 250 * time.Millisecond
+			wait = l.pollInterval
 		}
 		if rpm > 0 && len(b.timestamps) >= rpm {
 			rpmWait := time.Until(b.timestamps[0].Add(time.Minute))

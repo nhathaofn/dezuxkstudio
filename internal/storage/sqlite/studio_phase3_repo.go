@@ -59,7 +59,7 @@ func (r *StudioRepository) GetTimeline(ctx context.Context, episodeID string) (s
 		if exists == 0 {
 			return studio.TimelineRecord{}, studio.ErrEpisodeNotFound(epID)
 		}
-		defTL := studio.DefaultEditTimeline(1920, 1080, 24)
+		defTL := studio.DefaultEditTimeline(studio.BaselineVideoWidth, studio.BaselineVideoHeight, studio.BaselineVideoFPS)
 		b, _ := json.Marshal(defTL)
 		rec.Revision = 0
 		rec.Timeline = defTL
@@ -261,7 +261,7 @@ func (r *StudioRepository) ListTimelineRevisions(ctx context.Context, episodeID 
 		return nil, apperr.Validation("episode_id is required")
 	}
 	if limit <= 0 {
-		limit = 30
+		limit = studio.DefaultRevisionHistoryLimit
 	}
 	rows, err := r.db.read().QueryContext(ctx, `
 		SELECT id, episode_id, revision, actor, summary, timeline_json, created_at

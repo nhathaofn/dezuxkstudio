@@ -121,45 +121,7 @@ func NewNodes(opts Options) []engine.Node {
 }
 
 func withStudioDefaults(cfg config.StudioConfig) config.StudioConfig {
-	def := config.Default(config.ModeDesktop).Studio
-	presetWasEmpty := strings.TrimSpace(cfg.FFmpegPreset) == ""
-	if cfg.DefaultFPS <= 0 {
-		cfg.DefaultFPS = def.DefaultFPS
-	}
-	if strings.TrimSpace(cfg.DefaultResolution) == "" {
-		cfg.DefaultResolution = def.DefaultResolution
-	}
-	if presetWasEmpty {
-		cfg.FFmpegPreset = def.FFmpegPreset
-	}
-	if cfg.FFmpegCRF < 0 || cfg.FFmpegCRF > 51 || (cfg.FFmpegCRF == 0 && presetWasEmpty) {
-		cfg.FFmpegCRF = def.FFmpegCRF
-	}
-	if cfg.FFmpegTimeout <= 0 {
-		cfg.FFmpegTimeout = def.FFmpegTimeout
-	}
-	if cfg.FFprobeTimeout <= 0 {
-		cfg.FFprobeTimeout = def.FFprobeTimeout
-	}
-	if cfg.MaxConcurrentBatch <= 0 {
-		cfg.MaxConcurrentBatch = def.MaxConcurrentBatch
-	}
-	if cfg.ExportMaxZipBytes <= 0 {
-		cfg.ExportMaxZipBytes = def.ExportMaxZipBytes
-	}
-	if cfg.ExportLoudnormLUFS == 0 {
-		cfg.ExportLoudnormLUFS = def.ExportLoudnormLUFS
-	}
-	if cfg.ExportSubtitleFontSize <= 0 {
-		cfg.ExportSubtitleFontSize = def.ExportSubtitleFontSize
-	}
-	if cfg.TimelineThumbIntervalSec <= 0 {
-		cfg.TimelineThumbIntervalSec = def.TimelineThumbIntervalSec
-	}
-	if cfg.TimelinePeakBins <= 0 {
-		cfg.TimelinePeakBins = def.TimelinePeakBins
-	}
-	return cfg
+	return config.ResolveStudioConfig(cfg)
 }
 
 func resolveTree(opts Options) paths.WorkspaceTree {
@@ -295,18 +257,22 @@ func resolveBinary(ctx context.Context, resolver BinaryResolver, id domainbinari
 	return exe, nil
 }
 
-func parseResolutionWxH(raw string) (int, int, error) {
+func parseResolutionWxH(raw string, maxDim ...int) (int, int, error) {
+	limit := config.Default(config.ModeDesktop).Studio.MaxVideoDimension
+	if len(maxDim) > 0 && maxDim[0] >= 64 {
+		limit = maxDim[0]
+	}
 	s := strings.ToLower(strings.TrimSpace(raw))
 	parts := strings.Split(s, "x")
 	if len(parts) != 2 {
-		return 0, 0, apperr.Validation(fmt.Sprintf("resolution must be WxH (e.g. 1920x1080), got %q", raw))
+		return 0, 0, apperr.Validation(fmt.Sprintf("resolution must be WxH (e.g. %s), got %q", config.Default(config.ModeDesktop).Studio.DefaultResolution, raw))
 	}
 	w, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
 	h, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
-	if err1 != nil || err2 != nil || w < 64 || h < 64 || w > 16384 || h > 16384 {
-		return 0, 0, apperr.Validation(fmt.Sprintf("resolution out of bounds (64..16384): %q", raw))
+	if err1 != nil || err2 != nil || w < 64 || h < 64 || w > limit || h > limit {
+		return 0, 0, apperr.Validation(fmt.Sprintf("resolution out of bounds (64..%d): %q", limit, raw))
 	}
-	// Ensure even dimensions for yuv420p H.264 encoding
+	// Ensure even dimensions for YUV 4:2:0 H.264 encoding
 	if w%2 != 0 {
 		w--
 	}

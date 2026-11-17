@@ -58,9 +58,6 @@ func (s *Service) GenerateText(ctx context.Context, req domainmedia.TextRequest)
 	if maxTokens <= 0 {
 		maxTokens = s.cfg.TextMaxTokens
 	}
-	if maxTokens <= 0 {
-		maxTokens = 8192
-	}
 	if target.modelFacts.Facts.MaxOutputTokens > 0 && maxTokens > target.modelFacts.Facts.MaxOutputTokens {
 		maxTokens = target.modelFacts.Facts.MaxOutputTokens
 	}

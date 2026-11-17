@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"app/internal/apperr"
+	"app/internal/config"
 	"app/internal/contracts"
 	domainbinaries "app/internal/domain/binaries"
 	"app/internal/engine"
@@ -44,7 +45,7 @@ func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 		Params: []engine.Param{
 			{Name: "thumb_interval_sec", Label: "Thumbnail Interval (sec)", Kind: engine.ParamText, Default: defInterval},
 			{Name: "peak_bins", Label: "Waveform Peak Bins", Kind: engine.ParamInteger, Min: 16, Max: 4096, Default: strconv.Itoa(defBins)},
-			{Name: "thumb_height", Label: "Thumbnail Height (px)", Kind: engine.ParamInteger, Min: 32, Max: 360, Default: "90"},
+			{Name: "thumb_height", Label: "Thumbnail Height (px)", Kind: engine.ParamInteger, Min: 32, Max: 360, Default: strconv.Itoa(opts.StudioConfig.TimelineThumbHeight)},
 			{Name: "output_dir", Label: "Output Directory", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
 		},
 	}
@@ -80,7 +81,7 @@ func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 		}
 		thumbH := in.ThumbHeight
 		if thumbH <= 0 {
-			thumbH = 90
+			thumbH = opts.StudioConfig.TimelineThumbHeight
 		}
 		if thumbH < 32 || thumbH > 360 {
 			return contracts.MediaPeaksThumbsOutput{}, apperr.Validation("thumb_height must be between 32 and 360")
@@ -103,7 +104,7 @@ func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 		}
 		durSec := info.DurationSec
 		if durSec <= 0 {
-			durSec = 5.0
+			durSec = float64(opts.StudioConfig.DefaultShotDurationSec)
 		}
 		durationMs := int64(math.Round(durSec * 1000))
 
@@ -117,7 +118,7 @@ func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 		var spritePath, spriteAssetID string
 		thumbCount := 0
 		if info.Width > 0 && info.Height > 0 {
-			const maxStripThumbs = 60
+			maxStripThumbs := opts.StudioConfig.TimelineMaxStripThumbs
 			thumbCount = max(1, int(math.Ceil(durSec/interval)))
 			effInterval := interval
 			if thumbCount > maxStripThumbs {
@@ -154,7 +155,7 @@ func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 		var peaks []float64
 		if info.HasAudio {
 			ffCtx, cancelPCM := context.WithTimeout(ctx, opts.StudioConfig.FFmpegTimeout)
-			peaks, err = extractAudioPeaksPCM(ffCtx, ffmpegExe, resolvedPath, bins)
+			peaks, err = extractAudioPeaksPCM(ffCtx, ffmpegExe, resolvedPath, bins, opts.StudioConfig)
 			cancelPCM()
 			if err != nil {
 				return contracts.MediaPeaksThumbsOutput{}, err
@@ -200,11 +201,12 @@ func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 	})
 }
 
-func extractAudioPeaksPCM(ctx context.Context, ffmpegExe, mediaPath string, bins int) ([]float64, error) {
+func extractAudioPeaksPCM(ctx context.Context, ffmpegExe, mediaPath string, bins int, cfg config.StudioConfig) ([]float64, error) {
+	cfg = withStudioDefaults(cfg)
 	args := []string{
 		"-hide_banner", "-v", "error",
 		"-i", mediaPath,
-		"-vn", "-ac", "1", "-ar", "8000",
+		"-vn", "-ac", "1", "-ar", strconv.Itoa(cfg.TimelineWaveSampleRate),
 		"-f", "f32le", "pipe:1",
 	}
 	cmd := proc.Command(context.Background(), ffmpegExe, args...)
@@ -239,7 +241,7 @@ func extractAudioPeaksPCM(ctx context.Context, ffmpegExe, mediaPath string, bins
 	})
 
 	// Stream float32 samples into 80-sample (~10ms @ 8kHz) frame blocks to keep memory small.
-	const blockSamples = 80
+	blockSamples := cfg.TimelineWaveBlockSamples
 	var blocks []float64
 	var curMax float64
 	var inBlock int

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"app/internal/apperr"
@@ -34,7 +33,7 @@ func (s *Service) GetTimeline(ctx context.Context, episodeID string) (contracts.
 	if err != nil {
 		return contracts.StudioTimelineResult{}, err
 	}
-	revs, err := s.repo.ListTimelineRevisions(ctx, ep.ID, 30)
+	revs, err := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
 	if err != nil {
 		return contracts.StudioTimelineResult{}, err
 	}
@@ -95,7 +94,7 @@ func (s *Service) ApplyTimelineOps(ctx context.Context, p contracts.StudioTimeli
 
 	ep, timelinePath := s.persistTimelineJSON(ctx, proj, ep, saved.Timeline)
 	_ = ep
-	revs, _ := s.repo.ListTimelineRevisions(ctx, ep.ID, 30)
+	revs, _ := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
 	s.emitTimelineChanged(proj.ID, saved, string(actor), summary)
 	return timelineResultToDTO(proj.ID, timelinePath, saved, revs), nil
 }
@@ -125,7 +124,7 @@ func (s *Service) UndoTimeline(ctx context.Context, p contracts.StudioTimelineRe
 	s.hydrateTimelineClipAssets(ctx, s.resolveEpisodeRoot(proj, ep.Code), &rec.Timeline)
 	ep, timelinePath := s.persistTimelineJSON(ctx, proj, ep, rec.Timeline)
 	_ = ep
-	revs, _ := s.repo.ListTimelineRevisions(ctx, ep.ID, 30)
+	revs, _ := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
 	s.emitTimelineChanged(proj.ID, rec, string(domainstudio.ActorUser), "undo")
 	return timelineResultToDTO(proj.ID, timelinePath, rec, revs), nil
 }
@@ -155,7 +154,7 @@ func (s *Service) RedoTimeline(ctx context.Context, p contracts.StudioTimelineRe
 	s.hydrateTimelineClipAssets(ctx, s.resolveEpisodeRoot(proj, ep.Code), &rec.Timeline)
 	ep, timelinePath := s.persistTimelineJSON(ctx, proj, ep, rec.Timeline)
 	_ = ep
-	revs, _ := s.repo.ListTimelineRevisions(ctx, ep.ID, 30)
+	revs, _ := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
 	s.emitTimelineChanged(proj.ID, rec, string(domainstudio.ActorUser), "redo")
 	return timelineResultToDTO(proj.ID, timelinePath, rec, revs), nil
 }
@@ -268,7 +267,7 @@ func (s *Service) AutoAssembleTimeline(ctx context.Context, p contracts.StudioTi
 
 	ep, timelinePath := s.persistTimelineJSON(ctx, proj, ep, saved.Timeline)
 	_ = ep
-	revs, _ := s.repo.ListTimelineRevisions(ctx, ep.ID, 30)
+	revs, _ := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
 	s.emitTimelineChanged(proj.ID, saved, string(domainstudio.ActorNode), summary)
 	return timelineResultToDTO(proj.ID, timelinePath, saved, revs), nil
 }
@@ -580,13 +579,10 @@ func (s *Service) loadEpisodeTimelineRecord(ctx context.Context, proj domainstud
 		return domainstudio.TimelineRecord{}, err
 	}
 	if rec.Revision == 0 {
-		w, h := parseResolutionDims(resolutionForAspectRatio(proj.AspectRatio, s.cfg.DefaultResolution))
+		w, h := parseResolutionDims(resolutionForAspectRatio(proj.AspectRatio, s.cfg.DefaultResolution), s.cfg.DefaultResolution)
 		fps := s.cfg.DefaultFPS
-		if fps <= 0 {
-			fps = 24
-		}
 		if len(rec.Timeline.Tracks) == 0 {
-			rec.Timeline = domainstudio.DefaultEditTimeline(w, h, fps)
+			rec.Timeline = domainstudio.DefaultEditTimelineWithBGM(w, h, fps, s.cfg.TimelineDefaultBGMVolume)
 		} else {
 			rec.Timeline.Width = w
 			rec.Timeline.Height = h
@@ -761,17 +757,9 @@ func summarizeTimelineOps(ops []domainstudio.TimelineOp) string {
 	return fmt.Sprintf("%s (+%d ops)", ops[0].Op, len(ops)-1)
 }
 
-func parseResolutionDims(res string) (int, int) {
-	parts := strings.Split(strings.ToLower(strings.TrimSpace(res)), "x")
-	if len(parts) != 2 {
-		return 1920, 1080
-	}
-	w, errW := strconv.Atoi(strings.TrimSpace(parts[0]))
-	h, errH := strconv.Atoi(strings.TrimSpace(parts[1]))
-	if errW != nil || errH != nil || w <= 0 || h <= 0 {
-		return 1920, 1080
-	}
-	return w, h
+func parseResolutionDims(res, fallback string) (int, int) {
+	fw, fh := domainstudio.ParseResolutionDims(fallback, domainstudio.BaselineVideoWidth, domainstudio.BaselineVideoHeight)
+	return domainstudio.ParseResolutionDims(res, fw, fh)
 }
 
 func isWithinBaseDir(baseDir, target string) bool {

@@ -86,41 +86,7 @@ func New(opts Options) *Service {
 	if log == nil {
 		log = slog.Default()
 	}
-	cfg := opts.StudioConfig
-	def := config.Default(config.ModeDesktop).Studio
-	if cfg.DefaultFPS <= 0 {
-		cfg.DefaultFPS = def.DefaultFPS
-	}
-	if strings.TrimSpace(cfg.DefaultResolution) == "" {
-		cfg.DefaultResolution = def.DefaultResolution
-	}
-	if cfg.MaxConcurrentBatch <= 0 {
-		cfg.MaxConcurrentBatch = def.MaxConcurrentBatch
-	}
-	if cfg.QueueWorkers <= 0 {
-		cfg.QueueWorkers = def.QueueWorkers
-	}
-	if cfg.QueuePollInterval <= 0 {
-		cfg.QueuePollInterval = def.QueuePollInterval
-	}
-	if cfg.QueueMaxAttempts <= 0 {
-		cfg.QueueMaxAttempts = def.QueueMaxAttempts
-	}
-	if cfg.ExportMaxZipBytes <= 0 {
-		cfg.ExportMaxZipBytes = def.ExportMaxZipBytes
-	}
-	if cfg.ExportLoudnormLUFS == 0 {
-		cfg.ExportLoudnormLUFS = def.ExportLoudnormLUFS
-	}
-	if cfg.ExportSubtitleFontSize <= 0 {
-		cfg.ExportSubtitleFontSize = def.ExportSubtitleFontSize
-	}
-	if cfg.TimelineThumbIntervalSec <= 0 {
-		cfg.TimelineThumbIntervalSec = def.TimelineThumbIntervalSec
-	}
-	if cfg.TimelinePeakBins <= 0 {
-		cfg.TimelinePeakBins = def.TimelinePeakBins
-	}
+	cfg := config.ResolveStudioConfig(opts.StudioConfig)
 
 	projectsDir := strings.TrimSpace(opts.ProjectsDir)
 	if projectsDir != "" {
@@ -773,6 +739,9 @@ func (s *Service) UpsertShot(ctx context.Context, p contracts.StudioShotUpsertPa
 		cur.ErrorText = *p.ErrorText
 	}
 
+	if err := cur.ValidateWithMaxDuration(s.cfg.MaxShotDurationSec); err != nil {
+		return contracts.StudioShotUpsertResult{}, err
+	}
 	saved, err := s.repo.UpsertShot(ctx, cur)
 	if err != nil {
 		return contracts.StudioShotUpsertResult{}, err
@@ -1603,9 +1572,6 @@ func (s *Service) runGenerateVideos(ctx context.Context, proj domainstudio.Proje
 	workers := 0
 	if len(targets) > 0 {
 		workers = s.cfg.MaxConcurrentBatch
-		if workers <= 0 {
-			workers = 1
-		}
 		if workers > len(targets) {
 			workers = len(targets)
 		}
@@ -1867,7 +1833,7 @@ func (s *Service) runProbeShots(ctx context.Context, proj domainstudio.Project, 
 			continue
 		}
 		probed++
-		if out.DurationSec > 0 && int(out.DurationSec+0.5) >= 1 && int(out.DurationSec+0.5) <= 60 {
+		if out.DurationSec > 0 && int(out.DurationSec+0.5) >= domainstudio.MinShotDurationSec && int(out.DurationSec+0.5) <= s.cfg.MaxShotDurationSec {
 			sh.DurationSec = int(out.DurationSec + 0.5)
 			_, _ = s.repo.UpsertShot(ctx, sh)
 		}
@@ -2251,23 +2217,7 @@ func shotSpeechText(sh domainstudio.Shot) string {
 }
 
 func resolutionForAspectRatio(aspect, fallback string) string {
-	switch strings.TrimSpace(aspect) {
-	case "9:16":
-		return "1080x1920"
-	case "1:1":
-		return "1080x1080"
-	case "4:3":
-		return "1440x1080"
-	case "3:4":
-		return "1080x1440"
-	case "16:9":
-		return "1920x1080"
-	default:
-		if strings.TrimSpace(fallback) != "" {
-			return fallback
-		}
-		return "1920x1080"
-	}
+	return domainstudio.ResolutionForAspectRatio(aspect, fallback)
 }
 
 func decodeNodeOutput(raw any, dst any) error {

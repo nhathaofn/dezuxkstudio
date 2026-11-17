@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"app/internal/apperr"
+	"app/internal/config"
 	"app/internal/contracts"
 	domainbinaries "app/internal/domain/binaries"
 	"app/internal/engine"
@@ -83,7 +84,7 @@ func NewProbeMediaNode(opts Options) engine.Node {
 			out.SilentRatio = 1.0
 		} else if out.DurationSec > 0 {
 			if ffmpegExe, _, _, ferr := opts.Binaries.Resolve(probeCtx, domainbinaries.IDFFmpeg); ferr == nil && strings.TrimSpace(ffmpegExe) != "" {
-				out.SilentRatio = detectSilenceRatio(probeCtx, ffmpegExe, resolvedPath, out.DurationSec)
+				out.SilentRatio = detectSilenceRatio(probeCtx, ffmpegExe, resolvedPath, out.DurationSec, opts.StudioConfig)
 			}
 		}
 
@@ -172,15 +173,21 @@ func probeWithFFprobe(ctx context.Context, ffprobeExe, filePath string) (contrac
 	return out, nil
 }
 
-func detectSilenceRatio(ctx context.Context, ffmpegExe, filePath string, totalDur float64) float64 {
+func detectSilenceRatio(ctx context.Context, ffmpegExe, filePath string, totalDur float64, cfg ...config.StudioConfig) float64 {
 	if totalDur <= 0 {
 		return 0
 	}
+	var rawCfg config.StudioConfig
+	if len(cfg) > 0 {
+		rawCfg = cfg[0]
+	}
+	sCfg := withStudioDefaults(rawCfg)
+	filter := fmt.Sprintf("silencedetect=noise=%s:d=%.2f", sCfg.SilenceDetectNoiseDB, sCfg.SilenceDetectMinSec)
 	args := []string{
 		"-hide_banner",
 		"-nostats",
 		"-i", filePath,
-		"-af", "silencedetect=noise=-45dB:d=0.4",
+		"-af", filter,
 		"-f", "null",
 		"-",
 	}

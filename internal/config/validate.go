@@ -70,9 +70,14 @@ func (c *Config) Validate() error {
 			"mediagen.video_timeout":                c.MediaGen.VideoTimeout,
 			"mediagen.video_poll_interval":          c.MediaGen.VideoPollInterval,
 			"mediagen.text_timeout":                 c.MediaGen.TextTimeout,
+			"mediagen.retry_initial_delay":          c.MediaGen.RetryInitialDelay,
+			"mediagen.retry_max_delay":              c.MediaGen.RetryMaxDelay,
+			"mediagen.limiter_poll_interval":        c.MediaGen.LimiterPollInterval,
 			"studio.ffmpeg_timeout":                 c.Studio.FFmpegTimeout,
 			"studio.ffprobe_timeout":                c.Studio.FFprobeTimeout,
 			"studio.queue_poll_interval":            c.Studio.QueuePollInterval,
+			"studio.queue_poll_lease_min":           c.Studio.QueuePollLeaseMin,
+			"studio.queue_poll_backoff_max":         c.Studio.QueuePollBackoffMax,
 			"network.idle_conn_timeout":             c.Network.IdleConnTimeout,
 			"agent.turn_timeout":                    c.Agent.TurnTimeout,
 			"agent.initialize_timeout":              c.Agent.InitializeTimeout,
@@ -97,10 +102,21 @@ func (c *Config) Validate() error {
 			"agent.max_pending_approvals":     c.Agent.MaxPendingApprovals,
 			"agent.max_concurrent_subagents":  c.Agent.MaxConcurrentSubagents,
 			"mediagen.text_max_tokens":        c.MediaGen.TextMaxTokens,
+			"mediagen.retry_max":              c.MediaGen.RetryMax,
 			"studio.default_fps":              c.Studio.DefaultFPS,
+			"studio.ffmpeg_audio_sample_rate": c.Studio.FFmpegAudioSampleRate,
+			"studio.max_video_dimension":      c.Studio.MaxVideoDimension,
+			"studio.default_shot_duration_sec": c.Studio.DefaultShotDurationSec,
+			"studio.max_shot_duration_sec":    c.Studio.MaxShotDurationSec,
+			"studio.grid_split_max_count":     c.Studio.GridSplitMaxCount,
 			"studio.max_concurrent_batch":     c.Studio.MaxConcurrentBatch,
 			"studio.queue_workers":            c.Studio.QueueWorkers,
 			"studio.queue_max_attempts":       c.Studio.QueueMaxAttempts,
+			"studio.timeline_thumb_height":    c.Studio.TimelineThumbHeight,
+			"studio.timeline_max_strip_thumbs": c.Studio.TimelineMaxStripThumbs,
+			"studio.timeline_wave_sample_rate": c.Studio.TimelineWaveSampleRate,
+			"studio.timeline_wave_block_samples": c.Studio.TimelineWaveBlockSamples,
+			"studio.timeline_revision_limit":  c.Studio.TimelineRevisionLimit,
 		})
 		switch strings.ToLower(strings.TrimSpace(c.Agent.Mode)) {
 		case "", "assistant":
@@ -188,12 +204,18 @@ func (c *Config) Validate() error {
 	if c.Providers.DefaultRPM < 0 || c.Providers.DefaultRequestGapMs < 0 {
 		add("providers.default_rpm and providers.default_request_gap_ms must be >= 0")
 	}
-	if c.Mode != ModeClient && (c.MediaGen.MaxOutputBytes <= 0 || c.MediaGen.MaxReferenceBytes <= 0) {
-		add("mediagen.max_output_bytes and mediagen.max_reference_bytes must be > 0")
+	if c.Mode != ModeClient && (c.MediaGen.MaxOutputBytes <= 0 || c.MediaGen.MaxReferenceBytes <= 0 || c.MediaGen.MaxJSONResponseBytes <= 0) {
+		add("mediagen.max_output_bytes, mediagen.max_reference_bytes, and mediagen.max_json_response_bytes must be > 0")
 	}
 	if c.Mode != ModeClient {
 		if math.IsNaN(c.MediaGen.TextTemperature) || math.IsInf(c.MediaGen.TextTemperature, 0) || c.MediaGen.TextTemperature < 0 || c.MediaGen.TextTemperature > 2 {
 			add("mediagen.text_temperature must be between 0 and 2, got %v", c.MediaGen.TextTemperature)
+		}
+		if math.IsNaN(c.MediaGen.RetryBackoffFactor) || math.IsInf(c.MediaGen.RetryBackoffFactor, 0) || c.MediaGen.RetryBackoffFactor <= 1 {
+			add("mediagen.retry_backoff_factor must be > 1, got %v", c.MediaGen.RetryBackoffFactor)
+		}
+		if c.MediaGen.RetryMaxDelay < c.MediaGen.RetryInitialDelay {
+			add("mediagen.retry_max_delay must be >= mediagen.retry_initial_delay")
 		}
 		if c.Studio.FFmpegCRF < 0 || c.Studio.FFmpegCRF > 51 {
 			add("studio.ffmpeg_crf must be 0-51, got %d", c.Studio.FFmpegCRF)
@@ -201,8 +223,32 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(c.Studio.FFmpegPreset) == "" {
 			add("studio.ffmpeg_preset must not be empty")
 		}
-		if !validResolutionWxH(c.Studio.DefaultResolution) {
-			add("studio.default_resolution must be WxH (e.g. 1920x1080), got %q", c.Studio.DefaultResolution)
+		if strings.TrimSpace(c.Studio.FFmpegVideoCodec) == "" || strings.TrimSpace(c.Studio.FFmpegPixelFormat) == "" || strings.TrimSpace(c.Studio.FFmpegAudioCodec) == "" || strings.TrimSpace(c.Studio.FFmpegAudioBitrate) == "" {
+			add("studio FFmpeg codec, pixel format, and audio bitrate fields must not be empty")
+		}
+		if c.Studio.MaxVideoDimension < 64 {
+			add("studio.max_video_dimension must be >= 64, got %d", c.Studio.MaxVideoDimension)
+		}
+		if !validResolutionWxH(c.Studio.DefaultResolution, c.Studio.MaxVideoDimension) {
+			add("studio.default_resolution must be WxH within bounds (64..%d), got %q", c.Studio.MaxVideoDimension, c.Studio.DefaultResolution)
+		}
+		if c.Studio.MaxShotDurationSec < c.Studio.DefaultShotDurationSec {
+			add("studio.max_shot_duration_sec must be >= studio.default_shot_duration_sec")
+		}
+		if c.Studio.GridSplitMaxCount < 1 || c.Studio.GridSplitMaxCount > 32 {
+			add("studio.grid_split_max_count must be between 1 and 32, got %d", c.Studio.GridSplitMaxCount)
+		}
+		if c.Studio.ExtractFrameEOFOffsetSec <= 0 || c.Studio.ExtractFrameEndPadSec <= 0 || c.Studio.ExtractFrameLastPadSec <= 0 {
+			add("studio frame extract offset/pad values must be > 0")
+		}
+		if strings.TrimSpace(c.Studio.SilenceDetectNoiseDB) == "" || c.Studio.SilenceDetectMinSec <= 0 {
+			add("studio.silence_detect_noise_db must not be empty and silence_detect_min_sec must be > 0")
+		}
+		if math.IsNaN(c.Studio.QCSilenceWarnRatio) || math.IsInf(c.Studio.QCSilenceWarnRatio, 0) || c.Studio.QCSilenceWarnRatio <= 0 || c.Studio.QCSilenceWarnRatio > 1 {
+			add("studio.qc_silence_warn_ratio must be in (0, 1], got %v", c.Studio.QCSilenceWarnRatio)
+		}
+		if c.Studio.QueuePollBackoffMax < c.Studio.QueuePollInterval {
+			add("studio.queue_poll_backoff_max must be >= studio.queue_poll_interval")
 		}
 		if c.Studio.ExportMaxZipBytes <= 0 {
 			add("studio.export_max_zip_bytes must be > 0")
@@ -212,6 +258,12 @@ func (c *Config) Validate() error {
 		}
 		if c.Studio.ExportSubtitleFontSize < 8 || c.Studio.ExportSubtitleFontSize > 96 {
 			add("studio.export_subtitle_font_size must be between 8 and 96, got %d", c.Studio.ExportSubtitleFontSize)
+		}
+		if c.Studio.TimelineDefaultTransitionMs < 0 {
+			add("studio.timeline_default_transition_ms must be >= 0")
+		}
+		if c.Studio.TimelineDefaultBGMVolume < 0 || c.Studio.TimelineDefaultBGMVolume > 2 || c.Studio.TimelineAudioDuckThreshold <= 0 || c.Studio.TimelineAudioDuckOrigVol < 0 || c.Studio.TimelineAudioDuckOrigVol > 2 {
+			add("studio timeline BGM volume and audio ducking settings are out of range")
 		}
 		if math.IsNaN(c.Studio.TimelineThumbIntervalSec) || math.IsInf(c.Studio.TimelineThumbIntervalSec, 0) || c.Studio.TimelineThumbIntervalSec <= 0 {
 			add("studio.timeline_thumb_interval_sec must be > 0, got %v", c.Studio.TimelineThumbIntervalSec)
@@ -321,12 +373,15 @@ func positiveInts(add func(string, ...any), m map[string]int) {
 	}
 }
 
-func validResolutionWxH(raw string) bool {
+func validResolutionWxH(raw string, maxDim int) bool {
+	if maxDim < 64 {
+		maxDim = Default(ModeDesktop).Studio.MaxVideoDimension
+	}
 	parts := strings.Split(strings.ToLower(strings.TrimSpace(raw)), "x")
 	if len(parts) != 2 {
 		return false
 	}
 	w, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
 	h, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
-	return err1 == nil && err2 == nil && w >= 64 && h >= 64 && w <= 16384 && h <= 16384
+	return err1 == nil && err2 == nil && w >= 64 && h >= 64 && w <= maxDim && h <= maxDim
 }

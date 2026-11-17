@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"app/internal/apperr"
+	"app/internal/config"
 	"app/internal/contracts"
 	domainbinaries "app/internal/domain/binaries"
 	"app/internal/engine"
@@ -81,7 +82,7 @@ func (n *extractFramesNode) Run(ctx context.Context, raw json.RawMessage) (any, 
 		return nil, err
 	}
 
-	timestamps := resolveFrameTimestamps(in, info.DurationSec)
+	timestamps := resolveFrameTimestamps(in, info.DurationSec, n.opts.StudioConfig)
 	out := contracts.ExtractFramesOutput{
 		Frames:    make([]contracts.ExtractedFrame, 0, len(timestamps)),
 		OutputDir: outDir,
@@ -106,7 +107,7 @@ func (n *extractFramesNode) Run(ctx context.Context, raw json.RawMessage) (any, 
 		var args []string
 		if ts < 0 {
 			// Fallback when duration metadata was unavailable: seek near EOF directly
-			args = []string{"-y", "-sseof", "-0.1", "-i", vidPath, "-frames:v", "1", "-q:v", "2", outPath}
+			args = []string{"-y", "-sseof", fmt.Sprintf("-%.2f", n.opts.StudioConfig.ExtractFrameEOFOffsetSec), "-i", vidPath, "-frames:v", "1", "-q:v", "2", outPath}
 		} else {
 			args = []string{"-y", "-ss", fmt.Sprintf("%.3f", ts), "-i", vidPath, "-frames:v", "1", "-q:v", "2", outPath}
 		}
@@ -133,7 +134,10 @@ func (n *extractFramesNode) Run(ctx context.Context, raw json.RawMessage) (any, 
 	return out, nil
 }
 
-func resolveFrameTimestamps(in contracts.ExtractFramesInput, dur float64) []float64 {
+func resolveFrameTimestamps(in contracts.ExtractFramesInput, dur float64, sCfg config.StudioConfig) []float64 {
+	sCfg = withStudioDefaults(sCfg)
+	endPad := sCfg.ExtractFrameEndPadSec
+	lastPad := sCfg.ExtractFrameLastPadSec
 	mode := strings.ToLower(strings.TrimSpace(in.Mode))
 	if mode == "" {
 		mode = "last"
@@ -158,28 +162,28 @@ func resolveFrameTimestamps(in contracts.ExtractFramesInput, dur float64) []floa
 			if t < 0 {
 				t = 0
 			}
-			if dur > 0.05 && t > dur-0.05 {
-				t = dur - 0.05
+			if dur > endPad && t > dur-endPad {
+				t = dur - endPad
 			}
 			out = append(out, t)
 		}
 		return out
 	case "uniform":
 		count := clampInt(in.Count, 4, 1, 24)
-		if dur <= 0.1 {
+		if dur <= endPad*2 {
 			return []float64{0}
 		}
 		out := make([]float64, 0, count)
 		step := dur / float64(count+1)
 		for i := 1; i <= count; i++ {
-			out = append(out, math.Min(dur-0.05, step*float64(i)))
+			out = append(out, math.Min(dur-endPad, step*float64(i)))
 		}
 		return out
 	default: // "last"
 		if dur <= 0 {
 			return []float64{-1}
 		}
-		ts := dur - 0.08
+		ts := dur - lastPad
 		if ts < 0 {
 			ts = 0
 		}

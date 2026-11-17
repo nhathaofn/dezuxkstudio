@@ -253,14 +253,22 @@ type TimelineOp struct {
 
 // DefaultEditTimeline returns a clean initial timeline at the given dimensions and FPS.
 func DefaultEditTimeline(width, height, fps int) EditTimeline {
+	return DefaultEditTimelineWithBGM(width, height, fps, DefaultBGMVolume)
+}
+
+// DefaultEditTimelineWithBGM returns an initial multi-track timeline with caller-configured dimensions, FPS, and BGM volume.
+func DefaultEditTimelineWithBGM(width, height, fps int, bgmVolume float64) EditTimeline {
 	if width <= 0 {
-		width = 1920
+		width = BaselineVideoWidth
 	}
 	if height <= 0 {
-		height = 1080
+		height = BaselineVideoHeight
 	}
 	if fps <= 0 {
-		fps = 24
+		fps = BaselineVideoFPS
+	}
+	if bgmVolume < 0 || bgmVolume > 2.0 {
+		bgmVolume = DefaultBGMVolume
 	}
 	return EditTimeline{
 		Version: 1,
@@ -270,7 +278,7 @@ func DefaultEditTimeline(width, height, fps int) EditTimeline {
 		Tracks: []Track{
 			{ID: "v1", Name: "Video", Kind: TrackVideo, Volume: 1.0, Clips: []TimelineClip{}},
 			{ID: "a1", Name: "Voice", Kind: TrackAudioNarration, Volume: 1.0, Clips: []TimelineClip{}},
-			{ID: "a2", Name: "BGM", Kind: TrackAudioBGM, Volume: 0.3, Clips: []TimelineClip{}},
+			{ID: "a2", Name: "BGM", Kind: TrackAudioBGM, Volume: bgmVolume, Clips: []TimelineClip{}},
 		},
 		Subtitles: []SubtitleCue{},
 	}
@@ -300,13 +308,13 @@ func (tl *EditTimeline) Normalize() {
 		tl.Version = 1
 	}
 	if tl.FPS <= 0 {
-		tl.FPS = 24
+		tl.FPS = BaselineVideoFPS
 	}
 	if tl.Width <= 0 {
-		tl.Width = 1920
+		tl.Width = BaselineVideoWidth
 	}
 	if tl.Height <= 0 {
-		tl.Height = 1080
+		tl.Height = BaselineVideoHeight
 	}
 	if tl.Width%2 != 0 {
 		tl.Width--
@@ -840,6 +848,9 @@ func ApplyTimelineOps(tl EditTimeline, ops []TimelineOp) (EditTimeline, error) {
 	}
 	return cur, nil
 }
+
+// DefaultRevisionHistoryLimit bounds ListTimelineRevisions when no positive limit is specified.
+const DefaultRevisionHistoryLimit = 30
 
 // Phase3Repository defines persistence operations added in Studio Phase 3 (Timeline & Revisions).
 type Phase3Repository interface {

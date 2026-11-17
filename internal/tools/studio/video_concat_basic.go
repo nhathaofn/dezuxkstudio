@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"app/internal/apperr"
+	"app/internal/config"
 	"app/internal/contracts"
 	domainbinaries "app/internal/domain/binaries"
 	"app/internal/engine"
@@ -94,7 +95,7 @@ func NewVideoConcatBasicNode(opts Options) engine.Node {
 		if targetRes == "" {
 			targetRes = defaultRes
 		}
-		width, height, err := parseResolutionWxH(targetRes)
+		width, height, err := parseResolutionWxH(targetRes, opts.StudioConfig.MaxVideoDimension)
 		if err != nil {
 			return contracts.VideoConcatBasicOutput{}, err
 		}
@@ -163,7 +164,7 @@ func NewVideoConcatBasicNode(opts Options) engine.Node {
 				}
 			}
 			if dur <= 0 {
-				dur = 5.0
+				dur = float64(opts.StudioConfig.DefaultShotDurationSec)
 			}
 			clips[i].DurationSec = dur
 			totalDurSec += dur
@@ -175,7 +176,7 @@ func NewVideoConcatBasicNode(opts Options) engine.Node {
 		tmpOut := outPath + ".tmp.mp4"
 		defer func() { _ = os.Remove(tmpOut) }()
 
-		args := buildFFmpegConcatArgs(clips, clipHasAudio, narrationPath, width, height, fps, opts.StudioConfig.FFmpegPreset, opts.StudioConfig.FFmpegCRF, tmpOut)
+		args := buildFFmpegConcatArgs(clips, clipHasAudio, narrationPath, width, height, fps, opts.StudioConfig, tmpOut)
 		runCtx, cancel := context.WithTimeout(ctx, opts.StudioConfig.FFmpegTimeout)
 		defer cancel()
 
@@ -315,10 +316,12 @@ func buildFFmpegConcatArgs(
 	hasAudio []bool,
 	narrationPath string,
 	width, height, fps int,
-	preset string,
-	crf int,
+	cfg config.StudioConfig,
 	outPath string,
 ) []string {
+	cfg = withStudioDefaults(cfg)
+	preset := cfg.FFmpegPreset
+	crf := cfg.FFmpegCRF
 	args := []string{"-y", "-hide_banner", "-progress", "pipe:1", "-nostats"}
 	for _, c := range clips {
 		args = append(args, "-i", c.Path)
@@ -332,12 +335,12 @@ func buildFFmpegConcatArgs(
 	var fc strings.Builder
 	var concatInputs strings.Builder
 	for i, c := range clips {
-		fmt.Fprintf(&fc, "[%d:v]scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=%d,format=yuv420p,setpts=PTS-STARTPTS[v%d];",
-			i, width, height, width, height, fps, i)
+		fmt.Fprintf(&fc, "[%d:v]scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=%d,format=%s,setpts=PTS-STARTPTS[v%d];",
+			i, width, height, width, height, fps, cfg.FFmpegPixelFormat, i)
 		if hasAudio[i] {
-			fmt.Fprintf(&fc, "[%d:a]aformat=sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS[a%d];", i, i)
+			fmt.Fprintf(&fc, "[%d:a]aformat=sample_rates=%d:channel_layouts=stereo,asetpts=PTS-STARTPTS[a%d];", i, cfg.FFmpegAudioSampleRate, i)
 		} else {
-			fmt.Fprintf(&fc, "anullsrc=r=48000:cl=stereo,atrim=duration=%.3f[a%d];", c.DurationSec, i)
+			fmt.Fprintf(&fc, "anullsrc=r=%d:cl=stereo,atrim=duration=%.3f[a%d];", cfg.FFmpegAudioSampleRate, c.DurationSec, i)
 		}
 		fmt.Fprintf(&concatInputs, "[v%d][a%d]", i, i)
 	}
@@ -345,7 +348,7 @@ func buildFFmpegConcatArgs(
 	audioOutLabel := "aout"
 	if narIdx >= 0 {
 		fmt.Fprintf(&fc, "%sconcat=n=%d:v=1:a=1[vout][aconcat];", concatInputs.String(), len(clips))
-		fmt.Fprintf(&fc, "[%d:a]aformat=sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS[anar];", narIdx)
+		fmt.Fprintf(&fc, "[%d:a]aformat=sample_rates=%d:channel_layouts=stereo,asetpts=PTS-STARTPTS[anar];", narIdx, cfg.FFmpegAudioSampleRate)
 		fmt.Fprintf(&fc, "[aconcat][anar]amix=inputs=2:duration=first:normalize=0[%s]", audioOutLabel)
 	} else {
 		fmt.Fprintf(&fc, "%sconcat=n=%d:v=1:a=1[vout][%s]", concatInputs.String(), len(clips), audioOutLabel)
@@ -355,12 +358,12 @@ func buildFFmpegConcatArgs(
 		"-filter_complex", fc.String(),
 		"-map", "[vout]",
 		"-map", "["+audioOutLabel+"]",
-		"-c:v", "libx264",
+		"-c:v", cfg.FFmpegVideoCodec,
 		"-preset", preset,
 		"-crf", strconv.Itoa(crf),
-		"-pix_fmt", "yuv420p",
-		"-c:a", "aac",
-		"-b:a", "192k",
+		"-pix_fmt", cfg.FFmpegPixelFormat,
+		"-c:a", cfg.FFmpegAudioCodec,
+		"-b:a", cfg.FFmpegAudioBitrate,
 		"-movflags", "+faststart",
 		outPath,
 	)

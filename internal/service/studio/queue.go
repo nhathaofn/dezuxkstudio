@@ -95,13 +95,7 @@ func (s *Service) RunQueueWorker(ctx context.Context) {
 		s.log.WarnContext(ctx, "studio: queue startup recovery failed", "error", err)
 	}
 	workers := s.cfg.QueueWorkers
-	if workers <= 0 {
-		workers = 2
-	}
 	pollInterval := s.cfg.QueuePollInterval
-	if pollInterval <= 0 {
-		pollInterval = 2 * time.Second
-	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
@@ -136,7 +130,7 @@ func (s *Service) StepQueueOnce(ctx context.Context) bool {
 		return false
 	}
 	now := time.Now().UnixMilli()
-	leaseMs := max(15_000, s.cfg.QueuePollInterval.Milliseconds()*4)
+	leaseMs := max(s.cfg.QueuePollLeaseMin.Milliseconds(), s.cfg.QueuePollInterval.Milliseconds()*4)
 
 	if pollJob, ok, err := s.repo.ClaimNextPollJob(ctx, now, leaseMs); err == nil && ok {
 		s.executePollJob(ctx, pollJob)
@@ -368,7 +362,7 @@ func (s *Service) enqueueShotVideos(ctx context.Context, proj domainstudio.Proje
 	wantIDs := toSet(p.ShotIDs)
 	outDir := filepath.Join(epRoot, "videos")
 	modelRef := firstNonEmpty(p.Model, proj.DefaultVideoModel)
-	provID, modID := splitModelRefForPricing(modelRef)
+	provID, modID := domainstudio.SplitModelRefForPricing(modelRef)
 	unitPrice, _, _ := s.EstimateUnitPriceUSD(ctx, provID, modID, "video", "second")
 
 	var out []domainstudio.Job
@@ -428,7 +422,7 @@ func (s *Service) enqueueShotKeyframes(ctx context.Context, proj domainstudio.Pr
 	wantIDs := toSet(p.ShotIDs)
 	outDir := filepath.Join(epRoot, "images")
 	modelRef := firstNonEmpty(p.Model, proj.DefaultImageModel)
-	provID, modID := splitModelRefForPricing(modelRef)
+	provID, modID := domainstudio.SplitModelRefForPricing(modelRef)
 	unitPrice, _, _ := s.EstimateUnitPriceUSD(ctx, provID, modID, "image", "image")
 
 	var out []domainstudio.Job
@@ -486,7 +480,7 @@ func (s *Service) enqueueAssets(ctx context.Context, proj domainstudio.Project, 
 	wantIDs := toSet(p.AssetIDs)
 	outDir := filepath.Join(projRoot, "assets")
 	modelRef := firstNonEmpty(p.Model, proj.DefaultImageModel)
-	provID, modID := splitModelRefForPricing(modelRef)
+	provID, modID := domainstudio.SplitModelRefForPricing(modelRef)
 	unitPrice, _, _ := s.EstimateUnitPriceUSD(ctx, provID, modID, "image", "image")
 
 	var out []domainstudio.Job
@@ -573,7 +567,7 @@ func (s *Service) enqueueShotTTS(ctx context.Context, proj domainstudio.Project,
 				}
 			}
 		}
-		provID, modID := splitModelRefForPricing(modelRef)
+		provID, modID := domainstudio.SplitModelRefForPricing(modelRef)
 		unitPrice, _, _ := s.EstimateUnitPriceUSD(ctx, provID, modID, "tts", "1k_chars")
 		est := math.Round((float64(len([]rune(txt)))/1000.0)*unitPrice*10000) / 10000
 		payload := queuedTTSJobRequest{
@@ -617,7 +611,7 @@ func (s *Service) enqueueShotLipSync(ctx context.Context, proj domainstudio.Proj
 	}
 	wantIDs := toSet(p.ShotIDs)
 	outDir := filepath.Join(epRoot, "videos")
-	provID, modID := splitModelRefForPricing(p.Model)
+	provID, modID := domainstudio.SplitModelRefForPricing(p.Model)
 	unitPrice, _, _ := s.EstimateUnitPriceUSD(ctx, provID, modID, "lipsync", "second")
 
 	var out []domainstudio.Job

@@ -471,6 +471,7 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 	wfSvc, err := workflow.New(workflow.Options{
 		Paths:             o.Paths,
 		Logger:            o.Logger,
+		Config:            cfg,
 		Providers:         provSvc,
 		MediaGen:          mediaGenSvc,
 		Binaries:          binSvc,
@@ -690,17 +691,11 @@ func (a *studioPreflightAdapter) CheckCapability(ctx context.Context, capability
 		return "", "", fmt.Errorf("provider service is unavailable")
 	}
 	purpose := domainprovider.PurposeImage
-	switch capability {
-	case domainprovider.CapabilityLLM:
-		purpose = domainprovider.PurposeText
-	case domainprovider.CapabilityImage:
-		purpose = domainprovider.PurposeImage
-	case domainprovider.CapabilityVideo:
-		purpose = domainprovider.PurposeVideo
-	case domainprovider.CapabilityTTS:
-		purpose = domainprovider.PurposeTTS
-	case domainprovider.CapabilityLipSync:
-		purpose = domainprovider.PurposeLipSync
+	for _, spec := range domainprovider.PurposeSpecs() {
+		if spec.Capability == capability {
+			purpose = spec.Purpose
+			break
+		}
 	}
 	res, err := a.provSvc.ResolveModel(ctx, purpose, modelRef)
 	if err != nil {

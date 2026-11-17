@@ -34,6 +34,8 @@ type Options struct {
 	CostEstimator   studionodes.CostEstimator
 	// StudioConfig supplies default FPS, resolution, presets, and timeouts for studio nodes.
 	StudioConfig config.StudioConfig
+	// Config provides full runtime settings (including WatermarkConfig bounds) to workflow nodes.
+	Config *config.Config
 	// Registrar auto-registers newly created or cleaned media assets into the library.
 	Registrar watermark.MediaRegistrar
 	// WorkspaceTreeFunc provides dynamic workspace paths.
@@ -97,13 +99,18 @@ func New(o Options) (*Service, error) {
 
 	// Built-in feature nodes. A new feature = one entry here: the UI, workflows and the agent
 	// (MCP workflow_* tools) all pick it up from its Spec, with no agent-specific code.
+	studioCfg := config.ResolveStudioConfig(o.StudioConfig)
+	if o.Config != nil && o.StudioConfig == (config.StudioConfig{}) {
+		studioCfg = o.Config.StudioOrDefault()
+	}
 	wmOpts := watermark.Options{
 		MediaDir:      defaultMedia,
 		MediaDirFunc:  mediaDirFunc,
 		OutputDirFunc: watermarkDirFunc,
 		Registrar:     o.Registrar,
 		Binaries:      o.Binaries,
-		StudioConfig:  o.StudioConfig,
+		StudioConfig:  studioCfg,
+		Config:        o.Config,
 	}
 	nodes := []engine.Node{
 		watermark.NewNode(wmOpts),
@@ -118,7 +125,7 @@ func New(o Options) (*Service, error) {
 		CostEstimator:     o.CostEstimator,
 		Binaries:          o.Binaries,
 		Registrar:         o.Registrar,
-		StudioConfig:      o.StudioConfig,
+		StudioConfig:      studioCfg,
 		MediaDir:          defaultMedia,
 		WorkspaceDir:      defaultWorkspace,
 		WorkspaceTreeFunc: o.WorkspaceTreeFunc,

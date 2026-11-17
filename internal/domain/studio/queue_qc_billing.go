@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	domainprovider "app/internal/domain/provider"
 )
 
 // JobStatus tracks durable background job execution across app restarts.
@@ -139,6 +141,113 @@ type PricingEntry struct {
 	UnitPriceUSD float64
 	Currency     string
 	UpdatedAt    int64
+}
+
+// CapabilityPricingSpec defines canonical billing units, throughput estimates, and baseline fallback rates.
+// Keep aligned with migration 019_studio_queue_billing.sql seed rows.
+type CapabilityPricingSpec struct {
+	Capability           domainprovider.Capability
+	Unit                 string
+	DefaultUnitsPerItem  float64
+	EstimatedSecPerItem  int
+	FallbackUnitPriceUSD float64
+}
+
+const (
+	defaultFallbackUnit        = "request"
+	defaultFallbackUnitsPer    = 1.0
+	defaultFallbackSecPerItem  = 10
+	defaultFallbackPriceUSD    = 0.01
+	defaultCatalogCurrency     = "USD"
+	defaultPricingSeedUpdated  = int64(1763337600000)
+)
+
+var capabilityPricingCatalog = []CapabilityPricingSpec{
+	{
+		Capability:           domainprovider.CapabilityLLM,
+		Unit:                 "1k_tokens",
+		DefaultUnitsPerItem:  2.0,
+		EstimatedSecPerItem:  4,
+		FallbackUnitPriceUSD: 0.005,
+	},
+	{
+		Capability:           domainprovider.CapabilityImage,
+		Unit:                 "image",
+		DefaultUnitsPerItem:  1.0,
+		EstimatedSecPerItem:  8,
+		FallbackUnitPriceUSD: 0.04,
+	},
+	{
+		Capability:           domainprovider.CapabilityVideo,
+		Unit:                 "second",
+		DefaultUnitsPerItem:  5.0,
+		EstimatedSecPerItem:  35,
+		FallbackUnitPriceUSD: 0.08,
+	},
+	{
+		Capability:           domainprovider.CapabilityTTS,
+		Unit:                 "1k_chars",
+		DefaultUnitsPerItem:  0.5,
+		EstimatedSecPerItem:  4,
+		FallbackUnitPriceUSD: 0.015,
+	},
+	{
+		Capability:           domainprovider.CapabilityLipSync,
+		Unit:                 "second",
+		DefaultUnitsPerItem:  5.0,
+		EstimatedSecPerItem:  45,
+		FallbackUnitPriceUSD: 0.12,
+	},
+}
+
+// PreflightSpecForCapability returns the single canonical billing unit, throughput, and baseline rate spec for capName.
+func PreflightSpecForCapability(capName string) CapabilityPricingSpec {
+	normalized := domainprovider.Capability(strings.ToLower(strings.TrimSpace(capName)))
+	for _, spec := range capabilityPricingCatalog {
+		if spec.Capability == normalized {
+			return spec
+		}
+	}
+	return CapabilityPricingSpec{
+		Capability:           normalized,
+		Unit:                 defaultFallbackUnit,
+		DefaultUnitsPerItem:  defaultFallbackUnitsPer,
+		EstimatedSecPerItem:  defaultFallbackSecPerItem,
+		FallbackUnitPriceUSD: defaultFallbackPriceUSD,
+	}
+}
+
+// DefaultPricingCatalog returns the canonical baseline pricing catalog entries shared across preflight, billing, and storage seeding.
+func DefaultPricingCatalog() []PricingEntry {
+	out := make([]PricingEntry, 0, len(capabilityPricingCatalog))
+	for _, spec := range capabilityPricingCatalog {
+		out = append(out, PricingEntry{
+			ID:           "price_default_" + string(spec.Capability),
+			ProviderID:   "*",
+			ModelID:      "*",
+			Capability:   string(spec.Capability),
+			Unit:         spec.Unit,
+			UnitPriceUSD: spec.FallbackUnitPriceUSD,
+			Currency:     defaultCatalogCurrency,
+			UpdatedAt:    defaultPricingSeedUpdated,
+		})
+	}
+	return out
+}
+
+// SplitModelRefForPricing normalizes "provider/model" (or legacy "provider:model") references for catalog lookups.
+func SplitModelRefForPricing(ref string) (providerID, modelID string) {
+	trimmed := strings.TrimSpace(ref)
+	if trimmed == "" {
+		return "*", "*"
+	}
+	if parsed, err := domainprovider.ParseModelRef(trimmed); err == nil {
+		return parsed.ProviderID, parsed.ModelID
+	}
+	if prov, mod, ok := strings.Cut(trimmed, ":"); ok && strings.TrimSpace(prov) != "" && strings.TrimSpace(mod) != "" {
+		return strings.ToLower(strings.TrimSpace(prov)), strings.TrimSpace(mod)
+	}
+	return "*", trimmed
 }
 
 // CostStatus identifies whether a ledger row is an estimate, finalized cost, or failed attempt.

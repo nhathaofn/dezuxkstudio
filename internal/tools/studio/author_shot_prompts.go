@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"app/internal/apperr"
@@ -57,6 +58,7 @@ var shotPromptPackageSchema = json.RawMessage(`{
 
 // NewAuthorShotPromptsNode builds the tool.author_shot_prompts workflow node.
 func NewAuthorShotPromptsNode(opts Options) engine.Node {
+	opts.StudioConfig = withStudioDefaults(opts.StudioConfig)
 	spec := engine.Spec{
 		Type:        NodeTypeAuthorShotPrompts,
 		Provider:    "tool",
@@ -83,6 +85,14 @@ func NewAuthorShotPromptsNode(opts Options) engine.Node {
 				Kind:    engine.ParamSelect,
 				Options: optionStrings(domainstudio.ShotModes()),
 				Default: string(domainstudio.ShotModeSingle),
+			},
+			{
+				Name:    "default_duration_sec",
+				Label:   "Default shot duration (s)",
+				Kind:    engine.ParamInteger,
+				Min:     domainstudio.MinShotDurationSec,
+				Max:     opts.StudioConfig.MaxShotDurationSec,
+				Default: strconv.Itoa(opts.StudioConfig.DefaultShotDurationSec),
 			},
 			{Name: "style_prompt", Label: "Visual style prompt (optional)", Kind: engine.ParamText},
 			{Name: "model", Label: "Text LLM model (empty = Auto default)", Kind: engine.ParamText},

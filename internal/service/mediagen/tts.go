@@ -93,7 +93,7 @@ func defaultVoice(requested, fallback string) string {
 func (s *Service) genOpenAITTS(ctx context.Context, t targetSpec, req domainmedia.TTSRequest) ([]byte, string, error) {
 	base := domainprovider.EnsureOpenAIBase(t.baseURL)
 	headers := map[string]string{"Authorization": "Bearer " + t.apiKey}
-	voice := defaultVoice(req.Voice, "alloy")
+	voice := defaultVoice(req.Voice, s.cfg.TTSDefaultVoiceOpenAI)
 
 	payload := map[string]any{
 		"model":           t.modelID,
@@ -114,7 +114,7 @@ func (s *Service) genOpenAITTS(ctx context.Context, t targetSpec, req domainmedi
 
 func (s *Service) genGeminiTTS(ctx context.Context, t targetSpec, req domainmedia.TTSRequest) ([]byte, string, error) {
 	modelID := geminiModelName(t.modelID)
-	voice := defaultVoice(req.Voice, "Kore")
+	voice := defaultVoice(req.Voice, s.cfg.TTSDefaultVoiceGemini)
 	headers := map[string]string{}
 	var targetURL string
 
@@ -191,7 +191,7 @@ func (s *Service) genGeminiTTS(ctx context.Context, t targetSpec, req domainmedi
 func (s *Service) genDashScopeTTS(ctx context.Context, t targetSpec, req domainmedia.TTSRequest) ([]byte, string, error) {
 	root := ensureRootStrippingSuffixes(t.baseURL, "/compatible-mode/v1", "/api/v1", "/v1")
 	headers := map[string]string{"Authorization": "Bearer " + t.apiKey}
-	voice := defaultVoice(req.Voice, "Cherry")
+	voice := defaultVoice(req.Voice, s.cfg.TTSDefaultVoiceDashScope)
 
 	inputObj := map[string]any{
 		"text":  req.Text,
@@ -232,7 +232,7 @@ func (s *Service) genDashScopeTTS(ctx context.Context, t targetSpec, req domainm
 func (s *Service) genMiniMaxTTS(ctx context.Context, t targetSpec, req domainmedia.TTSRequest) ([]byte, string, error) {
 	root := ensureRootStrippingSuffixes(t.baseURL, "/v1")
 	headers := map[string]string{"Authorization": "Bearer " + t.apiKey}
-	voice := defaultVoice(req.Voice, "male-qn-qingse")
+	voice := defaultVoice(req.Voice, s.cfg.TTSDefaultVoiceMiniMax)
 	format := req.Format
 	if format != "mp3" && format != "pcm" && format != "flac" && format != "wav" {
 		format = "mp3"

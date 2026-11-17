@@ -152,33 +152,69 @@ type BinariesConfig struct {
 
 // MediaGenConfig tunes text, image, video, and TTS media generation requests.
 type MediaGenConfig struct {
-	RequestTimeout    time.Duration // HTTP timeout for synchronous generation and submit/poll RPCs
-	VideoTimeout      time.Duration // total deadline for async generation polling + artifact download
-	VideoPollInterval time.Duration // delay between async task status polls
-	MaxOutputBytes    int64         // safety cap on downloaded image, video, or audio payloads
-	MaxReferenceBytes int64         // max bytes allowed per local reference image
-	TextTimeout       time.Duration // HTTP timeout for structured LLM text generation calls
-	TextMaxTokens     int           // default max output tokens for LLM text generation
-	TextTemperature   float64       // default sampling temperature for LLM text generation
+	RequestTimeout            time.Duration // HTTP timeout for synchronous generation and submit/poll RPCs
+	VideoTimeout              time.Duration // total deadline for async generation polling + artifact download
+	VideoPollInterval         time.Duration // delay between async task status polls
+	MaxOutputBytes            int64         // safety cap on downloaded image, video, or audio payloads
+	MaxReferenceBytes         int64         // max bytes allowed per local reference image
+	MaxJSONResponseBytes      int64         // safety cap on parsed JSON HTTP responses from media providers
+	TextTimeout               time.Duration // HTTP timeout for structured LLM text generation calls
+	TextMaxTokens             int           // default max output tokens for LLM text generation
+	TextTemperature           float64       // default sampling temperature for LLM text generation
+	RetryMax                  int           // max HTTP retry attempts on transient 429/5xx failures
+	RetryInitialDelay         time.Duration // initial exponential backoff delay between HTTP retries
+	RetryMaxDelay             time.Duration // ceiling backoff delay between HTTP retries
+	RetryBackoffFactor        float64       // exponential multiplier for HTTP retry backoff
+	LimiterPollInterval       time.Duration // polling interval while waiting on local provider rate limiter slots
+	TTSDefaultVoiceOpenAI     string        // default OpenAI TTS voice when caller leaves voice empty
+	TTSDefaultVoiceGemini     string        // default Gemini TTS prebuilt voice name when caller leaves voice empty
+	TTSDefaultVoiceDashScope  string        // default DashScope TTS voice when caller leaves voice empty
+	TTSDefaultVoiceMiniMax    string        // default MiniMax TTS voice_id when caller leaves voice empty
 }
 
 // StudioConfig tunes film studio FFmpeg/FFprobe processing, batch concurrency, queue workers, and timeline exports.
 type StudioConfig struct {
-	DefaultFPS               int           // default output frame rate (e.g. 24)
-	DefaultResolution        string        // default output WxH resolution (e.g. "1920x1080")
-	FFmpegPreset             string        // libx264 preset (e.g. "medium")
-	FFmpegCRF                int           // constant rate factor 0..51 (e.g. 20)
-	FFmpegTimeout            time.Duration // max duration for FFmpeg studio commands
-	FFprobeTimeout           time.Duration // max duration for FFprobe media inspection commands
-	MaxConcurrentBatch       int           // max parallel items during studio batch generation
-	QueueWorkers             int           // concurrent studio queue worker goroutines
-	QueuePollInterval        time.Duration // polling/backoff interval for active queue jobs
-	QueueMaxAttempts         int           // max submission retry attempts before marking job failed
-	ExportMaxZipBytes        int64         // safety cap on packed NLE draft zip archives in bytes
-	ExportLoudnormLUFS       float64       // integrated loudness target in LUFS for timeline renders (e.g. -14.0)
-	ExportSubtitleFontSize   int           // default subtitle font size for timeline .ass burn-in
-	TimelineThumbIntervalSec float64       // default thumbnail sampling interval in seconds for timeline strips
-	TimelinePeakBins         int           // default waveform peak bins count per media clip
+	DefaultFPS                 int           // default output frame rate (e.g. 24)
+	DefaultResolution          string        // default output WxH resolution (e.g. "1920x1080")
+	FFmpegPreset               string        // libx264 preset (e.g. "medium")
+	FFmpegCRF                  int           // constant rate factor 0..51 (e.g. 20)
+	FFmpegVideoCodec           string        // output video codec (e.g. "libx264")
+	FFmpegPixelFormat          string        // output video pixel format (e.g. "yuv420p")
+	FFmpegAudioCodec           string        // output audio codec (e.g. "aac")
+	FFmpegAudioSampleRate      int           // output audio sample rate in Hz (e.g. 48000)
+	FFmpegAudioBitrate         string        // output audio bitrate (e.g. "192k")
+	FFmpegTimeout              time.Duration // max duration for FFmpeg studio commands
+	FFprobeTimeout             time.Duration // max duration for FFprobe media inspection commands
+	MaxVideoDimension          int           // maximum allowed width or height in pixels for studio video/grid ops
+	DefaultShotDurationSec     int           // default duration in seconds for newly authored shots
+	MaxShotDurationSec         int           // upper bound in seconds allowed per single shot
+	GridSplitMaxCount          int           // maximum rows or columns allowed in interactive grid split
+	ExtractFrameEOFOffsetSec   float64       // FFmpeg -sseof offset in seconds when seeking near end of clip
+	ExtractFrameEndPadSec      float64       // safety margin in seconds from video end when sampling multiple frames
+	ExtractFrameLastPadSec     float64       // safety margin in seconds from video end when extracting final keyframe
+	SilenceDetectNoiseDB       string        // FFmpeg silencedetect noise floor threshold (e.g. "-45dB")
+	SilenceDetectMinSec        float64       // minimum continuous silence duration in seconds for silencedetect
+	QCSilenceWarnRatio         float64       // threshold (0..1) above which QC warns that audio is mostly silent
+	MaxConcurrentBatch         int           // max parallel items during studio batch generation
+	QueueWorkers               int           // concurrent studio queue worker goroutines
+	QueuePollInterval          time.Duration // polling/backoff interval for active queue jobs
+	QueuePollLeaseMin          time.Duration // minimum lease extension while polling remote video jobs
+	QueuePollBackoffMax        time.Duration // maximum adaptive delay between remote job status polls
+	QueueMaxAttempts           int           // max submission retry attempts before marking job failed
+	ExportMaxZipBytes          int64         // safety cap on packed NLE draft zip archives in bytes
+	ExportLoudnormLUFS         float64       // integrated loudness target in LUFS for timeline renders (e.g. -14.0)
+	ExportSubtitleFontSize     int           // default subtitle font size for timeline .ass burn-in
+	TimelineDefaultTransitionMs int          // default transition overlap duration in ms for auto-assemble
+	TimelineDefaultBGMVolume   float64       // default background music track gain (0..2.0)
+	TimelineAudioDuckThreshold float64       // sidechaincompress threshold for voice-over BGM ducking
+	TimelineAudioDuckOrigVol   float64       // fallback attenuation factor for original audio behind TTS dub
+	TimelineThumbIntervalSec   float64       // default thumbnail sampling interval in seconds for timeline strips
+	TimelineThumbHeight        int           // pixel height of extracted timeline thumbnail sprite strips
+	TimelineMaxStripThumbs     int           // maximum thumbnail frames extracted per clip sprite strip
+	TimelinePeakBins           int           // default waveform peak bins count per media clip
+	TimelineWaveSampleRate     int           // PCM sample rate in Hz when computing timeline waveform peaks
+	TimelineWaveBlockSamples   int           // samples per RMS window block during peak extraction
+	TimelineRevisionLimit      int           // default number of timeline revisions returned by timeline queries
 }
 
 // MediaConfig tunes the media assets library, signed ticket streaming, and staging GC.
@@ -316,14 +352,24 @@ func Default(mode Mode) *Config {
 		Providers: ProvidersConfig{TestTimeout: 15 * time.Second, CheckOnStartup: true, AutoCheck: true, CheckConcurrency: 4,
 			DefaultMaxWorkers: 2, DefaultRPM: 0, DefaultRequestGapMs: 0}, // ArcReel _CONNECTIVITY_CHECK_TIMEOUT
 		MediaGen: MediaGenConfig{
-			RequestTimeout:    2 * time.Minute,
-			VideoTimeout:      15 * time.Minute,
-			VideoPollInterval: 4 * time.Second,
-			MaxOutputBytes:    256 << 20, // 256 MiB
-			MaxReferenceBytes: 20 << 20,  // 20 MiB
-			TextTimeout:       120 * time.Second,
-			TextMaxTokens:     8192,
-			TextTemperature:   0.4,
+			RequestTimeout:           2 * time.Minute,
+			VideoTimeout:             15 * time.Minute,
+			VideoPollInterval:        4 * time.Second,
+			MaxOutputBytes:           256 << 20, // 256 MiB
+			MaxReferenceBytes:        20 << 20,  // 20 MiB
+			MaxJSONResponseBytes:     16 << 20,  // 16 MiB handles inline base64 images/audio inside JSON payloads
+			TextTimeout:              120 * time.Second,
+			TextMaxTokens:            8192,
+			TextTemperature:          0.4,
+			RetryMax:                 3,
+			RetryInitialDelay:        100 * time.Millisecond,
+			RetryMaxDelay:            2 * time.Second,
+			RetryBackoffFactor:       2.0,
+			LimiterPollInterval:      250 * time.Millisecond,
+			TTSDefaultVoiceOpenAI:    "alloy",
+			TTSDefaultVoiceGemini:    "Kore",
+			TTSDefaultVoiceDashScope: "Cherry",
+			TTSDefaultVoiceMiniMax:   "male-qn-qingse",
 		},
 		Media: MediaConfig{
 			LibraryMaxItems:    1000,
@@ -335,21 +381,47 @@ func Default(mode Mode) *Config {
 			StagingGCInterval:  1 * time.Hour,
 		},
 		Studio: StudioConfig{
-			DefaultFPS:               24,
-			DefaultResolution:        "1920x1080",
-			FFmpegPreset:             "medium",
-			FFmpegCRF:                20,
-			FFmpegTimeout:            15 * time.Minute,
-			FFprobeTimeout:           30 * time.Second,
-			MaxConcurrentBatch:       4,
-			QueueWorkers:             2,
-			QueuePollInterval:        2 * time.Second,
-			QueueMaxAttempts:         3,
-			ExportMaxZipBytes:        512 << 20, // 512 MiB
-			ExportLoudnormLUFS:       -14.0,
-			ExportSubtitleFontSize:   24,
-			TimelineThumbIntervalSec: 2.0,
-			TimelinePeakBins:         120,
+			DefaultFPS:                  24,
+			DefaultResolution:           "1920x1080",
+			FFmpegPreset:                "medium",
+			FFmpegCRF:                   20,
+			FFmpegVideoCodec:            "libx264",
+			FFmpegPixelFormat:           "yuv420p",
+			FFmpegAudioCodec:            "aac",
+			FFmpegAudioSampleRate:       48000,
+			FFmpegAudioBitrate:          "192k",
+			FFmpegTimeout:               15 * time.Minute,
+			FFprobeTimeout:              30 * time.Second,
+			MaxVideoDimension:           16384,
+			DefaultShotDurationSec:      5,
+			MaxShotDurationSec:          60,
+			GridSplitMaxCount:           8,
+			ExtractFrameEOFOffsetSec:    0.1,
+			ExtractFrameEndPadSec:       0.05,
+			ExtractFrameLastPadSec:      0.08,
+			SilenceDetectNoiseDB:        "-45dB",
+			SilenceDetectMinSec:         0.4,
+			QCSilenceWarnRatio:          0.90,
+			MaxConcurrentBatch:          4,
+			QueueWorkers:                2,
+			QueuePollInterval:           2 * time.Second,
+			QueuePollLeaseMin:           15 * time.Second,
+			QueuePollBackoffMax:         60 * time.Second,
+			QueueMaxAttempts:            3,
+			ExportMaxZipBytes:           512 << 20, // 512 MiB
+			ExportLoudnormLUFS:          -14.0,
+			ExportSubtitleFontSize:      24,
+			TimelineDefaultTransitionMs: 400,
+			TimelineDefaultBGMVolume:    0.22,
+			TimelineAudioDuckThreshold:  0.05,
+			TimelineAudioDuckOrigVol:    0.35,
+			TimelineThumbIntervalSec:    2.0,
+			TimelineThumbHeight:         90,
+			TimelineMaxStripThumbs:      60,
+			TimelinePeakBins:            120,
+			TimelineWaveSampleRate:      8000,
+			TimelineWaveBlockSamples:    80,
+			TimelineRevisionLimit:       30,
 		},
 		Watermark: WatermarkConfig{
 			MaxWorkers:        4,
@@ -481,4 +553,245 @@ func (c *Config) MediaStagingGCInterval() time.Duration {
 		return 1 * time.Hour
 	}
 	return c.Media.StagingGCInterval
+}
+
+// MediaOrDefault returns the configured MediaConfig with any zero/unset fields populated from Default(ModeDesktop).Media.
+func (c *Config) MediaOrDefault() MediaConfig {
+	def := Default(ModeDesktop).Media
+	if c == nil {
+		return def
+	}
+	m := c.Media
+	if m.LibraryMaxItems <= 0 {
+		m.LibraryMaxItems = def.LibraryMaxItems
+	}
+	if m.LibraryRetention <= 0 {
+		m.LibraryRetention = def.LibraryRetention
+	}
+	if m.TicketTTL <= 0 {
+		m.TicketTTL = def.TicketTTL
+	}
+	if m.TicketRenewSkew <= 0 {
+		m.TicketRenewSkew = def.TicketRenewSkew
+	}
+	if m.RegisteredRootsMax <= 0 {
+		m.RegisteredRootsMax = def.RegisteredRootsMax
+	}
+	if m.StagingTTL <= 0 {
+		m.StagingTTL = def.StagingTTL
+	}
+	if m.StagingGCInterval <= 0 {
+		m.StagingGCInterval = def.StagingGCInterval
+	}
+	return m
+}
+
+// StudioOrDefault returns the configured StudioConfig with any zero/unset fields populated from Default(ModeDesktop).Studio.
+func (c *Config) StudioOrDefault() StudioConfig {
+	if c == nil {
+		return Default(ModeDesktop).Studio
+	}
+	return ResolveStudioConfig(c.Studio)
+}
+
+// ResolveStudioConfig fills unset fields on cfg from Default(ModeDesktop).Studio while preserving explicit valid zero values such as FFmpegCRF == 0 when FFmpegPreset is configured.
+func ResolveStudioConfig(cfg StudioConfig) StudioConfig {
+	def := Default(ModeDesktop).Studio
+	presetWasEmpty := strings.TrimSpace(cfg.FFmpegPreset) == ""
+	if cfg.DefaultFPS <= 0 {
+		cfg.DefaultFPS = def.DefaultFPS
+	}
+	if strings.TrimSpace(cfg.DefaultResolution) == "" {
+		cfg.DefaultResolution = def.DefaultResolution
+	}
+	if presetWasEmpty {
+		cfg.FFmpegPreset = def.FFmpegPreset
+	}
+	if cfg.FFmpegCRF < 0 || cfg.FFmpegCRF > 51 || (cfg.FFmpegCRF == 0 && presetWasEmpty) {
+		cfg.FFmpegCRF = def.FFmpegCRF
+	}
+	if strings.TrimSpace(cfg.FFmpegVideoCodec) == "" {
+		cfg.FFmpegVideoCodec = def.FFmpegVideoCodec
+	}
+	if strings.TrimSpace(cfg.FFmpegPixelFormat) == "" {
+		cfg.FFmpegPixelFormat = def.FFmpegPixelFormat
+	}
+	if strings.TrimSpace(cfg.FFmpegAudioCodec) == "" {
+		cfg.FFmpegAudioCodec = def.FFmpegAudioCodec
+	}
+	if cfg.FFmpegAudioSampleRate <= 0 {
+		cfg.FFmpegAudioSampleRate = def.FFmpegAudioSampleRate
+	}
+	if strings.TrimSpace(cfg.FFmpegAudioBitrate) == "" {
+		cfg.FFmpegAudioBitrate = def.FFmpegAudioBitrate
+	}
+	if cfg.FFmpegTimeout <= 0 {
+		cfg.FFmpegTimeout = def.FFmpegTimeout
+	}
+	if cfg.FFprobeTimeout <= 0 {
+		cfg.FFprobeTimeout = def.FFprobeTimeout
+	}
+	if cfg.MaxVideoDimension <= 0 {
+		cfg.MaxVideoDimension = def.MaxVideoDimension
+	}
+	if cfg.DefaultShotDurationSec <= 0 {
+		cfg.DefaultShotDurationSec = def.DefaultShotDurationSec
+	}
+	if cfg.MaxShotDurationSec <= 0 {
+		cfg.MaxShotDurationSec = def.MaxShotDurationSec
+	}
+	if cfg.MaxShotDurationSec < cfg.DefaultShotDurationSec {
+		cfg.MaxShotDurationSec = cfg.DefaultShotDurationSec
+	}
+	if cfg.GridSplitMaxCount <= 0 {
+		cfg.GridSplitMaxCount = def.GridSplitMaxCount
+	}
+	if cfg.ExtractFrameEOFOffsetSec <= 0 {
+		cfg.ExtractFrameEOFOffsetSec = def.ExtractFrameEOFOffsetSec
+	}
+	if cfg.ExtractFrameEndPadSec <= 0 {
+		cfg.ExtractFrameEndPadSec = def.ExtractFrameEndPadSec
+	}
+	if cfg.ExtractFrameLastPadSec <= 0 {
+		cfg.ExtractFrameLastPadSec = def.ExtractFrameLastPadSec
+	}
+	if strings.TrimSpace(cfg.SilenceDetectNoiseDB) == "" {
+		cfg.SilenceDetectNoiseDB = def.SilenceDetectNoiseDB
+	}
+	if cfg.SilenceDetectMinSec <= 0 {
+		cfg.SilenceDetectMinSec = def.SilenceDetectMinSec
+	}
+	if cfg.QCSilenceWarnRatio <= 0 || cfg.QCSilenceWarnRatio > 1 {
+		cfg.QCSilenceWarnRatio = def.QCSilenceWarnRatio
+	}
+	if cfg.MaxConcurrentBatch <= 0 {
+		cfg.MaxConcurrentBatch = def.MaxConcurrentBatch
+	}
+	if cfg.QueueWorkers <= 0 {
+		cfg.QueueWorkers = def.QueueWorkers
+	}
+	if cfg.QueuePollInterval <= 0 {
+		cfg.QueuePollInterval = def.QueuePollInterval
+	}
+	if cfg.QueuePollLeaseMin <= 0 {
+		cfg.QueuePollLeaseMin = def.QueuePollLeaseMin
+	}
+	if cfg.QueuePollBackoffMax <= 0 {
+		cfg.QueuePollBackoffMax = def.QueuePollBackoffMax
+	}
+	if cfg.QueueMaxAttempts <= 0 {
+		cfg.QueueMaxAttempts = def.QueueMaxAttempts
+	}
+	if cfg.ExportMaxZipBytes <= 0 {
+		cfg.ExportMaxZipBytes = def.ExportMaxZipBytes
+	}
+	if cfg.ExportLoudnormLUFS == 0 {
+		cfg.ExportLoudnormLUFS = def.ExportLoudnormLUFS
+	}
+	if cfg.ExportSubtitleFontSize <= 0 {
+		cfg.ExportSubtitleFontSize = def.ExportSubtitleFontSize
+	}
+	if cfg.TimelineDefaultTransitionMs <= 0 {
+		cfg.TimelineDefaultTransitionMs = def.TimelineDefaultTransitionMs
+	}
+	if cfg.TimelineDefaultBGMVolume <= 0 {
+		cfg.TimelineDefaultBGMVolume = def.TimelineDefaultBGMVolume
+	}
+	if cfg.TimelineAudioDuckThreshold <= 0 {
+		cfg.TimelineAudioDuckThreshold = def.TimelineAudioDuckThreshold
+	}
+	if cfg.TimelineAudioDuckOrigVol <= 0 {
+		cfg.TimelineAudioDuckOrigVol = def.TimelineAudioDuckOrigVol
+	}
+	if cfg.TimelineThumbIntervalSec <= 0 {
+		cfg.TimelineThumbIntervalSec = def.TimelineThumbIntervalSec
+	}
+	if cfg.TimelineThumbHeight <= 0 {
+		cfg.TimelineThumbHeight = def.TimelineThumbHeight
+	}
+	if cfg.TimelineMaxStripThumbs <= 0 {
+		cfg.TimelineMaxStripThumbs = def.TimelineMaxStripThumbs
+	}
+	if cfg.TimelinePeakBins <= 0 {
+		cfg.TimelinePeakBins = def.TimelinePeakBins
+	}
+	if cfg.TimelineWaveSampleRate <= 0 {
+		cfg.TimelineWaveSampleRate = def.TimelineWaveSampleRate
+	}
+	if cfg.TimelineWaveBlockSamples <= 0 {
+		cfg.TimelineWaveBlockSamples = def.TimelineWaveBlockSamples
+	}
+	if cfg.TimelineRevisionLimit <= 0 {
+		cfg.TimelineRevisionLimit = def.TimelineRevisionLimit
+	}
+	return cfg
+}
+
+// MediaGenOrDefault returns the configured MediaGenConfig with any zero/unset fields populated from Default(ModeDesktop).MediaGen.
+func (c *Config) MediaGenOrDefault() MediaGenConfig {
+	if c == nil {
+		return Default(ModeDesktop).MediaGen
+	}
+	return ResolveMediaGenConfig(c.MediaGen)
+}
+
+// ResolveMediaGenConfig fills unset fields on cfg from Default(ModeDesktop).MediaGen while preserving explicit valid zero temperature when text settings are configured.
+func ResolveMediaGenConfig(cfg MediaGenConfig) MediaGenConfig {
+	def := Default(ModeDesktop).MediaGen
+	textUnset := cfg.TextMaxTokens <= 0 && cfg.TextTimeout <= 0
+	if cfg.RequestTimeout <= 0 {
+		cfg.RequestTimeout = def.RequestTimeout
+	}
+	if cfg.VideoTimeout <= 0 {
+		cfg.VideoTimeout = def.VideoTimeout
+	}
+	if cfg.VideoPollInterval <= 0 {
+		cfg.VideoPollInterval = def.VideoPollInterval
+	}
+	if cfg.MaxOutputBytes <= 0 {
+		cfg.MaxOutputBytes = def.MaxOutputBytes
+	}
+	if cfg.MaxReferenceBytes <= 0 {
+		cfg.MaxReferenceBytes = def.MaxReferenceBytes
+	}
+	if cfg.MaxJSONResponseBytes <= 0 {
+		cfg.MaxJSONResponseBytes = def.MaxJSONResponseBytes
+	}
+	if cfg.TextTimeout <= 0 {
+		cfg.TextTimeout = def.TextTimeout
+	}
+	if cfg.TextMaxTokens <= 0 {
+		cfg.TextMaxTokens = def.TextMaxTokens
+	}
+	if cfg.TextTemperature < 0 || cfg.TextTemperature > 2 || (cfg.TextTemperature == 0 && textUnset) {
+		cfg.TextTemperature = def.TextTemperature
+	}
+	if cfg.RetryMax <= 0 {
+		cfg.RetryMax = def.RetryMax
+	}
+	if cfg.RetryInitialDelay <= 0 {
+		cfg.RetryInitialDelay = def.RetryInitialDelay
+	}
+	if cfg.RetryMaxDelay <= 0 {
+		cfg.RetryMaxDelay = def.RetryMaxDelay
+	}
+	if cfg.RetryBackoffFactor <= 1 {
+		cfg.RetryBackoffFactor = def.RetryBackoffFactor
+	}
+	if cfg.LimiterPollInterval <= 0 {
+		cfg.LimiterPollInterval = def.LimiterPollInterval
+	}
+	if strings.TrimSpace(cfg.TTSDefaultVoiceOpenAI) == "" {
+		cfg.TTSDefaultVoiceOpenAI = def.TTSDefaultVoiceOpenAI
+	}
+	if strings.TrimSpace(cfg.TTSDefaultVoiceGemini) == "" {
+		cfg.TTSDefaultVoiceGemini = def.TTSDefaultVoiceGemini
+	}
+	if strings.TrimSpace(cfg.TTSDefaultVoiceDashScope) == "" {
+		cfg.TTSDefaultVoiceDashScope = def.TTSDefaultVoiceDashScope
+	}
+	if strings.TrimSpace(cfg.TTSDefaultVoiceMiniMax) == "" {
+		cfg.TTSDefaultVoiceMiniMax = def.TTSDefaultVoiceMiniMax
+	}
+	return cfg
 }

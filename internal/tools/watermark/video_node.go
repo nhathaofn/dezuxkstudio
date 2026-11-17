@@ -29,10 +29,17 @@ type videoWatermarkNode struct {
 
 // NewVideoNode returns tool.video_watermark_remove, keeping tool.watermark_remover spec untouched.
 func NewVideoNode(opts Options) engine.Node {
+	opts.StudioConfig = config.ResolveStudioConfig(opts.StudioConfig)
 	return &videoWatermarkNode{opts: opts}
 }
 
 func (n *videoWatermarkNode) Spec() engine.Spec {
+	maxDim := n.opts.StudioConfig.MaxVideoDimension
+	if maxDim < 64 {
+		maxDim = config.ResolveStudioConfig(n.opts.StudioConfig).MaxVideoDimension
+	}
+	maxLogoDim := max(64, maxDim/2)
+	maxCrop := max(2, maxDim/4)
 	return engine.Spec{
 		Type:        NodeTypeVideo,
 		Provider:    "watermark",
@@ -46,12 +53,12 @@ func (n *videoWatermarkNode) Spec() engine.Spec {
 		},
 		Params: []engine.Param{
 			{Name: "mode", Label: "Removal Mode", Kind: engine.ParamSelect, Options: []string{"delogo", "crop"}, Default: "delogo"},
-			{Name: "x", Label: "Logo X (px)", Kind: engine.ParamInteger, Min: 0, Max: 8192, Default: "0"},
-			{Name: "y", Label: "Logo Y (px)", Kind: engine.ParamInteger, Min: 0, Max: 8192, Default: "0"},
-			{Name: "width", Label: "Logo Width (px)", Kind: engine.ParamInteger, Min: 1, Max: 4096, Default: "160"},
-			{Name: "height", Label: "Logo Height (px)", Kind: engine.ParamInteger, Min: 1, Max: 4096, Default: "64"},
+			{Name: "x", Label: "Logo X (px)", Kind: engine.ParamInteger, Min: 0, Max: maxDim, Default: "0"},
+			{Name: "y", Label: "Logo Y (px)", Kind: engine.ParamInteger, Min: 0, Max: maxDim, Default: "0"},
+			{Name: "width", Label: "Logo Width (px)", Kind: engine.ParamInteger, Min: 1, Max: maxLogoDim, Default: "160"},
+			{Name: "height", Label: "Logo Height (px)", Kind: engine.ParamInteger, Min: 1, Max: maxLogoDim, Default: "64"},
 			{Name: "crop_edge", Label: "Crop Edge", Kind: engine.ParamSelect, Options: []string{"bottom", "top", "left", "right"}, Default: "bottom"},
-			{Name: "crop_px", Label: "Crop Size (px)", Kind: engine.ParamInteger, Min: 2, Max: 2048, Default: "64"},
+			{Name: "crop_px", Label: "Crop Size (px)", Kind: engine.ParamInteger, Min: 2, Max: maxCrop, Default: "64"},
 			{Name: "output_dir", Label: "Output Folder", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
 		},
 	}
@@ -115,17 +122,7 @@ func (n *videoWatermarkNode) Run(ctx context.Context, raw json.RawMessage) (any,
 		return nil, apperr.New(apperr.CodeInternal, sanitizePathError(cleanOutDir, err))
 	}
 
-	studioCfg := n.opts.StudioConfig
-	defStudio := config.Default(config.ModeDesktop).Studio
-	if studioCfg.FFmpegPreset == "" {
-		studioCfg.FFmpegPreset = defStudio.FFmpegPreset
-	}
-	if studioCfg.FFmpegCRF <= 0 {
-		studioCfg.FFmpegCRF = defStudio.FFmpegCRF
-	}
-	if studioCfg.FFmpegTimeout <= 0 {
-		studioCfg.FFmpegTimeout = defStudio.FFmpegTimeout
-	}
+	studioCfg := config.ResolveStudioConfig(n.opts.StudioConfig)
 
 	vf, err := buildVideoWatermarkFilter(in)
 	if err != nil {
@@ -143,7 +140,7 @@ func (n *videoWatermarkNode) Run(ctx context.Context, raw json.RawMessage) (any,
 	args := []string{
 		"-y", "-i", vidPath,
 		"-vf", vf,
-		"-c:v", "libx264", "-preset", studioCfg.FFmpegPreset, "-crf", strconv.Itoa(studioCfg.FFmpegCRF), "-pix_fmt", "yuv420p",
+		"-c:v", studioCfg.FFmpegVideoCodec, "-preset", studioCfg.FFmpegPreset, "-crf", strconv.Itoa(studioCfg.FFmpegCRF), "-pix_fmt", studioCfg.FFmpegPixelFormat,
 		"-c:a", "copy", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", outPath,
 	}
 	parser := &videoPipeProgressParser{totalDurationUs: totalUs}
@@ -251,10 +248,7 @@ func probeVideoDurationUs(ctx context.Context, opts Options, vidPath string) int
 	if err != nil || strings.TrimSpace(ffprobeExe) == "" {
 		return 0
 	}
-	timeout := opts.StudioConfig.FFprobeTimeout
-	if timeout <= 0 {
-		timeout = config.Default(config.ModeDesktop).Studio.FFprobeTimeout
-	}
+	timeout := config.ResolveStudioConfig(opts.StudioConfig).FFprobeTimeout
 	pCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	res, err := runner.Run(pCtx, ffprobeExe, "-v", "quiet", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", vidPath)
