@@ -3,6 +3,7 @@ package contracts
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -51,10 +52,15 @@ type RuntimeInfo struct {
 
 // PathsInfo lists the application directories.
 type PathsInfo struct {
-	Config      string `json:"config"`
-	Data        string `json:"data"`
-	Logs        string `json:"logs"`
-	Diagnostics string `json:"diagnostics"`
+	Config                 string `json:"config"`
+	Data                   string `json:"data"`
+	Logs                   string `json:"logs"`
+	Diagnostics            string `json:"diagnostics"`
+	WorkspaceRoot          string `json:"workspace_root"`
+	SuggestedWorkspaceRoot string `json:"suggested_workspace_root"`
+	MediaDir               string `json:"media_dir"`
+	WatermarkDir           string `json:"watermark_dir"`
+	AgentWorkspace         string `json:"agent_workspace"`
 }
 
 // SystemInfo answers system:info.
@@ -74,11 +80,12 @@ const (
 	FolderConfig              FolderTarget = "config"
 	FolderDiagnostics         FolderTarget = "diagnostics"
 	FolderAgentCustomizations FolderTarget = "agent_customizations"
+	FolderWorkspaceRoot       FolderTarget = "workspace_root"
 )
 
 // FolderTargets lists valid targets.
 func FolderTargets() []FolderTarget {
-	return []FolderTarget{FolderLogs, FolderData, FolderConfig, FolderDiagnostics, FolderAgentCustomizations}
+	return []FolderTarget{FolderLogs, FolderData, FolderConfig, FolderDiagnostics, FolderAgentCustomizations, FolderWorkspaceRoot}
 }
 
 // OpenFolderPayload is the payload of system:open_folder.
@@ -106,28 +113,52 @@ type UpdateInfo struct {
 
 // Preferences mirrors the domain preference document.
 type Preferences struct {
-	Theme    preferences.Theme    `json:"theme"`
-	Language preferences.Language `json:"language"`
+	Theme                    preferences.Theme    `json:"theme"`
+	Language                 preferences.Language `json:"language"`
+	WorkspaceRoot            string               `json:"workspace_root"`
+	OnboardingCompleted      bool                 `json:"onboarding_completed"`
+	AgentSkipTrustedApproval bool                 `json:"agent_skip_trusted_approval"`
 }
 
 // NewPreferences converts the domain model.
 func NewPreferences(p preferences.Preferences) Preferences {
 	return Preferences{
-		Theme:    p.Theme,
-		Language: p.Language,
+		Theme:                    p.Theme,
+		Language:                 p.Language,
+		WorkspaceRoot:            p.WorkspaceRoot,
+		OnboardingCompleted:      p.OnboardingCompleted,
+		AgentSkipTrustedApproval: p.AgentSkipTrustedApproval,
 	}
 }
 
 // PreferencesPatch is the payload of preferences:update; omitted fields are unchanged.
 type PreferencesPatch struct {
-	Theme    *preferences.Theme    `json:"theme,omitempty"`
-	Language *preferences.Language `json:"language,omitempty"`
+	Theme                    *preferences.Theme    `json:"theme,omitempty"`
+	Language                 *preferences.Language `json:"language,omitempty"`
+	WorkspaceRoot            *string               `json:"workspace_root,omitempty"`
+	OnboardingCompleted      *bool                 `json:"onboarding_completed,omitempty"`
+	AgentSkipTrustedApproval *bool                 `json:"agent_skip_trusted_approval,omitempty"`
 }
 
-// Validate rejects empty patches.
+// Validate rejects empty patches or invalid values.
 func (p PreferencesPatch) Validate() error {
-	if p.Theme == nil && p.Language == nil {
+	if p.Theme == nil && p.Language == nil && p.WorkspaceRoot == nil && p.OnboardingCompleted == nil && p.AgentSkipTrustedApproval == nil {
 		return apperr.Validation("patch must change at least one field")
+	}
+	if p.WorkspaceRoot != nil {
+		if strings.ContainsRune(*p.WorkspaceRoot, 0) {
+			return apperr.Validation("workspace_root must not contain NUL bytes").
+				WithDetails(map[string]any{"field": "workspace_root"})
+		}
+		if trimmed := strings.TrimSpace(*p.WorkspaceRoot); trimmed != "" {
+			if !filepath.IsAbs(trimmed) {
+				return apperr.Validation(fmt.Sprintf("workspace_root must be an absolute path, got %q", *p.WorkspaceRoot)).
+					WithDetails(map[string]any{"field": "workspace_root"})
+			}
+		} else if *p.WorkspaceRoot != "" {
+			return apperr.Validation(fmt.Sprintf("workspace_root must be an absolute path, got %q", *p.WorkspaceRoot)).
+				WithDetails(map[string]any{"field": "workspace_root"})
+		}
 	}
 	return nil
 }
@@ -135,8 +166,11 @@ func (p PreferencesPatch) Validate() error {
 // ToDomain converts to the domain patch.
 func (p PreferencesPatch) ToDomain() preferences.Patch {
 	return preferences.Patch{
-		Theme:    p.Theme,
-		Language: p.Language,
+		Theme:                    p.Theme,
+		Language:                 p.Language,
+		WorkspaceRoot:            p.WorkspaceRoot,
+		OnboardingCompleted:      p.OnboardingCompleted,
+		AgentSkipTrustedApproval: p.AgentSkipTrustedApproval,
 	}
 }
 

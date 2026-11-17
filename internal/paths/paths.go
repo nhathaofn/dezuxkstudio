@@ -64,15 +64,25 @@ func ConfigDir(appID string) (string, error) {
 	return p.Config, err
 }
 
-// Ensure creates every directory with owner-only permissions.
+// Ensure creates every application-internal directory with owner-only permissions.
+// Creative workspace folders are managed separately via WorkspaceTree.Ensure.
 func (p Paths) Ensure() error {
-	for _, dir := range []string{p.Config, p.Data, p.Logs, p.Backups(), p.Diagnostics(), p.Media()} {
-		if err := os.MkdirAll(dir, dirPerm); err != nil {
+	for _, dir := range []string{p.Config, p.Data, p.Logs, p.Backups(), p.Diagnostics(), p.Staging()} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("paths: create %s: %w", dir, err)
 		}
 	}
 	return nil
 }
+
+// Staging returns the isolated staging directory for temporary files (<Data>/staging).
+func (p Paths) Staging() string { return filepath.Join(p.Data, "staging") }
+
+// MediaGenStaging returns the dedicated staging subdirectory for media generation jobs (<Data>/staging/mediagen).
+func (p Paths) MediaGenStaging() string { return filepath.Join(p.Staging(), "mediagen") }
+
+// DefaultStudioRoot returns the default fallback creative workspace root (<Data>/studio).
+func (p Paths) DefaultStudioRoot() string { return filepath.Join(p.Data, "studio") }
 
 // Media returns the directory where generated and processed images and videos are stored.
 func (p Paths) Media() string { return filepath.Join(p.Data, "media") }

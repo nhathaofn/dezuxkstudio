@@ -16,7 +16,7 @@ export type Theme = (typeof ThemeValues)[number];
 export const LanguageValues = ["en", "vi"] as const;
 export type Language = (typeof LanguageValues)[number];
 
-export const FolderTargetValues = ["logs", "data", "config", "diagnostics", "agent_customizations"] as const;
+export const FolderTargetValues = ["logs", "data", "config", "diagnostics", "agent_customizations", "workspace_root"] as const;
 export type FolderTarget = (typeof FolderTargetValues)[number];
 
 export const AppModeValues = ["desktop", "client", "server"] as const;
@@ -634,6 +634,11 @@ export interface PathsInfo {
   data: string;
   logs: string;
   diagnostics: string;
+  workspace_root: string;
+  suggested_workspace_root: string;
+  media_dir: string;
+  watermark_dir: string;
+  agent_workspace: string;
 }
 
 export interface PingResult {
@@ -651,11 +656,17 @@ export interface Port {
 export interface Preferences {
   theme: Theme;
   language: Language;
+  workspace_root: string;
+  onboarding_completed: boolean;
+  agent_skip_trusted_approval: boolean;
 }
 
 export interface PreferencesPatch {
   theme?: Theme;
   language?: Language;
+  workspace_root?: string;
+  onboarding_completed?: boolean;
+  agent_skip_trusted_approval?: boolean;
 }
 
 export interface ProviderCredential {
