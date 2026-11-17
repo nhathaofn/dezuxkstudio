@@ -318,6 +318,8 @@ func qcReportToDTO(r domainstudio.QCReport) contracts.StudioQCReport {
 			Severity:  iss.Severity,
 			Category:  iss.Category,
 			Message:   iss.Message,
+			MsgKey:    iss.MsgKey,
+			MsgParams: iss.MsgParams,
 			FramePath: iss.FramePath,
 		}
 	}

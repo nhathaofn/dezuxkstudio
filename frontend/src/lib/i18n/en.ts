@@ -808,6 +808,11 @@ export const en = {
     "This model requires at least one reference image for editing.",
   "errors.mediagen.reference_not_supported":
     "This model or endpoint does not accept reference images.",
+  "errors.mediagen.lipsync_video_required": "Lip-sync input video path is required.",
+  "errors.mediagen.lipsync_audio_required": "Lip-sync input audio path is required.",
+
+  "watermark.progress.video": "Removing video watermark…",
+  "watermark.progress.done": "Video watermark removed.",
 
   "agent.code.copy": "Copy code",
   "agent.code.copied": "Copied",
@@ -927,6 +932,7 @@ export const en = {
   "errors.studio.binary_unavailable": "Required external tool service ({id}) is unavailable.",
   "errors.studio.binary_missing": "{id} is not installed. Configure it in Settings -> Tools.",
   "errors.studio.duplicate_slug": "A studio project with this slug already exists.",
+  "errors.studio.shot_duration_invalid": "Shot duration must be at least {min} second(s).",
 
   "studio.progress.script_normalize": "Analyzing and normalizing screenplay…",
   "studio.progress.extract_assets": "Extracting characters, scenes, and props…",
@@ -944,6 +950,33 @@ export const en = {
   "studio.progress.render_timeline": "Rendering multi-track FFmpeg timeline…",
   "studio.progress.export_nle": "Packaging NLE draft archive…",
   "studio.progress.done": "Completed",
+
+  "studio.qc.issue.no_visual_stream": "Media contains no valid visual stream dimensions",
+  "studio.qc.issue.zero_duration": "Video duration is zero or unreadable",
+  "studio.qc.issue.audio_silent": "Audio track is {percent}% silent",
+  "studio.qc.issue.frame_sample_failed": "Could not sample video frames for vision review: {detail}",
+  "studio.qc.issue.vision_skipped": "Vision LLM critique skipped; technical validation only",
+  "studio.qc.issue.vision_unavailable": "Vision QC unavailable: {detail}",
+
+  "studio.preflight.warn.checker_unavailable": "Provider checker unavailable; skipping credential verification",
+  "studio.preflight.warn.fallback_rate": "Using fallback catalog rate for preflight estimate",
+  "studio.preflight.warn.large_batch": "Large batch ({count} items): review cost carefully before running",
+
+  "studio.batch.generate_assets.running": "Generating asset sheets ({current}/{total})…",
+  "studio.batch.generate_assets.completed": "Asset sheets batch finished ({current}/{total}).",
+  "studio.batch.generate_assets.failed": "Asset sheets batch failed ({current}/{total}).",
+  "studio.batch.generate_keyframes.running": "Generating shot keyframes ({current}/{total})…",
+  "studio.batch.generate_keyframes.completed": "Keyframes batch finished ({current}/{total}).",
+  "studio.batch.generate_keyframes.failed": "Keyframes batch failed ({current}/{total}).",
+  "studio.batch.generate_videos.running": "Generating shot videos ({current}/{total})…",
+  "studio.batch.generate_videos.completed": "Videos batch finished ({current}/{total}).",
+  "studio.batch.generate_videos.failed": "Videos batch failed ({current}/{total}).",
+  "studio.batch.generate_tts.running": "Synthesizing shot audio ({current}/{total})…",
+  "studio.batch.generate_tts.completed": "TTS audio batch finished ({current}/{total}).",
+  "studio.batch.generate_tts.failed": "TTS audio batch failed ({current}/{total}).",
+  "studio.batch.probe_shots.running": "Probing shot media ({current}/{total})…",
+  "studio.batch.probe_shots.completed": "Shot media probe finished ({current}/{total}).",
+  "studio.batch.probe_shots.failed": "Shot media probe failed ({current}/{total}).",
 
   "studio.title": "AI Film Studio",
   "studio.subtitle": "ArcReel 5-Stage Production Pipeline",

@@ -93,7 +93,9 @@ func LongActions() []string {
 		ActionDiagnosticsExport,
 		ActionAgentResolveApproval, // an approved action runs a workflow node or graph
 		ActionStudioEpisodeRunStage,
+		ActionStudioGridSplit,
 		ActionStudioMaskEdit,
+		ActionStudioExtractLastFrame,
 		ActionStudioQCReview,
 		ActionStudioTimelineAutoAssemble,
 		ActionStudioMediaPeaksThumbs,
@@ -353,6 +355,15 @@ func Enums() []EnumSpec {
 		{"StudioTransitionType", t[domainstudio.TransitionType](), stringsOf(domainstudio.TransitionTypes())},
 		{"StudioKenBurnsPreset", t[domainstudio.KenBurnsPreset](), stringsOf(domainstudio.KenBurnsPresets())},
 		{"StudioNLEExportFormat", t[domainstudio.NLEExportFormat](), stringsOf(domainstudio.NLEExportFormats())},
+		{"StudioJobStatus", t[domainstudio.JobStatus](), stringsOf(domainstudio.JobStatuses())},
+		{"StudioJobKind", t[domainstudio.JobKind](), stringsOf(domainstudio.JobKinds())},
+		{"StudioQueueAction", t[StudioQueueAction](), stringsOf(StudioQueueActions())},
+		{"StudioMediaTargetKind", t[domainstudio.MediaTargetKind](), stringsOf(domainstudio.MediaTargetKinds())},
+		{"StudioQCStatus", t[domainstudio.QCStatus](), stringsOf(domainstudio.QCStatuses())},
+		{"StudioTimelineActor", t[domainstudio.TimelineActor](), stringsOf(domainstudio.TimelineActors())},
+		{"StudioTimelineOpKind", t[domainstudio.TimelineOpKind](), stringsOf(domainstudio.TimelineOpKinds())},
+		{"StudioBatchStatus", t[StudioBatchStatus](), stringsOf(StudioBatchStatuses())},
+		{"StudioProjectChangedAction", t[StudioProjectChangedAction](), stringsOf(StudioProjectChangedActions())},
 	}
 }
 

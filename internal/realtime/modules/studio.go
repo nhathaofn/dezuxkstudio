@@ -46,7 +46,7 @@ func (s Studio) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionStudioProjectDelete,
 		func(ctx context.Context, _ *realtime.Request, p contracts.StudioProjectDeletePayload) (contracts.Empty, error) {
-			if err := s.Service.DeleteProject(ctx, p); err != nil {
+			if err := s.Service.DeleteProject(engine.WithFileGuard(ctx, s.FileGuard), p); err != nil {
 				return contracts.Empty{}, err
 			}
 			return contracts.Empty{}, nil
@@ -67,7 +67,7 @@ func (s Studio) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionStudioEpisodeSaveScript,
 		func(ctx context.Context, _ *realtime.Request, p contracts.StudioEpisodeSaveScriptPayload) (contracts.StudioEpisodeDetailResult, error) {
-			return s.Service.SaveScript(ctx, p)
+			return s.Service.SaveScript(engine.WithFileGuard(ctx, s.FileGuard), p)
 		})
 
 	realtime.Handle(r, contracts.ActionStudioAssetUpsert,
@@ -152,6 +152,9 @@ func (s Studio) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionStudioTimelineGet,
 		func(ctx context.Context, _ *realtime.Request, p contracts.StudioIDPayload) (contracts.StudioTimelineResult, error) {
+			if err := p.Validate(); err != nil {
+				return contracts.StudioTimelineResult{}, err
+			}
 			return s.Service.GetTimeline(engine.WithFileGuard(ctx, s.FileGuard), p.ID)
 		})
 

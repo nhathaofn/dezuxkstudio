@@ -87,6 +87,50 @@ func StudioRunStageActions() []StudioRunStageAction {
 	}
 }
 
+// StudioQueueAction enumerates durable studio queue control commands.
+type StudioQueueAction string
+
+const (
+	QueueActionPause  StudioQueueAction = "pause"
+	QueueActionResume StudioQueueAction = "resume"
+	QueueActionCancel StudioQueueAction = "cancel"
+	QueueActionRetry  StudioQueueAction = "retry"
+)
+
+// StudioQueueActions returns all supported queue control commands.
+func StudioQueueActions() []StudioQueueAction {
+	return []StudioQueueAction{QueueActionPause, QueueActionResume, QueueActionCancel, QueueActionRetry}
+}
+
+// StudioBatchStatus enumerates batch execution statuses reported on studio:batch_progress.
+type StudioBatchStatus string
+
+const (
+	BatchStatusRunning   StudioBatchStatus = "running"
+	BatchStatusCompleted StudioBatchStatus = "completed"
+	BatchStatusFailed    StudioBatchStatus = "failed"
+)
+
+// StudioBatchStatuses returns all valid batch execution statuses.
+func StudioBatchStatuses() []StudioBatchStatus {
+	return []StudioBatchStatus{BatchStatusRunning, BatchStatusCompleted, BatchStatusFailed}
+}
+
+// StudioProjectChangedAction enumerates project lifecycle change notifications.
+type StudioProjectChangedAction string
+
+const (
+	ProjectActionCreated StudioProjectChangedAction = "created"
+	ProjectActionUpdated StudioProjectChangedAction = "updated"
+	ProjectActionDeleted StudioProjectChangedAction = "deleted"
+	ProjectActionSynced  StudioProjectChangedAction = "synced"
+)
+
+// StudioProjectChangedActions returns all valid project change actions.
+func StudioProjectChangedActions() []StudioProjectChangedAction {
+	return []StudioProjectChangedAction{ProjectActionCreated, ProjectActionUpdated, ProjectActionDeleted, ProjectActionSynced}
+}
+
 // StudioProject is the transport DTO for a film studio project.
 type StudioProject struct {
 	ID                 string                      `json:"id"`
@@ -459,8 +503,9 @@ func (p StudioShotUpsertPayload) Validate() error {
 	if strings.TrimSpace(p.EpisodeID) == "" {
 		return apperr.Validation("episode_id is required")
 	}
-	if p.DurationSec != nil && (*p.DurationSec < 1 || *p.DurationSec > 60) {
-		return apperr.Validation("shot duration_sec must be between 1 and 60")
+	if p.DurationSec != nil && *p.DurationSec < domainstudio.MinShotDurationSec {
+		return apperr.Validation("shot duration_sec must be at least 1 second").
+			WithMsg("errors.studio.shot_duration_invalid", map[string]any{"min": domainstudio.MinShotDurationSec})
 	}
 	if p.ShotMode != "" {
 		if err := domainstudio.ValidateShotMode(p.ShotMode); err != nil {
@@ -556,15 +601,17 @@ type StudioEpisodeUpdatedEvent struct {
 
 // StudioBatchProgressEvent is published on studio:batch_progress during multi-item execution.
 type StudioBatchProgressEvent struct {
-	ProjectID string  `json:"project_id"`
-	EpisodeID string  `json:"episode_id"`
-	Stage     string  `json:"stage"`
-	Current   int     `json:"current"`
-	Total     int     `json:"total"`
-	TargetID  string  `json:"target_id,omitempty"`
-	Percent   float64 `json:"percent"`
-	Message   string  `json:"message"`
-	Status    string  `json:"status"` // running | completed | failed
+	ProjectID string         `json:"project_id"`
+	EpisodeID string         `json:"episode_id"`
+	Stage     string         `json:"stage"`
+	Current   int            `json:"current"`
+	Total     int            `json:"total"`
+	TargetID  string         `json:"target_id,omitempty"`
+	Percent   float64           `json:"percent"`
+	Message   string            `json:"message"`
+	MsgKey    string            `json:"msg_key,omitempty"`
+	MsgParams map[string]string `json:"msg_params,omitempty"`
+	Status    string            `json:"status"` // running | completed | failed
 }
 
 // StudioJob represents a durable Phase 2 queue item synced with studio_jobs.
@@ -730,6 +777,17 @@ type StudioPricingUpsertPayload struct {
 	UnitPriceUSD float64 `json:"unit_price_usd"`
 }
 
+// Validate checks StudioPricingUpsertPayload.
+func (p StudioPricingUpsertPayload) Validate() error {
+	if strings.TrimSpace(p.ProviderID) == "" || strings.TrimSpace(p.ModelID) == "" || strings.TrimSpace(p.Capability) == "" || strings.TrimSpace(p.Unit) == "" {
+		return apperr.Validation("provider_id, model_id, capability, and unit are required")
+	}
+	if p.UnitPriceUSD < 0 {
+		return apperr.Validation("unit_price_usd must be >= 0")
+	}
+	return nil
+}
+
 // StudioMediaVersion represents an output version in studio_media_versions.
 type StudioMediaVersion struct {
 	ID         string  `json:"id"`
@@ -755,6 +813,15 @@ type StudioVersionsListPayload struct {
 	TargetID   string `json:"target_id"`
 }
 
+// Validate checks StudioVersionsListPayload.
+func (p StudioVersionsListPayload) Validate() error {
+	kind := domainstudio.MediaTargetKind(strings.TrimSpace(p.TargetKind))
+	if !kind.Valid() || strings.TrimSpace(p.TargetID) == "" {
+		return apperr.Validation("valid target_kind and target_id are required")
+	}
+	return nil
+}
+
 // StudioVersionsListResult returns version history plus latest QC report if any.
 type StudioVersionsListResult struct {
 	Versions []StudioMediaVersion `json:"versions"`
@@ -764,6 +831,14 @@ type StudioVersionsListResult struct {
 // StudioVersionSelectPayload activates a specific saved media version.
 type StudioVersionSelectPayload struct {
 	VersionID string `json:"version_id"`
+}
+
+// Validate checks StudioVersionSelectPayload.
+func (p StudioVersionSelectPayload) Validate() error {
+	if strings.TrimSpace(p.VersionID) == "" {
+		return apperr.Validation("version_id is required")
+	}
+	return nil
 }
 
 // StudioVersionSelectResult returns the newly selected version and updated episode state if applicable.
@@ -787,6 +862,14 @@ type StudioGridSplitPayload struct {
 	ColWeights []float64 `json:"col_weights,omitempty"`
 }
 
+// Validate checks StudioGridSplitPayload.
+func (p StudioGridSplitPayload) Validate() error {
+	if strings.TrimSpace(p.ProjectID) == "" || strings.TrimSpace(p.ImagePath) == "" {
+		return apperr.Validation("project_id and image_path are required")
+	}
+	return nil
+}
+
 // StudioGridSplitResult returns split panels and created version records.
 type StudioGridSplitResult struct {
 	Panels   []GridPanel          `json:"panels"`
@@ -806,6 +889,17 @@ type StudioMaskEditPayload struct {
 	ModelRef       string `json:"model_ref,omitempty"`
 }
 
+// Validate checks StudioMaskEditPayload.
+func (p StudioMaskEditPayload) Validate() error {
+	if strings.TrimSpace(p.ProjectID) == "" || strings.TrimSpace(p.ImagePath) == "" || strings.TrimSpace(p.Prompt) == "" {
+		return apperr.Validation("project_id, image_path, and prompt are required")
+	}
+	if strings.TrimSpace(p.MaskPath) == "" && strings.TrimSpace(p.MaskDataBase64) == "" {
+		return apperr.Validation("mask_path or mask_data_base64 is required")
+	}
+	return nil
+}
+
 // StudioMaskEditResult returns the inpainted file and updated episode state.
 type StudioMaskEditResult struct {
 	Path    string                     `json:"path"`
@@ -819,6 +913,14 @@ type StudioExtractLastFramePayload struct {
 	EpisodeID    string `json:"episode_id"`
 	SourceShotID string `json:"source_shot_id"`
 	TargetShotID string `json:"target_shot_id,omitempty"`
+}
+
+// Validate checks StudioExtractLastFramePayload.
+func (p StudioExtractLastFramePayload) Validate() error {
+	if strings.TrimSpace(p.EpisodeID) == "" || strings.TrimSpace(p.SourceShotID) == "" {
+		return apperr.Validation("episode_id and source_shot_id are required")
+	}
+	return nil
 }
 
 // StudioExtractLastFrameResult returns the extracted frame and updated episode detail.
@@ -842,6 +944,14 @@ type StudioQCReviewPayload struct {
 	VisionModelRef string   `json:"vision_model_ref,omitempty"`
 	SampleCount    int      `json:"sample_count,omitempty"`
 	SkipVision     bool     `json:"skip_vision,omitempty"`
+}
+
+// Validate checks StudioQCReviewPayload.
+func (p StudioQCReviewPayload) Validate() error {
+	if strings.TrimSpace(p.ProjectID) == "" || strings.TrimSpace(p.MediaPath) == "" {
+		return apperr.Validation("project_id and media_path are required")
+	}
+	return nil
 }
 
 // StudioQCReport represents a saved visual & technical QC report.
@@ -869,6 +979,14 @@ type StudioBatchPreflightPayload struct {
 	Stage     string `json:"stage"`
 	Model     string `json:"model,omitempty"`
 	ItemCount int    `json:"item_count,omitempty"`
+}
+
+// Validate checks StudioBatchPreflightPayload.
+func (p StudioBatchPreflightPayload) Validate() error {
+	if strings.TrimSpace(p.ProjectID) == "" || strings.TrimSpace(p.Stage) == "" {
+		return apperr.Validation("project_id and stage are required")
+	}
+	return nil
 }
 
 // StudioQueueUpdatedEvent is pushed when queue jobs change state.
@@ -1095,7 +1213,7 @@ type StudioTimelineRenderPayload struct {
 	BurnSubtitles    bool    `json:"burn_subtitles,omitempty"`
 	SubtitleFontSize int     `json:"subtitle_font_size,omitempty"`
 	LoudnormLUFS     float64 `json:"loudnorm_lufs,omitempty"`
-	CRF              int     `json:"crf,omitempty"`
+	CRF              *int    `json:"crf,omitempty"`
 	Preset           string  `json:"preset,omitempty"`
 }
 
@@ -1103,6 +1221,9 @@ type StudioTimelineRenderPayload struct {
 func (p StudioTimelineRenderPayload) Validate() error {
 	if strings.TrimSpace(p.EpisodeID) == "" {
 		return apperr.Validation("episode_id is required")
+	}
+	if p.CRF != nil && (*p.CRF < 0 || *p.CRF > 51) {
+		return apperr.Validation("crf must be between 0 and 51")
 	}
 	return nil
 }

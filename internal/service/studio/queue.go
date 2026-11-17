@@ -73,7 +73,9 @@ func (s *Service) RecoverOnStartup(ctx context.Context) error {
 			if j.Status != domainstudio.JobPolling || j.NextPollAt > now {
 				j.Status = domainstudio.JobPolling
 				j.NextPollAt = now
-				_, _ = s.repo.UpdateJob(ctx, j)
+				if _, uerr := s.repo.UpdateJob(ctx, j); uerr != nil {
+					s.log.WarnContext(ctx, "studio: failed to update polling job on startup recovery", "id", j.ID, "error", uerr)
+				}
 			}
 		case j.Status == domainstudio.JobSubmitted:
 			if j.Attempts >= j.MaxAttempts {
@@ -83,7 +85,9 @@ func (s *Service) RecoverOnStartup(ctx context.Context) error {
 			} else {
 				j.Status = domainstudio.JobQueued
 			}
-			_, _ = s.repo.UpdateJob(ctx, j)
+			if _, uerr := s.repo.UpdateJob(ctx, j); uerr != nil {
+				s.log.WarnContext(ctx, "studio: failed to recover submitted job", "id", j.ID, "error", uerr)
+			}
 		}
 	}
 	return nil
@@ -556,17 +560,7 @@ func (s *Service) enqueueShotTTS(ctx context.Context, proj domainstudio.Project,
 			skipped++
 			continue
 		}
-		modelRef := firstNonEmpty(p.Model, proj.DefaultTTSModel)
-		voiceID := ""
-		if len(sh.Dialogues) > 0 {
-			spk := strings.ToLower(strings.TrimSpace(sh.Dialogues[0].Speaker))
-			if ca, ok := voiceBySpeaker[spk]; ok {
-				voiceID = ca.VoiceID
-				if p.Model == "" && ca.VoiceProvider != "" {
-					modelRef = ca.VoiceProvider
-				}
-			}
-		}
+		modelRef, voiceID := resolveShotVoiceConfig(sh, p.Model, proj.DefaultTTSModel, "", voiceBySpeaker)
 		provID, modID := domainstudio.SplitModelRefForPricing(modelRef)
 		unitPrice, _, _ := s.EstimateUnitPriceUSD(ctx, provID, modID, "tts", "1k_chars")
 		est := math.Round((float64(len([]rune(txt)))/1000.0)*unitPrice*10000) / 10000
@@ -722,10 +716,15 @@ func (s *Service) executeQueuedJob(ctx context.Context, j domainstudio.Job) {
 			s.failJob(ctx, j, merr)
 			return
 		}
+		if s.isJobCanceledOrPaused(ctx, j.ID) {
+			return
+		}
 		targetID := firstNonEmpty(j.AssetID, j.ShotID)
 		regID := s.registerMedia(ctx, "image", mediagennodes.NodeTypeImage, out.Path, qReq.Input.OutputDir, 0)
 		s.recordSelectedVersion(ctx, j.ProjectID, j.EpisodeID, qReq.TargetKind, targetID, out.Path, mediagennodes.NodeTypeImage, qReq.Input.Prompt, j.ModelRef)
-		_, _ = s.applyMediaPathToTarget(ctx, j.ProjectID, j.EpisodeID, qReq.TargetKind, targetID, out.Path, regID, "queue_image_done")
+		if _, aerr := s.applyMediaPathToTarget(ctx, j.ProjectID, j.EpisodeID, qReq.TargetKind, targetID, out.Path, regID, "queue_image_done"); aerr != nil {
+			s.log.WarnContext(ctx, "studio: failed to apply image output to target", "job_id", j.ID, "target_id", targetID, "error", aerr)
+		}
 		s.succeedJob(ctx, j, out.Path)
 
 	case domainstudio.JobTTS:
@@ -749,9 +748,14 @@ func (s *Service) executeQueuedJob(ctx context.Context, j domainstudio.Job) {
 			s.failJob(ctx, j, merr)
 			return
 		}
+		if s.isJobCanceledOrPaused(ctx, j.ID) {
+			return
+		}
 		regID := s.registerMedia(ctx, "audio", mediagennodes.NodeTypeTTS, out.Path, qReq.Input.OutputDir, 0)
 		s.recordSelectedVersion(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetDubAudio, j.ShotID, out.Path, mediagennodes.NodeTypeTTS, qReq.Input.Text, j.ModelRef)
-		_, _ = s.applyMediaPathToTarget(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetDubAudio, j.ShotID, out.Path, regID, "queue_tts_done")
+		if _, aerr := s.applyMediaPathToTarget(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetDubAudio, j.ShotID, out.Path, regID, "queue_tts_done"); aerr != nil {
+			s.log.WarnContext(ctx, "studio: failed to apply TTS output to shot", "job_id", j.ID, "shot_id", j.ShotID, "error", aerr)
+		}
 		s.succeedJob(ctx, j, out.Path)
 
 	case domainstudio.JobLipSync:
@@ -775,8 +779,13 @@ func (s *Service) executeQueuedJob(ctx context.Context, j domainstudio.Job) {
 			s.failJob(ctx, j, merr)
 			return
 		}
+		if s.isJobCanceledOrPaused(ctx, j.ID) {
+			return
+		}
 		s.recordSelectedVersion(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetLipSyncVideo, j.ShotID, out.Path, studionodes.NodeTypeLipSyncGenerate, qReq.Input.Prompt, j.ModelRef)
-		_, _ = s.applyMediaPathToTarget(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetLipSyncVideo, j.ShotID, out.Path, out.AssetID, "queue_lipsync_done")
+		if _, aerr := s.applyMediaPathToTarget(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetLipSyncVideo, j.ShotID, out.Path, out.AssetID, "queue_lipsync_done"); aerr != nil {
+			s.log.WarnContext(ctx, "studio: failed to apply lipsync output to shot", "job_id", j.ID, "shot_id", j.ShotID, "error", aerr)
+		}
 		s.succeedJob(ctx, j, out.Path)
 
 	default:
@@ -815,7 +824,9 @@ func (s *Service) executePollJob(ctx context.Context, j domainstudio.Job) {
 				if sh, serr := s.repo.GetShot(ctx, j.ShotID); serr == nil {
 					sh.Status = domainstudio.ShotFailed
 					sh.ErrorText = err.Error()
-					_, _ = s.repo.UpsertShot(ctx, sh)
+					if _, uerr := s.repo.UpsertShot(ctx, sh); uerr != nil {
+						s.log.WarnContext(ctx, "studio: failed to update failed shot status", "shot_id", j.ShotID, "error", uerr)
+					}
 				}
 			}
 			return
@@ -823,7 +834,9 @@ func (s *Service) executePollJob(ctx context.Context, j domainstudio.Job) {
 		j.Status = domainstudio.JobPolling
 		j.ErrorText = err.Error()
 		j.NextPollAt = now + pollDelay
-		_, _ = s.repo.UpdateJob(ctx, j)
+		if _, uerr := s.repo.UpdateJob(ctx, j); uerr != nil {
+			s.log.WarnContext(ctx, "studio: failed to persist poll retry timestamp", "job_id", j.ID, "error", uerr)
+		}
 		return
 	}
 
@@ -845,7 +858,7 @@ func (s *Service) executePollJob(ctx context.Context, j domainstudio.Job) {
 	}
 
 	outPath := st.Result.Path
-	if cur, cerr := s.repo.GetJob(ctx, j.ID); cerr == nil && cur.Status == domainstudio.JobCanceled {
+	if s.isJobCanceledOrPaused(ctx, j.ID) {
 		return
 	}
 	var regID string
@@ -853,26 +866,87 @@ func (s *Service) executePollJob(ctx context.Context, j domainstudio.Job) {
 		if sh, serr := s.repo.GetShot(ctx, j.ShotID); serr == nil {
 			regID = s.registerMedia(ctx, "video", mediagennodes.NodeTypeVideo, outPath, tok.OutputDir, st.Result.Duration)
 			s.recordSelectedVersion(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetVideo, sh.ID, outPath, mediagennodes.NodeTypeVideo, sh.VideoPrompt, j.ModelRef)
-			_, _ = s.applyMediaPathToTarget(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetVideo, sh.ID, outPath, regID, "queue_video_done")
+			if _, aerr := s.applyMediaPathToTarget(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetVideo, sh.ID, outPath, regID, "queue_video_done"); aerr != nil {
+				s.log.WarnContext(ctx, "studio: failed to apply polled video to shot", "job_id", j.ID, "shot_id", sh.ID, "error", aerr)
+			}
 		}
 	}
 	s.succeedJob(ctx, j, outPath)
 }
 
 func (s *Service) handleSubmitError(ctx context.Context, j domainstudio.Job, err error) {
-	if j.Attempts < j.MaxAttempts {
-		j.Status = domainstudio.JobQueued
-		j.ErrorText = err.Error()
-		updated, uerr := s.repo.UpdateJob(ctx, j)
-		if uerr == nil {
-			dto := jobToDTO(updated)
-			s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{
-				ProjectID: updated.ProjectID, EpisodeID: updated.EpisodeID, Job: &dto, Summary: "Retrying queued job",
-			})
-		}
+	if isPermanentJobError(err) || j.Attempts >= j.MaxAttempts {
+		s.failJob(ctx, j, err)
 		return
 	}
-	s.failJob(ctx, j, err)
+	backoff := s.retryBackoffForAttempt(j.Attempts)
+	j.Status = domainstudio.JobQueued
+	j.ErrorText = err.Error()
+	j.NextPollAt = time.Now().UnixMilli() + backoff.Milliseconds()
+	updated, uerr := s.repo.UpdateJob(ctx, j)
+	if uerr == nil {
+		dto := jobToDTO(updated)
+		s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{
+			ProjectID: updated.ProjectID, EpisodeID: updated.EpisodeID, Job: &dto, Summary: "Retrying queued job",
+		})
+	} else {
+		s.log.WarnContext(ctx, "studio: failed to schedule queued job retry", "job_id", j.ID, "error", uerr)
+	}
+}
+
+func isPermanentJobError(err error) bool {
+	return apperr.IsCode(err, apperr.CodeValidation) ||
+		apperr.IsCode(err, apperr.CodeUnauthorized) ||
+		apperr.IsCode(err, apperr.CodeNotFound) ||
+		apperr.IsCode(err, apperr.CodeBadRequest)
+}
+
+func (s *Service) retryBackoffForAttempt(attempts int) time.Duration {
+	base := max(time.Millisecond, s.cfg.QueuePollInterval)
+	maxB := max(base, s.cfg.QueuePollBackoffMax)
+	shift := max(0, min(attempts-1, 10))
+	backoff := base << shift
+	if backoff > maxB || backoff <= 0 {
+		return maxB
+	}
+	return backoff
+}
+
+func (s *Service) isJobCanceledOrPaused(ctx context.Context, jobID string) bool {
+	if s.repo == nil || strings.TrimSpace(jobID) == "" {
+		return false
+	}
+	cur, err := s.repo.GetJob(ctx, jobID)
+	if err != nil {
+		return false
+	}
+	return cur.Status == domainstudio.JobCanceled || cur.Status == domainstudio.JobPaused
+}
+
+func resolveShotVoiceConfig(sh domainstudio.Shot, overrideModel, defaultModel, overrideVoice string, voiceBySpeaker map[string]domainstudio.AssetEntry) (modelRef, voiceID string) {
+	modelRef = firstNonEmpty(overrideModel, defaultModel)
+	voiceID = strings.TrimSpace(overrideVoice)
+	if len(sh.Dialogues) == 0 || len(voiceBySpeaker) == 0 {
+		return modelRef, voiceID
+	}
+	for _, d := range sh.Dialogues {
+		spk := strings.ToLower(strings.TrimSpace(d.Speaker))
+		if spk == "" {
+			continue
+		}
+		if ca, ok := voiceBySpeaker[spk]; ok {
+			if voiceID == "" && strings.TrimSpace(ca.VoiceID) != "" {
+				voiceID = ca.VoiceID
+			}
+			if overrideModel == "" && strings.TrimSpace(ca.VoiceProvider) != "" {
+				modelRef = ca.VoiceProvider
+			}
+			if voiceID != "" || modelRef != "" {
+				break
+			}
+		}
+	}
+	return modelRef, voiceID
 }
 
 func (s *Service) succeedJob(ctx context.Context, j domainstudio.Job, outPath string) {

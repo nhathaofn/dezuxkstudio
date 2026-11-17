@@ -103,8 +103,8 @@ func NewRenderTimelineNode(opts Options) engine.Node {
 		}
 
 		crf := opts.StudioConfig.FFmpegCRF
-		if in.CRF > 0 {
-			crf = in.CRF
+		if in.CRF != nil {
+			crf = *in.CRF
 		}
 		if crf < 0 || crf > 51 {
 			return contracts.RenderTimelineOutput{}, apperr.Validation("crf must be between 0 and 51")
@@ -169,6 +169,7 @@ func NewRenderTimelineNode(opts Options) engine.Node {
 		}
 
 		var srtPath, assPath string
+		burnPath := ""
 		if len(tl.Subtitles) > 0 {
 			stem := strings.TrimSuffix(baseName, filepath.Ext(baseName))
 			srtPath = filepath.Join(outDir, stem+".srt")
@@ -179,22 +180,25 @@ func NewRenderTimelineNode(opts Options) engine.Node {
 			if err := engine.CheckFile(ctx, assPath, true); err != nil {
 				return contracts.RenderTimelineOutput{}, err
 			}
-			if err := fsutil.WriteFileAtomic(srtPath, []byte(formatSRT(tl.Subtitles)), 0o644); err != nil {
-				return contracts.RenderTimelineOutput{}, apperr.Internal(err)
-			}
-			if err := fsutil.WriteFileAtomic(assPath, []byte(formatASS(tl.Subtitles, tl.Width, tl.Height, fontSize)), 0o644); err != nil {
-				return contracts.RenderTimelineOutput{}, apperr.Internal(err)
+			if in.BurnSubtitles {
+				burnPath = assPath
 			}
 		}
 
 		tmpOut := outPath + ".tmp.mp4"
 		defer func() { _ = os.Remove(tmpOut) }()
 
-		burnPath := ""
-		if in.BurnSubtitles && assPath != "" {
-			burnPath = assPath
+		args, expectedDurSec, shifts := buildRenderTimelineArgs(tl, resolved, burnPath, lufs, preset, crf, opts.StudioConfig, tmpOut)
+
+		if len(tl.Subtitles) > 0 {
+			shiftedSubs := shiftSubtitleCues(tl.Subtitles, shifts)
+			if err := fsutil.WriteFileAtomic(srtPath, []byte(formatSRT(shiftedSubs)), 0o644); err != nil {
+				return contracts.RenderTimelineOutput{}, apperr.Internal(err)
+			}
+			if err := fsutil.WriteFileAtomic(assPath, []byte(formatASS(shiftedSubs, tl.Width, tl.Height, fontSize)), 0o644); err != nil {
+				return contracts.RenderTimelineOutput{}, apperr.Internal(err)
+			}
 		}
-		args, expectedDurSec := buildRenderTimelineArgs(tl, resolved, burnPath, lufs, preset, crf, opts.StudioConfig, tmpOut)
 
 		runCtx, cancelRun := context.WithTimeout(ctx, opts.StudioConfig.FFmpegTimeout)
 		defer cancelRun()
@@ -237,7 +241,7 @@ func NewRenderTimelineNode(opts Options) engine.Node {
 
 		assetID := ""
 		if opts.Registrar != nil {
-			item, rerr := opts.Registrar.RegisterAsset(context.Background(), media.RegisterAssetParams{
+			item, rerr := opts.Registrar.RegisterAsset(ctx, media.RegisterAssetParams{
 				Kind:           "video",
 				SourceNode:     NodeTypeRenderTimeline,
 				FilePath:       outPath,
@@ -266,6 +270,34 @@ func NewRenderTimelineNode(opts Options) engine.Node {
 	})
 }
 
+type renderTimeShift struct {
+	fromTimelineMs int64
+	deltaMs        int64
+}
+
+func shiftTimelineMs(shifts []renderTimeShift, timelineMs int64) int64 {
+	delta := int64(0)
+	for _, s := range shifts {
+		if timelineMs >= s.fromTimelineMs {
+			delta = s.deltaMs
+		}
+	}
+	return max(0, timelineMs+delta)
+}
+
+func shiftSubtitleCues(cues []domainstudio.SubtitleCue, shifts []renderTimeShift) []domainstudio.SubtitleCue {
+	if len(cues) == 0 || len(shifts) == 0 {
+		return cues
+	}
+	out := make([]domainstudio.SubtitleCue, len(cues))
+	for i, c := range cues {
+		out[i] = c
+		out[i].StartMs = shiftTimelineMs(shifts, c.StartMs)
+		out[i].EndMs = max(out[i].StartMs+1, shiftTimelineMs(shifts, c.EndMs))
+	}
+	return out
+}
+
 func buildRenderTimelineArgs(
 	tl domainstudio.EditTimeline,
 	resolved []resolvedTimelineClip,
@@ -275,7 +307,7 @@ func buildRenderTimelineArgs(
 	crf int,
 	cfg config.StudioConfig,
 	outPath string,
-) (args []string, totalDurSec float64) {
+) (args []string, totalDurSec float64, shifts []renderTimeShift) {
 	cfg = withStudioDefaults(cfg)
 	args = []string{"-y", "-hide_banner", "-progress", "pipe:1", "-nostats"}
 
@@ -392,6 +424,9 @@ func buildRenderTimelineArgs(
 					accumSec = accumSec + curDurSec - overlapSec
 					prevEndMs = max(prevEndMs, cur.clip.TimelineEndMs())
 					prevDurSec = curDurSec
+					if delta := int64(math.Round(accumSec*1000)) - prevEndMs; delta != 0 {
+						shifts = append(shifts, renderTimeShift{fromTimelineMs: cur.clip.TimelineStartMs, deltaMs: delta})
+					}
 					continue
 				}
 			}
@@ -409,6 +444,9 @@ func buildRenderTimelineArgs(
 					accumSec = accumSec + curDurSec - overlapSec
 					prevEndMs = cur.clip.TimelineEndMs()
 					prevDurSec = curDurSec
+					if delta := int64(math.Round(accumSec*1000)) - prevEndMs; delta != 0 {
+						shifts = append(shifts, renderTimeShift{fromTimelineMs: cur.clip.TimelineStartMs, deltaMs: delta})
+					}
 					continue
 				}
 			}
@@ -437,7 +475,21 @@ func buildRenderTimelineArgs(
 			prevDurSec = curDurSec
 		}
 		vOutLabel = curLabel
-		totalDurSec = math.Max(totalDurSec, accumSec)
+		totalDurSec = math.Max(1.0, accumSec)
+	}
+
+	if len(videoClips) > 0 {
+		for _, sub := range shiftSubtitleCues(tl.Subtitles, shifts) {
+			if endSec := float64(sub.EndMs) / 1000.0; endSec > totalDurSec {
+				totalDurSec = endSec
+			}
+		}
+		for _, rc := range audioClips {
+			startMs := shiftTimelineMs(shifts, rc.clip.TimelineStartMs)
+			if endSec := float64(startMs+rc.clip.TimelineSpanMs()) / 1000.0; endSec > totalDurSec {
+				totalDurSec = endSec
+			}
+		}
 	}
 
 	if assBurnPath != "" {
@@ -473,8 +525,9 @@ func buildRenderTimelineArgs(
 				fmt.Sprintf("volume=%.3f", gain),
 				fmt.Sprintf("aformat=sample_rates=%d:channel_layouts=stereo", cfg.FFmpegAudioSampleRate),
 			)
-			if rc.clip.TimelineStartMs > 0 {
-				filters = append(filters, fmt.Sprintf("adelay=%d|%d", rc.clip.TimelineStartMs, rc.clip.TimelineStartMs))
+			delayMs := shiftTimelineMs(shifts, rc.clip.TimelineStartMs)
+			if delayMs > 0 {
+				filters = append(filters, fmt.Sprintf("adelay=%d|%d", delayMs, delayMs))
 			}
 			lbl := fmt.Sprintf("[aud%d]", i)
 			fc = append(fc, fmt.Sprintf("[%d:a]%s%s", rc.inputIndex, strings.Join(filters, ","), lbl))
@@ -501,7 +554,7 @@ func buildRenderTimelineArgs(
 		"-movflags", "+faststart",
 		outPath,
 	)
-	return args, totalDurSec
+	return args, totalDurSec, shifts
 }
 
 func kenBurnsFilter(preset domainstudio.KenBurnsPreset, w, h, fps int, durSec float64) string {
@@ -547,15 +600,17 @@ func escapeFFmpegFilterPath(p string) string {
 
 func formatSRT(cues []domainstudio.SubtitleCue) string {
 	var b strings.Builder
-	for i, c := range cues {
+	seq := 0
+	for _, c := range cues {
 		text := strings.TrimSpace(c.Text)
 		if text == "" {
 			continue
 		}
+		seq++
 		if c.Speaker != "" && !strings.HasPrefix(text, c.Speaker+":") {
 			text = c.Speaker + ": " + text
 		}
-		fmt.Fprintf(&b, "%d\n%s --> %s\n%s\n\n", i+1, formatSRTTimestamp(c.StartMs), formatSRTTimestamp(c.EndMs), text)
+		fmt.Fprintf(&b, "%d\n%s --> %s\n%s\n\n", seq, formatSRTTimestamp(c.StartMs), formatSRTTimestamp(c.EndMs), text)
 	}
 	return b.String()
 }

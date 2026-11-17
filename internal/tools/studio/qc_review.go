@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"app/internal/apperr"
@@ -120,12 +121,16 @@ func (n *qcReviewNode) Run(ctx context.Context, raw json.RawMessage) (any, error
 			out.FFprobeJSON = pOut.ProbeJSON
 			if pOut.Width == 0 || pOut.Height == 0 {
 				out.Issues = append(out.Issues, contracts.QCReviewIssue{
-					Severity: "error", Category: "technical", Message: "Media contains no valid visual stream dimensions",
+					Severity: "error", Category: "technical",
+					Message: "Media contains no valid visual stream dimensions",
+					MsgKey:  "studio.qc.issue.no_visual_stream",
 				})
 			}
 			if isVideo && pOut.DurationSec <= 0 {
 				out.Issues = append(out.Issues, contracts.QCReviewIssue{
-					Severity: "error", Category: "technical", Message: "Video duration is zero or unreadable",
+					Severity: "error", Category: "technical",
+					Message: "Video duration is zero or unreadable",
+					MsgKey:  "studio.qc.issue.zero_duration",
 				})
 			}
 			if isVideo && pOut.HasAudio && pOut.DurationSec > 0 {
@@ -133,7 +138,10 @@ func (n *qcReviewNode) Run(ctx context.Context, raw json.RawMessage) (any, error
 					silentRatio := detectSilenceRatio(probeCtx, ffmpegExe, mediaPath, pOut.DurationSec, n.opts.StudioConfig)
 					if silentRatio > n.opts.StudioConfig.QCSilenceWarnRatio {
 						out.Issues = append(out.Issues, contracts.QCReviewIssue{
-							Severity: "warn", Category: "audio", Message: fmt.Sprintf("Audio track is %.0f%% silent", silentRatio*100),
+							Severity: "warn", Category: "audio",
+							Message:   fmt.Sprintf("Audio track is %.0f%% silent", silentRatio*100),
+							MsgKey:    "studio.qc.issue.audio_silent",
+							MsgParams: map[string]string{"percent": strconv.Itoa(int(math.Round(silentRatio * 100)))},
 						})
 					}
 				}
@@ -162,7 +170,10 @@ func (n *qcReviewNode) Run(ctx context.Context, raw json.RawMessage) (any, error
 		}
 		if sampleErr != nil {
 			out.Issues = append(out.Issues, contracts.QCReviewIssue{
-				Severity: "warn", Category: "technical", Message: "Could not sample video frames for vision review: " + sampleErr.Error(),
+				Severity: "warn", Category: "technical",
+				Message:   "Could not sample video frames for vision review: " + sampleErr.Error(),
+				MsgKey:    "studio.qc.issue.frame_sample_failed",
+				MsgParams: map[string]string{"detail": sampleErr.Error()},
 			})
 		}
 	}
@@ -173,7 +184,9 @@ func (n *qcReviewNode) Run(ctx context.Context, raw json.RawMessage) (any, error
 
 	if n.opts.TextGen == nil || len(visionImages) == 0 {
 		out.Issues = append(out.Issues, contracts.QCReviewIssue{
-			Severity: "info", Category: "vision", Message: "Vision LLM critique skipped; technical validation only",
+			Severity: "info", Category: "vision",
+			Message: "Vision LLM critique skipped; technical validation only",
+			MsgKey:  "studio.qc.issue.vision_skipped",
 		})
 		finalizeTechnicalQC(&out)
 		progress.Report(ctx, progress.Update{Percent: 100, Message: "Technical QC complete", Key: "studio.progress.done"})
@@ -196,7 +209,10 @@ func (n *qcReviewNode) Run(ctx context.Context, raw json.RawMessage) (any, error
 	})
 	if err != nil {
 		out.Issues = append(out.Issues, contracts.QCReviewIssue{
-			Severity: "warn", Category: "vision", Message: "Vision QC unavailable: " + err.Error(),
+			Severity: "warn", Category: "vision",
+			Message:   "Vision QC unavailable: " + err.Error(),
+			MsgKey:    "studio.qc.issue.vision_unavailable",
+			MsgParams: map[string]string{"detail": err.Error()},
 		})
 		finalizeTechnicalQC(&out)
 		progress.Report(ctx, progress.Update{Percent: 100, Message: "QC completed with warnings", Key: "studio.progress.done"})

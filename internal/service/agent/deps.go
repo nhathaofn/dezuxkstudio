@@ -83,3 +83,18 @@ type StudioPhase3Manager interface {
 	UndoTimeline(ctx context.Context, p contracts.StudioTimelineRevisionNavPayload) (contracts.StudioTimelineResult, error)
 	RedoTimeline(ctx context.Context, p contracts.StudioTimelineRevisionNavPayload) (contracts.StudioTimelineResult, error)
 }
+
+// StudioExtendedManager exposes full UI-parity Studio operations (project updates, shot reorder,
+// pricing catalog updates, grid split, mask edit, continuity frame extraction, timeline assemble/peaks/render/NLE export).
+type StudioExtendedManager interface {
+	UpdateProject(ctx context.Context, p contracts.StudioProjectUpdatePayload) (contracts.StudioProjectDetailResult, error)
+	ReorderShots(ctx context.Context, p contracts.StudioShotReorderPayload) (contracts.StudioShotListResult, error)
+	UpsertPricing(ctx context.Context, p contracts.StudioPricingUpsertPayload) (contracts.StudioPricingEntry, error)
+	SplitGrid(ctx context.Context, p contracts.StudioGridSplitPayload) (contracts.StudioGridSplitResult, error)
+	ApplyMaskEdit(ctx context.Context, p contracts.StudioMaskEditPayload) (contracts.StudioMaskEditResult, error)
+	ExtractLastFrame(ctx context.Context, p contracts.StudioExtractLastFramePayload) (contracts.StudioExtractLastFrameResult, error)
+	AutoAssembleTimeline(ctx context.Context, p contracts.StudioTimelineAutoAssemblePayload) (contracts.StudioTimelineResult, error)
+	ComputeMediaPeaksThumbs(ctx context.Context, p contracts.StudioMediaPeaksThumbsPayload) (contracts.MediaPeaksThumbsOutput, error)
+	RenderTimeline(ctx context.Context, p contracts.StudioTimelineRenderPayload) (contracts.StudioTimelineRenderResult, error)
+	ExportNLEDraft(ctx context.Context, p contracts.StudioTimelineExportNLEPayload) (contracts.ExportNLEDraftOutput, error)
+}

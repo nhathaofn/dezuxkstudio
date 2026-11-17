@@ -249,6 +249,101 @@ type studioTimelineRevisionNavToolInput struct {
 	ExpectedRevision int    `json:"expected_revision" jsonschema:"Current timeline revision number required for optimistic concurrency"`
 }
 
+type studioProjectUpdateToolInput struct {
+	ID                 string  `json:"id" jsonschema:"Studio project ID or slug"`
+	Title              *string `json:"title,omitempty" jsonschema:"Updated project title"`
+	Genre              *string `json:"genre,omitempty" jsonschema:"drama|narration"`
+	ProductionMode     *string `json:"production_mode,omitempty" jsonschema:"storyboard_i2v|r2v"`
+	AspectRatio        *string `json:"aspect_ratio,omitempty" jsonschema:"Target aspect ratio e.g. 16:9 or 9:16"`
+	StylePrompt        *string `json:"style_prompt,omitempty" jsonschema:"Updated style bible prompt"`
+	AutoApproveBatches *bool   `json:"auto_approve_batches,omitempty" jsonschema:"Whether trusted workspace studio batches skip approval prompts"`
+	DefaultTextModel   *string `json:"default_text_model,omitempty"`
+	DefaultImageModel  *string `json:"default_image_model,omitempty"`
+	DefaultVideoModel  *string `json:"default_video_model,omitempty"`
+	DefaultTTSModel    *string `json:"default_tts_model,omitempty"`
+}
+
+type studioShotReorderToolInput struct {
+	EpisodeID string   `json:"episode_id" jsonschema:"Studio episode ID"`
+	ShotIDs   []string `json:"shot_ids" jsonschema:"Ordered list of shot IDs"`
+}
+
+type studioPricingUpsertToolInput struct {
+	ProviderID   string  `json:"provider_id" jsonschema:"Provider ID or * wildcard"`
+	ModelID      string  `json:"model_id" jsonschema:"Model ID or * wildcard"`
+	Capability   string  `json:"capability" jsonschema:"llm|image|video|tts|lipsync"`
+	Unit         string  `json:"unit" jsonschema:"Pricing unit e.g. image|second|1k_chars|1k_tokens"`
+	UnitPriceUSD float64 `json:"unit_price_usd" jsonschema:"USD unit rate"`
+}
+
+type studioGridSplitToolInput struct {
+	ProjectID  string    `json:"project_id" jsonschema:"Studio project ID"`
+	EpisodeID  string    `json:"episode_id,omitempty" jsonschema:"Optional episode ID"`
+	TargetKind string    `json:"target_kind,omitempty" jsonschema:"asset|keyframe|grid_panel"`
+	TargetID   string    `json:"target_id,omitempty" jsonschema:"Target asset or shot ID"`
+	ImagePath  string    `json:"image_path" jsonschema:"Path to the storyboard grid image inside the workspace"`
+	Rows       int       `json:"rows" jsonschema:"Grid row count"`
+	Cols       int       `json:"cols" jsonschema:"Grid column count"`
+	MarginPx   int       `json:"margin_px,omitempty" jsonschema:"Optional outer pixel margin"`
+	GutterPx   int       `json:"gutter_px,omitempty" jsonschema:"Optional gutter pixels between cells"`
+	RowWeights []float64 `json:"row_weights,omitempty" jsonschema:"Optional relative row proportions"`
+	ColWeights []float64 `json:"col_weights,omitempty" jsonschema:"Optional relative column proportions"`
+}
+
+type studioMaskEditToolInput struct {
+	ProjectID      string `json:"project_id" jsonschema:"Studio project ID"`
+	EpisodeID      string `json:"episode_id,omitempty" jsonschema:"Optional episode ID"`
+	TargetKind     string `json:"target_kind,omitempty" jsonschema:"asset|keyframe"`
+	TargetID       string `json:"target_id,omitempty" jsonschema:"Target asset or shot ID"`
+	ImagePath      string `json:"image_path" jsonschema:"Source image path inside the workspace"`
+	MaskPath       string `json:"mask_path,omitempty" jsonschema:"Binary mask PNG path inside the workspace (white edits, black preserves)"`
+	MaskDataBase64 string `json:"mask_data_base64,omitempty" jsonschema:"Optional base64 PNG mask when mask_path is omitted"`
+	Prompt         string `json:"prompt" jsonschema:"Inpainting / repair prompt for masked region"`
+	ModelRef       string `json:"model_ref,omitempty" jsonschema:"Optional image provider/model override"`
+}
+
+type studioExtractLastFrameToolInput struct {
+	EpisodeID    string `json:"episode_id" jsonschema:"Studio episode ID"`
+	SourceShotID string `json:"source_shot_id" jsonschema:"Source shot ID whose final frame will be extracted"`
+	TargetShotID string `json:"target_shot_id,omitempty" jsonschema:"Optional next shot ID to bind the extracted frame as keyframe"`
+}
+
+type studioTimelineAutoAssembleToolInput struct {
+	EpisodeID         string  `json:"episode_id" jsonschema:"Studio episode ID"`
+	ExpectedRevision  *int    `json:"expected_revision,omitempty" jsonschema:"Optional expected timeline revision check"`
+	Resolution        string  `json:"resolution,omitempty" jsonschema:"Output resolution WxH"`
+	FPS               int     `json:"fps,omitempty" jsonschema:"Output frame rate"`
+	TransitionDefault string  `json:"transition_default,omitempty" jsonschema:"none|fade|crossfade|wipeleft|slideleft"`
+	TransitionMs      int64   `json:"transition_ms,omitempty" jsonschema:"Transition duration in ms"`
+	BGMPath           string  `json:"bgm_path,omitempty" jsonschema:"Optional workspace BGM audio file path"`
+	BGMVolume         float64 `json:"bgm_volume,omitempty" jsonschema:"Optional BGM track gain (0..2)"`
+}
+
+type studioMediaPeaksThumbsToolInput struct {
+	EpisodeID        string  `json:"episode_id" jsonschema:"Studio episode ID"`
+	MediaPath        string  `json:"media_path" jsonschema:"Media clip path inside the workspace"`
+	ClipID           string  `json:"clip_id,omitempty" jsonschema:"Optional timeline clip ID to hydrate with peaks & sprite"`
+	ThumbIntervalSec float64 `json:"thumb_interval_sec,omitempty" jsonschema:"Optional thumbnail sampling interval seconds"`
+	PeakBins         int     `json:"peak_bins,omitempty" jsonschema:"Optional waveform peak bucket count"`
+}
+
+type studioTimelineRenderToolInput struct {
+	EpisodeID        string  `json:"episode_id" jsonschema:"Studio episode ID"`
+	Filename         string  `json:"filename,omitempty" jsonschema:"Optional output .mp4 filename"`
+	BurnSubtitles    bool    `json:"burn_subtitles,omitempty" jsonschema:"Whether to burn UTF-8 subtitles onto video"`
+	SubtitleFontSize int     `json:"subtitle_font_size,omitempty" jsonschema:"Optional burned subtitle font size"`
+	LoudnormLUFS     float64 `json:"loudnorm_lufs,omitempty" jsonschema:"Optional EBU R128 loudness target e.g. -14"`
+	CRF              *int    `json:"crf,omitempty" jsonschema:"Optional H.264 CRF (0..51)"`
+	Preset           string  `json:"preset,omitempty" jsonschema:"Optional FFmpeg encoding preset"`
+}
+
+type studioTimelineExportNLEToolInput struct {
+	EpisodeID        string `json:"episode_id" jsonschema:"Studio episode ID"`
+	Format           string `json:"format" jsonschema:"capcut|jianying|fcpxml|otio"`
+	ProjectName      string `json:"project_name,omitempty" jsonschema:"Optional exported draft project name"`
+	IncludeMediaCopy *bool  `json:"include_media_copy,omitempty" jsonschema:"Whether to copy media inside NLE draft zip"`
+}
+
 func (s *Service) registerStudioTools(server *mcpToolset) {
 	addMCPTool(server, "studio_project_list",
 		"List all AI film studio projects and the active workspace projects directory.",
@@ -309,7 +404,7 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 				st := domainstudio.EpisodeStage(strings.TrimSpace(*in.Stage))
 				stagePtr = &st
 			}
-			res, err := s.studio.SaveScript(ctx, contracts.StudioEpisodeSaveScriptPayload{
+			res, err := s.studio.SaveScript(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioEpisodeSaveScriptPayload{
 				EpisodeID:        in.EpisodeID,
 				RawScript:        in.RawScript,
 				NormalizedScript: in.NormalizedScript,
@@ -439,7 +534,7 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 			if s.studio == nil {
 				return mcpError("studio service is unavailable")
 			}
-			detail, err := s.studio.SyncWorkspace(ctx, in.ProjectID)
+			detail, err := s.studio.SyncWorkspace(engine.WithFileGuard(ctx, s.CheckTrustedFile), in.ProjectID)
 			if err != nil {
 				return mcpError(err.Error())
 			}
@@ -760,6 +855,294 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 			res, err := p3.RedoTimeline(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioTimelineRevisionNavPayload{
 				EpisodeID:        strings.TrimSpace(in.EpisodeID),
 				ExpectedRevision: in.ExpectedRevision,
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "studio_project_update",
+		"Update AI film studio project metadata, visual style bible prompt, or default model selections.",
+		func(ctx context.Context, in studioProjectUpdateToolInput) (*mcp.CallToolResult, any, error) {
+			ext, ok := s.studio.(StudioExtendedManager)
+			if !ok {
+				return mcpError("studio project updates unavailable")
+			}
+			var genrePtr *domainstudio.Genre
+			if in.Genre != nil {
+				g := domainstudio.Genre(strings.TrimSpace(*in.Genre))
+				genrePtr = &g
+			}
+			var modePtr *domainstudio.ProductionMode
+			if in.ProductionMode != nil {
+				m := domainstudio.ProductionMode(strings.TrimSpace(*in.ProductionMode))
+				modePtr = &m
+			}
+			res, err := ext.UpdateProject(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioProjectUpdatePayload{
+				ID:                 strings.TrimSpace(in.ID),
+				Title:              in.Title,
+				Genre:              genrePtr,
+				ProductionMode:     modePtr,
+				AspectRatio:        in.AspectRatio,
+				StylePrompt:        in.StylePrompt,
+				AutoApproveBatches: in.AutoApproveBatches,
+				DefaultTextModel:   in.DefaultTextModel,
+				DefaultImageModel:  in.DefaultImageModel,
+				DefaultVideoModel:  in.DefaultVideoModel,
+				DefaultTTSModel:    in.DefaultTTSModel,
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "studio_shot_reorder",
+		"Reorder storyboard shots in an episode and persist storyboard/shots.json.",
+		func(ctx context.Context, in studioShotReorderToolInput) (*mcp.CallToolResult, any, error) {
+			ext, ok := s.studio.(StudioExtendedManager)
+			if !ok {
+				return mcpError("studio shot reorder unavailable")
+			}
+			res, err := ext.ReorderShots(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioShotReorderPayload{
+				EpisodeID: strings.TrimSpace(in.EpisodeID),
+				ShotIDs:   in.ShotIDs,
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "studio_pricing_upsert",
+		"Upsert a provider/model unit rate rule in studio_pricing_catalog for cost estimates.",
+		func(ctx context.Context, in studioPricingUpsertToolInput) (*mcp.CallToolResult, any, error) {
+			ext, ok := s.studio.(StudioExtendedManager)
+			if !ok {
+				return mcpError("studio pricing catalog updates unavailable")
+			}
+			res, err := ext.UpsertPricing(ctx, contracts.StudioPricingUpsertPayload{
+				ProviderID:   strings.TrimSpace(in.ProviderID),
+				ModelID:      strings.TrimSpace(in.ModelID),
+				Capability:   strings.TrimSpace(in.Capability),
+				Unit:         strings.TrimSpace(in.Unit),
+				UnitPriceUSD: in.UnitPriceUSD,
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "studio_grid_split",
+		"Split a multi-panel grid image into individual frame files and record them in media version history.",
+		func(ctx context.Context, in studioGridSplitToolInput) (*mcp.CallToolResult, any, error) {
+			ext, ok := s.studio.(StudioExtendedManager)
+			if !ok {
+				return mcpError("studio grid split unavailable")
+			}
+			imgPath := strings.TrimSpace(in.ImagePath)
+			if imgPath != "" && s.policy != nil {
+				resolved, err := s.policy.ValidateRead(imgPath)
+				if err != nil {
+					return mcpError(err.Error())
+				}
+				imgPath = resolved
+			}
+			res, err := ext.SplitGrid(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioGridSplitPayload{
+				ProjectID:  strings.TrimSpace(in.ProjectID),
+				EpisodeID:  strings.TrimSpace(in.EpisodeID),
+				TargetKind: strings.TrimSpace(in.TargetKind),
+				TargetID:   strings.TrimSpace(in.TargetID),
+				ImagePath:  imgPath,
+				Rows:       in.Rows,
+				Cols:       in.Cols,
+				MarginPx:   in.MarginPx,
+				GutterPx:   in.GutterPx,
+				RowWeights: in.RowWeights,
+				ColWeights: in.ColWeights,
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "studio_mask_edit",
+		"Apply targeted mask inpainting to a keyframe or asset reference sheet and record the repaired output version.",
+		func(ctx context.Context, in studioMaskEditToolInput) (*mcp.CallToolResult, any, error) {
+			if s.studio == nil {
+				return mcpError("studio service is unavailable")
+			}
+			ext, ok := s.studio.(StudioExtendedManager)
+			if !ok {
+				return mcpError("studio mask edit unavailable")
+			}
+			imgPath := strings.TrimSpace(in.ImagePath)
+			if imgPath != "" && s.policy != nil {
+				resolved, err := s.policy.ValidateRead(imgPath)
+				if err != nil {
+					return mcpError(err.Error())
+				}
+				imgPath = resolved
+			}
+			maskPath := strings.TrimSpace(in.MaskPath)
+			if maskPath != "" && s.policy != nil {
+				resolved, err := s.policy.ValidateRead(maskPath)
+				if err != nil {
+					return mcpError(err.Error())
+				}
+				maskPath = resolved
+			}
+			p := contracts.StudioMaskEditPayload{
+				ProjectID:      strings.TrimSpace(in.ProjectID),
+				EpisodeID:      strings.TrimSpace(in.EpisodeID),
+				TargetKind:     strings.TrimSpace(in.TargetKind),
+				TargetID:       strings.TrimSpace(in.TargetID),
+				ImagePath:      imgPath,
+				MaskPath:       maskPath,
+				MaskDataBase64: strings.TrimSpace(in.MaskDataBase64),
+				Prompt:         strings.TrimSpace(in.Prompt),
+				ModelRef:       strings.TrimSpace(in.ModelRef),
+			}
+			if err := p.Validate(); err != nil {
+				return mcpError(err.Error())
+			}
+			projDetail, err := s.studio.GetProject(ctx, p.ProjectID)
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			prep := preparedNodeInput{Files: []string{p.ImagePath}}
+			if p.MaskPath != "" {
+				prep.Files = append(prep.Files, p.MaskPath)
+			}
+			if projDetail.Project.RootDir != "" {
+				prep.OutputDirs = []string{projDetail.Project.RootDir}
+			}
+			if projDetail.Project.AutoApproveBatches && allFileTargetsTrusted(s.policy, prep) {
+				res, rerr := ext.ApplyMaskEdit(engine.WithFileGuard(ctx, s.CheckTrustedFile), p)
+				if rerr != nil {
+					return mcpError(rerr.Error())
+				}
+				return mcpJSON(res)
+			}
+			return s.needsApproval(ctx, "studio_mask_edit", "", p, "Run studio mask edit", fmt.Sprintf("Inpaint masked area of %s", imgPath), func(execCtx context.Context) (any, error) {
+				return ext.ApplyMaskEdit(engine.WithFileGuard(execCtx, s.CheckTrustedFile), p)
+			})
+		})
+
+	addMCPTool(server, "studio_extract_last_frame",
+		"Extract the final frame of a shot's video for shot-to-shot visual continuity and optionally bind it to the next shot's keyframe.",
+		func(ctx context.Context, in studioExtractLastFrameToolInput) (*mcp.CallToolResult, any, error) {
+			ext, ok := s.studio.(StudioExtendedManager)
+			if !ok {
+				return mcpError("studio extract last frame unavailable")
+			}
+			res, err := ext.ExtractLastFrame(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioExtractLastFramePayload{
+				EpisodeID:    strings.TrimSpace(in.EpisodeID),
+				SourceShotID: strings.TrimSpace(in.SourceShotID),
+				TargetShotID: strings.TrimSpace(in.TargetShotID),
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "studio_timeline_auto_assemble",
+		"Auto-assemble ready episode shots, speech audio, subtitles, transitions, and optional BGM into a canonical multi-track EditTimeline.",
+		func(ctx context.Context, in studioTimelineAutoAssembleToolInput) (*mcp.CallToolResult, any, error) {
+			ext, ok := s.studio.(StudioExtendedManager)
+			if !ok {
+				return mcpError("studio timeline auto-assemble unavailable")
+			}
+			bgmPath := strings.TrimSpace(in.BGMPath)
+			if bgmPath != "" && s.policy != nil {
+				resolved, err := s.policy.ValidateRead(bgmPath)
+				if err != nil {
+					return mcpError(err.Error())
+				}
+				bgmPath = resolved
+			}
+			res, err := ext.AutoAssembleTimeline(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioTimelineAutoAssemblePayload{
+				EpisodeID:         strings.TrimSpace(in.EpisodeID),
+				ExpectedRevision:  in.ExpectedRevision,
+				Resolution:        strings.TrimSpace(in.Resolution),
+				FPS:               in.FPS,
+				TransitionDefault: domainstudio.TransitionType(strings.TrimSpace(in.TransitionDefault)),
+				TransitionMs:      in.TransitionMs,
+				BGMPath:           bgmPath,
+				BGMVolume:         in.BGMVolume,
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "studio_media_peaks_thumbs",
+		"Extract audio waveform RMS peaks and thumbnail sprite strips for a media clip on the timeline.",
+		func(ctx context.Context, in studioMediaPeaksThumbsToolInput) (*mcp.CallToolResult, any, error) {
+			ext, ok := s.studio.(StudioExtendedManager)
+			if !ok {
+				return mcpError("studio media peaks & thumbs unavailable")
+			}
+			mediaPath := strings.TrimSpace(in.MediaPath)
+			if mediaPath != "" && s.policy != nil {
+				resolved, err := s.policy.ValidateRead(mediaPath)
+				if err != nil {
+					return mcpError(err.Error())
+				}
+				mediaPath = resolved
+			}
+			res, err := ext.ComputeMediaPeaksThumbs(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioMediaPeaksThumbsPayload{
+				EpisodeID:        strings.TrimSpace(in.EpisodeID),
+				MediaPath:        mediaPath,
+				ClipID:           strings.TrimSpace(in.ClipID),
+				ThumbIntervalSec: in.ThumbIntervalSec,
+				PeakBins:         in.PeakBins,
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "studio_timeline_render",
+		"Render an episode's multi-track EditTimeline to a mastered MP4 with transitions, loudness normalization, and UTF-8 SRT/ASS subtitles.",
+		func(ctx context.Context, in studioTimelineRenderToolInput) (*mcp.CallToolResult, any, error) {
+			ext, ok := s.studio.(StudioExtendedManager)
+			if !ok {
+				return mcpError("studio timeline render unavailable")
+			}
+			res, err := ext.RenderTimeline(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioTimelineRenderPayload{
+				EpisodeID:        strings.TrimSpace(in.EpisodeID),
+				Filename:         strings.TrimSpace(in.Filename),
+				BurnSubtitles:    in.BurnSubtitles,
+				SubtitleFontSize: in.SubtitleFontSize,
+				LoudnormLUFS:     in.LoudnormLUFS,
+				CRF:              in.CRF,
+				Preset:           strings.TrimSpace(in.Preset),
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "studio_timeline_export_nle",
+		"Export an episode's EditTimeline into CapCut/Jianying draft zip, FCPXML, or OpenTimelineIO format.",
+		func(ctx context.Context, in studioTimelineExportNLEToolInput) (*mcp.CallToolResult, any, error) {
+			ext, ok := s.studio.(StudioExtendedManager)
+			if !ok {
+				return mcpError("studio NLE export unavailable")
+			}
+			res, err := ext.ExportNLEDraft(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioTimelineExportNLEPayload{
+				EpisodeID:        strings.TrimSpace(in.EpisodeID),
+				Format:           domainstudio.NLEExportFormat(strings.TrimSpace(in.Format)),
+				ProjectName:      strings.TrimSpace(in.ProjectName),
+				IncludeMediaCopy: in.IncludeMediaCopy,
 			})
 			if err != nil {
 				return mcpError(err.Error())

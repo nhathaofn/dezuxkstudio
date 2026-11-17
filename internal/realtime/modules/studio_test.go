@@ -63,13 +63,17 @@ func TestStudioModule_RegisterDispatchAndFileGuard(t *testing.T) {
 	})
 
 	reg := realtime.NewRegistry(contracts.ActionNames())
-	// Test FileGuard denial works during studio:episode_run_stage.
+	// Test FileGuard enforcement across studio actions (SaveScript + RunStage + Asset/Shot upserts).
 	var guardCalled bool
+	var denyAll bool
 	mod := modules.Studio{
 		Service: svc,
 		FileGuard: func(path string, write bool) error {
 			guardCalled = true
-			return apperr.New(apperr.CodeUnauthorized, "denied by guard")
+			if denyAll {
+				return apperr.New(apperr.CodeUnauthorized, "denied by guard")
+			}
+			return nil
 		},
 	}
 	mod.Register(reg)
@@ -126,7 +130,17 @@ func TestStudioModule_RegisterDispatchAndFileGuard(t *testing.T) {
 	if _, err := hSave(context.Background(), &realtime.Request{}, []byte(`{"episode_id":"`+epID+`","raw_script":"Hero walks in."}`)); err != nil {
 		t.Fatalf("studio:episode_save_script failed: %v", err)
 	}
+	if !guardCalled {
+		t.Fatal("expected FileGuard to be invoked during studio:episode_save_script")
+	}
 
+	guardCalled = false
+	denyAll = true
+	if _, err := hSave(context.Background(), &realtime.Request{}, []byte(`{"episode_id":"`+epID+`","raw_script":"Blocked write."}`)); err == nil || !apperr.IsCode(err, apperr.CodeUnauthorized) {
+		t.Fatalf("expected ERR_UNAUTHORIZED from FileGuard on studio:episode_save_script, got %v", err)
+	}
+
+	guardCalled = false
 	hRun, _ := reg.Lookup(contracts.ActionStudioEpisodeRunStage)
 	_, err = hRun(context.Background(), &realtime.Request{}, []byte(`{"episode_id":"`+epID+`","stage":"script_normalize"}`))
 	if !guardCalled {

@@ -130,9 +130,49 @@ const (
 	ActorNode  TimelineActor = "node"
 )
 
+// TimelineActors returns all valid timeline revision actors.
+func TimelineActors() []TimelineActor {
+	return []TimelineActor{ActorUser, ActorAgent, ActorNode}
+}
+
 // Valid reports whether a is a valid TimelineActor.
 func (a TimelineActor) Valid() bool {
 	return a == ActorUser || a == ActorAgent || a == ActorNode
+}
+
+// TimelineOpKind enumerates atomic EditTimeline mutation operations.
+type TimelineOpKind string
+
+const (
+	OpReplaceTimeline TimelineOpKind = "replace_timeline"
+	OpSetFormat       TimelineOpKind = "set_format"
+	OpAddTrack        TimelineOpKind = "add_track"
+	OpUpdateTrack     TimelineOpKind = "update_track"
+	OpRemoveTrack     TimelineOpKind = "remove_track"
+	OpAddClip         TimelineOpKind = "add_clip"
+	OpUpdateClip      TimelineOpKind = "update_clip"
+	OpMoveClip        TimelineOpKind = "move_clip"
+	OpRemoveClip      TimelineOpKind = "remove_clip"
+	OpSplitClip       TimelineOpKind = "split_clip"
+	OpAddSubtitle     TimelineOpKind = "add_subtitle"
+	OpUpdateSubtitle  TimelineOpKind = "update_subtitle"
+	OpRemoveSubtitle  TimelineOpKind = "remove_subtitle"
+	OpAddMarker       TimelineOpKind = "add_marker"
+	OpRemoveMarker    TimelineOpKind = "remove_marker"
+)
+
+// TimelineOpKinds returns all supported EditTimeline mutation op kinds.
+func TimelineOpKinds() []TimelineOpKind {
+	return []TimelineOpKind{
+		OpReplaceTimeline, OpSetFormat, OpAddTrack, OpUpdateTrack, OpRemoveTrack,
+		OpAddClip, OpUpdateClip, OpMoveClip, OpRemoveClip, OpSplitClip,
+		OpAddSubtitle, OpUpdateSubtitle, OpRemoveSubtitle, OpAddMarker, OpRemoveMarker,
+	}
+}
+
+// Valid reports whether k is a supported TimelineOpKind.
+func (k TimelineOpKind) Valid() bool {
+	return slices.Contains(TimelineOpKinds(), k)
 }
 
 // EditTimeline is the canonical multi-track post-production timeline shared by UI, FFmpeg render, NLE export, and Agent.

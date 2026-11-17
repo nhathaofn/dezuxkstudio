@@ -454,7 +454,7 @@ func parseShotsForAssemble(raw string) ([]domainstudio.Shot, error) {
 		return nil, apperr.Validation("shots_json is required")
 	}
 	var pkg domainstudio.ShotPromptPackage
-	if err := json.Unmarshal([]byte(trimmed), &pkg); err == nil && len(pkg.Shots) > 0 {
+	if err := json.Unmarshal([]byte(trimmed), &pkg); err == nil && pkg.Shots != nil {
 		return pkg.Shots, nil
 	}
 	var arr []domainstudio.Shot

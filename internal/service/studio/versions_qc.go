@@ -72,8 +72,8 @@ func (s *Service) SelectVersion(ctx context.Context, p contracts.StudioVersionSe
 	if s.repo == nil {
 		return contracts.StudioVersionSelectResult{}, apperr.Unavailable("studio repository unavailable")
 	}
-	if strings.TrimSpace(p.VersionID) == "" {
-		return contracts.StudioVersionSelectResult{}, apperr.Validation("version_id is required")
+	if err := p.Validate(); err != nil {
+		return contracts.StudioVersionSelectResult{}, err
 	}
 	v, err := s.repo.SelectMediaVersion(ctx, p.VersionID)
 	if err != nil {
@@ -93,6 +93,9 @@ func (s *Service) SelectVersion(ctx context.Context, p contracts.StudioVersionSe
 func (s *Service) SplitGrid(ctx context.Context, p contracts.StudioGridSplitPayload) (contracts.StudioGridSplitResult, error) {
 	if s.repo == nil || s.wf == nil {
 		return contracts.StudioGridSplitResult{}, apperr.Unavailable("studio dependencies unavailable")
+	}
+	if err := p.Validate(); err != nil {
+		return contracts.StudioGridSplitResult{}, err
 	}
 	proj, err := s.repo.GetProject(ctx, strings.TrimSpace(p.ProjectID))
 	if err != nil {
@@ -133,9 +136,9 @@ func (s *Service) SplitGrid(ctx context.Context, p contracts.StudioGridSplitPayl
 	if targetID == "" {
 		targetID = proj.ID
 	}
-	var versions []contracts.StudioMediaVersion
+	versions := make([]contracts.StudioMediaVersion, 0, len(out.Panels))
 	for _, panel := range out.Panels {
-		v, err := s.repo.CreateMediaVersion(ctx, domainstudio.MediaVersion{
+		v, verr := s.repo.CreateMediaVersion(ctx, domainstudio.MediaVersion{
 			ProjectID:  proj.ID,
 			EpisodeID:  p.EpisodeID,
 			TargetKind: targetKind,
@@ -144,9 +147,11 @@ func (s *Service) SplitGrid(ctx context.Context, p contracts.StudioGridSplitPayl
 			SourceNode: studionodes.NodeTypeGridSplit,
 			IsSelected: false,
 		})
-		if err == nil {
-			versions = append(versions, mediaVersionToDTO(v))
+		if verr != nil {
+			s.log.WarnContext(ctx, "studio: failed to persist grid split version", "path", panel.Path, "error", verr)
+			continue
 		}
+		versions = append(versions, mediaVersionToDTO(v))
 	}
 	return contracts.StudioGridSplitResult{Panels: out.Panels, Versions: versions}, nil
 }
@@ -157,12 +162,12 @@ func (s *Service) ApplyMaskEdit(ctx context.Context, p contracts.StudioMaskEditP
 	if s.repo == nil || s.wf == nil {
 		return contracts.StudioMaskEditResult{}, apperr.Unavailable("studio dependencies unavailable")
 	}
+	if err := p.Validate(); err != nil {
+		return contracts.StudioMaskEditResult{}, err
+	}
 	proj, err := s.repo.GetProject(ctx, strings.TrimSpace(p.ProjectID))
 	if err != nil {
 		return contracts.StudioMaskEditResult{}, err
-	}
-	if strings.TrimSpace(p.ImagePath) == "" || strings.TrimSpace(p.Prompt) == "" {
-		return contracts.StudioMaskEditResult{}, apperr.Validation("image_path and prompt are required")
 	}
 
 	projRoot := s.resolveProjectRoot(proj)
@@ -214,7 +219,11 @@ func (s *Service) ApplyMaskEdit(ctx context.Context, p contracts.StudioMaskEditP
 			dto := mediaVersionToDTO(*v)
 			verDTO = &dto
 		}
-		epDetail, _ = s.applyMediaPathToTarget(ctx, proj.ID, p.EpisodeID, kind, p.TargetID, out.Path, out.AssetID, "mask_edit_applied")
+		var epErr error
+		epDetail, epErr = s.applyMediaPathToTarget(ctx, proj.ID, p.EpisodeID, kind, p.TargetID, out.Path, out.AssetID, "mask_edit_applied")
+		if epErr != nil {
+			s.log.WarnContext(ctx, "studio: failed to bind mask edit result to target", "target_id", p.TargetID, "error", epErr)
+		}
 	}
 	return contracts.StudioMaskEditResult{
 		Path:    out.Path,
@@ -228,6 +237,9 @@ func (s *Service) ApplyMaskEdit(ctx context.Context, p contracts.StudioMaskEditP
 func (s *Service) ExtractLastFrame(ctx context.Context, p contracts.StudioExtractLastFramePayload) (contracts.StudioExtractLastFrameResult, error) {
 	if s.repo == nil || s.wf == nil {
 		return contracts.StudioExtractLastFrameResult{}, apperr.Unavailable("studio dependencies unavailable")
+	}
+	if err := p.Validate(); err != nil {
+		return contracts.StudioExtractLastFrameResult{}, err
 	}
 	ep, err := s.repo.GetEpisode(ctx, strings.TrimSpace(p.EpisodeID))
 	if err != nil {
@@ -274,7 +286,11 @@ func (s *Service) ExtractLastFrame(ctx context.Context, p contracts.StudioExtrac
 			dto := mediaVersionToDTO(*v)
 			verDTO = &dto
 		}
-		epDetail, _ = s.applyMediaPathToTarget(ctx, proj.ID, ep.ID, domainstudio.TargetKeyframe, targetID, out.LastFramePath, assetID, "extracted_last_frame")
+		var epErr error
+		epDetail, epErr = s.applyMediaPathToTarget(ctx, proj.ID, ep.ID, domainstudio.TargetKeyframe, targetID, out.LastFramePath, assetID, "extracted_last_frame")
+		if epErr != nil {
+			s.log.WarnContext(ctx, "studio: failed to bind extracted last frame to target shot", "target_id", targetID, "error", epErr)
+		}
 	}
 	return contracts.StudioExtractLastFrameResult{
 		FramePath: out.LastFramePath,
@@ -288,6 +304,9 @@ func (s *Service) ExtractLastFrame(ctx context.Context, p contracts.StudioExtrac
 func (s *Service) RunQCReview(ctx context.Context, p contracts.StudioQCReviewPayload) (contracts.StudioQCReport, error) {
 	if s.repo == nil || s.wf == nil {
 		return contracts.StudioQCReport{}, apperr.Unavailable("studio dependencies unavailable")
+	}
+	if err := p.Validate(); err != nil {
+		return contracts.StudioQCReport{}, err
 	}
 	proj, err := s.repo.GetProject(ctx, strings.TrimSpace(p.ProjectID))
 	if err != nil {
@@ -331,6 +350,8 @@ func (s *Service) RunQCReview(ctx context.Context, p contracts.StudioQCReviewPay
 			Severity:  iss.Severity,
 			Category:  iss.Category,
 			Message:   iss.Message,
+			MsgKey:    iss.MsgKey,
+			MsgParams: iss.MsgParams,
 			FramePath: iss.FramePath,
 		}
 	}
@@ -371,7 +392,7 @@ func (s *Service) applyMediaPathToTarget(ctx context.Context, projectID, episode
 		}
 		if proj, perr := s.repo.GetProject(ctx, projectID); perr == nil {
 			if allAssets, lerr := s.repo.ListAssets(ctx, proj.ID); lerr == nil {
-				_ = s.persistProjectToDisk(proj, allAssets)
+				s.warnDiskMirror(ctx, "asset_bible.json", s.persistProjectToDisk(ctx, proj, allAssets))
 			}
 		}
 	case domainstudio.TargetKeyframe, domainstudio.TargetVideo, domainstudio.TargetDubAudio, domainstudio.TargetLipSyncVideo:
@@ -413,7 +434,7 @@ func (s *Service) applyMediaPathToTarget(ctx context.Context, projectID, episode
 				if proj, perr := s.repo.GetProject(ctx, projectID); perr == nil {
 					if epRow, eerr := s.repo.GetEpisode(ctx, epID); eerr == nil {
 						if refreshed, lerr := s.repo.ListShots(ctx, epID); lerr == nil {
-							_ = s.syncEpisodeShotsToDisk(proj, epRow, refreshed)
+							s.warnDiskMirror(ctx, "shots.json", s.syncEpisodeShotsToDisk(ctx, proj, epRow, refreshed))
 						}
 					}
 				}

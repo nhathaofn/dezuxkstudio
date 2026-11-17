@@ -286,19 +286,27 @@ type BatchPreflightInput struct {
 	OutputDir    string  `json:"output_dir,omitempty"`
 }
 
+// BatchPreflightMessage describes a localizable warning or blocker returned by batch preflight.
+type BatchPreflightMessage struct {
+	Message   string            `json:"message"`
+	MsgKey    string            `json:"msg_key,omitempty"`
+	MsgParams map[string]string `json:"msg_params,omitempty"`
+}
+
 // BatchPreflightOutput is returned by tool.batch_preflight.
 type BatchPreflightOutput struct {
-	Ready        bool     `json:"ready"`
-	ProviderID   string   `json:"provider_id,omitempty"`
-	ModelID      string   `json:"model_id,omitempty"`
-	Capability   string   `json:"capability"`
-	ItemCount    int      `json:"item_count"`
-	Unit         string   `json:"unit"`
-	UnitPriceUSD float64  `json:"unit_price_usd"`
-	EstimatedUSD float64  `json:"estimated_usd"`
-	EstimatedSec int      `json:"estimated_sec"`
-	Warnings     []string `json:"warnings,omitempty"`
-	Blockers     []string `json:"blockers,omitempty"`
+	Ready        bool                    `json:"ready"`
+	ProviderID   string                  `json:"provider_id,omitempty"`
+	ModelID      string                  `json:"model_id,omitempty"`
+	Capability   string                  `json:"capability"`
+	ItemCount    int                     `json:"item_count"`
+	Unit         string                  `json:"unit"`
+	UnitPriceUSD float64                 `json:"unit_price_usd"`
+	EstimatedUSD float64                 `json:"estimated_usd"`
+	EstimatedSec int                     `json:"estimated_sec"`
+	Warnings     []string                `json:"warnings,omitempty"`
+	WarningItems []BatchPreflightMessage `json:"warning_items,omitempty"`
+	Blockers     []string                `json:"blockers,omitempty"`
 }
 
 // GridSplitInput is the input+params contract for tool.grid_split.
@@ -436,10 +444,12 @@ type QCReviewInput struct {
 
 // QCReviewIssue describes one issue found during automated QC inspection.
 type QCReviewIssue struct {
-	Severity  string `json:"severity"`
-	Category  string `json:"category"`
-	Message   string `json:"message"`
-	FramePath string `json:"frame_path,omitempty"`
+	Severity  string            `json:"severity"`
+	Category  string            `json:"category"`
+	Message   string            `json:"message"`
+	MsgKey    string            `json:"msg_key,omitempty"`
+	MsgParams map[string]string `json:"msg_params,omitempty"`
+	FramePath string            `json:"frame_path,omitempty"`
 }
 
 // QCReviewOutput is returned by tool.qc_review.
@@ -529,7 +539,7 @@ type RenderTimelineInput struct {
 	BurnSubtitles    bool    `json:"burn_subtitles,omitempty"`
 	SubtitleFontSize int     `json:"subtitle_font_size,omitempty"`
 	LoudnormLUFS     float64 `json:"loudnorm_lufs,omitempty"`
-	CRF              int     `json:"crf,omitempty"`
+	CRF              *int    `json:"crf,omitempty"`
 	Preset           string  `json:"preset,omitempty"`
 }
 
@@ -730,7 +740,7 @@ func (in *RenderTimelineInput) UnmarshalJSON(data []byte) error {
 		BurnSubtitles    bool            `json:"burn_subtitles,omitempty"`
 		SubtitleFontSize int             `json:"subtitle_font_size,omitempty"`
 		LoudnormLUFS     any             `json:"loudnorm_lufs,omitempty"`
-		CRF              int             `json:"crf,omitempty"`
+		CRF              *int            `json:"crf,omitempty"`
 		Preset           string          `json:"preset,omitempty"`
 	}
 	var r raw

@@ -445,6 +445,18 @@ func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) 
 				res, execErr = p2.EnqueueBatch(engine.WithFileGuard(ctx, s.CheckTrustedFile), p)
 			}
 		}
+	} else if s.studio != nil && rec.ToolName == "studio_mask_edit" {
+		ext, ok := s.studio.(StudioExtendedManager)
+		if !ok {
+			execErr = fmt.Errorf("studio mask edit unavailable")
+		} else {
+			var p contracts.StudioMaskEditPayload
+			if err := json.Unmarshal([]byte(rec.InputJSON), &p); err != nil {
+				execErr = fmt.Errorf("invalid studio mask edit input: %w", err)
+			} else {
+				res, execErr = ext.ApplyMaskEdit(engine.WithFileGuard(ctx, s.CheckTrustedFile), p)
+			}
+		}
 	} else {
 		execErr = fmt.Errorf("no executor available for approved action %s", rec.ToolName)
 	}

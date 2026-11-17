@@ -216,7 +216,7 @@ func NewVideoConcatBasicNode(opts Options) engine.Node {
 
 		assetID := ""
 		if opts.Registrar != nil {
-			item, rerr := opts.Registrar.RegisterAsset(context.Background(), media.RegisterAssetParams{
+			item, rerr := opts.Registrar.RegisterAsset(ctx, media.RegisterAssetParams{
 				Kind:           "video",
 				SourceNode:     NodeTypeVideoConcatBasic,
 				FilePath:       outPath,

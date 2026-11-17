@@ -106,6 +106,33 @@ export type StudioKenBurnsPreset = (typeof StudioKenBurnsPresetValues)[number];
 export const StudioNLEExportFormatValues = ["capcut", "jianying", "fcpxml", "otio"] as const;
 export type StudioNLEExportFormat = (typeof StudioNLEExportFormatValues)[number];
 
+export const StudioJobStatusValues = ["queued", "submitted", "polling", "paused", "succeeded", "failed", "canceled"] as const;
+export type StudioJobStatus = (typeof StudioJobStatusValues)[number];
+
+export const StudioJobKindValues = ["image", "video", "tts", "lipsync", "mask_edit", "grid_split", "extract_frames", "tts_dub_mux", "video_wm_remove", "qc_review"] as const;
+export type StudioJobKind = (typeof StudioJobKindValues)[number];
+
+export const StudioQueueActionValues = ["pause", "resume", "cancel", "retry"] as const;
+export type StudioQueueAction = (typeof StudioQueueActionValues)[number];
+
+export const StudioMediaTargetKindValues = ["asset", "keyframe", "video", "dub_audio", "lipsync_video", "grid_panel", "clean_video"] as const;
+export type StudioMediaTargetKind = (typeof StudioMediaTargetKindValues)[number];
+
+export const StudioQCStatusValues = ["pending", "pass", "warn", "fail"] as const;
+export type StudioQCStatus = (typeof StudioQCStatusValues)[number];
+
+export const StudioTimelineActorValues = ["user", "agent", "node"] as const;
+export type StudioTimelineActor = (typeof StudioTimelineActorValues)[number];
+
+export const StudioTimelineOpKindValues = ["replace_timeline", "set_format", "add_track", "update_track", "remove_track", "add_clip", "update_clip", "move_clip", "remove_clip", "split_clip", "add_subtitle", "update_subtitle", "remove_subtitle", "add_marker", "remove_marker"] as const;
+export type StudioTimelineOpKind = (typeof StudioTimelineOpKindValues)[number];
+
+export const StudioBatchStatusValues = ["running", "completed", "failed"] as const;
+export type StudioBatchStatus = (typeof StudioBatchStatusValues)[number];
+
+export const StudioProjectChangedActionValues = ["created", "updated", "deleted", "synced"] as const;
+export type StudioProjectChangedAction = (typeof StudioProjectChangedActionValues)[number];
+
 export interface ActionProgress {
   percent: number;
   message: string;
@@ -363,6 +390,12 @@ export interface BatchPreflightInput {
   output_dir?: string;
 }
 
+export interface BatchPreflightMessage {
+  message: string;
+  msg_key?: string;
+  msg_params?: Record<string, string>;
+}
+
 export interface BatchPreflightOutput {
   ready: boolean;
   provider_id?: string;
@@ -374,6 +407,7 @@ export interface BatchPreflightOutput {
   estimated_usd: number;
   estimated_sec: number;
   warnings?: string[];
+  warning_items?: BatchPreflightMessage[];
   blockers?: string[];
 }
 
@@ -997,6 +1031,8 @@ export interface QCReviewIssue {
   severity: string;
   category: string;
   message: string;
+  msg_key?: string;
+  msg_params?: Record<string, string>;
   frame_path?: string;
 }
 
@@ -1193,6 +1229,8 @@ export interface StudioBatchProgressEvent {
   target_id?: string;
   percent: number;
   message: string;
+  msg_key?: string;
+  msg_params?: Record<string, string>;
   status: string;
 }
 
@@ -2306,7 +2344,9 @@ export const LongActions: readonly ActionName[] = [
   "diagnostics:export",
   "agent:resolve_approval",
   "studio:episode_run_stage",
+  "studio:grid_split",
   "studio:mask_edit",
+  "studio:extract_last_frame",
   "studio:qc_review",
   "studio:timeline_auto_assemble",
   "studio:media_peaks_thumbs",

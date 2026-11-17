@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -215,7 +216,7 @@ func (s *Service) CreateProject(ctx context.Context, p contracts.StudioProjectCr
 		return contracts.StudioProjectDetailResult{}, err
 	}
 
-	_ = s.persistProjectToDisk(proj, nil)
+	s.warnDiskMirror(ctx, "project.json", s.persistProjectToDisk(ctx, proj, nil))
 
 	epTitle := strings.TrimSpace(p.InitialEpisodeTitle)
 	if epTitle == "" {
@@ -333,7 +334,7 @@ func (s *Service) UpdateProject(ctx context.Context, p contracts.StudioProjectUp
 		return contracts.StudioProjectDetailResult{}, err
 	}
 	assets, _ := s.repo.ListAssets(ctx, updated.ID)
-	_ = s.persistProjectToDisk(updated, assets)
+	s.warnDiskMirror(ctx, "project.json", s.persistProjectToDisk(ctx, updated, assets))
 
 	dtoProj := projectToDTO(updated)
 	s.emit(contracts.EventStudioProjectChanged, contracts.StudioProjectChangedEvent{
@@ -361,7 +362,12 @@ func (s *Service) DeleteProject(ctx context.Context, p contracts.StudioProjectDe
 	}
 	if p.DeleteFiles && proj.RootDir != "" {
 		if pDir := s.ProjectsDir(); pDir != "" && isDirectOrSubpath(pDir, proj.RootDir) {
-			_ = os.RemoveAll(proj.RootDir)
+			if cerr := engine.CheckFile(ctx, proj.RootDir, true); cerr != nil {
+				return cerr
+			}
+			if rerr := os.RemoveAll(proj.RootDir); rerr != nil {
+				s.log.WarnContext(ctx, "studio: failed to remove deleted project directory", "dir", proj.RootDir, "error", rerr)
+			}
 		}
 	}
 	s.emit(contracts.EventStudioProjectChanged, contracts.StudioProjectChangedEvent{
@@ -447,7 +453,7 @@ func (s *Service) createEpisodeInternal(ctx context.Context, proj domainstudio.P
 	}
 
 	if epRoot != "" {
-		_ = s.persistEpisodeToDisk(proj, ep, "", nil, nil, "", "")
+		s.warnDiskMirror(ctx, "episode.json", s.persistEpisodeToDisk(ctx, proj, ep, "", nil, nil, "", ""))
 	}
 	return s.GetEpisode(ctx, ep.ID)
 }
@@ -528,8 +534,8 @@ func (s *Service) SaveScript(ctx context.Context, p contracts.StudioEpisodeSaveS
 	if p.RawScript != nil {
 		rawText = *p.RawScript
 		if ep.RawScriptPath != "" {
-			if err := fsutil.WriteFileAtomic(ep.RawScriptPath, []byte(rawText), 0o644); err != nil {
-				return contracts.StudioEpisodeDetailResult{}, apperr.Internal(err)
+			if err := s.writeGuardedFile(ctx, epRoot, ep.RawScriptPath, []byte(rawText), 0o644); err != nil {
+				return contracts.StudioEpisodeDetailResult{}, err
 			}
 		}
 	}
@@ -543,8 +549,8 @@ func (s *Service) SaveScript(ctx context.Context, p contracts.StudioEpisodeSaveS
 			if merr != nil {
 				return contracts.StudioEpisodeDetailResult{}, apperr.Internal(merr)
 			}
-			if err := fsutil.WriteFileAtomic(ep.ScriptJSONPath, append(data, '\n'), 0o644); err != nil {
-				return contracts.StudioEpisodeDetailResult{}, apperr.Internal(err)
+			if err := s.writeGuardedFile(ctx, epRoot, ep.ScriptJSONPath, append(data, '\n'), 0o644); err != nil {
+				return contracts.StudioEpisodeDetailResult{}, err
 			}
 		}
 	}
@@ -563,7 +569,7 @@ func (s *Service) SaveScript(ctx context.Context, p contracts.StudioEpisodeSaveS
 		finalPath = meta.FinalVideoPath
 		finalAssetID = meta.FinalVideoAssetID
 	}
-	_ = s.persistEpisodeToDisk(proj, updatedEp, rawText, normDomain, shots, finalPath, finalAssetID)
+	s.warnDiskMirror(ctx, "episode.json", s.persistEpisodeToDisk(ctx, proj, updatedEp, rawText, normDomain, shots, finalPath, finalAssetID))
 
 	s.emit(contracts.EventStudioEpisodeUpdated, contracts.StudioEpisodeUpdatedEvent{
 		ProjectID: proj.ID,
@@ -593,7 +599,7 @@ func (s *Service) UpsertAsset(ctx context.Context, p contracts.StudioAssetUpsert
 		}
 		assets, _ := s.repo.ListAssets(ctx, existing.ProjectID)
 		if proj, perr := s.repo.GetProject(ctx, existing.ProjectID); perr == nil {
-			_ = s.persistProjectToDisk(proj, assets)
+			s.warnDiskMirror(ctx, "asset_bible.json", s.persistProjectToDisk(ctx, proj, assets))
 			dtoProj := projectToDTO(proj)
 			s.emit(contracts.EventStudioProjectChanged, contracts.StudioProjectChangedEvent{
 				ProjectID: proj.ID,
@@ -635,7 +641,7 @@ func (s *Service) UpsertAsset(ctx context.Context, p contracts.StudioAssetUpsert
 		return contracts.StudioAssetUpsertResult{}, err
 	}
 	assets, _ := s.repo.ListAssets(ctx, proj.ID)
-	_ = s.persistProjectToDisk(proj, assets)
+	s.warnDiskMirror(ctx, "asset_bible.json", s.persistProjectToDisk(ctx, proj, assets))
 
 	dtoProj := projectToDTO(proj)
 	s.emit(contracts.EventStudioProjectChanged, contracts.StudioProjectChangedEvent{
@@ -747,7 +753,7 @@ func (s *Service) UpsertShot(ctx context.Context, p contracts.StudioShotUpsertPa
 		return contracts.StudioShotUpsertResult{}, err
 	}
 	shots, _ := s.repo.ListShots(ctx, ep.ID)
-	_ = s.syncEpisodeShotsToDisk(proj, ep, shots)
+	s.warnDiskMirror(ctx, "shots.json", s.syncEpisodeShotsToDisk(ctx, proj, ep, shots))
 
 	s.emit(contracts.EventStudioEpisodeUpdated, contracts.StudioEpisodeUpdatedEvent{
 		ProjectID: proj.ID,
@@ -779,7 +785,7 @@ func (s *Service) ReorderShots(ctx context.Context, p contracts.StudioShotReorde
 	if err != nil {
 		return contracts.StudioShotListResult{}, err
 	}
-	_ = s.syncEpisodeShotsToDisk(proj, ep, reordered)
+	s.warnDiskMirror(ctx, "shots.json", s.syncEpisodeShotsToDisk(ctx, proj, ep, reordered))
 	s.emit(contracts.EventStudioEpisodeUpdated, contracts.StudioEpisodeUpdatedEvent{
 		ProjectID: proj.ID,
 		EpisodeID: ep.ID,
@@ -826,6 +832,9 @@ func (s *Service) SyncWorkspace(ctx context.Context, projectID string) (*contrac
 		}
 		projRoot := filepath.Join(pDir, entry.Name())
 		projFile := filepath.Join(projRoot, "project.json")
+		if cerr := engine.CheckFile(ctx, projFile, false); cerr != nil {
+			continue
+		}
 		data, rerr := os.ReadFile(projFile)
 		if rerr != nil {
 			continue
@@ -890,55 +899,60 @@ func (s *Service) syncSingleProjectFromDisk(ctx context.Context, proj domainstud
 	}
 
 	// Sync project.json metadata if modified on disk.
-	if b, err := os.ReadFile(filepath.Join(projRoot, "project.json")); err == nil {
-		var dp domainstudio.Project
-		if json.Unmarshal(b, &dp) == nil && dp.Title != "" {
-			proj.Title = dp.Title
-			if dp.Genre != "" {
-				proj.Genre = dp.Genre
-			}
-			if dp.ProductionMode != "" {
-				proj.ProductionMode = dp.ProductionMode
-			}
-			if dp.AspectRatio != "" {
-				proj.AspectRatio = dp.AspectRatio
-			}
-			proj.StylePrompt = dp.StylePrompt
-			proj.AutoApproveBatches = dp.AutoApproveBatches
-			if updated, uerr := s.repo.UpdateProject(ctx, proj); uerr == nil {
-				proj = updated
+	projJSONPath := filepath.Join(projRoot, "project.json")
+	if engine.CheckFile(ctx, projJSONPath, false) == nil {
+		if b, err := os.ReadFile(projJSONPath); err == nil {
+			var dp domainstudio.Project
+			if json.Unmarshal(b, &dp) == nil && dp.Title != "" {
+				proj.Title = dp.Title
+				if dp.Genre != "" {
+					proj.Genre = dp.Genre
+				}
+				if dp.ProductionMode != "" {
+					proj.ProductionMode = dp.ProductionMode
+				}
+				if dp.AspectRatio != "" {
+					proj.AspectRatio = dp.AspectRatio
+				}
+				proj.StylePrompt = dp.StylePrompt
+				proj.AutoApproveBatches = dp.AutoApproveBatches
+				if updated, uerr := s.repo.UpdateProject(ctx, proj); uerr == nil {
+					proj = updated
+				}
 			}
 		}
 	}
 
 	// Sync asset_bible.json -> studio_assets.
 	biblePath := filepath.Join(projRoot, "assets", "asset_bible.json")
-	if b, err := os.ReadFile(biblePath); err == nil {
-		var pkg domainstudio.AssetBiblePackage
-		if json.Unmarshal(b, &pkg) == nil {
-			existingAssets, _ := s.repo.ListAssets(ctx, proj.ID)
-			byTag := make(map[string]domainstudio.AssetEntry, len(existingAssets))
-			for _, ea := range existingAssets {
-				byTag[strings.ToLower(ea.CodeTag)] = ea
-			}
-			merged := make([]domainstudio.AssetEntry, 0, len(pkg.Assets))
-			for _, da := range pkg.Assets {
-				da.ProjectID = proj.ID
-				da.Normalize()
-				if prev, ok := byTag[strings.ToLower(da.CodeTag)]; ok {
-					if da.ID == "" {
-						da.ID = prev.ID
-					}
-					if da.PrimaryPath == "" {
-						da.PrimaryPath = prev.PrimaryPath
-					}
-					if da.PrimaryAssetID == "" {
-						da.PrimaryAssetID = prev.PrimaryAssetID
-					}
+	if engine.CheckFile(ctx, biblePath, false) == nil {
+		if b, err := os.ReadFile(biblePath); err == nil {
+			var pkg domainstudio.AssetBiblePackage
+			if json.Unmarshal(b, &pkg) == nil {
+				existingAssets, _ := s.repo.ListAssets(ctx, proj.ID)
+				byTag := make(map[string]domainstudio.AssetEntry, len(existingAssets))
+				for _, ea := range existingAssets {
+					byTag[strings.ToLower(ea.CodeTag)] = ea
 				}
-				merged = append(merged, da)
+				merged := make([]domainstudio.AssetEntry, 0, len(pkg.Assets))
+				for _, da := range pkg.Assets {
+					da.ProjectID = proj.ID
+					da.Normalize()
+					if prev, ok := byTag[strings.ToLower(da.CodeTag)]; ok {
+						if da.ID == "" {
+							da.ID = prev.ID
+						}
+						if da.PrimaryPath == "" {
+							da.PrimaryPath = prev.PrimaryPath
+						}
+						if da.PrimaryAssetID == "" {
+							da.PrimaryAssetID = prev.PrimaryAssetID
+						}
+					}
+					merged = append(merged, da)
+				}
+				_, _ = s.repo.ReplaceAssets(ctx, proj.ID, merged)
 			}
-			_, _ = s.repo.ReplaceAssets(ctx, proj.ID, merged)
 		}
 	}
 
@@ -982,58 +996,63 @@ func (s *Service) syncSingleProjectFromDisk(ctx context.Context, proj domainstud
 					ep = updatedEp
 				}
 			}
-			if b, serr := os.ReadFile(filepath.Join(epRoot, "storyboard", "shots.json")); serr == nil {
-				var sp domainstudio.ShotPromptPackage
-				if json.Unmarshal(b, &sp) == nil {
-					existingShots, _ := s.repo.ListShots(ctx, ep.ID)
-					byID := make(map[string]domainstudio.Shot, len(existingShots))
-					bySeq := make(map[int]domainstudio.Shot, len(existingShots))
-					for _, es := range existingShots {
-						byID[es.ID] = es
-						bySeq[es.Seq] = es
+			shotsDiskPath := filepath.Join(epRoot, "storyboard", "shots.json")
+			if engine.CheckFile(ctx, shotsDiskPath, false) == nil {
+				if b, serr := os.ReadFile(shotsDiskPath); serr == nil {
+					var sp domainstudio.ShotPromptPackage
+					if json.Unmarshal(b, &sp) == nil {
+						existingShots, _ := s.repo.ListShots(ctx, ep.ID)
+						byID := make(map[string]domainstudio.Shot, len(existingShots))
+						bySeq := make(map[int]domainstudio.Shot, len(existingShots))
+						for _, es := range existingShots {
+							byID[es.ID] = es
+							bySeq[es.Seq] = es
+						}
+						merged := make([]domainstudio.Shot, 0, len(sp.Shots))
+						for i, ds := range sp.Shots {
+							ds.EpisodeID = ep.ID
+							if ds.Seq <= 0 {
+								ds.Seq = i + 1
+							}
+							prev, ok := byID[ds.ID]
+							if !ok {
+								prev, ok = bySeq[ds.Seq]
+							}
+							if ok {
+								if ds.ID == "" {
+									ds.ID = prev.ID
+								}
+								if ds.KeyframePath == "" {
+									ds.KeyframePath = prev.KeyframePath
+									ds.KeyframeAssetID = prev.KeyframeAssetID
+								}
+								if ds.VideoPath == "" {
+									ds.VideoPath = prev.VideoPath
+									ds.VideoAssetID = prev.VideoAssetID
+								}
+								if ds.AudioPath == "" {
+									ds.AudioPath = prev.AudioPath
+									ds.AudioAssetID = prev.AudioAssetID
+								}
+							}
+							merged = append(merged, ds)
+						}
+						_, _ = s.repo.ReplaceShots(ctx, ep.ID, merged)
 					}
-					merged := make([]domainstudio.Shot, 0, len(sp.Shots))
-					for i, ds := range sp.Shots {
-						ds.EpisodeID = ep.ID
-						if ds.Seq <= 0 {
-							ds.Seq = i + 1
-						}
-						prev, ok := byID[ds.ID]
-						if !ok {
-							prev, ok = bySeq[ds.Seq]
-						}
-						if ok {
-							if ds.ID == "" {
-								ds.ID = prev.ID
-							}
-							if ds.KeyframePath == "" {
-								ds.KeyframePath = prev.KeyframePath
-								ds.KeyframeAssetID = prev.KeyframeAssetID
-							}
-							if ds.VideoPath == "" {
-								ds.VideoPath = prev.VideoPath
-								ds.VideoAssetID = prev.VideoAssetID
-							}
-							if ds.AudioPath == "" {
-								ds.AudioPath = prev.AudioPath
-								ds.AudioAssetID = prev.AudioAssetID
-							}
-						}
-						merged = append(merged, ds)
-					}
-					_, _ = s.repo.ReplaceShots(ctx, ep.ID, merged)
 				}
 			}
-			if tb, terr := os.ReadFile(timelinePath); terr == nil {
-				var diskTL domainstudio.EditTimeline
-				if json.Unmarshal(tb, &diskTL) == nil && len(diskTL.Tracks) > 0 {
-					diskTL.Normalize()
-					diskCanon, _ := json.Marshal(diskTL)
-					if curRec, rerr := s.repo.GetTimeline(ctx, ep.ID); rerr == nil {
-						curCanon, _ := json.Marshal(curRec.Timeline)
-						if string(diskCanon) != string(curCanon) {
-							if _, serr := s.repo.SaveTimelineRevision(ctx, ep.ID, curRec.Revision, domainstudio.ActorUser, "disk sync", diskTL); serr == nil {
-								s.log.Debug("reconciled timeline.json from disk", "episode_id", ep.ID)
+			if engine.CheckFile(ctx, timelinePath, false) == nil {
+				if tb, terr := os.ReadFile(timelinePath); terr == nil {
+					var diskTL domainstudio.EditTimeline
+					if json.Unmarshal(tb, &diskTL) == nil && len(diskTL.Tracks) > 0 {
+						diskTL.Normalize()
+						diskCanon, _ := json.Marshal(diskTL)
+						if curRec, rerr := s.repo.GetTimeline(ctx, ep.ID); rerr == nil {
+							curCanon, _ := json.Marshal(curRec.Timeline)
+							if string(diskCanon) != string(curCanon) {
+								if _, serr := s.repo.SaveTimelineRevision(ctx, ep.ID, curRec.Revision, domainstudio.ActorUser, "disk sync", diskTL); serr == nil {
+									s.log.Debug("reconciled timeline.json from disk", "episode_id", ep.ID)
+								}
 							}
 						}
 					}
@@ -1238,7 +1257,7 @@ func (s *Service) runExtractAssets(ctx context.Context, proj domainstudio.Projec
 		ep.AssetsJSONPath = out.AssetsPath
 		_, _ = s.repo.UpdateEpisode(ctx, ep)
 	}
-	_ = s.persistProjectToDisk(proj, savedAssets)
+	s.warnDiskMirror(ctx, "asset_bible.json", s.persistProjectToDisk(ctx, proj, savedAssets))
 
 	detail, err := s.GetEpisode(ctx, ep.ID)
 	if err != nil {
@@ -1319,7 +1338,7 @@ func (s *Service) runAuthorShots(ctx context.Context, proj domainstudio.Project,
 	if _, err := s.repo.UpdateEpisode(ctx, ep); err != nil {
 		return contracts.StudioRunStageResult{}, err
 	}
-	_ = s.syncEpisodeShotsToDisk(proj, ep, savedShots)
+	s.warnDiskMirror(ctx, "shots.json", s.syncEpisodeShotsToDisk(ctx, proj, ep, savedShots))
 
 	detail, err := s.GetEpisode(ctx, ep.ID)
 	if err != nil {
@@ -1400,12 +1419,12 @@ func (s *Service) runGenerateAssets(ctx context.Context, proj domainstudio.Proje
 			lastErr = uerr
 			continue
 		}
-		s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetAsset, asset.ID, out.Path, mediagennodes.NodeTypeImage, prompt, p.Model)
+		s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetAsset, asset.ID, out.Path, mediagennodes.NodeTypeImage, prompt, model)
 		completed++
 	}
 
 	if allAssets, lerr := s.repo.ListAssets(ctx, proj.ID); lerr == nil {
-		_ = s.persistProjectToDisk(proj, allAssets)
+		s.warnDiskMirror(ctx, "asset_bible.json", s.persistProjectToDisk(ctx, proj, allAssets))
 	}
 	status := "completed"
 	if failed > 0 && completed == 0 {
@@ -1503,7 +1522,7 @@ func (s *Service) runGenerateKeyframes(ctx context.Context, proj domainstudio.Pr
 		}
 		shot.ErrorText = ""
 		_, _ = s.repo.UpsertShot(ctx, shot)
-		s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetKeyframe, shot.ID, out.Path, mediagennodes.NodeTypeImage, prompt, p.Model)
+		s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetKeyframe, shot.ID, out.Path, mediagennodes.NodeTypeImage, prompt, model)
 		completed++
 	}
 
@@ -1512,7 +1531,7 @@ func (s *Service) runGenerateKeyframes(ctx context.Context, proj domainstudio.Pr
 		_, _ = s.repo.UpdateEpisode(ctx, ep)
 	}
 	if refreshed, lerr := s.repo.ListShots(ctx, ep.ID); lerr == nil {
-		_ = s.syncEpisodeShotsToDisk(proj, ep, refreshed)
+		s.warnDiskMirror(ctx, "shots.json", s.syncEpisodeShotsToDisk(ctx, proj, ep, refreshed))
 	}
 	status := "completed"
 	if failed > 0 && completed == 0 {
@@ -1656,7 +1675,7 @@ func (s *Service) runGenerateVideos(ctx context.Context, proj domainstudio.Proje
 				shot.Status = domainstudio.ShotVideoReady
 				shot.ErrorText = ""
 				_, _ = s.repo.UpsertShot(ctx, shot)
-				s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetVideo, shot.ID, out.Path, mediagennodes.NodeTypeVideo, shot.VideoPrompt, p.Model)
+				s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetVideo, shot.ID, out.Path, mediagennodes.NodeTypeVideo, shot.VideoPrompt, model)
 
 				stateMu.Lock()
 				completed++
@@ -1673,7 +1692,7 @@ func (s *Service) runGenerateVideos(ctx context.Context, proj domainstudio.Proje
 	}
 
 	if refreshed, lerr := s.repo.ListShots(ctx, ep.ID); lerr == nil {
-		_ = s.syncEpisodeShotsToDisk(proj, ep, refreshed)
+		s.warnDiskMirror(ctx, "shots.json", s.syncEpisodeShotsToDisk(ctx, proj, ep, refreshed))
 	}
 	if completed > 0 && ep.Stage != domainstudio.StageExport {
 		ep.Stage = domainstudio.StageVideo
@@ -1733,7 +1752,15 @@ func (s *Service) runGenerateTTS(ctx context.Context, proj domainstudio.Project,
 		outDir = filepath.Join(epRoot, "media", "tts")
 		_ = os.MkdirAll(outDir, 0o755)
 	}
-	model := firstNonEmpty(p.Model, proj.DefaultTTSModel)
+
+	assets, _ := s.repo.ListAssets(ctx, proj.ID)
+	voiceBySpeaker := map[string]domainstudio.AssetEntry{}
+	for _, a := range assets {
+		if a.Kind == domainstudio.AssetCharacter && (a.VoiceID != "" || a.VoiceProvider != "") {
+			voiceBySpeaker[strings.ToLower(strings.TrimSpace(a.Name))] = a
+			voiceBySpeaker[strings.ToLower(strings.TrimSpace(a.CodeTag))] = a
+		}
+	}
 
 	completed, failed := 0, 0
 	var lastErr error
@@ -1741,11 +1768,12 @@ func (s *Service) runGenerateTTS(ctx context.Context, proj domainstudio.Project,
 		if ctx.Err() != nil {
 			return contracts.StudioRunStageResult{}, ctx.Err()
 		}
+		shotModel, shotVoice := resolveShotVoiceConfig(shot, p.Model, proj.DefaultTTSModel, p.Voice, voiceBySpeaker)
 		s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), idx+1, len(targets), shot.ID, fmt.Sprintf("Synthesizing TTS for shot #%d", shot.Seq), "running")
 		reqBytes, _ := json.Marshal(mediagennodes.TTSGenerateInput{
 			Text:      shotSpeechText(shot),
-			Model:     model,
-			Voice:     p.Voice,
+			Model:     shotModel,
+			Voice:     shotVoice,
 			OutputDir: outDir,
 		})
 		rawOut, rerr := s.wf.RunNode(ctx, mediagennodes.NodeTypeTTS, reqBytes)
@@ -1767,13 +1795,15 @@ func (s *Service) runGenerateTTS(ctx context.Context, proj domainstudio.Project,
 		if shot.Status == domainstudio.ShotPending || shot.Status == domainstudio.ShotKeyframeReady {
 			shot.Status = domainstudio.ShotTTSReady
 		}
-		_, _ = s.repo.UpsertShot(ctx, shot)
-		s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetDubAudio, shot.ID, out.Path, mediagennodes.NodeTypeTTS, shotSpeechText(shot), p.Model)
+		if _, uerr := s.repo.UpsertShot(ctx, shot); uerr != nil {
+			s.log.WarnContext(ctx, "studio: failed to update shot audio metadata", "shot_id", shot.ID, "error", uerr)
+		}
+		s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetDubAudio, shot.ID, out.Path, mediagennodes.NodeTypeTTS, shotSpeechText(shot), shotModel)
 		completed++
 	}
 
 	if refreshed, lerr := s.repo.ListShots(ctx, ep.ID); lerr == nil {
-		_ = s.syncEpisodeShotsToDisk(proj, ep, refreshed)
+		s.warnDiskMirror(ctx, "shots.json", s.syncEpisodeShotsToDisk(ctx, proj, ep, refreshed))
 	}
 	status := "completed"
 	if failed > 0 && completed == 0 {
@@ -1935,7 +1965,7 @@ func (s *Service) runConcatVideo(ctx context.Context, proj domainstudio.Project,
 			normPtr = &ns
 		}
 	}
-	_ = s.persistEpisodeToDisk(proj, ep, rawText, normPtr, shots, out.OutputPath, out.AssetID)
+	s.warnDiskMirror(ctx, "episode.json", s.persistEpisodeToDisk(ctx, proj, ep, rawText, normPtr, shots, out.OutputPath, out.AssetID))
 
 	detail, err := s.GetEpisode(ctx, ep.ID)
 	if err != nil {
@@ -1983,9 +2013,17 @@ func (s *Service) reportBatchProgress(ctx context.Context, projectID, episodeID,
 	if total > 0 {
 		pct = float64(cur) / float64(total) * 100.0
 	}
+	msgKey := "studio.batch." + stage + "." + status
+	msgParams := map[string]string{
+		"current": strconv.Itoa(cur),
+		"total":   strconv.Itoa(total),
+		"stage":   stage,
+	}
 	progress.Report(ctx, progress.Update{
 		Percent: pct,
 		Message: msg,
+		Key:     msgKey,
+		Params:  msgParams,
 	})
 	s.emit(contracts.EventStudioBatchProgress, contracts.StudioBatchProgressEvent{
 		ProjectID: projectID,
@@ -1996,6 +2034,8 @@ func (s *Service) reportBatchProgress(ctx context.Context, projectID, episodeID,
 		TargetID:  targetID,
 		Percent:   pct,
 		Message:   msg,
+		MsgKey:    msgKey,
+		MsgParams: msgParams,
 		Status:    status,
 	})
 }
@@ -2018,7 +2058,31 @@ func (s *Service) resolveEpisodeRoot(proj domainstudio.Project, epCode string) s
 	return filepath.Join(projRoot, "episodes", epCode)
 }
 
-func (s *Service) persistProjectToDisk(proj domainstudio.Project, assets []domainstudio.AssetEntry) error {
+func (s *Service) warnDiskMirror(ctx context.Context, artifact string, err error) {
+	if err != nil {
+		s.log.WarnContext(ctx, "studio: disk workspace mirror skipped or failed", "artifact", artifact, "error", err)
+	}
+}
+
+func (s *Service) writeGuardedFile(ctx context.Context, rootDir, targetPath string, data []byte, perm os.FileMode) error {
+	cleanRoot := filepath.Clean(strings.TrimSpace(rootDir))
+	cleanTarget := filepath.Clean(strings.TrimSpace(targetPath))
+	if cleanRoot == "" || cleanTarget == "" || !isWithinBaseDir(cleanRoot, cleanTarget) {
+		return apperr.Validation("workspace artifact path escapes project directory")
+	}
+	if err := engine.CheckFile(ctx, cleanTarget, true); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(cleanTarget), 0o755); err != nil {
+		return apperr.Internal(err)
+	}
+	if err := fsutil.WriteFileAtomic(cleanTarget, data, perm); err != nil {
+		return apperr.Internal(err)
+	}
+	return nil
+}
+
+func (s *Service) persistProjectToDisk(ctx context.Context, proj domainstudio.Project, assets []domainstudio.AssetEntry) error {
 	projRoot := s.resolveProjectRoot(proj)
 	if projRoot == "" {
 		return nil
@@ -2026,19 +2090,23 @@ func (s *Service) persistProjectToDisk(proj domainstudio.Project, assets []domai
 	if err := ensureProjectDirs(projRoot); err != nil {
 		return err
 	}
-	if pb, err := json.MarshalIndent(proj, "", "  "); err == nil {
-		_ = fsutil.WriteFileAtomic(filepath.Join(projRoot, "project.json"), append(pb, '\n'), 0o644)
+	if pb, err := json.MarshalIndent(proj, "", "  "); err != nil {
+		return apperr.Internal(err)
+	} else if werr := s.writeGuardedFile(ctx, projRoot, filepath.Join(projRoot, "project.json"), append(pb, '\n'), 0o644); werr != nil {
+		return werr
 	}
 	if ab, err := json.MarshalIndent(domainstudio.AssetBiblePackage{
 		StylePrompt: proj.StylePrompt,
 		Assets:      assets,
-	}, "", "  "); err == nil {
-		_ = fsutil.WriteFileAtomic(filepath.Join(projRoot, "assets", "asset_bible.json"), append(ab, '\n'), 0o644)
+	}, "", "  "); err != nil {
+		return apperr.Internal(err)
+	} else if werr := s.writeGuardedFile(ctx, projRoot, filepath.Join(projRoot, "assets", "asset_bible.json"), append(ab, '\n'), 0o644); werr != nil {
+		return werr
 	}
 	return nil
 }
 
-func (s *Service) syncEpisodeShotsToDisk(proj domainstudio.Project, ep domainstudio.Episode, shots []domainstudio.Shot) error {
+func (s *Service) syncEpisodeShotsToDisk(ctx context.Context, proj domainstudio.Project, ep domainstudio.Episode, shots []domainstudio.Shot) error {
 	epRoot := s.resolveEpisodeRoot(proj, ep.Code)
 	if epRoot == "" {
 		return nil
@@ -2059,10 +2127,10 @@ func (s *Service) syncEpisodeShotsToDisk(proj domainstudio.Project, ep domainstu
 	if target == "" {
 		target = filepath.Join(epRoot, "storyboard", "shots.json")
 	}
-	return fsutil.WriteFileAtomic(target, append(data, '\n'), 0o644)
+	return s.writeGuardedFile(ctx, epRoot, target, append(data, '\n'), 0o644)
 }
 
-func (s *Service) persistEpisodeToDisk(proj domainstudio.Project, ep domainstudio.Episode, rawScript string, normScript *domainstudio.NormalizedScript, shots []domainstudio.Shot, finalPath, finalAssetID string) error {
+func (s *Service) persistEpisodeToDisk(ctx context.Context, proj domainstudio.Project, ep domainstudio.Episode, rawScript string, normScript *domainstudio.NormalizedScript, shots []domainstudio.Shot, finalPath, finalAssetID string) error {
 	epRoot := s.resolveEpisodeRoot(proj, ep.Code)
 	if epRoot == "" {
 		return nil
@@ -2075,19 +2143,27 @@ func (s *Service) persistEpisodeToDisk(proj domainstudio.Project, ep domainstudi
 		FinalVideoPath:    finalPath,
 		FinalVideoAssetID: finalAssetID,
 	}
-	if mb, err := json.MarshalIndent(meta, "", "  "); err == nil {
-		_ = fsutil.WriteFileAtomic(filepath.Join(epRoot, "episode.json"), append(mb, '\n'), 0o644)
+	if mb, err := json.MarshalIndent(meta, "", "  "); err != nil {
+		return apperr.Internal(err)
+	} else if werr := s.writeGuardedFile(ctx, epRoot, filepath.Join(epRoot, "episode.json"), append(mb, '\n'), 0o644); werr != nil {
+		return werr
 	}
 	if rawScript != "" && ep.RawScriptPath != "" {
-		_ = fsutil.WriteFileAtomic(ep.RawScriptPath, []byte(rawScript), 0o644)
+		if werr := s.writeGuardedFile(ctx, epRoot, ep.RawScriptPath, []byte(rawScript), 0o644); werr != nil {
+			return werr
+		}
 	}
 	if normScript != nil && ep.ScriptJSONPath != "" {
-		if sb, err := json.MarshalIndent(normScript, "", "  "); err == nil {
-			_ = fsutil.WriteFileAtomic(ep.ScriptJSONPath, append(sb, '\n'), 0o644)
+		if sb, err := json.MarshalIndent(normScript, "", "  "); err != nil {
+			return apperr.Internal(err)
+		} else if werr := s.writeGuardedFile(ctx, epRoot, ep.ScriptJSONPath, append(sb, '\n'), 0o644); werr != nil {
+			return werr
 		}
 	}
 	if len(shots) > 0 {
-		_ = s.syncEpisodeShotsToDisk(proj, ep, shots)
+		if werr := s.syncEpisodeShotsToDisk(ctx, proj, ep, shots); werr != nil {
+			return werr
+		}
 	}
 	return nil
 }

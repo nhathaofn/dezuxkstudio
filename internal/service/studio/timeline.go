@@ -92,8 +92,7 @@ func (s *Service) ApplyTimelineOps(ctx context.Context, p contracts.StudioTimeli
 		return contracts.StudioTimelineResult{}, err
 	}
 
-	ep, timelinePath := s.persistTimelineJSON(ctx, proj, ep, saved.Timeline)
-	_ = ep
+	_, timelinePath := s.persistTimelineJSON(ctx, proj, ep, saved.Timeline)
 	revs, _ := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
 	s.emitTimelineChanged(proj.ID, saved, string(actor), summary)
 	return timelineResultToDTO(proj.ID, timelinePath, saved, revs), nil
@@ -122,8 +121,7 @@ func (s *Service) UndoTimeline(ctx context.Context, p contracts.StudioTimelineRe
 		return contracts.StudioTimelineResult{}, err
 	}
 	s.hydrateTimelineClipAssets(ctx, s.resolveEpisodeRoot(proj, ep.Code), &rec.Timeline)
-	ep, timelinePath := s.persistTimelineJSON(ctx, proj, ep, rec.Timeline)
-	_ = ep
+	_, timelinePath := s.persistTimelineJSON(ctx, proj, ep, rec.Timeline)
 	revs, _ := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
 	s.emitTimelineChanged(proj.ID, rec, string(domainstudio.ActorUser), "undo")
 	return timelineResultToDTO(proj.ID, timelinePath, rec, revs), nil
@@ -152,8 +150,7 @@ func (s *Service) RedoTimeline(ctx context.Context, p contracts.StudioTimelineRe
 		return contracts.StudioTimelineResult{}, err
 	}
 	s.hydrateTimelineClipAssets(ctx, s.resolveEpisodeRoot(proj, ep.Code), &rec.Timeline)
-	ep, timelinePath := s.persistTimelineJSON(ctx, proj, ep, rec.Timeline)
-	_ = ep
+	_, timelinePath := s.persistTimelineJSON(ctx, proj, ep, rec.Timeline)
 	revs, _ := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
 	s.emitTimelineChanged(proj.ID, rec, string(domainstudio.ActorUser), "redo")
 	return timelineResultToDTO(proj.ID, timelinePath, rec, revs), nil
@@ -265,8 +262,7 @@ func (s *Service) AutoAssembleTimeline(ctx context.Context, p contracts.StudioTi
 		return contracts.StudioTimelineResult{}, err
 	}
 
-	ep, timelinePath := s.persistTimelineJSON(ctx, proj, ep, saved.Timeline)
-	_ = ep
+	_, timelinePath := s.persistTimelineJSON(ctx, proj, ep, saved.Timeline)
 	revs, _ := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
 	s.emitTimelineChanged(proj.ID, saved, string(domainstudio.ActorNode), summary)
 	return timelineResultToDTO(proj.ID, timelinePath, saved, revs), nil
@@ -413,7 +409,7 @@ func (s *Service) RenderTimeline(ctx context.Context, p contracts.StudioTimeline
 			normPtr = &ns
 		}
 	}
-	_ = s.persistEpisodeToDisk(proj, ep, rawText, normPtr, shots, nodeOut.OutputPath, nodeOut.AssetID)
+	s.warnDiskMirror(ctx, "episode.json", s.persistEpisodeToDisk(ctx, proj, ep, rawText, normPtr, shots, nodeOut.OutputPath, nodeOut.AssetID))
 
 	detail, err := s.GetEpisode(ctx, ep.ID)
 	if err != nil {
@@ -688,12 +684,21 @@ func (s *Service) resolveTimelineJSONPath(proj domainstudio.Project, ep domainst
 func (s *Service) persistTimelineJSON(ctx context.Context, proj domainstudio.Project, ep domainstudio.Episode, tl domainstudio.EditTimeline) (domainstudio.Episode, string) {
 	epRoot := s.resolveEpisodeRoot(proj, ep.Code)
 	timelinePath := s.resolveTimelineJSONPath(proj, ep)
-	if epRoot == "" || timelinePath == "" {
+	if epRoot == "" || timelinePath == "" || !isWithinBaseDir(epRoot, timelinePath) {
 		return ep, timelinePath
 	}
-	_ = ensureEpisodeDirs(epRoot)
-	if b, err := json.MarshalIndent(tl, "", "  "); err == nil {
-		_ = fsutil.WriteFileAtomic(timelinePath, append(b, '\n'), 0o644)
+	if err := engine.CheckFile(ctx, timelinePath, true); err != nil {
+		s.log.WarnContext(ctx, "studio: timeline.json write rejected by file guard", "path", timelinePath, "error", err)
+		return ep, timelinePath
+	}
+	if err := ensureEpisodeDirs(epRoot); err != nil {
+		s.log.WarnContext(ctx, "studio: failed to ensure episode dirs for timeline", "error", err)
+		return ep, timelinePath
+	}
+	if b, err := json.MarshalIndent(tl, "", "  "); err != nil {
+		s.log.WarnContext(ctx, "studio: failed to encode timeline.json", "error", err)
+	} else if werr := fsutil.WriteFileAtomic(timelinePath, append(b, '\n'), 0o644); werr != nil {
+		s.log.WarnContext(ctx, "studio: failed to write timeline.json", "path", timelinePath, "error", werr)
 	}
 	if ep.TimelineJSONPath != timelinePath {
 		ep.TimelineJSONPath = timelinePath

@@ -262,9 +262,9 @@ func (r *StudioRepository) ClaimNextQueuedJob(ctx context.Context, nowMs int64) 
 
 	row := tx.QueryRowContext(ctx, `
 		SELECT `+jobCols+` FROM studio_jobs
-		WHERE status = 'queued'
-		ORDER BY created_at ASC, id ASC
-		LIMIT 1`)
+		WHERE status = 'queued' AND next_poll_at <= ?
+		ORDER BY next_poll_at ASC, created_at ASC, id ASC
+		LIMIT 1`, nowMs)
 	j, err := scanJob(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return studio.Job{}, false, nil

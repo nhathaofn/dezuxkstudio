@@ -808,6 +808,11 @@ export const vi: Record<MessageKey, string> = {
   "errors.mediagen.reference_required":
     "Model này yêu cầu ít nhất một ảnh tham chiếu để chỉnh sửa.",
   "errors.mediagen.reference_not_supported": "Model hoặc endpoint này không hỗ trợ ảnh tham chiếu.",
+  "errors.mediagen.lipsync_video_required": "Thiếu đường dẫn video đầu vào cho đồng bộ môi.",
+  "errors.mediagen.lipsync_audio_required": "Thiếu đường dẫn âm thanh đầu vào cho đồng bộ môi.",
+
+  "watermark.progress.video": "Đang xóa watermark trên video…",
+  "watermark.progress.done": "Đã xóa watermark video xong.",
 
   "agent.code.copy": "Sao chép mã",
   "agent.code.copied": "Đã sao chép",
@@ -929,6 +934,7 @@ export const vi: Record<MessageKey, string> = {
   "errors.studio.binary_unavailable": "Dịch vụ công cụ ngoài ({id}) hiện không khả dụng.",
   "errors.studio.binary_missing": "Chưa cài đặt {id}. Vui lòng cấu hình trong Cài đặt -> Công cụ.",
   "errors.studio.duplicate_slug": "Đã tồn tại dự án phim với slug này.",
+  "errors.studio.shot_duration_invalid": "Thời lượng shot phải tối thiểu {min} giây.",
 
   "studio.progress.script_normalize": "Đang phân tích và chuẩn hóa kịch bản…",
   "studio.progress.extract_assets": "Đang rút trích nhân vật, bối cảnh và đạo cụ…",
@@ -946,6 +952,33 @@ export const vi: Record<MessageKey, string> = {
   "studio.progress.render_timeline": "Đang render FFmpeg timeline đa track…",
   "studio.progress.export_nle": "Đang đóng gói bản nháp cho phần mềm dựng phim…",
   "studio.progress.done": "Hoàn tất",
+
+  "studio.qc.issue.no_visual_stream": "Tệp media không có luồng hình ảnh hoặc kích thước hợp lệ",
+  "studio.qc.issue.zero_duration": "Thời lượng video bằng 0 hoặc không đọc được",
+  "studio.qc.issue.audio_silent": "Rãnh âm thanh bị im lặng {percent}%",
+  "studio.qc.issue.frame_sample_failed": "Không thể lấy mẫu khung hình để kiểm tra Vision QC: {detail}",
+  "studio.qc.issue.vision_skipped": "Đã bỏ qua đánh giá Vision LLM; chỉ kiểm tra kỹ thuật",
+  "studio.qc.issue.vision_unavailable": "Vision QC không khả dụng: {detail}",
+
+  "studio.preflight.warn.checker_unavailable": "Dịch vụ kiểm tra provider không khả dụng; bỏ qua bước xác minh key",
+  "studio.preflight.warn.fallback_rate": "Đang dùng biểu giá dự phòng trong danh mục để ước tính chi phí",
+  "studio.preflight.warn.large_batch": "Lô xử lý lớn ({count} mục): hãy rà kỹ chi phí trước khi chạy",
+
+  "studio.batch.generate_assets.running": "Đang tạo ảnh tham chiếu tài sản ({current}/{total})…",
+  "studio.batch.generate_assets.completed": "Đã xong lô tạo ảnh tài sản ({current}/{total}).",
+  "studio.batch.generate_assets.failed": "Lô tạo ảnh tài sản thất bại ({current}/{total}).",
+  "studio.batch.generate_keyframes.running": "Đang tạo ảnh khung hình shot ({current}/{total})…",
+  "studio.batch.generate_keyframes.completed": "Đã xong lô khung hình shot ({current}/{total}).",
+  "studio.batch.generate_keyframes.failed": "Lô khung hình shot thất bại ({current}/{total}).",
+  "studio.batch.generate_videos.running": "Đang tạo video từng shot ({current}/{total})…",
+  "studio.batch.generate_videos.completed": "Đã xong lô video shot ({current}/{total}).",
+  "studio.batch.generate_videos.failed": "Lô video shot thất bại ({current}/{total}).",
+  "studio.batch.generate_tts.running": "Đang tổng hợp giọng nói TTS cho shot ({current}/{total})…",
+  "studio.batch.generate_tts.completed": "Đã xong lô giọng nói TTS ({current}/{total}).",
+  "studio.batch.generate_tts.failed": "Lô giọng nói TTS thất bại ({current}/{total}).",
+  "studio.batch.probe_shots.running": "Đang đo thông số video các shot ({current}/{total})…",
+  "studio.batch.probe_shots.completed": "Đã đo thông số video các shot ({current}/{total}).",
+  "studio.batch.probe_shots.failed": "Đo thông số các shot thất bại ({current}/{total}).",
 
   "studio.title": "Xưởng phim AI",
   "studio.subtitle": "Quy trình sản xuất 5 bước kiểu ArcReel",

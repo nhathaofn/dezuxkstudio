@@ -84,7 +84,9 @@ func (s *Service) HandleMediaUsage(ctx context.Context, ev domainmedia.UsageEven
 	if ev.JobID != "" && actual > 0 {
 		if job, jerr := s.repo.GetJob(ctx, ev.JobID); jerr == nil {
 			job.ActualUSD = actual
-			_, _ = s.repo.UpdateJob(ctx, job)
+			if _, uerr := s.repo.UpdateJob(ctx, job); uerr != nil {
+				s.log.WarnContext(ctx, "studio: failed to update job actual cost", "id", ev.JobID, "error", uerr)
+			}
 		}
 	}
 
@@ -165,6 +167,9 @@ func (s *Service) UpsertPricing(ctx context.Context, p contracts.StudioPricingUp
 	if s.repo == nil {
 		return contracts.StudioPricingEntry{}, apperr.Unavailable("studio repository unavailable")
 	}
+	if err := p.Validate(); err != nil {
+		return contracts.StudioPricingEntry{}, err
+	}
 	saved, err := s.repo.UpsertPricing(ctx, domainstudio.PricingEntry{
 		ProviderID:   p.ProviderID,
 		ModelID:      p.ModelID,
@@ -182,6 +187,9 @@ func (s *Service) UpsertPricing(ctx context.Context, p contracts.StudioPricingUp
 func (s *Service) RunBatchPreflight(ctx context.Context, p contracts.StudioBatchPreflightPayload) (contracts.BatchPreflightOutput, error) {
 	if s.repo == nil {
 		return contracts.BatchPreflightOutput{}, apperr.Unavailable("studio repository unavailable")
+	}
+	if err := p.Validate(); err != nil {
+		return contracts.BatchPreflightOutput{}, err
 	}
 	proj, err := s.repo.GetProject(ctx, strings.TrimSpace(p.ProjectID))
 	if err != nil {

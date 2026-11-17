@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	"app/internal/apperr"
@@ -66,10 +67,21 @@ func (n *batchPreflightNode) Run(ctx context.Context, raw json.RawMessage) (any,
 	}
 
 	out := contracts.BatchPreflightOutput{
-		Ready:      true,
-		Capability: capName,
-		ItemCount:  in.ItemCount,
-		Unit:       unit,
+		Ready:        true,
+		Capability:   capName,
+		ItemCount:    in.ItemCount,
+		Unit:         unit,
+		Warnings:     []string{},
+		WarningItems: []contracts.BatchPreflightMessage{},
+		Blockers:     []string{},
+	}
+	addWarning := func(msg, key string, params map[string]string) {
+		out.Warnings = append(out.Warnings, msg)
+		out.WarningItems = append(out.WarningItems, contracts.BatchPreflightMessage{
+			Message:   msg,
+			MsgKey:    key,
+			MsgParams: params,
+		})
 	}
 
 	if n.opts.ProviderChecker != nil {
@@ -82,7 +94,7 @@ func (n *batchPreflightNode) Run(ctx context.Context, raw json.RawMessage) (any,
 			out.ModelID = modelID
 		}
 	} else {
-		out.Warnings = append(out.Warnings, "Provider checker unavailable; skipping credential verification")
+		addWarning("Provider checker unavailable; skipping credential verification", "studio.preflight.warn.checker_unavailable", nil)
 	}
 
 	unitPrice := spec.FallbackUnitPriceUSD
@@ -95,10 +107,10 @@ func (n *batchPreflightNode) Run(ctx context.Context, raw json.RawMessage) (any,
 		}
 	}
 	if usedWildcard {
-		out.Warnings = append(out.Warnings, "Using fallback catalog rate for preflight estimate")
+		addWarning("Using fallback catalog rate for preflight estimate", "studio.preflight.warn.fallback_rate", nil)
 	}
 	if in.ItemCount >= 10 {
-		out.Warnings = append(out.Warnings, fmt.Sprintf("Large batch (%d items): review cost carefully before running", in.ItemCount))
+		addWarning(fmt.Sprintf("Large batch (%d items): review cost carefully before running", in.ItemCount), "studio.preflight.warn.large_batch", map[string]string{"count": strconv.Itoa(in.ItemCount)})
 	}
 
 	out.UnitPriceUSD = math.Round(unitPrice*10000) / 10000

@@ -54,10 +54,10 @@ func NormalizeLipSyncRequest(req LipSyncRequest) (LipSyncRequest, error) {
 	req.Prompt = strings.TrimSpace(req.Prompt)
 	req.OutputDir = strings.TrimSpace(req.OutputDir)
 	if req.VideoPath == "" {
-		return LipSyncRequest{}, apperr.New(apperr.CodeValidation, "lip-sync video_path is required")
+		return LipSyncRequest{}, apperr.Validation("lip-sync video_path is required").WithMsg("errors.mediagen.lipsync_video_required", nil)
 	}
 	if req.AudioPath == "" {
-		return LipSyncRequest{}, apperr.New(apperr.CodeValidation, "lip-sync audio_path is required")
+		return LipSyncRequest{}, apperr.Validation("lip-sync audio_path is required").WithMsg("errors.mediagen.lipsync_audio_required", nil)
 	}
 	if req.FaceIndex < 0 {
 		req.FaceIndex = 0

@@ -21,6 +21,11 @@ const (
 	JobCanceled  JobStatus = "canceled"
 )
 
+// JobStatuses returns all supported durable studio job statuses.
+func JobStatuses() []JobStatus {
+	return []JobStatus{JobQueued, JobSubmitted, JobPolling, JobPaused, JobSucceeded, JobFailed, JobCanceled}
+}
+
 // Valid reports whether s is a supported job status.
 func (s JobStatus) Valid() bool {
 	switch s {
@@ -51,6 +56,15 @@ const (
 	JobVideoWatermarkRemove JobKind = "video_wm_remove"
 	JobQCReview             JobKind = "qc_review"
 )
+
+// JobKinds returns all supported studio background job kinds.
+func JobKinds() []JobKind {
+	return []JobKind{
+		JobImage, JobVideo, JobTTS, JobLipSync,
+		JobMaskEdit, JobGridSplit, JobExtractFrames, JobTTSDubMux,
+		JobVideoWatermarkRemove, JobQCReview,
+	}
+}
 
 // Valid reports whether k is a known studio job kind.
 func (k JobKind) Valid() bool {
@@ -313,6 +327,14 @@ const (
 	TargetCleanVideo   MediaTargetKind = "clean_video"
 )
 
+// MediaTargetKinds returns all supported studio media version target kinds.
+func MediaTargetKinds() []MediaTargetKind {
+	return []MediaTargetKind{
+		TargetAsset, TargetKeyframe, TargetVideo, TargetDubAudio,
+		TargetLipSyncVideo, TargetGridPanel, TargetCleanVideo,
+	}
+}
+
 // Valid reports whether k is a recognized MediaTargetKind.
 func (k MediaTargetKind) Valid() bool {
 	switch k {
@@ -332,6 +354,11 @@ const (
 	QCWarn    QCStatus = "warn"
 	QCFail    QCStatus = "fail"
 )
+
+// QCStatuses returns all valid QC verdicts.
+func QCStatuses() []QCStatus {
+	return []QCStatus{QCPending, QCPass, QCWarn, QCFail}
+}
 
 // Valid reports whether s is a valid QC verdict.
 func (s QCStatus) Valid() bool {
@@ -365,10 +392,12 @@ type MediaVersion struct {
 
 // QCIssue describes one technical or visual finding surfaced by tool.qc_review.
 type QCIssue struct {
-	Severity  string `json:"severity"` // "info" | "warn" | "error"
-	Category  string `json:"category"` // "technical" | "continuity" | "artifacts" | "audio"
-	Message   string `json:"message"`
-	FramePath string `json:"frame_path,omitempty"`
+	Severity  string            `json:"severity"` // "info" | "warn" | "error"
+	Category  string            `json:"category"` // "technical" | "continuity" | "artifacts" | "audio"
+	Message   string            `json:"message"`
+	MsgKey    string            `json:"msg_key,omitempty"`
+	MsgParams map[string]string `json:"msg_params,omitempty"`
+	FramePath string            `json:"frame_path,omitempty"`
 }
 
 // QCReport stores technical probe + vision critique output for a target media file.
