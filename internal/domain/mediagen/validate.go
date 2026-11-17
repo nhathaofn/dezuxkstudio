@@ -27,6 +27,7 @@ func validationErr(key, msg string, params map[string]any) error {
 func NormalizeImageRequest(req ImageRequest) (ImageRequest, error) {
 	req.ModelRef = strings.TrimSpace(req.ModelRef)
 	req.Prompt = strings.TrimSpace(req.Prompt)
+	req.MaskPath = strings.TrimSpace(req.MaskPath)
 	req.AspectRatio = strings.TrimSpace(req.AspectRatio)
 	req.Resolution = strings.TrimSpace(req.Resolution)
 	req.OutputDir = strings.TrimSpace(req.OutputDir)
@@ -34,6 +35,9 @@ func NormalizeImageRequest(req ImageRequest) (ImageRequest, error) {
 
 	if req.Prompt == "" {
 		return req, validationErr("errors.mediagen.prompt_required", "Prompt is required", nil)
+	}
+	if req.MaskPath != "" && len(req.ReferenceImages) == 0 {
+		return req, validationErr("errors.mediagen.mask_requires_image", "A base reference image is required when mask_path is provided", nil)
 	}
 	if req.AspectRatio == "" {
 		req.AspectRatio = DefaultImageAspectRatio

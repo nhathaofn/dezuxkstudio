@@ -107,6 +107,16 @@ func (s *Service) GenerateText(ctx context.Context, req domainmedia.TextRequest)
 		parsedJSON = json.RawMessage(cleaned)
 	}
 
+	s.emitUsage(ctx, domainmedia.UsageEvent{
+		ProviderID:  target.ownerID,
+		ModelID:     target.modelID,
+		Capability:  string(domainprovider.CapabilityLLM),
+		Operation:   "generate_text",
+		InputUnits:  float64(out.inputTokens) / 1000.0,
+		OutputUnits: float64(out.outputTokens) / 1000.0,
+		Unit:        "1k_tokens",
+	})
+
 	return domainmedia.TextResult{
 		Text:         text,
 		ParsedJSON:   parsedJSON,

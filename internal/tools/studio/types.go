@@ -15,6 +15,7 @@ import (
 	"app/internal/contracts"
 	domainbinaries "app/internal/domain/binaries"
 	domainmedia "app/internal/domain/mediagen"
+	domainprovider "app/internal/domain/provider"
 	"app/internal/engine"
 	"app/internal/fsutil"
 	"app/internal/paths"
@@ -27,11 +28,43 @@ const (
 	NodeTypeAuthorShotPrompts = contracts.NodeTypeAuthorShotPrompts
 	NodeTypeProbeMedia        = contracts.NodeTypeProbeMedia
 	NodeTypeVideoConcatBasic  = contracts.NodeTypeVideoConcatBasic
+	NodeTypeBatchPreflight    = contracts.NodeTypeBatchPreflight
+	NodeTypeGridSplit         = contracts.NodeTypeGridSplit
+	NodeTypeMaskEdit          = contracts.NodeTypeMaskEdit
+	NodeTypeExtractFrames     = contracts.NodeTypeExtractFrames
+	NodeTypeTTSDubMux         = contracts.NodeTypeTTSDubMux
+	NodeTypeLipSyncGenerate   = contracts.NodeTypeLipSyncGenerate
+	NodeTypeQCReview          = contracts.NodeTypeQCReview
 )
 
 // TextGenerator executes structured LLM calls (satisfied by *service/mediagen.Service).
 type TextGenerator interface {
 	GenerateText(ctx context.Context, req domainmedia.TextRequest) (domainmedia.TextResult, error)
+}
+
+// ImageGenerator generates or edits images (satisfied by *service/mediagen.Service).
+type ImageGenerator interface {
+	GenerateImage(ctx context.Context, req domainmedia.ImageRequest) (domainmedia.Result, error)
+}
+
+// TTSGenerator synthesizes speech audio (satisfied by *service/mediagen.Service).
+type TTSGenerator interface {
+	GenerateTTS(ctx context.Context, req domainmedia.TTSRequest) (domainmedia.Result, error)
+}
+
+// LipSyncGenerator generates lip-synced videos (satisfied by *service/mediagen.Service).
+type LipSyncGenerator interface {
+	GenerateLipSync(ctx context.Context, req domainmedia.LipSyncRequest) (domainmedia.Result, error)
+}
+
+// ProviderChecker verifies provider & model readiness before running batches.
+type ProviderChecker interface {
+	CheckCapability(ctx context.Context, capability domainprovider.Capability, modelRef string) (providerID, modelID string, err error)
+}
+
+// CostEstimator resolves unit pricing in USD for preflight estimates.
+type CostEstimator interface {
+	EstimateUnitPriceUSD(ctx context.Context, providerID, modelID, capability, unit string) (unitPriceUSD float64, wildcardFallback bool, err error)
 }
 
 // BinaryResolver resolves managed external executables (satisfied by *service/binaries.Service).
@@ -47,6 +80,11 @@ type MediaRegistrar interface {
 // Options configures the film studio engine nodes.
 type Options struct {
 	TextGen           TextGenerator
+	ImageGen          ImageGenerator
+	TTSGen            TTSGenerator
+	LipSyncGen        LipSyncGenerator
+	ProviderChecker   ProviderChecker
+	CostEstimator     CostEstimator
 	Binaries          BinaryResolver
 	Registrar         MediaRegistrar
 	StudioConfig      config.StudioConfig
@@ -55,7 +93,7 @@ type Options struct {
 	WorkspaceTreeFunc func() paths.WorkspaceTree
 }
 
-// NewNodes returns all Phase 1 film studio engine nodes.
+// NewNodes returns all Film Studio engine nodes (Phase 1 + Phase 2).
 func NewNodes(opts Options) []engine.Node {
 	opts.StudioConfig = withStudioDefaults(opts.StudioConfig)
 	return []engine.Node{
@@ -64,6 +102,13 @@ func NewNodes(opts Options) []engine.Node {
 		NewAuthorShotPromptsNode(opts),
 		NewProbeMediaNode(opts),
 		NewVideoConcatBasicNode(opts),
+		NewBatchPreflightNode(opts),
+		NewGridSplitNode(opts),
+		NewMaskEditNode(opts),
+		NewExtractFramesNode(opts),
+		NewTTSDubMuxNode(opts),
+		NewLipSyncGenerateNode(opts),
+		NewQCReviewNode(opts),
 	}
 }
 
@@ -245,4 +290,51 @@ func optionStrings[T ~string](vals []T) []string {
 		out[i] = string(v)
 	}
 	return out
+}
+
+func resolveNodeOutputDir(ctx context.Context, opts Options, rawOutDir, subDir string) (string, error) {
+	if p := strings.TrimSpace(rawOutDir); p != "" {
+		clean := filepath.Clean(p)
+		if !filepath.IsAbs(clean) {
+			clean = filepath.Join(resolveMediaDir(opts), clean)
+		}
+		if err := engine.CheckFile(ctx, filepath.Join(clean, ".write-check"), true); err != nil {
+			return "", err
+		}
+		if err := os.MkdirAll(clean, 0o750); err != nil {
+			return "", apperr.Internal(err)
+		}
+		return clean, nil
+	}
+	base := resolveProjectsDir(opts)
+	if base == "" {
+		base = resolveMediaDir(opts)
+	}
+	if base == "" {
+		base = os.TempDir()
+	}
+	dir := filepath.Join(base, subDir)
+	if err := engine.CheckFile(ctx, filepath.Join(dir, ".write-check"), true); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return "", apperr.Internal(err)
+	}
+	return dir, nil
+}
+
+func registerStudioAsset(ctx context.Context, opts Options, kind, sourceNode, filePath, rootDir string) string {
+	if opts.Registrar == nil || strings.TrimSpace(filePath) == "" {
+		return ""
+	}
+	item, err := opts.Registrar.RegisterAsset(ctx, media.RegisterAssetParams{
+		Kind:           kind,
+		SourceNode:     sourceNode,
+		FilePath:       filePath,
+		RegisteredRoot: rootDir,
+	})
+	if err != nil || item == nil {
+		return ""
+	}
+	return item.ID
 }

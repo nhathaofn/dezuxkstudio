@@ -42,6 +42,7 @@ const (
 	EndpointOpenAITTS               Endpoint = "openai-tts"
 	EndpointGeminiVideo             Endpoint = "gemini-video"
 	EndpointGeminiTTS               Endpoint = "gemini-tts"
+	EndpointLipSync                 Endpoint = "lipsync"
 )
 
 // EndpointSpec describes a custom-provider endpoint.
@@ -72,6 +73,7 @@ func Endpoints() []EndpointSpec {
 		{EndpointOpenAITTS, CapabilityTTS, "POST", "/audio/speech", o},
 		{EndpointGeminiVideo, CapabilityVideo, "POST", "/models/{model}:predictLongRunning", []DiscoveryFormat{DiscoveryGemini}},
 		{EndpointGeminiTTS, CapabilityTTS, "POST", "/models/{model}:generateContent", []DiscoveryFormat{DiscoveryGemini}},
+		{EndpointLipSync, CapabilityLipSync, "POST", "/videos/lipsync", o},
 	}
 }
 

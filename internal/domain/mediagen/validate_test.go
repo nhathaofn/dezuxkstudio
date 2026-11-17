@@ -11,6 +11,7 @@ func TestNormalizeImageRequest(t *testing.T) {
 	got, err := NormalizeImageRequest(ImageRequest{
 		Prompt:          "  a cat on a surfboard  ",
 		ReferenceImages: []string{"  ", "/tmp/a.png  "},
+		MaskPath:        " /tmp/mask.png ",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -18,8 +19,8 @@ func TestNormalizeImageRequest(t *testing.T) {
 	if got.AspectRatio != DefaultImageAspectRatio || got.Resolution != DefaultImageResolution {
 		t.Fatalf("unexpected defaults: aspect=%s res=%s", got.AspectRatio, got.Resolution)
 	}
-	if len(got.ReferenceImages) != 1 || got.ReferenceImages[0] != "/tmp/a.png" {
-		t.Fatalf("unexpected refs: %v", got.ReferenceImages)
+	if len(got.ReferenceImages) != 1 || got.ReferenceImages[0] != "/tmp/a.png" || got.MaskPath != "/tmp/mask.png" {
+		t.Fatalf("unexpected refs/mask: %v mask=%q", got.ReferenceImages, got.MaskPath)
 	}
 
 	if _, err := NormalizeImageRequest(ImageRequest{}); !apperr.IsCode(err, apperr.CodeValidation) {
@@ -85,6 +86,20 @@ func TestWrapPCMToWAV(t *testing.T) {
 	}
 	if got := WrapPCMToWAV(wav, "audio/wav"); len(got) != len(wav) {
 		t.Fatalf("already-wrapped WAV should not be double-wrapped")
+	}
+}
+
+func TestNormalizeLipSyncRequest(t *testing.T) {
+	got, err := NormalizeLipSyncRequest(LipSyncRequest{
+		VideoPath: " /tmp/v.mp4 ",
+		AudioPath: " /tmp/a.wav ",
+		FaceIndex: -2,
+	})
+	if err != nil || got.VideoPath != "/tmp/v.mp4" || got.AudioPath != "/tmp/a.wav" || got.FaceIndex != 0 {
+		t.Fatalf("unexpected lipsync normalized = %+v err=%v", got, err)
+	}
+	if _, err := NormalizeLipSyncRequest(LipSyncRequest{AudioPath: "/tmp/a.wav"}); !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected validation error for missing video_path, got %v", err)
 	}
 }
 

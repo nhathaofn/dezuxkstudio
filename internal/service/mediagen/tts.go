@@ -66,6 +66,15 @@ func (s *Service) GenerateTTS(ctx context.Context, req domainmedia.TTSRequest) (
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
+	s.emitUsage(ctx, domainmedia.UsageEvent{
+		ProviderID:  target.ownerID,
+		ModelID:     target.modelID,
+		Capability:  string(domainprovider.CapabilityTTS),
+		Operation:   "generate_tts",
+		InputUnits:  float64(len([]rune(norm.Text))) / 1000.0,
+		OutputUnits: 1,
+		Unit:        "1k_chars",
+	})
 	progress.Report(callCtx, progress.Update{
 		Percent: 100,
 		Message: "Audio ready",

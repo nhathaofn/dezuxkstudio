@@ -15,6 +15,7 @@ import (
 	"app/internal/apperr"
 	"app/internal/config"
 	"app/internal/contracts"
+	domainbinaries "app/internal/domain/binaries"
 	"app/internal/engine"
 	"app/internal/fsutil"
 	"app/internal/progress"
@@ -26,12 +27,17 @@ import (
 // NodeType is the unique identifier for the watermark remover node.
 const NodeType = contracts.NodeTypeWatermarkRemover
 
+// VideoBinaryResolver resolves managed ffmpeg/ffprobe binaries for video watermark removal.
+type VideoBinaryResolver interface {
+	Resolve(ctx context.Context, id domainbinaries.BinaryID) (resolvedPath string, source domainbinaries.Source, customPath string, err error)
+}
+
 // MediaRegistrar registers newly created or copied media assets into the library.
 type MediaRegistrar interface {
 	RegisterAsset(ctx context.Context, params media.RegisterAssetParams) (*contracts.MediaAssetItem, error)
 }
 
-// Options configures default directories for the node.
+// Options configures default directories for the watermark nodes.
 type Options struct {
 	MediaDir      string // Application media storage directory
 	MediaDirFunc  func() string
@@ -39,6 +45,8 @@ type Options struct {
 	OutputDirFunc func() string
 	Templates     []watermark.Template
 	Registrar     MediaRegistrar
+	Binaries      VideoBinaryResolver
+	StudioConfig  config.StudioConfig
 	Config        *config.Config
 }
 

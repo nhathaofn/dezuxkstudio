@@ -57,6 +57,7 @@ type ImageRequest struct {
 	ModelRef        string
 	Prompt          string
 	ReferenceImages []string
+	MaskPath        string
 	AspectRatio     string
 	Resolution      string
 	Seed            *int

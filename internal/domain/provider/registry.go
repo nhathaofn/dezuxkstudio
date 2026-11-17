@@ -121,7 +121,7 @@ var registry = []Meta{
 	},
 	{
 		ID: IDMiniMax, DisplayName: "MiniMax",
-		Capabilities:   []Capability{llm, image, video, tts},
+		Capabilities:   []Capability{llm, image, video, tts, CapabilityLipSync},
 		Fields:         []Field{apiKey(), baseURL("https://api.minimaxi.com/v1 · https://api.minimax.io/v1")},
 		DefaultBaseURL: "https://api.minimaxi.com/v1",
 		DocsURL:        "https://platform.minimax.io",
@@ -130,7 +130,7 @@ var registry = []Meta{
 	},
 	{
 		ID: IDKling, DisplayName: "Kling",
-		Capabilities: []Capability{image, video},
+		Capabilities: []Capability{image, video, CapabilityLipSync},
 		Fields: []Field{
 			apiKey(),
 			{Key: FieldAccessKey, Kind: FieldText, Secret: true, Required: true},

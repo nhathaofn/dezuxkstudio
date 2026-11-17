@@ -23,7 +23,13 @@ func TestParseModelRef(t *testing.T) {
 }
 
 func TestPurposes(t *testing.T) {
-	want := map[Purpose]Capability{PurposeText: CapabilityLLM, PurposeImage: CapabilityImage, PurposeVideo: CapabilityVideo, PurposeTTS: CapabilityTTS}
+	want := map[Purpose]Capability{
+		PurposeText:    CapabilityLLM,
+		PurposeImage:   CapabilityImage,
+		PurposeVideo:   CapabilityVideo,
+		PurposeTTS:     CapabilityTTS,
+		PurposeLipSync: CapabilityLipSync,
+	}
 	if len(Purposes()) != len(want) {
 		t.Fatal(Purposes())
 	}

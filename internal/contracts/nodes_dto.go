@@ -21,6 +21,14 @@ const (
 	NodeTypeAuthorShotPrompts = "tool.author_shot_prompts"
 	NodeTypeProbeMedia        = "tool.probe_media"
 	NodeTypeVideoConcatBasic  = "tool.video_concat_basic"
+	NodeTypeBatchPreflight    = "tool.batch_preflight"
+	NodeTypeGridSplit         = "tool.grid_split"
+	NodeTypeMaskEdit          = "tool.mask_edit"
+	NodeTypeExtractFrames     = "tool.extract_frames"
+	NodeTypeTTSDubMux         = "tool.tts_dub_mux"
+	NodeTypeLipSyncGenerate   = "tool.lipsync_generate"
+	NodeTypeQCReview          = "tool.qc_review"
+	NodeTypeVideoWMRemove     = "tool.video_watermark_remove"
 )
 
 // RemoverInput is the input payload for the watermark remover node.
@@ -261,6 +269,205 @@ type VideoConcatBasicOutput struct {
 	AssetID     string          `json:"asset_id,omitempty"`
 	DurationSec float64         `json:"duration_sec"`
 	ClipCount   int             `json:"clip_count"`
+}
+
+// BatchPreflightInput is the input+params contract for tool.batch_preflight.
+type BatchPreflightInput struct {
+	ProjectID    string  `json:"project_id,omitempty"`
+	EpisodeID    string  `json:"episode_id,omitempty"`
+	ModelRef     string  `json:"model_ref,omitempty"`
+	Capability   string  `json:"capability"`
+	ItemCount    int     `json:"item_count"`
+	UnitsPerItem float64 `json:"units_per_item,omitempty"`
+	OutputDir    string  `json:"output_dir,omitempty"`
+}
+
+// BatchPreflightOutput is returned by tool.batch_preflight.
+type BatchPreflightOutput struct {
+	Ready        bool     `json:"ready"`
+	ProviderID   string   `json:"provider_id,omitempty"`
+	ModelID      string   `json:"model_id,omitempty"`
+	Capability   string   `json:"capability"`
+	ItemCount    int      `json:"item_count"`
+	Unit         string   `json:"unit"`
+	UnitPriceUSD float64  `json:"unit_price_usd"`
+	EstimatedUSD float64  `json:"estimated_usd"`
+	EstimatedSec int      `json:"estimated_sec"`
+	Warnings     []string `json:"warnings,omitempty"`
+	Blockers     []string `json:"blockers,omitempty"`
+}
+
+// GridSplitInput is the input+params contract for tool.grid_split.
+type GridSplitInput struct {
+	ImagePath  string    `json:"image_path"`
+	Rows       int       `json:"rows,omitempty"`
+	Cols       int       `json:"cols,omitempty"`
+	MarginPx   int       `json:"margin_px,omitempty"`
+	GutterPx   int       `json:"gutter_px,omitempty"`
+	RowWeights []float64 `json:"row_weights,omitempty"`
+	ColWeights []float64 `json:"col_weights,omitempty"`
+	OutputDir  string    `json:"output_dir,omitempty"`
+}
+
+// GridPanel describes one cropped cell produced by tool.grid_split.
+type GridPanel struct {
+	Index   int    `json:"index"`
+	Row     int    `json:"row"`
+	Col     int    `json:"col"`
+	Path    string `json:"path"`
+	Width   int    `json:"width"`
+	Height  int    `json:"height"`
+	AssetID string `json:"asset_id,omitempty"`
+}
+
+// GridSplitOutput is returned by tool.grid_split.
+type GridSplitOutput struct {
+	Panels    []GridPanel `json:"panels"`
+	OutputDir string      `json:"output_dir"`
+}
+
+// MaskEditInput is the input+params contract for tool.mask_edit.
+type MaskEditInput struct {
+	ImagePath   string `json:"image_path"`
+	MaskPath    string `json:"mask_path"`
+	Prompt      string `json:"prompt"`
+	ModelRef    string `json:"model_ref,omitempty"`
+	AspectRatio string `json:"aspect_ratio,omitempty"`
+	Resolution  string `json:"resolution,omitempty"`
+	Seed        *int   `json:"seed,omitempty"`
+	OutputDir   string `json:"output_dir,omitempty"`
+}
+
+// MaskEditOutput is returned by tool.mask_edit.
+type MaskEditOutput struct {
+	Image    engine.MediaRef `json:"image"`
+	Path     string          `json:"path"`
+	AssetID  string          `json:"asset_id,omitempty"`
+	MimeType string          `json:"mime_type,omitempty"`
+	Provider string          `json:"provider,omitempty"`
+	Model    string          `json:"model,omitempty"`
+}
+
+// ExtractFramesInput is the input+params contract for tool.extract_frames.
+type ExtractFramesInput struct {
+	VideoPath     string    `json:"video_path"`
+	Mode          string    `json:"mode,omitempty"`
+	TimestampsSec []float64 `json:"timestamps_sec,omitempty"`
+	Count         int       `json:"count,omitempty"`
+	OutputDir     string    `json:"output_dir,omitempty"`
+}
+
+// ExtractedFrame describes one saved frame image from tool.extract_frames.
+type ExtractedFrame struct {
+	Path         string  `json:"path"`
+	TimestampSec float64 `json:"timestamp_sec"`
+	Width        int     `json:"width,omitempty"`
+	Height       int     `json:"height,omitempty"`
+	AssetID      string  `json:"asset_id,omitempty"`
+}
+
+// ExtractFramesOutput is returned by tool.extract_frames.
+type ExtractFramesOutput struct {
+	Frames        []ExtractedFrame `json:"frames"`
+	LastFramePath string           `json:"last_frame_path,omitempty"`
+	OutputDir     string           `json:"output_dir"`
+}
+
+// TTSDubMuxInput is the input+params contract for tool.tts_dub_mux.
+type TTSDubMuxInput struct {
+	VideoPath      string  `json:"video_path"`
+	Text           string  `json:"text,omitempty"`
+	AudioPath      string  `json:"audio_path,omitempty"`
+	ModelRef       string  `json:"model_ref,omitempty"`
+	Voice          string  `json:"voice,omitempty"`
+	Language       string  `json:"language,omitempty"`
+	OverflowMode   string  `json:"overflow_mode,omitempty"`
+	DuckOriginal   bool    `json:"duck_original,omitempty"`
+	OriginalVolume float64 `json:"original_volume,omitempty"`
+	OutputDir      string  `json:"output_dir,omitempty"`
+}
+
+// TTSDubMuxOutput is returned by tool.tts_dub_mux.
+type TTSDubMuxOutput struct {
+	Video         engine.MediaRef `json:"video"`
+	Path          string          `json:"path"`
+	AudioPath     string          `json:"audio_path"`
+	AssetID       string          `json:"asset_id,omitempty"`
+	DurationSec   float64         `json:"duration_sec"`
+	AdjustedRatio float64         `json:"adjusted_ratio,omitempty"`
+}
+
+// LipSyncGenerateInput is the input+params contract for tool.lipsync_generate.
+type LipSyncGenerateInput struct {
+	VideoPath string `json:"video_path"`
+	AudioPath string `json:"audio_path"`
+	ModelRef  string `json:"model_ref,omitempty"`
+	FaceIndex int    `json:"face_index,omitempty"`
+	Prompt    string `json:"prompt,omitempty"`
+	OutputDir string `json:"output_dir,omitempty"`
+}
+
+// LipSyncGenerateOutput is returned by tool.lipsync_generate.
+type LipSyncGenerateOutput struct {
+	Video    engine.MediaRef `json:"video"`
+	Path     string          `json:"path"`
+	AssetID  string          `json:"asset_id,omitempty"`
+	MimeType string          `json:"mime_type,omitempty"`
+	Provider string          `json:"provider,omitempty"`
+	Model    string          `json:"model,omitempty"`
+}
+
+// QCReviewInput is the input+params contract for tool.qc_review.
+type QCReviewInput struct {
+	MediaPath      string   `json:"media_path"`
+	TargetKind     string   `json:"target_kind,omitempty"`
+	TargetID       string   `json:"target_id,omitempty"`
+	ReferencePaths []string `json:"reference_paths,omitempty"`
+	PromptExpected string   `json:"prompt_expected,omitempty"`
+	VisionModelRef string   `json:"vision_model_ref,omitempty"`
+	SampleCount    int      `json:"sample_count,omitempty"`
+	SkipVision     bool     `json:"skip_vision,omitempty"`
+}
+
+// QCReviewIssue describes one issue found during automated QC inspection.
+type QCReviewIssue struct {
+	Severity  string `json:"severity"`
+	Category  string `json:"category"`
+	Message   string `json:"message"`
+	FramePath string `json:"frame_path,omitempty"`
+}
+
+// QCReviewOutput is returned by tool.qc_review.
+type QCReviewOutput struct {
+	Verdict       string          `json:"verdict"`
+	OverallScore  float64         `json:"overall_score"`
+	FFprobeJSON   string          `json:"ffprobe_json,omitempty"`
+	Issues        []QCReviewIssue `json:"issues"`
+	VisionSummary string          `json:"vision_summary,omitempty"`
+	SampleFrames  []string        `json:"sample_frames,omitempty"`
+}
+
+// VideoWatermarkRemoveInput is the input+params contract for tool.video_watermark_remove.
+type VideoWatermarkRemoveInput struct {
+	VideoPath string `json:"video_path"`
+	Mode      string `json:"mode,omitempty"`
+	X         int    `json:"x,omitempty"`
+	Y         int    `json:"y,omitempty"`
+	Width     int    `json:"width,omitempty"`
+	Height    int    `json:"height,omitempty"`
+	CropEdge  string `json:"crop_edge,omitempty"`
+	CropPx    int    `json:"crop_px,omitempty"`
+	OutputDir string `json:"output_dir,omitempty"`
+}
+
+// VideoWatermarkRemoveOutput is returned by tool.video_watermark_remove.
+type VideoWatermarkRemoveOutput struct {
+	Video       engine.MediaRef `json:"video"`
+	Path        string          `json:"path"`
+	AssetID     string          `json:"asset_id,omitempty"`
+	Width       int             `json:"width,omitempty"`
+	Height      int             `json:"height,omitempty"`
+	DurationSec float64         `json:"duration_sec,omitempty"`
 }
 
 func decodeTextOrJSON(raw json.RawMessage) string {

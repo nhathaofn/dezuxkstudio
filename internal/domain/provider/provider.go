@@ -24,15 +24,16 @@ import (
 type Capability string
 
 const (
-	CapabilityLLM   Capability = "llm"
-	CapabilityImage Capability = "image"
-	CapabilityVideo Capability = "video"
-	CapabilityTTS   Capability = "tts"
+	CapabilityLLM     Capability = "llm"
+	CapabilityImage   Capability = "image"
+	CapabilityVideo   Capability = "video"
+	CapabilityTTS     Capability = "tts"
+	CapabilityLipSync Capability = "lipsync"
 )
 
 // Capabilities lists every capability in display order.
 func Capabilities() []Capability {
-	return []Capability{CapabilityLLM, CapabilityImage, CapabilityVideo, CapabilityTTS}
+	return []Capability{CapabilityLLM, CapabilityImage, CapabilityVideo, CapabilityTTS, CapabilityLipSync}
 }
 
 // FieldKind tells the UI how to render a credential field.

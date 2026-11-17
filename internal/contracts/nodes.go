@@ -24,5 +24,13 @@ func Nodes() []NodeSpec {
 		{"AUTHOR_SHOT_PROMPTS", NodeTypeAuthorShotPrompts, t[AuthorShotPromptsInput](), t[AuthorShotPromptsOutput]()},
 		{"PROBE_MEDIA", NodeTypeProbeMedia, t[ProbeMediaInput](), t[ProbeMediaOutput]()},
 		{"VIDEO_CONCAT_BASIC", NodeTypeVideoConcatBasic, t[VideoConcatBasicInput](), t[VideoConcatBasicOutput]()},
+		{"BATCH_PREFLIGHT", NodeTypeBatchPreflight, t[BatchPreflightInput](), t[BatchPreflightOutput]()},
+		{"GRID_SPLIT", NodeTypeGridSplit, t[GridSplitInput](), t[GridSplitOutput]()},
+		{"MASK_EDIT", NodeTypeMaskEdit, t[MaskEditInput](), t[MaskEditOutput]()},
+		{"EXTRACT_FRAMES", NodeTypeExtractFrames, t[ExtractFramesInput](), t[ExtractFramesOutput]()},
+		{"TTS_DUB_MUX", NodeTypeTTSDubMux, t[TTSDubMuxInput](), t[TTSDubMuxOutput]()},
+		{"LIPSYNC_GENERATE", NodeTypeLipSyncGenerate, t[LipSyncGenerateInput](), t[LipSyncGenerateOutput]()},
+		{"QC_REVIEW", NodeTypeQCReview, t[QCReviewInput](), t[QCReviewOutput]()},
+		{"VIDEO_WATERMARK_REMOVE", NodeTypeVideoWMRemove, t[VideoWatermarkRemoveInput](), t[VideoWatermarkRemoveOutput]()},
 	}
 }

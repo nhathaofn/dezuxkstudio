@@ -67,6 +67,7 @@ type Options struct {
 	Leases            *LeaseRegistry
 	StagingTTL        time.Duration
 	StagingGCInterval time.Duration
+	OnUsage           func(context.Context, domainmedia.UsageEvent)
 }
 
 type cachedVertexToken struct {
@@ -95,6 +96,9 @@ type Service struct {
 
 	assetsMu sync.RWMutex
 	assets   map[string]string // map[path]assetID
+
+	usageMu sync.RWMutex
+	onUsage func(context.Context, domainmedia.UsageEvent)
 }
 
 // New constructs a unified media generation service.
@@ -153,7 +157,44 @@ func New(o Options) *Service {
 		stagingGCInterval: stagingGCInterval,
 		vertexCache:       make(map[string]cachedVertexToken),
 		assets:            make(map[string]string),
+		onUsage:           o.OnUsage,
 	}
+}
+
+// SetUsageHook registers or clears an asynchronous usage reporting callback.
+func (s *Service) SetUsageHook(fn func(context.Context, domainmedia.UsageEvent)) {
+	s.usageMu.Lock()
+	s.onUsage = fn
+	s.usageMu.Unlock()
+}
+
+func (s *Service) emitUsage(ctx context.Context, ev domainmedia.UsageEvent) {
+	s.usageMu.RLock()
+	fn := s.onUsage
+	s.usageMu.RUnlock()
+	if fn == nil {
+		return
+	}
+	meta := domainmedia.UsageMetaFromContext(ctx)
+	if ev.ProjectID == "" {
+		ev.ProjectID = meta.ProjectID
+	}
+	if ev.EpisodeID == "" {
+		ev.EpisodeID = meta.EpisodeID
+	}
+	if ev.ShotID == "" {
+		ev.ShotID = meta.ShotID
+	}
+	if ev.JobID == "" {
+		ev.JobID = meta.JobID
+	}
+	if ev.Operation == "" {
+		ev.Operation = meta.Operation
+	}
+	if ev.EstimatedUSD == 0 {
+		ev.EstimatedUSD = meta.EstimatedUSD
+	}
+	fn(ctx, ev)
 }
 
 func withMediaGenDefaults(cfg config.MediaGenConfig) config.MediaGenConfig {
@@ -188,6 +229,7 @@ func withMediaGenDefaults(cfg config.MediaGenConfig) config.MediaGenConfig {
 type targetSpec struct {
 	ownerID      string
 	providerName string
+	resolvedRef  string
 	protocol     string
 	baseURL      string
 	modelID      string
@@ -208,9 +250,14 @@ func (s *Service) resolveTarget(ctx context.Context, purpose domainprovider.Purp
 	if err != nil {
 		return targetSpec{}, domainprovider.Limits{}, err
 	}
+	resolvedRef := strings.TrimSpace(res.Ref.String())
+	if resolvedRef == "" {
+		resolvedRef = strings.TrimSpace(modelRef)
+	}
 	t := targetSpec{
-		modelID:    res.Model.ModelID,
-		modelFacts: res.Model,
+		resolvedRef: resolvedRef,
+		modelID:     res.Model.ModelID,
+		modelFacts:  res.Model,
 	}
 
 	if res.Custom != nil {
@@ -328,6 +375,8 @@ func builtinProtocolFor(providerID string, purpose domainprovider.Purpose) (stri
 			return "minimax-video", nil
 		case domainprovider.PurposeTTS:
 			return "minimax-tts", nil
+		case domainprovider.PurposeLipSync:
+			return "minimax-lipsync", nil
 		}
 	case domainprovider.IDKling:
 		switch purpose {
@@ -335,6 +384,8 @@ func builtinProtocolFor(providerID string, purpose domainprovider.Purpose) (stri
 			return "kling-image", nil
 		case domainprovider.PurposeVideo:
 			return "kling-video", nil
+		case domainprovider.PurposeLipSync:
+			return "kling-lipsync", nil
 		}
 	case domainprovider.IDVidu:
 		switch purpose {
@@ -396,6 +447,8 @@ func customProtocolFor(format domainprovider.DiscoveryFormat, ep domainprovider.
 		return "openai-tts", nil
 	case domainprovider.EndpointGeminiTTS:
 		return "gemini-aistudio-tts", nil
+	case domainprovider.EndpointLipSync:
+		return "openai-lipsync", nil
 	}
 
 	// Fallback when custom model endpoint wasn't specified explicitly
@@ -424,6 +477,8 @@ func customProtocolFor(format domainprovider.DiscoveryFormat, ep domainprovider.
 			return "openai-video", nil
 		case domainprovider.PurposeTTS:
 			return "openai-tts", nil
+		case domainprovider.PurposeLipSync:
+			return "openai-lipsync", nil
 		}
 	}
 	return "", apperr.Validation("Unsupported custom endpoint "+string(ep)+" for "+string(purpose)).

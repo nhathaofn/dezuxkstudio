@@ -11,10 +11,11 @@ import (
 type Purpose string
 
 const (
-	PurposeText  Purpose = "text"
-	PurposeImage Purpose = "image"
-	PurposeVideo Purpose = "video"
-	PurposeTTS   Purpose = "tts"
+	PurposeText    Purpose = "text"
+	PurposeImage   Purpose = "image"
+	PurposeVideo   Purpose = "video"
+	PurposeTTS     Purpose = "tts"
+	PurposeLipSync Purpose = "lipsync"
 )
 
 // PurposeSpec declares a purpose.
@@ -30,6 +31,7 @@ func PurposeSpecs() []PurposeSpec {
 		{PurposeImage, CapabilityImage},
 		{PurposeVideo, CapabilityVideo},
 		{PurposeTTS, CapabilityTTS},
+		{PurposeLipSync, CapabilityLipSync},
 	}
 }
 

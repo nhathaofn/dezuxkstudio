@@ -303,6 +303,14 @@ func TestWorkflowRegistersStudioNodes(t *testing.T) {
 		studionodes.NodeTypeAuthorShotPrompts,
 		studionodes.NodeTypeProbeMedia,
 		studionodes.NodeTypeVideoConcatBasic,
+		studionodes.NodeTypeBatchPreflight,
+		studionodes.NodeTypeGridSplit,
+		studionodes.NodeTypeMaskEdit,
+		studionodes.NodeTypeExtractFrames,
+		studionodes.NodeTypeTTSDubMux,
+		studionodes.NodeTypeLipSyncGenerate,
+		studionodes.NodeTypeQCReview,
+		"tool.video_watermark_remove",
 	}
 	for _, want := range wantNodes {
 		if !have[want] {

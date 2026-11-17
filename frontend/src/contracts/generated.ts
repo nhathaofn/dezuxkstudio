@@ -52,7 +52,7 @@ export type AgentCustomizationKind = (typeof AgentCustomizationKindValues)[numbe
 export const AgentCustomizationStateValues = ["managed", "user_modified", "user_only", "tombstone"] as const;
 export type AgentCustomizationState = (typeof AgentCustomizationStateValues)[number];
 
-export const ProviderCapabilityValues = ["llm", "image", "video", "tts"] as const;
+export const ProviderCapabilityValues = ["llm", "image", "video", "tts", "lipsync"] as const;
 export type ProviderCapability = (typeof ProviderCapabilityValues)[number];
 
 export const ProviderFieldKindValues = ["text", "url", "file"] as const;
@@ -61,13 +61,13 @@ export type ProviderFieldKind = (typeof ProviderFieldKindValues)[number];
 export const ProviderDiscoveryFormatValues = ["openai", "gemini", "anthropic"] as const;
 export type ProviderDiscoveryFormat = (typeof ProviderDiscoveryFormatValues)[number];
 
-export const ProviderEndpointValues = ["openai-chat", "openai-responses", "gemini-generate", "anthropic-messages", "openai-images", "openai-images-generations", "openai-images-edits", "openai-chat-image", "openrouter-images", "gemini-image", "openai-video", "openai-tts", "gemini-video", "gemini-tts"] as const;
+export const ProviderEndpointValues = ["openai-chat", "openai-responses", "gemini-generate", "anthropic-messages", "openai-images", "openai-images-generations", "openai-images-edits", "openai-chat-image", "openrouter-images", "gemini-image", "openai-video", "openai-tts", "gemini-video", "gemini-tts", "lipsync"] as const;
 export type ProviderEndpoint = (typeof ProviderEndpointValues)[number];
 
 export const ProviderTestOutcomeValues = ["ok", "auth_failed", "rate_limited", "not_found", "http_error", "timeout", "network", "invalid_credentials", "secret_missing", "models_failed"] as const;
 export type ProviderTestOutcome = (typeof ProviderTestOutcomeValues)[number];
 
-export const ProviderPurposeValues = ["text", "image", "video", "tts"] as const;
+export const ProviderPurposeValues = ["text", "image", "video", "tts", "lipsync"] as const;
 export type ProviderPurpose = (typeof ProviderPurposeValues)[number];
 
 export const SecretBackendValues = ["keyring", "encrypted_file", "memory"] as const;
@@ -341,6 +341,30 @@ export interface AuthorShotPromptsOutput {
   model: string;
 }
 
+export interface BatchPreflightInput {
+  project_id?: string;
+  episode_id?: string;
+  model_ref?: string;
+  capability: string;
+  item_count: number;
+  units_per_item?: number;
+  output_dir?: string;
+}
+
+export interface BatchPreflightOutput {
+  ready: boolean;
+  provider_id?: string;
+  model_id?: string;
+  capability: string;
+  item_count: number;
+  unit: string;
+  unit_price_usd: number;
+  estimated_usd: number;
+  estimated_sec: number;
+  warnings?: string[];
+  blockers?: string[];
+}
+
 export interface BinaryIDPayload {
   id: BinaryID;
 }
@@ -531,6 +555,28 @@ export interface ExtractAssetsOutput {
   model: string;
 }
 
+export interface ExtractFramesInput {
+  video_path: string;
+  mode?: string;
+  timestamps_sec?: number[];
+  count?: number;
+  output_dir?: string;
+}
+
+export interface ExtractFramesOutput {
+  frames: ExtractedFrame[];
+  last_frame_path?: string;
+  output_dir: string;
+}
+
+export interface ExtractedFrame {
+  path: string;
+  timestamp_sec: number;
+  width?: number;
+  height?: number;
+  asset_id?: string;
+}
+
 export interface Graph {
   requestId?: string;
   nodes: GraphNode[];
@@ -546,6 +592,32 @@ export interface GraphNode {
 export interface GraphResult {
   order: string[];
   nodes: Record<string, NodeRun>;
+}
+
+export interface GridPanel {
+  index: number;
+  row: number;
+  col: number;
+  path: string;
+  width: number;
+  height: number;
+  asset_id?: string;
+}
+
+export interface GridSplitInput {
+  image_path: string;
+  rows?: number;
+  cols?: number;
+  margin_px?: number;
+  gutter_px?: number;
+  row_weights?: number[];
+  col_weights?: number[];
+  output_dir?: string;
+}
+
+export interface GridSplitOutput {
+  panels: GridPanel[];
+  output_dir: string;
 }
 
 export interface ImageGenerateInput {
@@ -572,6 +644,44 @@ export interface ImageInputRef {
   localUrl: string;
   kind: string;
   mimeType?: string;
+}
+
+export interface LipSyncGenerateInput {
+  video_path: string;
+  audio_path: string;
+  model_ref?: string;
+  face_index?: number;
+  prompt?: string;
+  output_dir?: string;
+}
+
+export interface LipSyncGenerateOutput {
+  video: MediaRef;
+  path: string;
+  asset_id?: string;
+  mime_type?: string;
+  provider?: string;
+  model?: string;
+}
+
+export interface MaskEditInput {
+  image_path: string;
+  mask_path: string;
+  prompt: string;
+  model_ref?: string;
+  aspect_ratio?: string;
+  resolution?: string;
+  seed?: number;
+  output_dir?: string;
+}
+
+export interface MaskEditOutput {
+  image: MediaRef;
+  path: string;
+  asset_id?: string;
+  mime_type?: string;
+  provider?: string;
+  model?: string;
 }
 
 export interface MediaAssetItem {
@@ -821,6 +931,33 @@ export interface PurposeDefault {
   effective: string;
   chosen_unavailable: boolean;
   candidates: ModelCandidate[];
+}
+
+export interface QCReviewInput {
+  media_path: string;
+  target_kind?: string;
+  target_id?: string;
+  reference_paths?: string[];
+  prompt_expected?: string;
+  vision_model_ref?: string;
+  sample_count?: number;
+  skip_vision?: boolean;
+}
+
+export interface QCReviewIssue {
+  severity: string;
+  category: string;
+  message: string;
+  frame_path?: string;
+}
+
+export interface QCReviewOutput {
+  verdict: string;
+  overall_score: number;
+  ffprobe_json?: string;
+  issues: QCReviewIssue[];
+  vision_summary?: string;
+  sample_frames?: string[];
 }
 
 export interface RemoverInput {
@@ -1260,6 +1397,28 @@ export interface SystemInfo {
   paths: PathsInfo;
 }
 
+export interface TTSDubMuxInput {
+  video_path: string;
+  text?: string;
+  audio_path?: string;
+  model_ref?: string;
+  voice?: string;
+  language?: string;
+  overflow_mode?: string;
+  duck_original?: boolean;
+  original_volume?: number;
+  output_dir?: string;
+}
+
+export interface TTSDubMuxOutput {
+  video: MediaRef;
+  path: string;
+  audio_path: string;
+  asset_id?: string;
+  duration_sec: number;
+  adjusted_ratio?: number;
+}
+
 export interface TTSGenerateInput {
   text: string;
   model?: string;
@@ -1343,6 +1502,27 @@ export interface VideoGenerateOutput {
   duration: number;
   sizeBytes: number;
   asset_id?: string;
+}
+
+export interface VideoWatermarkRemoveInput {
+  video_path: string;
+  mode?: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  crop_edge?: string;
+  crop_px?: number;
+  output_dir?: string;
+}
+
+export interface VideoWatermarkRemoveOutput {
+  video: MediaRef;
+  path: string;
+  asset_id?: string;
+  width?: number;
+  height?: number;
+  duration_sec?: number;
 }
 
 export interface WorkflowRunGraphPayload {
@@ -1643,6 +1823,14 @@ export const NodeTypes = {
   AUTHOR_SHOT_PROMPTS: "tool.author_shot_prompts",
   PROBE_MEDIA: "tool.probe_media",
   VIDEO_CONCAT_BASIC: "tool.video_concat_basic",
+  BATCH_PREFLIGHT: "tool.batch_preflight",
+  GRID_SPLIT: "tool.grid_split",
+  MASK_EDIT: "tool.mask_edit",
+  EXTRACT_FRAMES: "tool.extract_frames",
+  TTS_DUB_MUX: "tool.tts_dub_mux",
+  LIPSYNC_GENERATE: "tool.lipsync_generate",
+  QC_REVIEW: "tool.qc_review",
+  VIDEO_WATERMARK_REMOVE: "tool.video_watermark_remove",
 } as const;
 export type NodeType = (typeof NodeTypes)[keyof typeof NodeTypes];
 
@@ -1656,6 +1844,14 @@ export interface NodeMap {
   "tool.author_shot_prompts": { input: AuthorShotPromptsInput; output: AuthorShotPromptsOutput };
   "tool.probe_media": { input: ProbeMediaInput; output: ProbeMediaOutput };
   "tool.video_concat_basic": { input: VideoConcatBasicInput; output: VideoConcatBasicOutput };
+  "tool.batch_preflight": { input: BatchPreflightInput; output: BatchPreflightOutput };
+  "tool.grid_split": { input: GridSplitInput; output: GridSplitOutput };
+  "tool.mask_edit": { input: MaskEditInput; output: MaskEditOutput };
+  "tool.extract_frames": { input: ExtractFramesInput; output: ExtractFramesOutput };
+  "tool.tts_dub_mux": { input: TTSDubMuxInput; output: TTSDubMuxOutput };
+  "tool.lipsync_generate": { input: LipSyncGenerateInput; output: LipSyncGenerateOutput };
+  "tool.qc_review": { input: QCReviewInput; output: QCReviewOutput };
+  "tool.video_watermark_remove": { input: VideoWatermarkRemoveInput; output: VideoWatermarkRemoveOutput };
 }
 
 export const Events = {

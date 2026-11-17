@@ -29,6 +29,9 @@ type Options struct {
 	TextGen studionodes.TextGenerator
 	// Binaries resolves managed external tools such as ffmpeg/ffprobe for media inspection & concat nodes.
 	Binaries studionodes.BinaryResolver
+	// ProviderChecker & CostEstimator back tool.batch_preflight (optional; nil omits provider/pricing checks in minimal tests).
+	ProviderChecker studionodes.ProviderChecker
+	CostEstimator   studionodes.CostEstimator
 	// StudioConfig supplies default FPS, resolution, presets, and timeouts for studio nodes.
 	StudioConfig config.StudioConfig
 	// Registrar auto-registers newly created or cleaned media assets into the library.
@@ -77,18 +80,42 @@ func New(o Options) (*Service, error) {
 		}
 	}
 
+	var imgGen studionodes.ImageGenerator
+	var ttsGen studionodes.TTSGenerator
+	var lipSyncGen studionodes.LipSyncGenerator
+	if o.MediaGen != nil {
+		if ig, ok := o.MediaGen.(studionodes.ImageGenerator); ok {
+			imgGen = ig
+		}
+		if ag, ok := o.MediaGen.(studionodes.TTSGenerator); ok {
+			ttsGen = ag
+		}
+		if lg, ok := o.MediaGen.(studionodes.LipSyncGenerator); ok {
+			lipSyncGen = lg
+		}
+	}
+
 	// Built-in feature nodes. A new feature = one entry here: the UI, workflows and the agent
 	// (MCP workflow_* tools) all pick it up from its Spec, with no agent-specific code.
+	wmOpts := watermark.Options{
+		MediaDir:      defaultMedia,
+		MediaDirFunc:  mediaDirFunc,
+		OutputDirFunc: watermarkDirFunc,
+		Registrar:     o.Registrar,
+		Binaries:      o.Binaries,
+		StudioConfig:  o.StudioConfig,
+	}
 	nodes := []engine.Node{
-		watermark.NewNode(watermark.Options{
-			MediaDir:      defaultMedia,
-			MediaDirFunc:  mediaDirFunc,
-			OutputDirFunc: watermarkDirFunc,
-			Registrar:     o.Registrar,
-		}),
+		watermark.NewNode(wmOpts),
+		watermark.NewVideoNode(wmOpts),
 	}
 	nodes = append(nodes, studionodes.NewNodes(studionodes.Options{
 		TextGen:           textGen,
+		ImageGen:          imgGen,
+		TTSGen:            ttsGen,
+		LipSyncGen:        lipSyncGen,
+		ProviderChecker:   o.ProviderChecker,
+		CostEstimator:     o.CostEstimator,
 		Binaries:          o.Binaries,
 		Registrar:         o.Registrar,
 		StudioConfig:      o.StudioConfig,
