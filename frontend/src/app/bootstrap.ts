@@ -46,6 +46,8 @@ export function bootstrap(): void {
   rtClient.on(Events.STUDIO_BATCH_PROGRESS, (p) =>
     useStudioStore.getState().receiveBatchProgress(p)
   );
+  rtClient.on(Events.STUDIO_QUEUE_UPDATED, (p) => useStudioStore.getState().receiveQueueUpdated(p));
+  rtClient.on(Events.STUDIO_COST_UPDATED, (p) => useStudioStore.getState().receiveCostUpdated(p));
   rtClient.on(Events.ACTION_PROGRESS, (p) => {
     // Heartbeats only keep a request alive; logging them would flood the live log buffer.
     if (!p.heartbeat) uiLog.info(`progress ${Math.round(p.percent)}% ${p.message}`);

@@ -4,8 +4,11 @@ import {
   Clapperboard,
   FolderOpen,
   Layers,
+  Play,
   Plus,
   RefreshCw,
+  ShieldAlert,
+  ShieldCheck,
   Trash2,
 } from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
@@ -24,9 +27,17 @@ import {
 } from "../../contracts/generated";
 import { translateServerMessage, useT } from "../../lib/i18n";
 import { useAgentScreenContext } from "../agent/screenContext";
+import { useAgentStore } from "../agent/useAgentStore";
 import { MediaModelSelect } from "../mediagen/MediaModelSelect";
 import { useMediaLibraryStore } from "../media/useMediaLibraryStore";
 import { useSystemStore } from "../system/useSystemStore";
+import {
+  StudioGridSplitterModal,
+  StudioMaskEditorModal,
+  StudioPreflightDialog,
+  StudioVersionDrawer,
+} from "./StudioPhase2Modals";
+import { StudioQueueCostDrawer } from "./StudioQueueCostDrawer";
 import {
   AssetsStagePanel,
   CreateProjectDialog,
@@ -87,6 +98,9 @@ export const StudioView: React.FC = () => {
     error,
     lastSummary,
     setActiveStage,
+    jobs,
+    costSummary,
+    openQueueDrawer,
     fetchProjects,
     selectProject,
     updateProject,
@@ -94,6 +108,13 @@ export const StudioView: React.FC = () => {
     createEpisode,
     clearError,
   } = useStudioStore();
+
+  const approvals = useAgentStore((s) => s.approvals);
+  const resolveApproval = useAgentStore((s) => s.resolveApproval);
+  const studioApprovals = approvals.filter((a) => a.tool.startsWith("studio_"));
+  const activeJobsCount = jobs.filter(
+    (j) => j.status === "queued" || j.status === "submitted" || j.status === "polling"
+  ).length;
 
   const openMediaDrawer = useMediaLibraryStore((s) => s.openDrawer);
   const openFolder = useSystemStore((s) => s.openFolder);
@@ -364,6 +385,31 @@ export const StudioView: React.FC = () => {
                 disabled={runningStage !== null}
               />
             )}
+            {activeProj && (
+              <>
+                <Button
+                  variant={studioApprovals.length > 0 ? "primary" : "secondary"}
+                  size="sm"
+                  onClick={() => openQueueDrawer(true)}
+                >
+                  {studioApprovals.length > 0 ? <ShieldAlert size={13} /> : <Play size={13} />}
+                  {t("studio.queue.button")}
+                  {activeJobsCount > 0 ? ` (${activeJobsCount})` : ""}
+                </Button>
+                <Badge
+                  className={
+                    activeProj.auto_approve_batches ? "studio-badge--ok" : "studio-badge--warn"
+                  }
+                >
+                  {activeProj.auto_approve_batches ? (
+                    <ShieldCheck size={11} />
+                  ) : (
+                    <ShieldAlert size={11} />
+                  )}
+                  ${(costSummary?.actual_total_usd ?? 0).toFixed(2)}
+                </Badge>
+              </>
+            )}
             <Button variant="secondary" size="sm" onClick={openMediaDrawer}>
               <Layers size={13} />
               {t("studio.common.openLibrary")}
@@ -385,6 +431,32 @@ export const StudioView: React.FC = () => {
         {error && (
           <div onClick={clearError} role="presentation">
             <ErrorText error={error} />
+          </div>
+        )}
+
+        {studioApprovals.length > 0 && (
+          <div className="studio-approval-bar studio-approval-bar--inline">
+            <div>
+              <strong>{t("studio.approval.pendingTitle")}</strong>
+              <div className="studio-field-hint">{studioApprovals[0].summary}</div>
+            </div>
+            <div className="studio-phase2-meta-grid">
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={() => void resolveApproval(studioApprovals[0].id, true)}
+              >
+                <ShieldCheck size={13} />
+                {t("studio.approval.approve")}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => void resolveApproval(studioApprovals[0].id, false)}
+              >
+                {t("studio.approval.reject")}
+              </Button>
+            </div>
           </div>
         )}
 
@@ -452,6 +524,11 @@ export const StudioView: React.FC = () => {
       {showDeleteDialog && activeProj && (
         <DeleteProjectDialog project={activeProj} onClose={() => setShowDeleteDialog(false)} />
       )}
+      <StudioQueueCostDrawer />
+      <StudioVersionDrawer />
+      <StudioGridSplitterModal />
+      <StudioMaskEditorModal />
+      <StudioPreflightDialog />
     </div>
   );
 };

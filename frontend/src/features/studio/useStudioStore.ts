@@ -3,18 +3,32 @@ import {
   Actions,
   NodeTypes,
   type ActionProgress,
+  type BatchPreflightOutput,
   type ProbeMediaOutput,
   type StudioAssetUpsertPayload,
   type StudioBatchProgressEvent,
+  type StudioCostSummaryResult,
+  type StudioCostUpdatedEvent,
   type StudioEpisodeDetailResult,
   type StudioEpisodeRunStagePayload,
   type StudioEpisodeStage,
   type StudioEpisodeUpdatedEvent,
+  type StudioExtractLastFramePayload,
+  type StudioGridSplitPayload,
+  type StudioJob,
+  type StudioMaskEditPayload,
+  type StudioMediaVersion,
+  type StudioPricingUpsertPayload,
   type StudioProject,
   type StudioProjectChangedEvent,
   type StudioProjectCreatePayload,
   type StudioProjectDetailResult,
   type StudioProjectUpdatePayload,
+  type StudioQCReport,
+  type StudioQCReviewPayload,
+  type StudioQueueControlPayload,
+  type StudioQueueEnqueuePayload,
+  type StudioQueueUpdatedEvent,
   type StudioRunStageAction,
   type StudioShot,
   type StudioShotUpsertPayload,
@@ -37,6 +51,15 @@ export interface StudioState {
   actionProgress: ActionProgress | null;
   batchProgress: StudioBatchProgressEvent | null;
   probeMap: Record<string, ProbeMediaOutput>;
+  jobs: StudioJob[];
+  costSummary: StudioCostSummaryResult | null;
+  versionsByTarget: Record<string, StudioMediaVersion[]>;
+  qcByTarget: Record<string, StudioQCReport>;
+  queueDrawerOpen: boolean;
+  versionDrawerTarget: StudioVersionModalTarget | null;
+  gridModalTarget: StudioGridModalTarget | null;
+  maskModalTarget: StudioMaskModalTarget | null;
+  pendingPreflight: StudioPendingPreflight | null;
   error: ActionError | null;
   lastSummary: string;
 
@@ -69,6 +92,86 @@ export interface StudioState {
   receiveProjectChanged: (evt: StudioProjectChangedEvent) => void;
   receiveEpisodeUpdated: (evt: StudioEpisodeUpdatedEvent) => void;
   receiveBatchProgress: (evt: StudioBatchProgressEvent) => void;
+  receiveQueueUpdated: (evt: StudioQueueUpdatedEvent) => void;
+  receiveCostUpdated: (evt: StudioCostUpdatedEvent) => void;
+
+  openQueueDrawer: (open: boolean) => void;
+  openVersionDrawer: (target: StudioVersionModalTarget | null) => void;
+  openGridModal: (target: StudioGridModalTarget | null) => void;
+  openMaskModal: (target: StudioMaskModalTarget | null) => void;
+  cancelPreflight: () => void;
+  confirmPreflight: () => Promise<boolean>;
+
+  fetchQueue: (projectId: string, episodeId?: string) => Promise<void>;
+  enqueueBatch: (payload: Omit<StudioQueueEnqueuePayload, "episode_id">) => Promise<boolean>;
+  controlQueue: (payload: StudioQueueControlPayload) => Promise<void>;
+  fetchCostSummary: (projectId: string, episodeId?: string) => Promise<void>;
+  upsertPricing: (payload: StudioPricingUpsertPayload) => Promise<boolean>;
+  fetchVersions: (targetKind: string, targetId: string) => Promise<void>;
+  selectVersion: (versionId: string) => Promise<boolean>;
+  splitGrid: (payload: StudioGridSplitPayload) => Promise<boolean>;
+  applyMaskEdit: (payload: StudioMaskEditPayload) => Promise<boolean>;
+  extractLastFrame: (
+    payload: Omit<StudioExtractLastFramePayload, "episode_id">
+  ) => Promise<boolean>;
+  runQCReview: (payload: StudioQCReviewPayload) => Promise<StudioQCReport | null>;
+  runBatchPreflight: (
+    stage: string,
+    model?: string,
+    itemCount?: number
+  ) => Promise<BatchPreflightOutput | null>;
+}
+
+export interface StudioVersionModalTarget {
+  projectId: string;
+  episodeId?: string;
+  targetKind: string;
+  targetId: string;
+  label: string;
+  mediaPath: string;
+  mediaAssetId?: string;
+  promptExpected?: string;
+  referencePaths?: string[];
+}
+
+export interface StudioGridModalTarget {
+  projectId: string;
+  episodeId?: string;
+  targetKind?: string;
+  targetId?: string;
+  imagePath: string;
+  assetId?: string;
+}
+
+export interface StudioMaskModalTarget {
+  projectId: string;
+  episodeId?: string;
+  targetKind: string;
+  targetId: string;
+  imagePath: string;
+  assetId?: string;
+  defaultPrompt?: string;
+}
+
+export interface StudioPendingPreflight {
+  mode: "stage" | "queue";
+  stage: string;
+  opts: Record<string, unknown>;
+  preflight: BatchPreflightOutput;
+}
+
+export function targetVersionKey(targetKind: string, targetId: string): string {
+  return `${targetKind}:${targetId}`;
+}
+
+function isHeavyStudioStage(stage: string): boolean {
+  return (
+    stage === "generate_assets" ||
+    stage === "generate_keyframes" ||
+    stage === "generate_videos" ||
+    stage === "generate_tts" ||
+    stage === "lipsync"
+  );
 }
 
 export const useStudioStore = create<StudioState>((set, get) => ({
@@ -87,6 +190,15 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   actionProgress: null,
   batchProgress: null,
   probeMap: {},
+  jobs: [],
+  costSummary: null,
+  versionsByTarget: {},
+  qcByTarget: {},
+  queueDrawerOpen: false,
+  versionDrawerTarget: null,
+  gridModalTarget: null,
+  maskModalTarget: null,
+  pendingPreflight: null,
   error: null,
   lastSummary: "",
 
@@ -141,6 +253,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         activeStage: activeEp?.episode.stage ?? get().activeStage,
         loadingEpisode: false,
       });
+      void get().fetchQueue(detail.project.id, activeEp?.episode.id);
+      void get().fetchCostSummary(detail.project.id, activeEp?.episode.id);
     } catch (err) {
       set({ error: toActionError(err), loadingEpisode: false });
     }
@@ -219,6 +333,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         activeEpisodeId: detail.episode.id,
         loadingEpisode: false,
       });
+      void get().fetchQueue(detail.project.id, detail.episode.id);
+      void get().fetchCostSummary(detail.project.id, detail.episode.id);
     } catch (err) {
       set({ error: toActionError(err), loadingEpisode: false });
     }
@@ -380,6 +496,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   runStage: async (stage, opts = {}) => {
     const epId = get().activeEpisodeId;
     if (!epId) return false;
+    const proj = get().projectDetail?.project;
+    if (proj && !proj.auto_approve_batches && !opts.approved && isHeavyStudioStage(stage)) {
+      const preflight = await get().runBatchPreflight(stage, opts.model, undefined);
+      if (preflight) {
+        set({ pendingPreflight: { mode: "stage", stage, opts: { ...opts }, preflight } });
+        return false;
+      }
+    }
     set({
       runningStage: stage,
       actionProgress: null,
@@ -453,6 +577,291 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   receiveBatchProgress: (evt) => {
     if (evt.episode_id === get().activeEpisodeId) {
       set({ batchProgress: evt.status === "running" ? evt : null });
+    }
+  },
+
+  receiveQueueUpdated: (evt) => {
+    if (evt.project_id === get().activeProjectId && evt.job) {
+      set((s) => {
+        const idx = s.jobs.findIndex((j) => j.id === evt.job!.id);
+        const jobs =
+          idx >= 0
+            ? s.jobs.map((j) => (j.id === evt.job!.id ? evt.job! : j))
+            : [evt.job!, ...s.jobs];
+        return { jobs };
+      });
+    } else if (evt.project_id === get().activeProjectId) {
+      void get().fetchQueue(evt.project_id, evt.episode_id);
+    }
+  },
+
+  receiveCostUpdated: (evt) => {
+    if (evt.project_id === get().activeProjectId) {
+      void get().fetchCostSummary(evt.project_id, evt.episode_id);
+    }
+  },
+
+  openQueueDrawer: (open) => {
+    set({ queueDrawerOpen: open });
+    const pid = get().activeProjectId;
+    if (open && pid) {
+      void get().fetchQueue(pid, get().activeEpisodeId ?? undefined);
+      void get().fetchCostSummary(pid, get().activeEpisodeId ?? undefined);
+    }
+  },
+
+  openVersionDrawer: (target) => {
+    set({ versionDrawerTarget: target });
+    if (target) {
+      void get().fetchVersions(target.targetKind, target.targetId);
+    }
+  },
+
+  openGridModal: (target) => set({ gridModalTarget: target }),
+  openMaskModal: (target) => set({ maskModalTarget: target }),
+  cancelPreflight: () => set({ pendingPreflight: null }),
+
+  confirmPreflight: async () => {
+    const pending = get().pendingPreflight;
+    if (!pending) return false;
+    set({ pendingPreflight: null });
+    if (pending.mode === "queue") {
+      return get().enqueueBatch({
+        ...(pending.opts as Omit<StudioQueueEnqueuePayload, "episode_id">),
+        stage: pending.stage,
+        approved: true,
+      });
+    }
+    return get().runStage(pending.stage as StudioRunStageAction, {
+      ...pending.opts,
+      approved: true,
+    });
+  },
+
+  fetchQueue: async (projectId, episodeId) => {
+    try {
+      const res = await rtClient.request(Actions.STUDIO_QUEUE_LIST, {
+        project_id: projectId,
+        episode_id: episodeId,
+      });
+      set({ jobs: res.jobs ?? [] });
+    } catch (err) {
+      set({ error: toActionError(err) });
+    }
+  },
+
+  enqueueBatch: async (payload) => {
+    const epId = get().activeEpisodeId;
+    const proj = get().projectDetail?.project;
+    if (!epId || !proj) return false;
+    if (!proj.auto_approve_batches && !payload.approved) {
+      const preflight = await get().runBatchPreflight(payload.stage, payload.model, undefined);
+      if (preflight) {
+        set({
+          pendingPreflight: {
+            mode: "queue",
+            stage: payload.stage,
+            opts: { ...payload },
+            preflight,
+          },
+        });
+        return false;
+      }
+    }
+    set({ saving: true, error: null });
+    try {
+      const res = await rtClient.request(Actions.STUDIO_QUEUE_ENQUEUE, {
+        ...payload,
+        episode_id: epId,
+        approved: payload.approved ?? true,
+      });
+      set((s) => ({
+        saving: false,
+        jobs: [...res.jobs, ...s.jobs.filter((x) => !res.jobs.some((n) => n.id === x.id))],
+        lastSummary: res.summary,
+      }));
+      return true;
+    } catch (err) {
+      set({ saving: false, error: toActionError(err) });
+      return false;
+    }
+  },
+
+  controlQueue: async (payload) => {
+    set({ saving: true, error: null });
+    try {
+      await rtClient.request(Actions.STUDIO_QUEUE_CONTROL, payload);
+      const pid = payload.project_id ?? get().activeProjectId;
+      if (pid) await get().fetchQueue(pid, get().activeEpisodeId ?? undefined);
+      set({ saving: false });
+    } catch (err) {
+      set({ saving: false, error: toActionError(err) });
+    }
+  },
+
+  fetchCostSummary: async (projectId, episodeId) => {
+    try {
+      const sum = await rtClient.request(Actions.STUDIO_COST_SUMMARY, {
+        project_id: projectId,
+        episode_id: episodeId,
+      });
+      set({ costSummary: sum });
+    } catch {
+      // Quiet background refresh error
+    }
+  },
+
+  upsertPricing: async (payload) => {
+    set({ saving: true, error: null });
+    try {
+      await rtClient.request(Actions.STUDIO_PRICING_UPSERT, payload);
+      const pid = get().activeProjectId;
+      if (pid) await get().fetchCostSummary(pid, get().activeEpisodeId ?? undefined);
+      set({ saving: false });
+      return true;
+    } catch (err) {
+      set({ saving: false, error: toActionError(err) });
+      return false;
+    }
+  },
+
+  fetchVersions: async (targetKind, targetId) => {
+    try {
+      const res = await rtClient.request(Actions.STUDIO_VERSIONS_LIST, {
+        target_kind: targetKind,
+        target_id: targetId,
+      });
+      const key = targetVersionKey(targetKind, targetId);
+      set((s) => ({
+        versionsByTarget: { ...s.versionsByTarget, [key]: res.versions ?? [] },
+        qcByTarget: res.latest_qc ? { ...s.qcByTarget, [key]: res.latest_qc } : s.qcByTarget,
+      }));
+    } catch (err) {
+      set({ error: toActionError(err) });
+    }
+  },
+
+  selectVersion: async (versionId) => {
+    set({ saving: true, error: null });
+    try {
+      const res = await rtClient.request(Actions.STUDIO_VERSION_SELECT, {
+        version_id: versionId,
+      });
+      const key = targetVersionKey(res.version.target_kind, res.version.target_id);
+      set((s) => ({
+        saving: false,
+        episodeDetail: res.episode ?? s.episodeDetail,
+        versionsByTarget: {
+          ...s.versionsByTarget,
+          [key]: (s.versionsByTarget[key] ?? []).map((v) => ({
+            ...v,
+            is_selected: v.id === res.version.id,
+          })),
+        },
+      }));
+      const pid = get().activeProjectId;
+      if (pid) {
+        const projDetail = await rtClient.request(Actions.STUDIO_PROJECT_GET, { id: pid });
+        set({ projectDetail: projDetail });
+      }
+      return true;
+    } catch (err) {
+      set({ saving: false, error: toActionError(err) });
+      return false;
+    }
+  },
+
+  splitGrid: async (payload) => {
+    set({ saving: true, error: null });
+    try {
+      const res = await rtClient.request(Actions.STUDIO_GRID_SPLIT, payload);
+      if (payload.target_kind && payload.target_id && res.versions) {
+        const key = targetVersionKey(payload.target_kind, payload.target_id);
+        set((s) => ({
+          versionsByTarget: {
+            ...s.versionsByTarget,
+            [key]: [...res.versions!, ...(s.versionsByTarget[key] ?? [])],
+          },
+        }));
+      }
+      set({ saving: false });
+      return true;
+    } catch (err) {
+      set({ saving: false, error: toActionError(err) });
+      return false;
+    }
+  },
+
+  applyMaskEdit: async (payload) => {
+    set({ saving: true, error: null });
+    try {
+      const res = await rtClient.request(Actions.STUDIO_MASK_EDIT, payload);
+      set((s) => ({
+        saving: false,
+        episodeDetail: res.episode ?? s.episodeDetail,
+        maskModalTarget: null,
+      }));
+      if (res.version) {
+        await get().fetchVersions(res.version.target_kind, res.version.target_id);
+      }
+      return true;
+    } catch (err) {
+      set({ saving: false, error: toActionError(err) });
+      return false;
+    }
+  },
+
+  extractLastFrame: async (payload) => {
+    const epId = get().activeEpisodeId;
+    if (!epId) return false;
+    set({ saving: true, error: null });
+    try {
+      const res = await rtClient.request(Actions.STUDIO_EXTRACT_LAST_FRAME, {
+        ...payload,
+        episode_id: epId,
+      });
+      set((s) => ({
+        saving: false,
+        episodeDetail: res.episode ?? s.episodeDetail,
+        lastSummary: res.frame_path,
+      }));
+      return true;
+    } catch (err) {
+      set({ saving: false, error: toActionError(err) });
+      return false;
+    }
+  },
+
+  runQCReview: async (payload) => {
+    set({ saving: true, error: null });
+    try {
+      const rep = await rtClient.request(Actions.STUDIO_QC_REVIEW, payload);
+      const key = targetVersionKey(rep.target_kind, rep.target_id);
+      set((s) => ({
+        saving: false,
+        qcByTarget: { ...s.qcByTarget, [key]: rep },
+      }));
+      return rep;
+    } catch (err) {
+      set({ saving: false, error: toActionError(err) });
+      return null;
+    }
+  },
+
+  runBatchPreflight: async (stage, model, itemCount) => {
+    const pid = get().activeProjectId;
+    if (!pid) return null;
+    try {
+      return await rtClient.request(Actions.STUDIO_BATCH_PREFLIGHT, {
+        project_id: pid,
+        episode_id: get().activeEpisodeId ?? undefined,
+        stage,
+        model,
+        item_count: itemCount,
+      });
+    } catch (err) {
+      set({ error: toActionError(err) });
+      return null;
     }
   },
 }));

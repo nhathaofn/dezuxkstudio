@@ -9,12 +9,16 @@ import {
   FileText,
   Film,
   FolderOpen,
+  Grid,
   Image as ImageIcon,
   Layers,
   Loader2,
+  Paintbrush,
+  Play,
   Plus,
   Save,
   Sparkles,
+  Speech,
   Trash2,
   Upload,
   Volume2,
@@ -47,7 +51,7 @@ import { askAgentAboutMediaAsset } from "../agent/screenContext";
 import { useSystemStore } from "../system/useSystemStore";
 import { findParam, useNodeSpec } from "../workflow/useNodeSpecs";
 import { SignedStudioAudio, SignedStudioImage, SignedStudioVideo } from "./SignedStudioMedia";
-import { useStudioStore } from "./useStudioStore";
+import { targetVersionKey, useStudioStore } from "./useStudioStore";
 
 export const CreateProjectDialog: React.FC<{
   onClose: () => void;
@@ -400,6 +404,10 @@ const AssetBibleCard: React.FC<{
   const upsertAsset = useStudioStore((s) => s.upsertAsset);
   const uploadAssetImage = useStudioStore((s) => s.uploadAssetImage);
   const runStage = useStudioStore((s) => s.runStage);
+  const activeEpisodeId = useStudioStore((s) => s.activeEpisodeId);
+  const openVersionDrawer = useStudioStore((s) => s.openVersionDrawer);
+  const openGridModal = useStudioStore((s) => s.openGridModal);
+  const openMaskModal = useStudioStore((s) => s.openMaskModal);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [name, setName] = useState(asset.name);
@@ -407,6 +415,9 @@ const AssetBibleCard: React.FC<{
   const [kind, setKind] = useState<StudioAssetKind>(asset.kind);
   const [description, setDescription] = useState(asset.description);
   const [prompt, setPrompt] = useState(asset.prompt);
+  const [voiceProvider, setVoiceProvider] = useState(asset.voice_provider ?? "");
+  const [voiceId, setVoiceId] = useState(asset.voice_id ?? "");
+  const [voiceStyle, setVoiceStyle] = useState(asset.voice_style ?? "");
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -516,6 +527,41 @@ const AssetBibleCard: React.FC<{
         disabled={busy}
       />
 
+      {kind === "character" && (
+        <div className="studio-voice-box">
+          <div className="studio-voice-box__title">
+            <Speech size={13} />
+            <strong>{t("studio.voice.title")}</strong>
+          </div>
+          <div className="studio-voice-grid">
+            <input
+              className="input-control"
+              value={voiceProvider}
+              onChange={(e) => setVoiceProvider(e.target.value)}
+              placeholder={t("studio.voice.provider")}
+              aria-label={t("studio.voice.provider")}
+              disabled={busy}
+            />
+            <input
+              className="input-control"
+              value={voiceId}
+              onChange={(e) => setVoiceId(e.target.value)}
+              placeholder={t("studio.voice.voiceId")}
+              aria-label={t("studio.voice.voiceId")}
+              disabled={busy}
+            />
+            <input
+              className="input-control"
+              value={voiceStyle}
+              onChange={(e) => setVoiceStyle(e.target.value)}
+              placeholder={t("studio.voice.style")}
+              aria-label={t("studio.voice.style")}
+              disabled={busy}
+            />
+          </div>
+        </div>
+      )}
+
       <div className="studio-toolbar">
         <input
           ref={fileRef}
@@ -538,6 +584,9 @@ const AssetBibleCard: React.FC<{
               prompt,
               primary_asset_id: asset.primary_asset_id,
               primary_path: asset.primary_path,
+              voice_provider: voiceProvider.trim(),
+              voice_id: voiceId.trim(),
+              voice_style: voiceStyle.trim(),
             })
           }
           disabled={busy || !name.trim()}
@@ -558,6 +607,67 @@ const AssetBibleCard: React.FC<{
           <Upload size={13} />
           {t("studio.assets.uploadImage")}
         </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() =>
+            openVersionDrawer({
+              projectId: asset.project_id,
+              episodeId: activeEpisodeId ?? undefined,
+              targetKind: "asset",
+              targetId: asset.id,
+              label: asset.name,
+              mediaPath: asset.primary_path,
+              mediaAssetId: asset.primary_asset_id,
+              promptExpected: prompt,
+            })
+          }
+          disabled={busy}
+        >
+          <Layers size={13} />
+          {t("studio.versions.button")}
+        </Button>
+        {asset.primary_path && (
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() =>
+                openGridModal({
+                  projectId: asset.project_id,
+                  episodeId: activeEpisodeId ?? undefined,
+                  targetKind: "asset",
+                  targetId: asset.id,
+                  imagePath: asset.primary_path,
+                  assetId: asset.primary_asset_id,
+                })
+              }
+              disabled={busy}
+            >
+              <Grid size={13} />
+              {t("studio.gridSplit.button")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() =>
+                openMaskModal({
+                  projectId: asset.project_id,
+                  episodeId: activeEpisodeId ?? undefined,
+                  targetKind: "asset",
+                  targetId: asset.id,
+                  imagePath: asset.primary_path,
+                  assetId: asset.primary_asset_id,
+                  defaultPrompt: prompt,
+                })
+              }
+              disabled={busy}
+            >
+              <Paintbrush size={13} />
+              {t("studio.maskEdit.button")}
+            </Button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -656,17 +766,21 @@ export const AssetsStagePanel: React.FC<{
 };
 
 const StoryboardShotCard: React.FC<{
+  projectId: string;
   shot: StudioShot;
   index: number;
   total: number;
   shotModeOptions: string[];
   busy: boolean;
   onMove: (delta: number) => void;
-}> = ({ shot, index, total, shotModeOptions, busy, onMove }) => {
+}> = ({ projectId, shot, index, total, shotModeOptions, busy, onMove }) => {
   const t = useT();
   const upsertShot = useStudioStore((s) => s.upsertShot);
   const uploadShotKeyframe = useStudioStore((s) => s.uploadShotKeyframe);
   const runStage = useStudioStore((s) => s.runStage);
+  const openVersionDrawer = useStudioStore((s) => s.openVersionDrawer);
+  const openGridModal = useStudioStore((s) => s.openGridModal);
+  const openMaskModal = useStudioStore((s) => s.openMaskModal);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [title, setTitle] = useState(shot.title);
@@ -829,6 +943,67 @@ const StoryboardShotCard: React.FC<{
           <Upload size={13} />
           {t("studio.storyboard.uploadKeyframe")}
         </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() =>
+            openVersionDrawer({
+              projectId,
+              episodeId: shot.episode_id,
+              targetKind: "shot_keyframe",
+              targetId: shot.id,
+              label: shot.title,
+              mediaPath: shot.keyframe_path,
+              mediaAssetId: shot.keyframe_asset_id,
+              promptExpected: imagePrompt,
+            })
+          }
+          disabled={busy}
+        >
+          <Layers size={13} />
+          {t("studio.versions.button")}
+        </Button>
+        {shot.keyframe_path && (
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() =>
+                openGridModal({
+                  projectId,
+                  episodeId: shot.episode_id,
+                  targetKind: "shot_keyframe",
+                  targetId: shot.id,
+                  imagePath: shot.keyframe_path,
+                  assetId: shot.keyframe_asset_id,
+                })
+              }
+              disabled={busy}
+            >
+              <Grid size={13} />
+              {t("studio.gridSplit.button")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() =>
+                openMaskModal({
+                  projectId,
+                  episodeId: shot.episode_id,
+                  targetKind: "shot_keyframe",
+                  targetId: shot.id,
+                  imagePath: shot.keyframe_path,
+                  assetId: shot.keyframe_asset_id,
+                  defaultPrompt: imagePrompt,
+                })
+              }
+              disabled={busy}
+            >
+              <Paintbrush size={13} />
+              {t("studio.maskEdit.button")}
+            </Button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -922,6 +1097,7 @@ export const StoryboardStagePanel: React.FC<{
           {detail.shots.map((shot, idx) => (
             <StoryboardShotCard
               key={`${shot.id}:${shot.updated_at}`}
+              projectId={detail.project.id}
               shot={shot}
               index={idx}
               total={detail.shots.length}
@@ -949,6 +1125,10 @@ export const VideoShotsStagePanel: React.FC<{
   const effectiveResolution = resolution || resParam?.default || resOptions[0] || "720p";
 
   const runStage = useStudioStore((s) => s.runStage);
+  const enqueueBatch = useStudioStore((s) => s.enqueueBatch);
+  const extractLastFrame = useStudioStore((s) => s.extractLastFrame);
+  const openVersionDrawer = useStudioStore((s) => s.openVersionDrawer);
+  const qcByTarget = useStudioStore((s) => s.qcByTarget);
   const probeShot = useStudioStore((s) => s.probeShot);
   const probeMap = useStudioStore((s) => s.probeMap);
   const runningStage = useStudioStore((s) => s.runningStage);
@@ -1040,6 +1220,29 @@ export const VideoShotsStagePanel: React.FC<{
           >
             {t("studio.video.probeAll")}
           </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() =>
+              void enqueueBatch({
+                stage: "generate_videos",
+                ...(videoModel ? { model: videoModel } : {}),
+              })
+            }
+            disabled={busy || detail.shots.length === 0}
+          >
+            <Play size={13} />
+            {t("studio.queue.enqueueBatch")}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void enqueueBatch({ stage: "lipsync" })}
+            disabled={busy || !detail.shots.some((s) => Boolean(s.video_path && s.audio_path))}
+          >
+            <Speech size={13} />
+            {t("studio.voice.lipSyncButton")}
+          </Button>
         </div>
       </div>
 
@@ -1050,8 +1253,10 @@ export const VideoShotsStagePanel: React.FC<{
         </div>
       ) : (
         <div className="studio-card-grid">
-          {detail.shots.map((shot) => {
+          {detail.shots.map((shot, idx) => {
             const probe = probeMap[shot.id];
+            const nextShot = detail.shots[idx + 1];
+            const latestQC = qcByTarget[targetVersionKey("shot_video", shot.id)];
             return (
               <div key={shot.id} className="studio-item-card">
                 <div className="studio-item-head">
@@ -1059,7 +1264,22 @@ export const VideoShotsStagePanel: React.FC<{
                     <Badge>#{shot.seq}</Badge>
                     <strong>{shot.title}</strong>
                   </div>
-                  <Badge>{shot.status}</Badge>
+                  <div className="studio-phase2-meta-grid">
+                    {latestQC && (
+                      <Badge
+                        className={
+                          latestQC.verdict === "pass"
+                            ? "studio-badge--ok"
+                            : latestQC.verdict === "fail"
+                              ? "studio-badge--error"
+                              : "studio-badge--warn"
+                        }
+                      >
+                        {t(`studio.qc.verdict.${latestQC.verdict}` as never)}
+                      </Badge>
+                    )}
+                    <Badge>{shot.status}</Badge>
+                  </div>
                 </div>
 
                 <div className="studio-media-frame">
@@ -1105,6 +1325,48 @@ export const VideoShotsStagePanel: React.FC<{
                   >
                     <Volume2 size={13} />
                     {t("studio.video.genTTS")}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      openVersionDrawer({
+                        projectId: detail.project.id,
+                        episodeId: detail.episode.id,
+                        targetKind: "shot_video",
+                        targetId: shot.id,
+                        label: shot.title,
+                        mediaPath: shot.video_path,
+                        mediaAssetId: shot.video_asset_id,
+                        promptExpected: shot.video_prompt,
+                        referencePaths: shot.keyframe_path ? [shot.keyframe_path] : undefined,
+                      })
+                    }
+                    disabled={busy}
+                  >
+                    <Layers size={13} />
+                    {t("studio.versions.button")}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      if (nextShot) {
+                        void extractLastFrame({
+                          source_shot_id: shot.id,
+                          target_shot_id: nextShot.id,
+                        });
+                      }
+                    }}
+                    disabled={busy || !shot.video_path || !nextShot}
+                    title={
+                      nextShot
+                        ? t("studio.extractFrame.button")
+                        : t("studio.extractFrame.noNextShot")
+                    }
+                  >
+                    <ImageIcon size={13} />
+                    {t("studio.extractFrame.button")}
                   </Button>
                   <Button
                     variant="ghost"
