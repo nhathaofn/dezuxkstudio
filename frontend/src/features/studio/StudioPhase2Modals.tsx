@@ -3,8 +3,10 @@ import { Check, Eraser, Grid, Paintbrush, RotateCcw, ShieldCheck, ShieldAlert } 
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
+import { NodeTypes } from "../../contracts/generated";
 import { useSignedMediaURL } from "../../lib/hooks/useSignedMediaURL";
 import { useT } from "../../lib/i18n";
+import { findParam, useNodeSpec } from "../workflow/useNodeSpecs";
 import { targetVersionKey, useStudioStore, type StudioMaskModalTarget } from "./useStudioStore";
 import {
   buildMaskDataURLFromStrokes,
@@ -201,6 +203,20 @@ export const StudioVersionDrawer: React.FC = () => {
 
 export const StudioGridSplitterModal: React.FC = () => {
   const t = useT();
+  const gridSpec = useNodeSpec(NodeTypes.GRID_SPLIT);
+  const rowsParam = findParam(gridSpec, "rows");
+  const colsParam = findParam(gridSpec, "cols");
+  const marginParam = findParam(gridSpec, "margin_px");
+  const gutterParam = findParam(gridSpec, "gutter_px");
+  const rowsMin = rowsParam?.min ?? 1;
+  const rowsMax = rowsParam?.max ?? 8;
+  const colsMin = colsParam?.min ?? 1;
+  const colsMax = colsParam?.max ?? 8;
+  const marginMin = marginParam?.min ?? 0;
+  const marginMax = marginParam?.max ?? 512;
+  const gutterMin = gutterParam?.min ?? 0;
+  const gutterMax = gutterParam?.max ?? 256;
+
   const target = useStudioStore((s) => s.gridModalTarget);
   const openGridModal = useStudioStore((s) => s.openGridModal);
   const splitGrid = useStudioStore((s) => s.splitGrid);
@@ -208,16 +224,16 @@ export const StudioGridSplitterModal: React.FC = () => {
   const selectVersion = useStudioStore((s) => s.selectVersion);
   const saving = useStudioStore((s) => s.saving);
 
-  const [rows, setRows] = useState(2);
-  const [cols, setCols] = useState(2);
-  const [marginPx, setMarginPx] = useState(0);
-  const [gutterPx, setGutterPx] = useState(0);
+  const [rows, setRows] = useState(() => Number(rowsParam?.default ?? "2") || 2);
+  const [cols, setCols] = useState(() => Number(colsParam?.default ?? "2") || 2);
+  const [marginPx, setMarginPx] = useState(() => Number(marginParam?.default ?? "0") || 0);
+  const [gutterPx, setGutterPx] = useState(() => Number(gutterParam?.default ?? "0") || 0);
   const [rowWeights, setRowWeights] = useState<number[]>([50, 50]);
   const [colWeights, setColWeights] = useState<number[]>([50, 50]);
   const { url } = useSignedMediaURL(target?.assetId || null, "preview");
 
   const handleRowsChange = (nextRows: number) => {
-    const clamped = Math.max(1, Math.min(6, nextRows));
+    const clamped = Math.max(rowsMin, Math.min(rowsMax, nextRows));
     setRows(clamped);
     setRowWeights((prev) =>
       Array.from({ length: clamped }, (_, i) => prev[i] ?? Math.round(100 / clamped))
@@ -225,7 +241,7 @@ export const StudioGridSplitterModal: React.FC = () => {
   };
 
   const handleColsChange = (nextCols: number) => {
-    const clamped = Math.max(1, Math.min(6, nextCols));
+    const clamped = Math.max(colsMin, Math.min(colsMax, nextCols));
     setCols(clamped);
     setColWeights((prev) =>
       Array.from({ length: clamped }, (_, i) => prev[i] ?? Math.round(100 / clamped))
@@ -268,40 +284,44 @@ export const StudioGridSplitterModal: React.FC = () => {
             <span>{t("studio.gridSplit.rows")}</span>
             <input
               type="number"
-              min={1}
-              max={6}
+              min={rowsMin}
+              max={rowsMax}
               value={rows}
-              onChange={(e) => handleRowsChange(Number(e.target.value) || 2)}
+              onChange={(e) => handleRowsChange(Number(e.target.value) || rowsMin)}
             />
           </label>
           <label className="studio-field-inline">
             <span>{t("studio.gridSplit.cols")}</span>
             <input
               type="number"
-              min={1}
-              max={6}
+              min={colsMin}
+              max={colsMax}
               value={cols}
-              onChange={(e) => handleColsChange(Number(e.target.value) || 2)}
+              onChange={(e) => handleColsChange(Number(e.target.value) || colsMin)}
             />
           </label>
           <label className="studio-field-inline">
             <span>{t("studio.gridSplit.margin")}</span>
             <input
               type="number"
-              min={0}
-              max={400}
+              min={marginMin}
+              max={marginMax}
               value={marginPx}
-              onChange={(e) => setMarginPx(Math.max(0, Number(e.target.value) || 0))}
+              onChange={(e) =>
+                setMarginPx(Math.max(marginMin, Math.min(marginMax, Number(e.target.value) || 0)))
+              }
             />
           </label>
           <label className="studio-field-inline">
             <span>{t("studio.gridSplit.gutter")}</span>
             <input
               type="number"
-              min={0}
-              max={200}
+              min={gutterMin}
+              max={gutterMax}
               value={gutterPx}
-              onChange={(e) => setGutterPx(Math.max(0, Number(e.target.value) || 0))}
+              onChange={(e) =>
+                setGutterPx(Math.max(gutterMin, Math.min(gutterMax, Number(e.target.value) || 0)))
+              }
             />
           </label>
           <Button size="sm" variant="primary" disabled={saving} onClick={handleSplit}>

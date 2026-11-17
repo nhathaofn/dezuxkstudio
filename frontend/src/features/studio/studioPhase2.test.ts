@@ -631,6 +631,43 @@ describe("Studio Phase 2 ArcReel helpers, store & modals", () => {
 
     const gridHtml = renderToStaticMarkup(React.createElement(StudioGridSplitterModal));
     expect(gridHtml).toContain("Interactive Grid Splitter");
+    expect(gridHtml).toContain('max="8"');
+
+    // Also verifies grid splitter reads max bounds dynamically from workflow node spec
+    useNodeSpecsStore.setState({
+      specs: [
+        {
+          type: "tool.grid_split",
+          provider: "studio",
+          label: "Grid Storyboard Splitter",
+          description: "Split grid",
+          inputs: [
+            {
+              name: "image_path",
+              label: "Grid Image",
+              type: "image",
+              multiple: false,
+              optional: false,
+            },
+          ],
+          outputs: [
+            {
+              name: "panels",
+              label: "Panel Images",
+              type: "image",
+              multiple: true,
+              optional: false,
+            },
+          ],
+          params: [
+            { name: "rows", label: "Rows", kind: "integer", min: 1, max: 12, default: "2" },
+            { name: "cols", label: "Cols", kind: "integer", min: 1, max: 12, default: "2" },
+          ],
+        },
+      ],
+    });
+    const customSpecGridHtml = renderToStaticMarkup(React.createElement(StudioGridSplitterModal));
+    expect(customSpecGridHtml).toContain('max="12"');
 
     const maskHtml = renderToStaticMarkup(React.createElement(StudioMaskEditorModal));
     expect(maskHtml).toContain("Mask &amp; Inpaint Editor");
