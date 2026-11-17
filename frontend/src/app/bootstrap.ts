@@ -7,6 +7,7 @@ import { useConnectionStore } from "../features/connection/useConnectionStore";
 import { uiLog } from "../features/logs/useLogStore";
 import { usePreferencesStore } from "../features/preferences/usePreferencesStore";
 import { useSystemStore } from "../features/system/useSystemStore";
+import { useStudioStore } from "../features/studio/useStudioStore";
 import { useNodeSpecsStore } from "../features/workflow/useNodeSpecs";
 import { onNativeEvent } from "../lib/bridge";
 import { ActionError, rtClient } from "../lib/rtClient";
@@ -35,6 +36,15 @@ export function bootstrap(): void {
   );
   rtClient.on(Events.AGENT_CUSTOMIZATIONS_CHANGED, (p) =>
     useAgentCustomizationsStore.getState().receiveCustomizations(p)
+  );
+  rtClient.on(Events.STUDIO_PROJECT_CHANGED, (p) =>
+    useStudioStore.getState().receiveProjectChanged(p)
+  );
+  rtClient.on(Events.STUDIO_EPISODE_UPDATED, (p) =>
+    useStudioStore.getState().receiveEpisodeUpdated(p)
+  );
+  rtClient.on(Events.STUDIO_BATCH_PROGRESS, (p) =>
+    useStudioStore.getState().receiveBatchProgress(p)
   );
   rtClient.on(Events.ACTION_PROGRESS, (p) => {
     // Heartbeats only keep a request alive; logging them would flood the live log buffer.

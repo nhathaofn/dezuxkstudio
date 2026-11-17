@@ -1,5 +1,6 @@
 import type React from "react";
 import {
+  Clapperboard,
   Film,
   Image as ImageIcon,
   LayoutDashboard,
@@ -24,6 +25,12 @@ export const navRoutes: NavRoute[] = [
     label: "nav.overview",
     icon: LayoutDashboard,
     load: () => import("../features/system/OverviewView"),
+  },
+  {
+    path: "/studio",
+    label: "nav.studio",
+    icon: Clapperboard,
+    load: () => import("../features/studio/StudioView"),
   },
   {
     path: "/watermark",

@@ -1,0 +1,1292 @@
+import React, { useRef, useState } from "react";
+import {
+  ArrowDown,
+  ArrowRight,
+  ArrowUp,
+  Bot,
+  Clapperboard,
+  Download,
+  FileText,
+  Film,
+  FolderOpen,
+  Image as ImageIcon,
+  Layers,
+  Loader2,
+  Plus,
+  Save,
+  Sparkles,
+  Trash2,
+  Upload,
+  Volume2,
+  Wand2,
+} from "lucide-react";
+import { Badge } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { Dialog } from "../../components/ui/Dialog";
+import { Switch } from "../../components/ui/Switch";
+import {
+  NodeTypes,
+  StudioAssetKindValues,
+  StudioGenreValues,
+  StudioProductionModeValues,
+  StudioShotModeValues,
+  type ProbeMediaOutput,
+  type StudioAsset,
+  type StudioAssetKind,
+  type StudioEpisodeDetailResult,
+  type StudioGenre,
+  type StudioProductionMode,
+  type StudioProject,
+  type StudioShot,
+  type StudioShotMode,
+} from "../../contracts/generated";
+import { useT } from "../../lib/i18n";
+import { mediaBasename, saveMediaToDevice } from "../../lib/rtClient";
+import { askAgentAboutMediaAsset } from "../agent/screenContext";
+import { useSystemStore } from "../system/useSystemStore";
+import { findParam, useNodeSpec } from "../workflow/useNodeSpecs";
+import { SignedStudioAudio, SignedStudioImage, SignedStudioVideo } from "./SignedStudioMedia";
+import { useStudioStore } from "./useStudioStore";
+
+export const CreateProjectDialog: React.FC<{
+  onClose: () => void;
+}> = ({ onClose }) => {
+  const t = useT();
+  const scriptSpec = useNodeSpec(NodeTypes.SCRIPT_NORMALIZE);
+  const aspectParam = findParam(scriptSpec, "aspect_ratio");
+  const aspectOptions = aspectParam?.options ?? ["16:9", "9:16", "1:1", "4:3", "3:4"];
+  const createProject = useStudioStore((s) => s.createProject);
+  const saving = useStudioStore((s) => s.saving);
+
+  const [title, setTitle] = useState("");
+  const [genre, setGenre] = useState<StudioGenre>("drama");
+  const [productionMode, setProductionMode] = useState<StudioProductionMode>("storyboard_i2v");
+  const [aspectRatio, setAspectRatio] = useState(aspectParam?.default ?? "16:9");
+  const [stylePrompt, setStylePrompt] = useState("");
+  const [autoApproveBatches, setAutoApproveBatches] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!title.trim()) return;
+    const ok = await createProject({
+      title: title.trim(),
+      genre,
+      production_mode: productionMode,
+      aspect_ratio: aspectRatio,
+      style_prompt: stylePrompt.trim(),
+      auto_approve_batches: autoApproveBatches,
+    });
+    if (ok) onClose();
+  };
+
+  return (
+    <Dialog
+      title={t("studio.modal.newProject")}
+      onClose={onClose}
+      busy={saving}
+      dirty={title.trim().length > 0 || stylePrompt.trim().length > 0}
+      footer={(requestClose) => (
+        <>
+          <Button variant="ghost" onClick={requestClose} disabled={saving}>
+            {t("studio.modal.cancel")}
+          </Button>
+          <Button
+            variant="primary"
+            onClick={handleSubmit}
+            disabled={saving || title.trim().length === 0}
+          >
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+            {t("studio.modal.create")}
+          </Button>
+        </>
+      )}
+    >
+      <form className="studio-form-stack" onSubmit={handleSubmit}>
+        <div className="form-group">
+          <label className="field-label" htmlFor="studio-new-title">
+            {t("studio.modal.projectTitle")}
+          </label>
+          <input
+            id="studio-new-title"
+            className="input-control"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder={t("studio.modal.projectTitlePlaceholder")}
+            autoFocus
+          />
+        </div>
+
+        <div className="studio-field-row">
+          <div className="form-group">
+            <label className="field-label" htmlFor="studio-new-genre">
+              {t("studio.modal.genre")}
+            </label>
+            <select
+              id="studio-new-genre"
+              className="input-control"
+              value={genre}
+              onChange={(e) => setGenre(e.target.value as StudioGenre)}
+            >
+              {StudioGenreValues.map((g) => (
+                <option key={g} value={g}>
+                  {t(`studio.modal.genre.${g}`)}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label className="field-label" htmlFor="studio-new-mode">
+              {t("studio.modal.mode")}
+            </label>
+            <select
+              id="studio-new-mode"
+              className="input-control"
+              value={productionMode}
+              onChange={(e) => setProductionMode(e.target.value as StudioProductionMode)}
+            >
+              {StudioProductionModeValues.map((m) => (
+                <option key={m} value={m}>
+                  {t(`studio.modal.mode.${m}`)}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label className="field-label" htmlFor="studio-new-aspect">
+              {t("studio.modal.aspectRatio")}
+            </label>
+            <select
+              id="studio-new-aspect"
+              className="input-control"
+              value={aspectRatio}
+              onChange={(e) => setAspectRatio(e.target.value)}
+            >
+              {aspectOptions.map((ar) => (
+                <option key={ar} value={ar}>
+                  {ar}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label className="field-label" htmlFor="studio-new-style">
+            {t("studio.modal.stylePrompt")}
+          </label>
+          <textarea
+            id="studio-new-style"
+            className="studio-textarea studio-textarea--compact"
+            value={stylePrompt}
+            onChange={(e) => setStylePrompt(e.target.value)}
+            placeholder={t("studio.modal.stylePromptPlaceholder")}
+          />
+        </div>
+
+        <div className="studio-switch-row">
+          <span className="field-label">{t("studio.modal.autoApprove")}</span>
+          <Switch checked={autoApproveBatches} onCheckedChange={setAutoApproveBatches} />
+        </div>
+      </form>
+    </Dialog>
+  );
+};
+
+export const DeleteProjectDialog: React.FC<{
+  project: StudioProject;
+  onClose: () => void;
+}> = ({ project, onClose }) => {
+  const t = useT();
+  const deleteProject = useStudioStore((s) => s.deleteProject);
+  const saving = useStudioStore((s) => s.saving);
+  const [deleteFiles, setDeleteFiles] = useState(false);
+
+  const handleConfirm = async () => {
+    const ok = await deleteProject(project.id, deleteFiles);
+    if (ok) onClose();
+  };
+
+  return (
+    <Dialog
+      title={t("studio.sidebar.deleteProject")}
+      onClose={onClose}
+      busy={saving}
+      size="sm"
+      footer={(requestClose) => (
+        <>
+          <Button variant="ghost" onClick={requestClose} disabled={saving}>
+            {t("studio.modal.cancel")}
+          </Button>
+          <Button variant="primary" onClick={handleConfirm} disabled={saving}>
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+            {t("studio.common.delete")}
+          </Button>
+        </>
+      )}
+    >
+      <div className="studio-form-stack">
+        <p>{t("studio.sidebar.deleteConfirm", { title: project.title })}</p>
+        <label className="studio-switch-row">
+          <span className="field-label">{t("studio.sidebar.deleteWithFiles")}</span>
+          <Switch checked={deleteFiles} onCheckedChange={setDeleteFiles} />
+        </label>
+      </div>
+    </Dialog>
+  );
+};
+
+export const ScriptStagePanel: React.FC<{
+  detail: StudioEpisodeDetailResult;
+  modelOverride: string;
+}> = ({ detail, modelOverride }) => {
+  const t = useT();
+  const scriptSpec = useNodeSpec(NodeTypes.SCRIPT_NORMALIZE);
+  const saveScript = useStudioStore((s) => s.saveScript);
+  const runStage = useStudioStore((s) => s.runStage);
+  const setActiveStage = useStudioStore((s) => s.setActiveStage);
+  const saving = useStudioStore((s) => s.saving);
+  const runningStage = useStudioStore((s) => s.runningStage);
+
+  const [draft, setDraft] = useState(detail.raw_script ?? "");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const busy = saving || runningStage !== null;
+  const parsed = detail.normalized_script;
+  const beatTotal = parsed?.scenes.reduce((acc, sc) => acc + sc.beats.length, 0) ?? 0;
+
+  const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    const text = await file.text();
+    setDraft(text);
+    await saveScript(text);
+  };
+
+  const handleNormalize = async () => {
+    if (draft !== (detail.raw_script ?? "")) {
+      const ok = await saveScript(draft);
+      if (!ok) return;
+    }
+    await runStage("script_normalize", modelOverride ? { model: modelOverride } : {});
+  };
+
+  return (
+    <div className="studio-script-grid">
+      <Card
+        icon={FileText}
+        title={t("studio.script.rawTitle")}
+        actions={
+          <div className="studio-toolbar">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".txt,.md,.markdown"
+              className="studio-hidden-input"
+              onChange={handleFileImport}
+            />
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={busy}
+            >
+              <Upload size={13} />
+              {t("studio.script.importFile")}
+            </Button>
+          </div>
+        }
+      >
+        <textarea
+          className="studio-textarea"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder={t("studio.script.placeholder")}
+          disabled={busy}
+        />
+
+        <div className="studio-toolbar">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => void saveScript(draft)}
+            disabled={busy || draft === (detail.raw_script ?? "")}
+          >
+            <Save size={13} />
+            {saving ? t("studio.common.saving") : t("studio.script.saveScript")}
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => void handleNormalize()}
+            disabled={busy || draft.trim().length === 0}
+            title={scriptSpec?.description}
+          >
+            {runningStage === "script_normalize" ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <Sparkles size={13} />
+            )}
+            {t("studio.script.normalize")}
+          </Button>
+        </div>
+      </Card>
+
+      <Card
+        icon={Sparkles}
+        title={t("studio.script.parsedTitle")}
+        actions={
+          <div className="studio-toolbar">
+            {parsed && (
+              <Badge>
+                {t("studio.script.sceneCount", { scenes: parsed.scenes.length, beats: beatTotal })}
+              </Badge>
+            )}
+            {parsed && (
+              <Button variant="primary" size="sm" onClick={() => setActiveStage("assets")}>
+                {t("studio.script.nextToAssets")}
+                <ArrowRight size={13} />
+              </Button>
+            )}
+          </div>
+        }
+      >
+        {!parsed ? (
+          <div className="studio-media-empty">{t("studio.script.parsedEmpty")}</div>
+        ) : (
+          <div className="studio-scene-list">
+            {parsed.scenes.map((sc) => (
+              <div key={sc.code} className="studio-scene-box">
+                <div className="studio-item-head">
+                  <strong>
+                    {sc.code} — {sc.title}
+                  </strong>
+                  {sc.location && <Badge>{sc.location}</Badge>}
+                </div>
+                {sc.beats.map((bt) => (
+                  <div key={bt.code} className="studio-beat-row">
+                    <div className="studio-item-head">
+                      <span>
+                        <strong>{bt.code}</strong> · {bt.duration_sec}s
+                      </span>
+                      {bt.asset_tags && bt.asset_tags.length > 0 && (
+                        <span>{bt.asset_tags.join(" ")}</span>
+                      )}
+                    </div>
+                    <span>{bt.description}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+};
+
+const AssetBibleCard: React.FC<{
+  asset: StudioAsset;
+  selected: boolean;
+  busy: boolean;
+  onToggleSelect: () => void;
+}> = ({ asset, selected, busy, onToggleSelect }) => {
+  const t = useT();
+  const upsertAsset = useStudioStore((s) => s.upsertAsset);
+  const uploadAssetImage = useStudioStore((s) => s.uploadAssetImage);
+  const runStage = useStudioStore((s) => s.runStage);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const [name, setName] = useState(asset.name);
+  const [codeTag, setCodeTag] = useState(asset.code_tag);
+  const [kind, setKind] = useState<StudioAssetKind>(asset.kind);
+  const [description, setDescription] = useState(asset.description);
+  const [prompt, setPrompt] = useState(asset.prompt);
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    await uploadAssetImage(asset.id, file);
+  };
+
+  return (
+    <div className={`studio-item-card ${selected ? "studio-item-card--selected" : ""}`}>
+      <div className="studio-item-head">
+        <div className="studio-item-head-left">
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={onToggleSelect}
+            aria-label={asset.name}
+          />
+          <Badge>{t(`studio.assets.kind.${kind}`)}</Badge>
+          <strong>{asset.code_tag}</strong>
+        </div>
+        <div className="studio-toolbar">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() =>
+              askAgentAboutMediaAsset({
+                assetId: asset.primary_asset_id || undefined,
+                filePath: asset.primary_path || undefined,
+                fileName: asset.name,
+              })
+            }
+            title={t("studio.common.askAgent")}
+          >
+            <Bot size={13} />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() =>
+              void upsertAsset({
+                id: asset.id,
+                project_id: asset.project_id,
+                kind: asset.kind,
+                name: asset.name,
+                delete: true,
+              })
+            }
+            disabled={busy}
+            title={t("studio.common.delete")}
+          >
+            <Trash2 size={13} />
+          </Button>
+        </div>
+      </div>
+
+      <div className="studio-media-frame">
+        <SignedStudioImage
+          assetId={asset.primary_asset_id}
+          alt={asset.name}
+          placeholder={t("studio.assets.noPreview")}
+        />
+      </div>
+
+      <div className="studio-field-row">
+        <input
+          className="input-control"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder={t("studio.assets.name")}
+          disabled={busy}
+        />
+        <input
+          className="input-control"
+          value={codeTag}
+          onChange={(e) => setCodeTag(e.target.value)}
+          placeholder={t("studio.assets.codeTag")}
+          disabled={busy}
+        />
+        <select
+          className="input-control"
+          value={kind}
+          onChange={(e) => setKind(e.target.value as StudioAssetKind)}
+          disabled={busy}
+        >
+          {StudioAssetKindValues.map((k) => (
+            <option key={k} value={k}>
+              {t(`studio.assets.kind.${k}`)}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <textarea
+        className="studio-textarea studio-textarea--compact"
+        value={prompt}
+        onChange={(e) => setPrompt(e.target.value)}
+        placeholder={t("studio.assets.prompt")}
+        disabled={busy}
+      />
+
+      <input
+        className="input-control"
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+        placeholder={t("studio.assets.description")}
+        disabled={busy}
+      />
+
+      <div className="studio-toolbar">
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          className="studio-hidden-input"
+          onChange={handleUpload}
+        />
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() =>
+            void upsertAsset({
+              id: asset.id,
+              project_id: asset.project_id,
+              kind,
+              name,
+              code_tag: codeTag,
+              description,
+              prompt,
+              primary_asset_id: asset.primary_asset_id,
+              primary_path: asset.primary_path,
+            })
+          }
+          disabled={busy || !name.trim()}
+        >
+          <Save size={13} />
+          {t("studio.common.save")}
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={() => void runStage("generate_assets", { asset_ids: [asset.id], force: true })}
+          disabled={busy}
+        >
+          <ImageIcon size={13} />
+          {t("studio.assets.genSheet")}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => fileRef.current?.click()} disabled={busy}>
+          <Upload size={13} />
+          {t("studio.assets.uploadImage")}
+        </Button>
+      </div>
+    </div>
+  );
+};
+
+export const AssetsStagePanel: React.FC<{
+  detail: StudioEpisodeDetailResult;
+  textModel: string;
+  imageModel: string;
+}> = ({ detail, textModel, imageModel }) => {
+  const t = useT();
+  const extractSpec = useNodeSpec(NodeTypes.EXTRACT_ASSETS);
+  const runStage = useStudioStore((s) => s.runStage);
+  const upsertAsset = useStudioStore((s) => s.upsertAsset);
+  const runningStage = useStudioStore((s) => s.runningStage);
+  const saving = useStudioStore((s) => s.saving);
+  const selectedAssetIds = useStudioStore((s) => s.selectedAssetIds);
+  const toggleSelected = useStudioStore((s) => s.toggleSelectedAssetId);
+
+  const busy = saving || runningStage !== null;
+
+  const handleAddBlankAsset = async () => {
+    await upsertAsset({
+      project_id: detail.project.id,
+      kind: "character",
+      name: `Character ${detail.assets.length + 1}`,
+    });
+  };
+
+  return (
+    <div className="studio-form-stack">
+      <div className="studio-stage-header">
+        <h2 className="card-title">{t("studio.assets.title")}</h2>
+        <div className="studio-toolbar">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => void runStage("extract_assets", textModel ? { model: textModel } : {})}
+            disabled={busy || !detail.normalized_script}
+            title={extractSpec?.description}
+          >
+            {runningStage === "extract_assets" ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <Sparkles size={13} />
+            )}
+            {t("studio.assets.extract")}
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() =>
+              void runStage("generate_assets", imageModel ? { model: imageModel } : {})
+            }
+            disabled={busy || detail.assets.length === 0}
+          >
+            {runningStage === "generate_assets" ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <Wand2 size={13} />
+            )}
+            {t("studio.assets.generateAll")}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void handleAddBlankAsset()}
+            disabled={busy}
+          >
+            <Plus size={13} />
+            {t("studio.assets.addAsset")}
+          </Button>
+        </div>
+      </div>
+
+      {detail.assets.length === 0 ? (
+        <div className="studio-empty-state">
+          <Layers size={28} />
+          <p>{t("studio.assets.empty")}</p>
+        </div>
+      ) : (
+        <div className="studio-card-grid">
+          {detail.assets.map((asset) => (
+            <AssetBibleCard
+              key={`${asset.id}:${asset.updated_at}`}
+              asset={asset}
+              selected={selectedAssetIds.includes(asset.id)}
+              busy={busy}
+              onToggleSelect={() => toggleSelected(asset.id)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const StoryboardShotCard: React.FC<{
+  shot: StudioShot;
+  index: number;
+  total: number;
+  shotModeOptions: string[];
+  busy: boolean;
+  onMove: (delta: number) => void;
+}> = ({ shot, index, total, shotModeOptions, busy, onMove }) => {
+  const t = useT();
+  const upsertShot = useStudioStore((s) => s.upsertShot);
+  const uploadShotKeyframe = useStudioStore((s) => s.uploadShotKeyframe);
+  const runStage = useStudioStore((s) => s.runStage);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const [title, setTitle] = useState(shot.title);
+  const [shotMode, setShotMode] = useState<StudioShotMode>(shot.shot_mode);
+  const [durationSec, setDurationSec] = useState(shot.duration_sec);
+  const [tagsText, setTagsText] = useState((shot.ref_asset_tags ?? []).join(", "));
+  const [imagePrompt, setImagePrompt] = useState(shot.image_prompt);
+  const [videoPrompt, setVideoPrompt] = useState(shot.video_prompt);
+  const [narrationText, setNarrationText] = useState(shot.narration_text);
+
+  const parsedTags = tagsText
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  return (
+    <div className="studio-item-card">
+      <div className="studio-item-head">
+        <div className="studio-item-head-left">
+          <Badge>#{shot.seq}</Badge>
+          {shot.scene_code && <Badge>{shot.scene_code}</Badge>}
+          <Badge>{shot.status}</Badge>
+        </div>
+        <div className="studio-toolbar">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => onMove(-1)}
+            disabled={busy || index === 0}
+            title={t("studio.storyboard.moveUp")}
+          >
+            <ArrowUp size={13} />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => onMove(1)}
+            disabled={busy || index === total - 1}
+            title={t("studio.storyboard.moveDown")}
+          >
+            <ArrowDown size={13} />
+          </Button>
+        </div>
+      </div>
+
+      <div className="studio-media-frame">
+        <SignedStudioImage
+          assetId={shot.keyframe_asset_id}
+          alt={shot.title}
+          placeholder={t("studio.storyboard.noKeyframe")}
+        />
+      </div>
+
+      <div className="studio-field-row">
+        <input
+          className="input-control"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder={t("studio.storyboard.shotTitle")}
+          disabled={busy}
+        />
+        <select
+          className="input-control"
+          value={shotMode}
+          onChange={(e) => setShotMode(e.target.value as StudioShotMode)}
+          disabled={busy}
+        >
+          {shotModeOptions.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+        <input
+          type="number"
+          min={1}
+          max={60}
+          className="input-control"
+          value={durationSec}
+          onChange={(e) => setDurationSec(Math.max(1, Number(e.target.value) || 5))}
+          disabled={busy}
+        />
+      </div>
+
+      <input
+        className="input-control"
+        value={tagsText}
+        onChange={(e) => setTagsText(e.target.value)}
+        placeholder={t("studio.storyboard.tags")}
+        disabled={busy}
+      />
+
+      <textarea
+        className="studio-textarea studio-textarea--compact"
+        value={imagePrompt}
+        onChange={(e) => setImagePrompt(e.target.value)}
+        placeholder={t("studio.storyboard.imagePrompt")}
+        disabled={busy}
+      />
+
+      <textarea
+        className="studio-textarea studio-textarea--compact"
+        value={videoPrompt}
+        onChange={(e) => setVideoPrompt(e.target.value)}
+        placeholder={t("studio.storyboard.videoPrompt")}
+        disabled={busy}
+      />
+
+      <input
+        className="input-control"
+        value={narrationText}
+        onChange={(e) => setNarrationText(e.target.value)}
+        placeholder={t("studio.storyboard.narrationText")}
+        disabled={busy}
+      />
+
+      <div className="studio-toolbar">
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          className="studio-hidden-input"
+          onChange={async (e) => {
+            const f = e.target.files?.[0];
+            e.target.value = "";
+            if (f) await uploadShotKeyframe(shot.id, f);
+          }}
+        />
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() =>
+            void upsertShot({
+              id: shot.id,
+              episode_id: shot.episode_id,
+              title,
+              shot_mode: shotMode,
+              duration_sec: durationSec,
+              ref_asset_tags: parsedTags,
+              image_prompt: imagePrompt,
+              video_prompt: videoPrompt,
+              narration_text: narrationText,
+            })
+          }
+          disabled={busy}
+        >
+          <Save size={13} />
+          {t("studio.common.save")}
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={() => void runStage("generate_keyframes", { shot_ids: [shot.id], force: true })}
+          disabled={busy}
+        >
+          <ImageIcon size={13} />
+          {t("studio.storyboard.genKeyframe")}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => fileRef.current?.click()} disabled={busy}>
+          <Upload size={13} />
+          {t("studio.storyboard.uploadKeyframe")}
+        </Button>
+      </div>
+    </div>
+  );
+};
+
+export const StoryboardStagePanel: React.FC<{
+  detail: StudioEpisodeDetailResult;
+  textModel: string;
+  imageModel: string;
+}> = ({ detail, textModel, imageModel }) => {
+  const t = useT();
+  const shotSpec = useNodeSpec(NodeTypes.AUTHOR_SHOT_PROMPTS);
+  const shotModes = findParam(shotSpec, "shot_mode_default")?.options ?? [...StudioShotModeValues];
+  const runStage = useStudioStore((s) => s.runStage);
+  const upsertShot = useStudioStore((s) => s.upsertShot);
+  const reorderShots = useStudioStore((s) => s.reorderShots);
+  const runningStage = useStudioStore((s) => s.runningStage);
+  const saving = useStudioStore((s) => s.saving);
+
+  const busy = saving || runningStage !== null;
+
+  const handleMove = (index: number, delta: number) => {
+    const nextIdx = index + delta;
+    if (nextIdx < 0 || nextIdx >= detail.shots.length) return;
+    const ids = detail.shots.map((s) => s.id);
+    const [moved] = ids.splice(index, 1);
+    ids.splice(nextIdx, 0, moved);
+    void reorderShots(ids);
+  };
+
+  return (
+    <div className="studio-form-stack">
+      <div className="studio-stage-header">
+        <h2 className="card-title">{t("studio.storyboard.title")}</h2>
+        <div className="studio-toolbar">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => void runStage("author_shots", textModel ? { model: textModel } : {})}
+            disabled={busy || !detail.normalized_script}
+            title={shotSpec?.description}
+          >
+            {runningStage === "author_shots" ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <Sparkles size={13} />
+            )}
+            {t("studio.storyboard.author")}
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() =>
+              void runStage("generate_keyframes", imageModel ? { model: imageModel } : {})
+            }
+            disabled={busy || detail.shots.length === 0}
+          >
+            {runningStage === "generate_keyframes" ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <Wand2 size={13} />
+            )}
+            {t("studio.storyboard.generateKeyframes")}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() =>
+              void upsertShot({
+                episode_id: detail.episode.id,
+                scene_code: "S01",
+                title: `Shot ${detail.shots.length + 1}`,
+                shot_mode: detail.project.production_mode === "r2v" ? "r2v" : "single",
+              })
+            }
+            disabled={busy}
+          >
+            <Plus size={13} />
+            {t("studio.storyboard.addShot")}
+          </Button>
+        </div>
+      </div>
+
+      {detail.shots.length === 0 ? (
+        <div className="studio-empty-state">
+          <Clapperboard size={28} />
+          <p>{t("studio.storyboard.empty")}</p>
+        </div>
+      ) : (
+        <div className="studio-card-grid">
+          {detail.shots.map((shot, idx) => (
+            <StoryboardShotCard
+              key={`${shot.id}:${shot.updated_at}`}
+              shot={shot}
+              index={idx}
+              total={detail.shots.length}
+              shotModeOptions={shotModes}
+              busy={busy}
+              onMove={(delta) => handleMove(idx, delta)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const VideoShotsStagePanel: React.FC<{
+  detail: StudioEpisodeDetailResult;
+  videoModel: string;
+  ttsModel: string;
+}> = ({ detail, videoModel, ttsModel }) => {
+  const t = useT();
+  const videoSpec = useNodeSpec(NodeTypes.VIDEO_GENERATE);
+  const resParam = findParam(videoSpec, "resolution");
+  const resOptions = resParam?.options ?? ["720p", "1080p", "480p"];
+  const [resolution, setResolution] = useState(resParam?.default ?? resOptions[0] ?? "720p");
+
+  const runStage = useStudioStore((s) => s.runStage);
+  const probeShot = useStudioStore((s) => s.probeShot);
+  const probeMap = useStudioStore((s) => s.probeMap);
+  const runningStage = useStudioStore((s) => s.runningStage);
+  const busy = runningStage !== null;
+
+  const renderProbeBadge = (probe?: ProbeMediaOutput) => {
+    if (!probe) return null;
+    const dur = probe.duration_sec ?? 0;
+    const width = probe.width ?? 0;
+    const height = probe.height ?? 0;
+    const fps = probe.fps ?? 0;
+    const silentRatio = probe.silent_ratio ?? 0;
+    const isSilent = !probe.has_audio || silentRatio > 0.9;
+    return (
+      <div className="studio-toolbar">
+        <Badge>
+          {t("studio.video.probeMeta", {
+            duration: dur.toFixed(1),
+            width,
+            height,
+            fps: Math.round(fps),
+          })}
+        </Badge>
+        {isSilent ? (
+          <Badge className="studio-warn-badge">
+            {t("studio.video.silentWarn", { ratio: Math.round(silentRatio * 100) })}
+          </Badge>
+        ) : (
+          <Badge className="studio-ok-badge">{t("studio.video.hasAudio")}</Badge>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="studio-form-stack">
+      <div className="studio-stage-header">
+        <h2 className="card-title">{t("studio.video.title")}</h2>
+        <div className="studio-toolbar">
+          <select
+            className="input-control"
+            value={resolution}
+            onChange={(e) => setResolution(e.target.value)}
+            aria-label={t("studio.video.resolution")}
+            disabled={busy}
+          >
+            {resOptions.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => void runStage("generate_tts", ttsModel ? { model: ttsModel } : {})}
+            disabled={busy || detail.shots.length === 0}
+          >
+            {runningStage === "generate_tts" ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <Volume2 size={13} />
+            )}
+            {t("studio.video.generateTTS")}
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() =>
+              void runStage("generate_videos", {
+                resolution,
+                ...(videoModel ? { model: videoModel } : {}),
+              })
+            }
+            disabled={busy || detail.shots.length === 0}
+          >
+            {runningStage === "generate_videos" ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <Film size={13} />
+            )}
+            {t("studio.video.generateAll")}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void runStage("probe_shots")}
+            disabled={busy || !detail.shots.some((s) => Boolean(s.video_path))}
+          >
+            {t("studio.video.probeAll")}
+          </Button>
+        </div>
+      </div>
+
+      {detail.shots.length === 0 ? (
+        <div className="studio-empty-state">
+          <Film size={28} />
+          <p>{t("studio.video.empty")}</p>
+        </div>
+      ) : (
+        <div className="studio-card-grid">
+          {detail.shots.map((shot) => {
+            const probe = probeMap[shot.id];
+            return (
+              <div key={shot.id} className="studio-item-card">
+                <div className="studio-item-head">
+                  <div className="studio-item-head-left">
+                    <Badge>#{shot.seq}</Badge>
+                    <strong>{shot.title}</strong>
+                  </div>
+                  <Badge>{shot.status}</Badge>
+                </div>
+
+                <div className="studio-media-frame">
+                  <SignedStudioVideo
+                    assetId={shot.video_asset_id}
+                    placeholder={t("studio.video.noClip")}
+                  />
+                </div>
+
+                <SignedStudioAudio assetId={shot.audio_asset_id} />
+                {renderProbeBadge(probe)}
+
+                {shot.narration_text && <p>{shot.narration_text}</p>}
+
+                <div className="studio-toolbar">
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() =>
+                      void runStage("generate_videos", {
+                        shot_ids: [shot.id],
+                        resolution,
+                        force: true,
+                        ...(videoModel ? { model: videoModel } : {}),
+                      })
+                    }
+                    disabled={busy}
+                  >
+                    <Film size={13} />
+                    {t("studio.video.genClip")}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() =>
+                      void runStage("generate_tts", {
+                        shot_ids: [shot.id],
+                        force: true,
+                        ...(ttsModel ? { model: ttsModel } : {}),
+                      })
+                    }
+                    disabled={busy || (!shot.narration_text && !shot.dialogues?.length)}
+                  >
+                    <Volume2 size={13} />
+                    {t("studio.video.genTTS")}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => void probeShot(shot)}
+                    disabled={busy || !shot.video_path}
+                  >
+                    {t("studio.video.probe")}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      askAgentAboutMediaAsset({
+                        assetId: shot.video_asset_id || undefined,
+                        filePath: shot.video_path || undefined,
+                        fileName: shot.title,
+                      })
+                    }
+                    title={t("studio.common.askAgent")}
+                  >
+                    <Bot size={13} />
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const ExportStagePanel: React.FC<{
+  detail: StudioEpisodeDetailResult;
+}> = ({ detail }) => {
+  const t = useT();
+  const concatSpec = useNodeSpec(NodeTypes.VIDEO_CONCAT_BASIC);
+  const resDefault = findParam(concatSpec, "resolution")?.default ?? "1920x1080";
+  const fpsDefault = Number(findParam(concatSpec, "fps")?.default ?? "24") || 24;
+
+  const [resolution, setResolution] = useState(resDefault);
+  const [fps, setFps] = useState(fpsDefault);
+  const [narrationPath, setNarrationPath] = useState("");
+  const runStage = useStudioStore((s) => s.runStage);
+  const runningStage = useStudioStore((s) => s.runningStage);
+  const openFolder = useSystemStore((s) => s.openFolder);
+
+  const readyShots = detail.shots.filter((s) => Boolean(s.video_path));
+  const audioShots = detail.shots.filter((s) => Boolean(s.audio_path));
+  const busy = runningStage !== null;
+
+  return (
+    <div className="studio-form-stack">
+      <Card
+        icon={Clapperboard}
+        title={t("studio.export.title")}
+        actions={
+          <Badge>
+            {t("studio.export.clipsReady", {
+              ready: readyShots.length,
+              total: detail.shots.length,
+            })}
+          </Badge>
+        }
+      >
+        <div className="studio-field-row">
+          <div className="form-group">
+            <label className="field-label" htmlFor="studio-export-res">
+              {t("studio.export.resolution")}
+            </label>
+            <input
+              id="studio-export-res"
+              className="input-control"
+              value={resolution}
+              onChange={(e) => setResolution(e.target.value)}
+              disabled={busy}
+            />
+          </div>
+
+          <div className="form-group">
+            <label className="field-label" htmlFor="studio-export-fps">
+              {t("studio.export.fps")}
+            </label>
+            <input
+              id="studio-export-fps"
+              type="number"
+              min={1}
+              max={120}
+              className="input-control"
+              value={fps}
+              onChange={(e) => setFps(Number(e.target.value) || 24)}
+              disabled={busy}
+            />
+          </div>
+
+          <div className="form-group">
+            <label className="field-label" htmlFor="studio-export-narration">
+              {t("studio.export.narrationTrack")}
+            </label>
+            <select
+              id="studio-export-narration"
+              className="input-control"
+              value={narrationPath}
+              onChange={(e) => setNarrationPath(e.target.value)}
+              disabled={busy}
+            >
+              <option value="">{t("studio.export.narrationNone")}</option>
+              {audioShots.map((s) => (
+                <option key={s.id} value={s.audio_path}>
+                  #{s.seq} {s.title} ({mediaBasename(s.audio_path)})
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="studio-toolbar">
+          <Button
+            variant="primary"
+            onClick={() =>
+              void runStage("concat_video", {
+                resolution,
+                fps,
+                ...(narrationPath ? { narration_audio_path: narrationPath } : {}),
+              })
+            }
+            disabled={busy || readyShots.length === 0}
+          >
+            {runningStage === "concat_video" ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <Clapperboard size={14} />
+            )}
+            {t("studio.export.assemble")}
+          </Button>
+
+          {detail.final_video_path && (
+            <>
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  void saveMediaToDevice(
+                    detail.final_video_path!,
+                    mediaBasename(detail.final_video_path!)
+                  )
+                }
+              >
+                <Download size={14} />
+                {t("studio.export.download")}
+              </Button>
+              <Button variant="ghost" onClick={() => void openFolder("workspace_root")}>
+                <FolderOpen size={14} />
+                {t("studio.export.openFolder")}
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() =>
+                  askAgentAboutMediaAsset({
+                    assetId: detail.final_video_asset_id,
+                    filePath: detail.final_video_path,
+                    mimeType: "video/mp4",
+                  })
+                }
+              >
+                <Bot size={14} />
+                {t("studio.common.askAgent")}
+              </Button>
+            </>
+          )}
+        </div>
+      </Card>
+
+      <Card icon={Film} title={detail.episode.title}>
+        <div className="studio-media-frame studio-media-frame--export">
+          <SignedStudioVideo
+            assetId={detail.final_video_asset_id}
+            placeholder={t("studio.export.noOutput")}
+            large
+          />
+        </div>
+        {detail.final_video_path && (
+          <p>{t("studio.export.readyOutput", { path: detail.final_video_path })}</p>
+        )}
+      </Card>
+    </div>
+  );
+};
