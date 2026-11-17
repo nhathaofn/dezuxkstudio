@@ -77,7 +77,7 @@ func (s *Service) HandleMediaUsage(ctx context.Context, ev domainmedia.UsageEven
 		Status:       status,
 	})
 	if err != nil {
-		s.log.Warn("studio: failed to record cost ledger entry", "err", err)
+		s.log.WarnContext(ctx, "studio: failed to record cost ledger entry", "error", err)
 		return
 	}
 

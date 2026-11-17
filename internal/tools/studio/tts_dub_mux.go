@@ -13,6 +13,7 @@ import (
 	domainbinaries "app/internal/domain/binaries"
 	domainmedia "app/internal/domain/mediagen"
 	"app/internal/engine"
+	"app/internal/progress"
 	"app/internal/runner"
 )
 
@@ -40,8 +41,10 @@ func (n *ttsDubMuxNode) Spec() engine.Spec {
 			{Name: "video", Label: "Dubbed Video", Type: engine.PortVideo},
 		},
 		Params: []engine.Param{
+			{Name: "text", Label: "Dialogue / Narration Text", Kind: engine.ParamText},
 			{Name: "model_ref", Label: "TTS Model", Kind: engine.ParamText},
 			{Name: "voice", Label: "Voice ID", Kind: engine.ParamText},
+			{Name: "language", Label: "Language", Kind: engine.ParamText},
 			{Name: "overflow_mode", Label: "Audio Overflow Mode", Kind: engine.ParamSelect, Options: []string{"freeze_last_frame", "speed_up", "trim"}, Default: "freeze_last_frame"},
 			{Name: "duck_original", Label: "Duck Original Audio", Kind: engine.ParamToggle, Default: "true"},
 			{Name: "output_dir", Label: "Output Folder", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
@@ -121,13 +124,21 @@ func (n *ttsDubMuxNode) Run(ctx context.Context, raw json.RawMessage) (any, erro
 
 	ffCtx, cancelFF := context.WithTimeout(ctx, n.opts.StudioConfig.FFmpegTimeout)
 	defer cancelFF()
-	res, err := runner.Run(ffCtx, ffmpegExe, args...)
+	progress.Report(ctx, progress.Update{Percent: 10, Message: "Muxing dubbed audio onto video…", Key: "studio.progress.tts_dub_mux"})
+	parser := &pipeProgressParser{totalDurationUs: int64(targetDur * 1_000_000)}
+	res, err := runner.RunWithOptions(ffCtx, ffmpegExe, args, runner.RunOptions{
+		ProgressParser: parser,
+		OnProgress: func(pct float64, msg string) {
+			progress.Report(ctx, progress.Update{Percent: pct, Message: msg, Key: "studio.progress.tts_dub_mux"})
+		},
+	})
 	if err != nil {
 		return nil, apperr.Wrap(apperr.CodeUnavailable, "FFmpeg tts_dub_mux failed: "+resStderr(res), err)
 	}
 	if res.ExitCode != 0 {
 		return nil, apperr.Unavailable("FFmpeg tts_dub_mux failed: " + resStderr(res))
 	}
+	progress.Report(ctx, progress.Update{Percent: 100, Message: "Dubbing & mux ready", Key: "studio.progress.done"})
 
 	assetID := registerStudioAsset(ctx, n.opts, "video", NodeTypeTTSDubMux, outPath, outDir)
 	return contracts.TTSDubMuxOutput{
@@ -224,7 +235,7 @@ func buildDubMuxArgs(
 		args = append(args, "-map", "0:v", "-map", "1:a", "-c:v", "copy")
 	}
 
-	args = append(args, "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", outPath)
+	args = append(args, "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", outPath)
 	return args, outDur, ratio
 }
 

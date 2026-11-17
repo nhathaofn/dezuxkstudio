@@ -38,6 +38,8 @@ func (n *maskEditNode) Spec() engine.Spec {
 		Params: []engine.Param{
 			{Name: "prompt", Label: "Edit Prompt", Kind: engine.ParamText},
 			{Name: "model_ref", Label: "Image Model", Kind: engine.ParamText},
+			{Name: "aspect_ratio", Label: "Aspect Ratio", Kind: engine.ParamText},
+			{Name: "resolution", Label: "Resolution", Kind: engine.ParamText},
 			{Name: "output_dir", Label: "Output Folder", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
 		},
 	}

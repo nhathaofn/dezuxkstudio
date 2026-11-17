@@ -33,6 +33,8 @@ func (n *batchPreflightNode) Spec() engine.Spec {
 			{Name: "report", Label: "Preflight Report", Type: engine.PortText},
 		},
 		Params: []engine.Param{
+			{Name: "project_id", Label: "Project ID", Kind: engine.ParamText},
+			{Name: "episode_id", Label: "Episode ID", Kind: engine.ParamText},
 			{Name: "capability", Label: "Capability", Kind: engine.ParamSelect, Options: optionStrings(domainprovider.Capabilities()), Default: string(domainprovider.CapabilityVideo)},
 			{Name: "model_ref", Label: "Model", Kind: engine.ParamText},
 			{Name: "item_count", Label: "Item Count", Kind: engine.ParamInteger, Min: 1, Max: 500, Default: "1"},

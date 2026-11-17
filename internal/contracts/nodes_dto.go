@@ -353,6 +353,7 @@ type ExtractFramesInput struct {
 	VideoPath     string    `json:"video_path"`
 	Mode          string    `json:"mode,omitempty"`
 	TimestampsSec []float64 `json:"timestamps_sec,omitempty"`
+	TimestampsCSV string    `json:"timestamps_csv,omitempty"`
 	Count         int       `json:"count,omitempty"`
 	OutputDir     string    `json:"output_dir,omitempty"`
 }

@@ -15,6 +15,7 @@ import (
 	"app/internal/contracts"
 	domainbinaries "app/internal/domain/binaries"
 	"app/internal/engine"
+	"app/internal/progress"
 	"app/internal/runner"
 	"app/internal/service/media"
 )
@@ -93,11 +94,17 @@ func (n *videoWatermarkNode) Run(ctx context.Context, raw json.RawMessage) (any,
 		outDir = filepath.Join(mediaDir, "watermark")
 	}
 	if outDir == "" {
-		outDir = os.TempDir()
+		return nil, apperr.Validation("output_dir or configured workspace media directory is required")
 	}
 	cleanOutDir := filepath.Clean(outDir)
-	if !filepath.IsAbs(cleanOutDir) && mediaDir != "" {
-		cleanOutDir = filepath.Join(mediaDir, cleanOutDir)
+	if !filepath.IsAbs(cleanOutDir) {
+		if mediaDir == "" {
+			return nil, apperr.Validation("relative output_dir requires a configured media directory")
+		}
+		cleanOutDir = engine.ResolveMediaPath(outDir, mediaDir)
+		if cleanOutDir == "" {
+			return nil, apperr.Validation("output_dir escapes configured media directory")
+		}
 	}
 	outName := fmt.Sprintf("clean_%d%s", time.Now().UnixNano(), ".mp4")
 	outPath := filepath.Join(cleanOutDir, outName)
@@ -125,21 +132,38 @@ func (n *videoWatermarkNode) Run(ctx context.Context, raw json.RawMessage) (any,
 		return nil, err
 	}
 
+	totalUs := probeVideoDurationUs(ctx, n.opts, vidPath)
 	ffCtx, cancel := context.WithTimeout(ctx, studioCfg.FFmpegTimeout)
 	defer cancel()
+	progress.Report(ctx, progress.Update{
+		Percent: 5,
+		Message: "Removing video watermark…",
+		Key:     "watermark.progress.video",
+	})
 	args := []string{
 		"-y", "-i", vidPath,
 		"-vf", vf,
 		"-c:v", "libx264", "-preset", studioCfg.FFmpegPreset, "-crf", strconv.Itoa(studioCfg.FFmpegCRF), "-pix_fmt", "yuv420p",
-		"-c:a", "copy", "-movflags", "+faststart", outPath,
+		"-c:a", "copy", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", outPath,
 	}
-	res, err := runner.Run(ffCtx, ffmpegExe, args...)
+	parser := &videoPipeProgressParser{totalDurationUs: totalUs}
+	res, err := runner.RunWithOptions(ffCtx, ffmpegExe, args, runner.RunOptions{
+		ProgressParser: parser,
+		OnProgress: func(pct float64, msg string) {
+			progress.Report(ctx, progress.Update{
+				Percent: pct,
+				Message: msg,
+				Key:     "watermark.progress.video",
+			})
+		},
+	})
 	if err != nil {
 		return nil, apperr.New(apperr.CodeUnavailable, sanitizePathError(vidPath, err))
 	}
 	if res.ExitCode != 0 {
 		return nil, apperr.Unavailable("FFmpeg video watermark removal failed: " + strings.TrimSpace(res.Stderr))
 	}
+	progress.Report(ctx, progress.Update{Percent: 100, Message: "Video watermark removed", Key: "watermark.progress.done"})
 
 	var assetID string
 	if n.opts.Registrar != nil {
@@ -191,4 +215,55 @@ func buildVideoWatermarkFilter(in contracts.VideoWatermarkRemoveInput) (string, 
 		return "", apperr.Validation("delogo mode requires non-negative x,y and positive width,height")
 	}
 	return fmt.Sprintf("delogo=x=%d:y=%d:w=%d:h=%d", in.X, in.Y, in.Width, in.Height), nil
+}
+
+type videoPipeProgressParser struct {
+	totalDurationUs int64
+}
+
+func (p *videoPipeProgressParser) ParseLine(line string) (float64, string, bool) {
+	k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+	if !ok || (k != "out_time_us" && k != "out_time_ms") {
+		return 0, "", false
+	}
+	us, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	if err != nil || us < 0 {
+		return 0, "", false
+	}
+	pct := 50.0
+	if p.totalDurationUs > 0 {
+		pct = float64(us) / float64(p.totalDurationUs) * 100.0
+		if pct < 5 {
+			pct = 5
+		}
+		if pct > 98 {
+			pct = 98
+		}
+	}
+	return pct, fmt.Sprintf("Cleaning video watermark (%.1fs)…", float64(us)/1_000_000.0), true
+}
+
+func probeVideoDurationUs(ctx context.Context, opts Options, vidPath string) int64 {
+	if opts.Binaries == nil {
+		return 0
+	}
+	ffprobeExe, _, _, err := opts.Binaries.Resolve(ctx, domainbinaries.IDFFprobe)
+	if err != nil || strings.TrimSpace(ffprobeExe) == "" {
+		return 0
+	}
+	timeout := opts.StudioConfig.FFprobeTimeout
+	if timeout <= 0 {
+		timeout = config.Default(config.ModeDesktop).Studio.FFprobeTimeout
+	}
+	pCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	res, err := runner.Run(pCtx, ffprobeExe, "-v", "quiet", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", vidPath)
+	if err != nil || res.ExitCode != 0 {
+		return 0
+	}
+	sec, perr := strconv.ParseFloat(strings.TrimSpace(res.Stdout), 64)
+	if perr != nil || sec <= 0 {
+		return 0
+	}
+	return int64(sec * 1_000_000)
 }

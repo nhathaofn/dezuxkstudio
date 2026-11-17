@@ -559,6 +559,7 @@ export interface ExtractFramesInput {
   video_path: string;
   mode?: string;
   timestamps_sec?: number[];
+  timestamps_csv?: string;
   count?: number;
   output_dir?: string;
 }

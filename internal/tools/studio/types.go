@@ -222,29 +222,38 @@ func resolveInputFile(ctx context.Context, opts Options, raw string) (string, er
 	if trimmed == "" {
 		return "", nil
 	}
-	mediaDir := resolveMediaDir(opts)
-	resolved := engine.ResolveMediaPath(trimmed, mediaDir)
-	if resolved == "" {
-		return "", apperr.Validation("Input file path is invalid or escapes workspace")
-	}
-	if _, err := os.Stat(resolved); err != nil {
-		for _, altBase := range []string{resolveProjectsDir(opts), resolveTree(opts).WorkspaceDir} {
-			altBase = strings.TrimSpace(altBase)
-			if altBase == "" {
-				continue
+	bases := []string{resolveMediaDir(opts), resolveProjectsDir(opts), resolveTree(opts).WorkspaceDir}
+	var lastGuardErr error
+	var firstGuarded string
+	for _, base := range bases {
+		base = strings.TrimSpace(base)
+		if base == "" && !filepath.IsAbs(trimmed) {
+			continue
+		}
+		candidate := engine.ResolveMediaPath(trimmed, base)
+		if candidate == "" {
+			continue
+		}
+		if err := engine.CheckFile(ctx, candidate, false); err != nil {
+			if lastGuardErr == nil {
+				lastGuardErr = err
 			}
-			if candidate := engine.ResolveMediaPath(trimmed, altBase); candidate != "" {
-				if _, cerr := os.Stat(candidate); cerr == nil {
-					resolved = candidate
-					break
-				}
-			}
+			continue
+		}
+		if firstGuarded == "" {
+			firstGuarded = candidate
+		}
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
 		}
 	}
-	if err := engine.CheckFile(ctx, resolved, false); err != nil {
-		return "", err
+	if firstGuarded != "" {
+		return firstGuarded, nil
 	}
-	return resolved, nil
+	if lastGuardErr != nil {
+		return "", lastGuardErr
+	}
+	return "", apperr.Validation("Input file path is invalid or escapes workspace")
 }
 
 func resolveBinary(ctx context.Context, resolver BinaryResolver, id domainbinaries.BinaryID) (string, error) {
@@ -293,10 +302,24 @@ func optionStrings[T ~string](vals []T) []string {
 }
 
 func resolveNodeOutputDir(ctx context.Context, opts Options, rawOutDir, subDir string) (string, error) {
+	base := resolveProjectsDir(opts)
+	if base == "" {
+		base = resolveMediaDir(opts)
+	}
 	if p := strings.TrimSpace(rawOutDir); p != "" {
 		clean := filepath.Clean(p)
 		if !filepath.IsAbs(clean) {
-			clean = filepath.Join(resolveMediaDir(opts), clean)
+			anchor := resolveMediaDir(opts)
+			if anchor == "" {
+				anchor = base
+			}
+			if anchor == "" {
+				return "", apperr.Validation("relative output_dir requires a configured workspace or media directory")
+			}
+			clean = engine.ResolveMediaPath(p, anchor)
+			if clean == "" {
+				return "", apperr.Validation("output_dir escapes configured workspace directory")
+			}
 		}
 		if err := engine.CheckFile(ctx, filepath.Join(clean, ".write-check"), true); err != nil {
 			return "", err
@@ -306,12 +329,8 @@ func resolveNodeOutputDir(ctx context.Context, opts Options, rawOutDir, subDir s
 		}
 		return clean, nil
 	}
-	base := resolveProjectsDir(opts)
 	if base == "" {
-		base = resolveMediaDir(opts)
-	}
-	if base == "" {
-		base = os.TempDir()
+		return "", apperr.Validation("output_dir or configured workspace/media directory is required")
 	}
 	dir := filepath.Join(base, subDir)
 	if err := engine.CheckFile(ctx, filepath.Join(dir, ".write-check"), true); err != nil {

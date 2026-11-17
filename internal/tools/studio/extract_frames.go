@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"app/internal/apperr"
 	"app/internal/contracts"
 	domainbinaries "app/internal/domain/binaries"
 	"app/internal/engine"
+	"app/internal/progress"
 	"app/internal/runner"
 )
 
@@ -40,6 +42,7 @@ func (n *extractFramesNode) Spec() engine.Spec {
 		Params: []engine.Param{
 			{Name: "mode", Label: "Extraction Mode", Kind: engine.ParamSelect, Options: []string{"last", "first", "uniform", "timestamps"}, Default: "last"},
 			{Name: "count", Label: "Frame Count (uniform)", Kind: engine.ParamInteger, Min: 1, Max: 24, Default: "4"},
+			{Name: "timestamps_csv", Label: "Timestamps CSV (sec)", Kind: engine.ParamText},
 			{Name: "output_dir", Label: "Output Folder", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
 		},
 	}
@@ -88,6 +91,14 @@ func (n *extractFramesNode) Run(ctx context.Context, raw json.RawMessage) (any, 
 	defer cancelFF()
 
 	for i, ts := range timestamps {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		progress.Report(ctx, progress.Update{
+			Percent: float64(i) / float64(max(1, len(timestamps))) * 90.0,
+			Message: fmt.Sprintf("Extracting frame %d/%d…", i+1, len(timestamps)),
+			Key:     "studio.progress.extract_frames",
+		})
 		outPath := filepath.Join(outDir, uniqueExportFilename(fmt.Sprintf("frame_%02d", i+1), ".png"))
 		if err := engine.CheckFile(ctx, outPath, true); err != nil {
 			return nil, err
@@ -118,6 +129,7 @@ func (n *extractFramesNode) Run(ctx context.Context, raw json.RawMessage) (any, 
 	if len(out.Frames) > 0 {
 		out.LastFramePath = out.Frames[len(out.Frames)-1].Path
 	}
+	progress.Report(ctx, progress.Update{Percent: 100, Message: "Frames extracted", Key: "studio.progress.done"})
 	return out, nil
 }
 
@@ -130,11 +142,19 @@ func resolveFrameTimestamps(in contracts.ExtractFramesInput, dur float64) []floa
 	case "first":
 		return []float64{0}
 	case "timestamps":
-		if len(in.TimestampsSec) == 0 {
+		rawStamps := append([]float64(nil), in.TimestampsSec...)
+		if len(rawStamps) == 0 && strings.TrimSpace(in.TimestampsCSV) != "" {
+			for _, part := range strings.Split(in.TimestampsCSV, ",") {
+				if v, err := strconv.ParseFloat(strings.TrimSpace(part), 64); err == nil {
+					rawStamps = append(rawStamps, v)
+				}
+			}
+		}
+		if len(rawStamps) == 0 {
 			return []float64{0}
 		}
-		out := make([]float64, 0, len(in.TimestampsSec))
-		for _, t := range in.TimestampsSec {
+		out := make([]float64, 0, len(rawStamps))
+		for _, t := range rawStamps {
 			if t < 0 {
 				t = 0
 			}

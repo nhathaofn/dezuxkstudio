@@ -36,7 +36,7 @@ func (s *Service) recordSelectedVersion(ctx context.Context, projectID, episodeI
 		IsSelected: true,
 	})
 	if err != nil {
-		s.log.Warn("studio: failed to persist media version", "target", targetID, "err", err)
+		s.log.WarnContext(ctx, "studio: failed to persist media version", "id", targetID, "error", err)
 		return nil
 	}
 	return &v
@@ -173,12 +173,12 @@ func (s *Service) ApplyMaskEdit(ctx context.Context, p contracts.StudioMaskEditP
 		if derr != nil {
 			return contracts.StudioMaskEditResult{}, derr
 		}
-		if err := os.MkdirAll(outDir, 0o750); err != nil {
-			return contracts.StudioMaskEditResult{}, apperr.Internal(err)
-		}
 		maskPath = filepath.Join(outDir, fmt.Sprintf("mask_%d.png", time.Now().UnixNano()))
 		if err := engine.CheckFile(ctx, maskPath, true); err != nil {
 			return contracts.StudioMaskEditResult{}, err
+		}
+		if err := os.MkdirAll(outDir, 0o750); err != nil {
+			return contracts.StudioMaskEditResult{}, apperr.Internal(err)
 		}
 		if err := fsutil.WriteFileAtomic(maskPath, maskBytes, 0o600); err != nil {
 			return contracts.StudioMaskEditResult{}, apperr.Internal(err)

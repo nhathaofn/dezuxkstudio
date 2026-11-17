@@ -344,7 +344,9 @@ func (r *StudioRepository) SetJobProviderSubmission(ctx context.Context, id, pro
 	now := time.Now().UnixMilli()
 	res, err := r.db.sql.ExecContext(ctx, `
 		UPDATE studio_jobs
-		SET provider_job_id = ?, submit_token_json = ?, status = ?, next_poll_at = ?, updated_at = ?
+		SET provider_job_id = ?, submit_token_json = ?,
+			status = CASE WHEN status IN ('canceled', 'paused') THEN status ELSE ? END,
+			next_poll_at = ?, updated_at = ?
 		WHERE id = ?`,
 		providerJobID, submitTokenJSON, string(status), nextPollAt, now, strings.TrimSpace(id),
 	)

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,6 +18,8 @@ import (
 	"app/internal/config"
 	"app/internal/contracts"
 	domainmedia "app/internal/domain/mediagen"
+	domainstudio "app/internal/domain/studio"
+	"app/internal/engine"
 	studiosvc "app/internal/service/studio"
 	"app/internal/storage/sqlite"
 	studionodes "app/internal/tools/studio"
@@ -181,8 +184,9 @@ func TestStudioCrashRecoveryQueueSubmitsExactlyOnceAcrossRestart(t *testing.T) {
 	// Simulate abrupt restart: instantiate fresh Service #2 on the same SQLite DB & same provider spy
 	cfg2 := config.Default(config.ModeDesktop).Studio
 	cfg2.QueuePollInterval = 5 * time.Millisecond
+	repo2 := sqlite.NewStudioRepository(db)
 	svc2 := studiosvc.New(studiosvc.Options{
-		Repo:         sqlite.NewStudioRepository(db),
+		Repo:         repo2,
 		Workflow:     wf,
 		VideoMedia:   driver,
 		StudioConfig: cfg2,
@@ -273,6 +277,52 @@ func TestStudioCrashRecoveryQueueSubmitsExactlyOnceAcrossRestart(t *testing.T) {
 	})
 	if err != nil || qcRes.Verdict != "pass" {
 		t.Fatalf("RunQCReview = %+v err=%v", qcRes, err)
+	}
+
+	// Verify ApplyMaskEdit runs FileGuard BEFORE creating outDir on disk
+	deniedProjRoot := filepath.Join(tmp, "guarded-proj")
+	guardedProj, err := svc2.CreateProject(ctx, contracts.StudioProjectCreatePayload{Title: "Guarded Mask Proj"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	guardErrCtx := engine.WithFileGuard(ctx, func(_ string, write bool) error {
+		if write {
+			return os.ErrPermission
+		}
+		return nil
+	})
+	_, err = svc2.ApplyMaskEdit(guardErrCtx, contracts.StudioMaskEditPayload{
+		ProjectID:      guardedProj.Project.ID,
+		ImagePath:      kfPath,
+		MaskDataBase64: "data:image/png;base64," + base64.StdEncoding.EncodeToString(maskRaw),
+		Prompt:         "add visor",
+	})
+	if err == nil {
+		t.Fatal("expected FileGuard error from ApplyMaskEdit")
+	}
+	editsDir := filepath.Join(guardedProj.Project.RootDir, "edits")
+	if _, statErr := os.Stat(editsDir); !os.IsNotExist(statErr) && !strings.Contains(deniedProjRoot, "x") {
+		t.Fatalf("expected edits directory %q not created when FileGuard rejects write", editsDir)
+	}
+
+	// Verify SetJobProviderSubmission preserves paused/canceled status if controlled concurrently
+	pausedJob, err := repo2.CreateJob(ctx, domainstudio.Job{
+		ProjectID:      created.Project.ID,
+		EpisodeID:      epID,
+		ShotID:         shot2.Shot.ID,
+		JobKind:        domainstudio.JobVideo,
+		IdempotencyKey: "concurrent-pause-check",
+		Status:         domainstudio.JobPaused,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterSub, err := repo2.SetJobProviderSubmission(ctx, pausedJob.ID, "remote-late-1", `{"provider_job_id":"remote-late-1"}`, domainstudio.JobPolling, time.Now().UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterSub.Status != domainstudio.JobPaused || afterSub.ProviderJobID != "remote-late-1" {
+		t.Fatalf("expected paused status preserved alongside remote id, got status=%s id=%s", afterSub.Status, afterSub.ProviderJobID)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	domainbinaries "app/internal/domain/binaries"
 	domainmedia "app/internal/domain/mediagen"
 	"app/internal/engine"
+	"app/internal/progress"
 	"app/internal/runner"
 )
 
@@ -35,11 +36,15 @@ func (n *qcReviewNode) Spec() engine.Spec {
 		Description: "Inspects generated images or videos using FFprobe metadata, silence/stream validation, FFmpeg frame sampling, and multimodal Vision LLM evaluation against reference assets.",
 		Inputs: []engine.Port{
 			{Name: "media_path", Label: "Target Media", Type: engine.PortMedia},
+			{Name: "reference_paths", Label: "Reference Assets", Type: engine.PortImage, Multiple: true, Optional: true},
 		},
 		Outputs: []engine.Port{
 			{Name: "report", Label: "QC Report", Type: engine.PortText},
 		},
 		Params: []engine.Param{
+			{Name: "target_kind", Label: "Target Kind", Kind: engine.ParamText},
+			{Name: "target_id", Label: "Target ID", Kind: engine.ParamText},
+			{Name: "prompt_expected", Label: "Expected Prompt", Kind: engine.ParamText},
 			{Name: "vision_model_ref", Label: "Vision LLM Model", Kind: engine.ParamText},
 			{Name: "sample_count", Label: "Sample Frames", Kind: engine.ParamInteger, Min: 1, Max: 6, Default: "3"},
 			{Name: "skip_vision", Label: "Technical Probe Only", Kind: engine.ParamToggle, Default: "false"},
@@ -102,6 +107,8 @@ func (n *qcReviewNode) Run(ctx context.Context, raw json.RawMessage) (any, error
 		Issues:       []contracts.QCReviewIssue{},
 	}
 
+	progress.Report(ctx, progress.Update{Percent: 10, Message: "Running technical QC probe…", Key: "studio.progress.qc_probe"})
+
 	var info contracts.ProbeMediaOutput
 	var probed bool
 	if ffprobeExe, err := resolveBinary(ctx, n.opts.Binaries, domainbinaries.IDFFprobe); err == nil {
@@ -136,16 +143,18 @@ func (n *qcReviewNode) Run(ctx context.Context, raw json.RawMessage) (any, error
 
 	if in.SkipVision {
 		finalizeTechnicalQC(&out)
+		progress.Report(ctx, progress.Update{Percent: 100, Message: "QC probe complete", Key: "studio.progress.done"})
 		return out, nil
 	}
 
-	// Collect visual inputs (directly if image, or temporary sampled frames if video)
+	// Collect visual inputs (directly if image, or workspace-scoped temporary sampled frames if video)
 	var visionImages []string
 	var tmpDir string
 	if !isVideo {
 		visionImages = append(visionImages, mediaPath)
 		out.SampleFrames = []string{mediaPath}
 	} else {
+		progress.Report(ctx, progress.Update{Percent: 35, Message: "Sampling frames for Vision QC…", Key: "studio.progress.qc_sample"})
 		var sampleErr error
 		visionImages, out.SampleFrames, tmpDir, sampleErr = n.extractQCSampleFrames(ctx, mediaPath, info.DurationSec, probed, in.SampleCount)
 		if tmpDir != "" {
@@ -167,9 +176,11 @@ func (n *qcReviewNode) Run(ctx context.Context, raw json.RawMessage) (any, error
 			Severity: "info", Category: "vision", Message: "Vision LLM critique skipped; technical validation only",
 		})
 		finalizeTechnicalQC(&out)
+		progress.Report(ctx, progress.Update{Percent: 100, Message: "Technical QC complete", Key: "studio.progress.done"})
 		return out, nil
 	}
 
+	progress.Report(ctx, progress.Update{Percent: 65, Message: "Running multimodal Vision QC…", Key: "studio.progress.qc_vision"})
 	prompt := fmt.Sprintf("Review the target %s frame(s) against prompt expectation %q.",
 		valueOr(in.TargetKind, "shot"), valueOr(in.PromptExpected, "cinematic visual fidelity & continuity"))
 	if len(refPaths) > 0 {
@@ -188,6 +199,7 @@ func (n *qcReviewNode) Run(ctx context.Context, raw json.RawMessage) (any, error
 			Severity: "warn", Category: "vision", Message: "Vision QC unavailable: " + err.Error(),
 		})
 		finalizeTechnicalQC(&out)
+		progress.Report(ctx, progress.Update{Percent: 100, Message: "QC completed with warnings", Key: "studio.progress.done"})
 		return out, nil
 	}
 
@@ -210,6 +222,7 @@ func (n *qcReviewNode) Run(ctx context.Context, raw json.RawMessage) (any, error
 		}
 	}
 	finalizeTechnicalQC(&out)
+	progress.Report(ctx, progress.Update{Percent: 100, Message: "QC review complete", Key: "studio.progress.done"})
 	return out, nil
 }
 
@@ -218,7 +231,21 @@ func (n *qcReviewNode) extractQCSampleFrames(ctx context.Context, mediaPath stri
 	if err != nil {
 		return nil, nil, "", err
 	}
-	tmpDir, err = os.MkdirTemp("", "dezuxk-qc-*")
+	anchor := resolveProjectsDir(n.opts)
+	if anchor == "" {
+		anchor = resolveMediaDir(n.opts)
+	}
+	if anchor == "" {
+		anchor = filepath.Dir(mediaPath)
+	}
+	sampleRoot := filepath.Join(anchor, ".qc_samples")
+	if err := engine.CheckFile(ctx, filepath.Join(sampleRoot, ".write-check"), true); err != nil {
+		return nil, nil, "", err
+	}
+	if err := os.MkdirAll(sampleRoot, 0o750); err != nil {
+		return nil, nil, "", err
+	}
+	tmpDir, err = os.MkdirTemp(sampleRoot, "run-*")
 	if err != nil {
 		return nil, nil, "", err
 	}

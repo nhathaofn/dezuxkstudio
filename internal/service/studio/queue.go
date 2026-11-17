@@ -92,7 +92,7 @@ func (s *Service) RecoverOnStartup(ctx context.Context) error {
 // RunQueueWorker recovers unfinished jobs and runs the durable studio worker pool until ctx closes.
 func (s *Service) RunQueueWorker(ctx context.Context) {
 	if err := s.RecoverOnStartup(ctx); err != nil {
-		s.log.Warn("studio: queue startup recovery failed", "err", err)
+		s.log.WarnContext(ctx, "studio: queue startup recovery failed", "error", err)
 	}
 	workers := s.cfg.QueueWorkers
 	if workers <= 0 {
@@ -699,7 +699,7 @@ func (s *Service) executeQueuedJob(ctx context.Context, j domainstudio.Job) {
 		// Durable submit checkpoint: once provider_job_id is stored, restarts only resume polling!
 		updated, err := s.repo.SetJobProviderSubmission(ctx, j.ID, tok.ProviderJobID, string(tokJSON), domainstudio.JobPolling, now)
 		if err != nil {
-			s.log.Error("studio: failed to persist provider_job_id", "job", j.ID, "provider_job_id", tok.ProviderJobID, "err", err)
+			s.log.ErrorContext(ctx, "studio: failed to persist provider_job_id", "id", j.ID, "provider_job_id", tok.ProviderJobID, "error", err)
 			return
 		}
 		dto := jobToDTO(updated)
@@ -851,6 +851,9 @@ func (s *Service) executePollJob(ctx context.Context, j domainstudio.Job) {
 	}
 
 	outPath := st.Result.Path
+	if cur, cerr := s.repo.GetJob(ctx, j.ID); cerr == nil && cur.Status == domainstudio.JobCanceled {
+		return
+	}
 	var regID string
 	if j.ShotID != "" {
 		if sh, serr := s.repo.GetShot(ctx, j.ShotID); serr == nil {

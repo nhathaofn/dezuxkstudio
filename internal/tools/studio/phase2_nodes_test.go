@@ -301,6 +301,25 @@ func TestPhase2ExtractFramesTTSDubMuxLipSyncAndQCReview(t *testing.T) {
 		t.Fatalf("unexpected lipsync output: %+v", lsRaw)
 	}
 
+	// Extract frames using timestamps_csv + verify FileGuard runs before os.Stat
+	efCSVRaw, err := NewExtractFramesNode(opts).Run(context.Background(), mustJSON(t, contracts.ExtractFramesInput{
+		VideoPath: vidPath, Mode: "timestamps", TimestampsCSV: "1.0, 3.5", OutputDir: tmp,
+	}))
+	if err != nil {
+		t.Fatalf("extract_frames timestamps_csv: %v", err)
+	}
+	if len(efCSVRaw.(contracts.ExtractFramesOutput).Frames) != 2 {
+		t.Fatalf("expected 2 frames from timestamps_csv, got %+v", efCSVRaw)
+	}
+	denyReadCtx := engine.WithFileGuard(context.Background(), func(string, bool) error {
+		return errors.New("server mode denied read")
+	})
+	if _, err := NewExtractFramesNode(opts).Run(denyReadCtx, mustJSON(t, contracts.ExtractFramesInput{
+		VideoPath: filepath.Join(tmp, "nonexistent_should_still_guard_first.mp4"), Mode: "last", OutputDir: tmp,
+	})); err == nil || !strings.Contains(err.Error(), "server mode denied read") {
+		t.Fatalf("expected CheckFile to reject guarded path before stat, got: %v", err)
+	}
+
 	// QC Review multimodal on video + reference image
 	qcRaw, err := NewQCReviewNode(opts).Run(context.Background(), mustJSON(t, contracts.QCReviewInput{
 		MediaPath:      vidPath,

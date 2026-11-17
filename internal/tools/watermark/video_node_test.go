@@ -13,6 +13,7 @@ import (
 	"app/internal/contracts"
 	domainbinaries "app/internal/domain/binaries"
 	"app/internal/engine"
+	"app/internal/progress"
 	"app/internal/tools/watermark"
 )
 
@@ -94,8 +95,12 @@ func TestVideoWatermarkRemoveDelogoCropAndGuardSanitization(t *testing.T) {
 		t.Fatalf("expected sanitized FileGuard error hiding parent dir, got: %v", err)
 	}
 
-	// Delogo success preserving audio
-	rawOut, err := node.Run(context.Background(), mustJSON(t, contracts.VideoWatermarkRemoveInput{
+	// Delogo success preserving audio & reporting -progress pipe:1
+	var updates []progress.Update
+	pCtx := progress.With(context.Background(), progress.Sink{
+		Report: func(u progress.Update) { updates = append(updates, u) },
+	})
+	rawOut, err := node.Run(pCtx, mustJSON(t, contracts.VideoWatermarkRemoveInput{
 		VideoPath: src, Mode: "delogo", X: 12, Y: 16, Width: 120, Height: 48, OutputDir: dir,
 	}))
 	if err != nil {
@@ -104,6 +109,9 @@ func TestVideoWatermarkRemoveDelogoCropAndGuardSanitization(t *testing.T) {
 	out := rawOut.(contracts.VideoWatermarkRemoveOutput)
 	if out.Path == "" {
 		t.Fatal("expected output path")
+	}
+	if len(updates) == 0 {
+		t.Fatal("expected progress.Report updates during tool.video_watermark_remove")
 	}
 
 	// Crop mode
@@ -116,7 +124,7 @@ func TestVideoWatermarkRemoveDelogoCropAndGuardSanitization(t *testing.T) {
 
 	argsBytes, _ := os.ReadFile(logPath)
 	argsStr := string(argsBytes)
-	if !strings.Contains(argsStr, "delogo=x=12:y=16:w=120:h=48") || !strings.Contains(argsStr, "-c:a copy") || !strings.Contains(argsStr, "crop=iw:ih-40") {
+	if !strings.Contains(argsStr, "delogo=x=12:y=16:w=120:h=48") || !strings.Contains(argsStr, "-c:a copy") || !strings.Contains(argsStr, "-progress pipe:1") || !strings.Contains(argsStr, "crop=iw:ih-40") {
 		t.Fatalf("unexpected ffmpeg filter args:\n%s", argsStr)
 	}
 }

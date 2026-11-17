@@ -466,7 +466,12 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 			if err != nil {
 				return mcpError(err.Error())
 			}
-			prep := studioStageTargets(epDetail, contracts.StudioEpisodeRunStagePayload{EpisodeID: p.EpisodeID})
+			prep := studioStageTargets(epDetail, contracts.StudioEpisodeRunStagePayload{
+				EpisodeID: p.EpisodeID,
+				Stage:     contracts.StudioRunStageAction(p.Stage),
+				AssetIDs:  p.AssetIDs,
+				ShotIDs:   p.ShotIDs,
+			})
 			if epDetail.Project.AutoApproveBatches && allFileTargetsTrusted(s.policy, prep) {
 				p.Approved = true
 				res, qerr := p2.EnqueueBatch(engine.WithFileGuard(ctx, s.CheckTrustedFile), p)
@@ -602,6 +607,32 @@ func studioStageTargets(ep contracts.StudioEpisodeDetailResult, p contracts.Stud
 	}
 	if p.NarrationAudioPath != "" {
 		prep.Files = append(prep.Files, p.NarrationAudioPath)
+	}
+	wantAssets := make(map[string]bool, len(p.AssetIDs))
+	for _, id := range p.AssetIDs {
+		wantAssets[id] = true
+	}
+	for _, a := range ep.Assets {
+		if len(wantAssets) > 0 && !wantAssets[a.ID] {
+			continue
+		}
+		if path := strings.TrimSpace(a.PrimaryPath); path != "" {
+			prep.Files = append(prep.Files, path)
+		}
+	}
+	wantShots := make(map[string]bool, len(p.ShotIDs))
+	for _, id := range p.ShotIDs {
+		wantShots[id] = true
+	}
+	for _, sh := range ep.Shots {
+		if len(wantShots) > 0 && !wantShots[sh.ID] {
+			continue
+		}
+		for _, fp := range []string{sh.KeyframePath, sh.VideoPath, sh.AudioPath} {
+			if path := strings.TrimSpace(fp); path != "" {
+				prep.Files = append(prep.Files, path)
+			}
+		}
 	}
 	return prep
 }
