@@ -131,9 +131,10 @@ export async function downloadMediaBlob(
 export async function saveMediaToDevice(
   path: string,
   preferredName?: string,
-  endpoint?: Endpoint | null
+  endpoint?: Endpoint | null,
+  assetId?: string
 ): Promise<void> {
-  const { blob, filename } = await downloadMediaBlob(path, endpoint);
+  const { blob, filename } = await downloadMediaBlob(path, endpoint, assetId);
   const objectUrl = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = objectUrl;

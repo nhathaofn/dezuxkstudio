@@ -42,11 +42,11 @@ import {
   AssetsStagePanel,
   CreateProjectDialog,
   DeleteProjectDialog,
-  ExportStagePanel,
   ScriptStagePanel,
   StoryboardStagePanel,
   VideoShotsStagePanel,
 } from "./StudioStages";
+import { TimelineWorkspace } from "./timeline/TimelineWorkspace";
 import { useStudioStore } from "./useStudioStore";
 import "./StudioView.css";
 
@@ -61,7 +61,7 @@ function stageNodeType(stage: StudioEpisodeStage): string {
     case "video":
       return NodeTypes.VIDEO_GENERATE;
     case "export":
-      return NodeTypes.VIDEO_CONCAT_BASIC;
+      return NodeTypes.RENDER_TIMELINE;
   }
 }
 
@@ -515,7 +515,7 @@ export const StudioView: React.FC = () => {
               ttsModel={ttsModel}
             />
           ) : (
-            <ExportStagePanel detail={episodeDetail} />
+            <TimelineWorkspace detail={episodeDetail} />
           )}
         </div>
       </section>

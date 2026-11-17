@@ -132,6 +132,22 @@
   --action-settings-fg: #475569;
   --action-settings-border: rgba(100, 116, 139, 0.25);
 
+  /* Timeline Workspace Tokens (Light) */
+  --timeline-track-video-bg: rgba(37, 99, 235, 0.14);
+  --timeline-track-video-border: rgba(37, 99, 235, 0.45);
+  --timeline-track-audio-bg: rgba(16, 185, 129, 0.14);
+  --timeline-track-audio-border: rgba(16, 185, 129, 0.45);
+  --timeline-track-bgm-bg: rgba(139, 92, 246, 0.14);
+  --timeline-track-bgm-border: rgba(139, 92, 246, 0.45);
+  --timeline-track-sub-bg: rgba(245, 158, 11, 0.16);
+  --timeline-track-sub-border: rgba(245, 158, 11, 0.5);
+  --timeline-playhead: #dc2626;
+  --timeline-ruler-tick: #94a3b8;
+  --timeline-waveform-bar: #059669;
+  --timeline-player-bg: #0b0f19;
+  --timeline-subtitle-scrim: rgba(9, 11, 16, 0.72);
+  --timeline-subtitle-text: #ffffff;
+
   /* 5. Custom Select & Dropdown Tokens */
   --select-arrow-offset: 13px;
   --select-padding-right: 36px;
@@ -238,6 +254,22 @@ html[data-theme="light"],
   --action-settings-bg: rgba(148, 163, 184, 0.18);
   --action-settings-fg: #94a3b8;
   --action-settings-border: rgba(148, 163, 184, 0.35);
+
+  /* Timeline Workspace Tokens (Dark) */
+  --timeline-track-video-bg: rgba(59, 130, 246, 0.22);
+  --timeline-track-video-border: rgba(96, 165, 250, 0.5);
+  --timeline-track-audio-bg: rgba(16, 185, 129, 0.2);
+  --timeline-track-audio-border: rgba(52, 211, 153, 0.5);
+  --timeline-track-bgm-bg: rgba(139, 92, 246, 0.22);
+  --timeline-track-bgm-border: rgba(167, 139, 250, 0.5);
+  --timeline-track-sub-bg: rgba(245, 158, 11, 0.22);
+  --timeline-track-sub-border: rgba(251, 191, 36, 0.55);
+  --timeline-playhead: #ef4444;
+  --timeline-ruler-tick: #64748b;
+  --timeline-waveform-bar: #34d399;
+  --timeline-player-bg: #05070b;
+  --timeline-subtitle-scrim: rgba(5, 7, 11, 0.8);
+  --timeline-subtitle-text: #ffffff;
 
   --select-chevron-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23cbd5e1' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 

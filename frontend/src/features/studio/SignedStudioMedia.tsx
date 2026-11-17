@@ -30,7 +30,10 @@ export const SignedStudioVideo: React.FC<{
   placeholder: string;
   large?: boolean;
 }> = ({ assetId, placeholder, large }) => {
-  const { url, loading, handleMediaError, mediaRef } = useSignedMediaURL(assetId || null, "stream");
+  const { url, loading, handleMediaError, mediaRef } = useSignedMediaURL(
+    assetId || null,
+    "preview"
+  );
 
   if (!assetId) {
     return (
@@ -73,7 +76,7 @@ export const SignedStudioVideo: React.FC<{
 };
 
 export const SignedStudioAudio: React.FC<{ assetId?: string }> = ({ assetId }) => {
-  const { url, handleMediaError, mediaRef } = useSignedMediaURL(assetId || null, "stream");
+  const { url, handleMediaError, mediaRef } = useSignedMediaURL(assetId || null, "preview");
   if (!assetId || !url) return null;
   return (
     <audio

@@ -4,6 +4,8 @@ import {
   NodeTypes,
   type ActionProgress,
   type BatchPreflightOutput,
+  type ExportNLEDraftOutput,
+  type MediaPeaksThumbsOutput,
   type ProbeMediaOutput,
   type StudioAssetUpsertPayload,
   type StudioBatchProgressEvent,
@@ -32,6 +34,13 @@ import {
   type StudioRunStageAction,
   type StudioShot,
   type StudioShotUpsertPayload,
+  type StudioTimelineAutoAssemblePayload,
+  type StudioTimelineChangedEvent,
+  type StudioTimelineExportNLEPayload,
+  type StudioTimelineOp,
+  type StudioTimelineRenderPayload,
+  type StudioTimelineRenderResult,
+  type StudioTimelineResult,
 } from "../../contracts/generated";
 import { rtClient, toActionError, uploadMediaFile, type ActionError } from "../../lib/rtClient";
 
@@ -60,6 +69,13 @@ export interface StudioState {
   gridModalTarget: StudioGridModalTarget | null;
   maskModalTarget: StudioMaskModalTarget | null;
   pendingPreflight: StudioPendingPreflight | null;
+  timelineResult: StudioTimelineResult | null;
+  timelineLoading: boolean;
+  renderingTimeline: boolean;
+  exportingNLE: boolean;
+  lastRenderResult: StudioTimelineRenderResult | null;
+  lastNLEExport: ExportNLEDraftOutput | null;
+  peaksLoadingClipIds: Record<string, boolean>;
   error: ActionError | null;
   lastSummary: string;
 
@@ -120,6 +136,30 @@ export interface StudioState {
     model?: string,
     itemCount?: number
   ) => Promise<BatchPreflightOutput | null>;
+
+  fetchTimeline: (
+    episodeId?: string,
+    opts?: { preserveError?: boolean }
+  ) => Promise<StudioTimelineResult | null>;
+  applyTimelineOps: (ops: StudioTimelineOp[], summary?: string) => Promise<boolean>;
+  undoTimeline: () => Promise<boolean>;
+  redoTimeline: () => Promise<boolean>;
+  autoAssembleTimeline: (
+    payload?: Omit<StudioTimelineAutoAssemblePayload, "episode_id">
+  ) => Promise<boolean>;
+  computeClipPeaksThumbs: (
+    mediaPath: string,
+    clipId?: string,
+    opts?: { thumb_interval_sec?: number; peak_bins?: number }
+  ) => Promise<MediaPeaksThumbsOutput | null>;
+  renderTimeline: (
+    payload?: Omit<StudioTimelineRenderPayload, "episode_id">
+  ) => Promise<StudioTimelineRenderResult | null>;
+  exportNLEDraft: (
+    payload: Omit<StudioTimelineExportNLEPayload, "episode_id">
+  ) => Promise<ExportNLEDraftOutput | null>;
+  openExportFolder: (filePath?: string) => Promise<boolean>;
+  receiveTimelineChanged: (evt: StudioTimelineChangedEvent) => void;
 }
 
 export interface StudioVersionModalTarget {
@@ -199,6 +239,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   gridModalTarget: null,
   maskModalTarget: null,
   pendingPreflight: null,
+  timelineResult: null,
+  timelineLoading: false,
+  renderingTimeline: false,
+  exportingNLE: false,
+  lastRenderResult: null,
+  lastNLEExport: null,
+  peaksLoadingClipIds: {},
   error: null,
   lastSummary: "",
 
@@ -863,5 +910,239 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       set({ error: toActionError(err) });
       return null;
     }
+  },
+
+  fetchTimeline: async (episodeId, opts) => {
+    const epId = episodeId ?? get().activeEpisodeId;
+    if (!epId) return null;
+    set((s) => ({
+      timelineLoading: true,
+      error: opts?.preserveError ? s.error : null,
+    }));
+    try {
+      const res = await rtClient.request(Actions.STUDIO_TIMELINE_GET, { id: epId });
+      set({ timelineResult: res, timelineLoading: false });
+      return res;
+    } catch (err) {
+      set({ timelineLoading: false, error: toActionError(err) });
+      return null;
+    }
+  },
+
+  applyTimelineOps: async (ops, summary) => {
+    const epId = get().activeEpisodeId;
+    if (!epId || ops.length === 0) return false;
+    const expectedRev =
+      get().timelineResult?.episode_id === epId ? get().timelineResult!.revision : 0;
+    set({ saving: true, error: null });
+    try {
+      const res = await rtClient.request(Actions.STUDIO_TIMELINE_APPLY_OPS, {
+        episode_id: epId,
+        expected_revision: expectedRev,
+        actor: "user",
+        summary,
+        ops,
+      });
+      set({ saving: false, timelineResult: res });
+      return true;
+    } catch (err) {
+      const ae = toActionError(err);
+      set({ saving: false, error: ae });
+      if (ae.code === "ERR_CONFLICT") {
+        void get().fetchTimeline(epId, { preserveError: true });
+      }
+      return false;
+    }
+  },
+
+  undoTimeline: async () => {
+    const cur = get().timelineResult;
+    const epId = cur?.episode_id ?? get().activeEpisodeId;
+    if (!epId) return false;
+    set({ saving: true, error: null });
+    try {
+      const res = await rtClient.request(Actions.STUDIO_TIMELINE_UNDO, {
+        episode_id: epId,
+        expected_revision: cur?.revision ?? 0,
+      });
+      set({ saving: false, timelineResult: res });
+      return true;
+    } catch (err) {
+      set({ saving: false, error: toActionError(err) });
+      return false;
+    }
+  },
+
+  redoTimeline: async () => {
+    const cur = get().timelineResult;
+    const epId = cur?.episode_id ?? get().activeEpisodeId;
+    if (!epId) return false;
+    set({ saving: true, error: null });
+    try {
+      const res = await rtClient.request(Actions.STUDIO_TIMELINE_REDO, {
+        episode_id: epId,
+        expected_revision: cur?.revision ?? 0,
+      });
+      set({ saving: false, timelineResult: res });
+      return true;
+    } catch (err) {
+      set({ saving: false, error: toActionError(err) });
+      return false;
+    }
+  },
+
+  autoAssembleTimeline: async (payload = {}) => {
+    const epId = get().activeEpisodeId;
+    if (!epId) return false;
+    const expectedRev =
+      get().timelineResult?.episode_id === epId ? get().timelineResult!.revision : undefined;
+    set({ timelineLoading: true, actionProgress: null, error: null });
+    try {
+      const res = await rtClient.request(
+        Actions.STUDIO_TIMELINE_AUTO_ASSEMBLE,
+        {
+          episode_id: epId,
+          ...(expectedRev !== undefined ? { expected_revision: expectedRev } : {}),
+          ...payload,
+        },
+        {
+          onProgress: (p) => {
+            if (!p.heartbeat) set({ actionProgress: p });
+          },
+        }
+      );
+      set({
+        timelineLoading: false,
+        actionProgress: null,
+        timelineResult: res,
+      });
+      return true;
+    } catch (err) {
+      set({ timelineLoading: false, actionProgress: null, error: toActionError(err) });
+      return false;
+    }
+  },
+
+  computeClipPeaksThumbs: async (mediaPath, clipId, opts = {}) => {
+    const epId = get().activeEpisodeId;
+    if (!epId || !mediaPath) return null;
+    if (clipId) {
+      set((s) => ({ peaksLoadingClipIds: { ...s.peaksLoadingClipIds, [clipId]: true } }));
+    }
+    try {
+      const out = await rtClient.request(Actions.STUDIO_MEDIA_PEAKS_THUMBS, {
+        episode_id: epId,
+        media_path: mediaPath,
+        ...(clipId ? { clip_id: clipId } : {}),
+        ...(opts.thumb_interval_sec ? { thumb_interval_sec: opts.thumb_interval_sec } : {}),
+        ...(opts.peak_bins ? { peak_bins: opts.peak_bins } : {}),
+      });
+      if (clipId) {
+        set((s) => {
+          const next = { ...s.peaksLoadingClipIds };
+          delete next[clipId];
+          return { peaksLoadingClipIds: next };
+        });
+      }
+      return out;
+    } catch (err) {
+      if (clipId) {
+        set((s) => {
+          const next = { ...s.peaksLoadingClipIds };
+          delete next[clipId];
+          return { peaksLoadingClipIds: next, error: toActionError(err) };
+        });
+      } else {
+        set({ error: toActionError(err) });
+      }
+      return null;
+    }
+  },
+
+  renderTimeline: async (payload = {}) => {
+    const epId = get().activeEpisodeId;
+    if (!epId) return null;
+    set({ renderingTimeline: true, actionProgress: null, error: null });
+    try {
+      const res = await rtClient.request(
+        Actions.STUDIO_TIMELINE_RENDER,
+        { episode_id: epId, ...payload },
+        {
+          onProgress: (p) => {
+            if (!p.heartbeat) set({ actionProgress: p });
+          },
+        }
+      );
+      set({
+        renderingTimeline: false,
+        actionProgress: null,
+        lastRenderResult: res,
+        episodeDetail: res.episode ?? get().episodeDetail,
+        lastSummary: res.output_path,
+      });
+      return res;
+    } catch (err) {
+      set({ renderingTimeline: false, actionProgress: null, error: toActionError(err) });
+      return null;
+    }
+  },
+
+  exportNLEDraft: async (payload) => {
+    const epId = get().activeEpisodeId;
+    if (!epId) return null;
+    set({ exportingNLE: true, actionProgress: null, error: null });
+    try {
+      const out = await rtClient.request(
+        Actions.STUDIO_TIMELINE_EXPORT_NLE,
+        { episode_id: epId, ...payload },
+        {
+          onProgress: (p) => {
+            if (!p.heartbeat) set({ actionProgress: p });
+          },
+        }
+      );
+      set({ exportingNLE: false, actionProgress: null, lastNLEExport: out });
+      return out;
+    } catch (err) {
+      set({ exportingNLE: false, actionProgress: null, error: toActionError(err) });
+      return null;
+    }
+  },
+
+  openExportFolder: async (filePath) => {
+    const epId = get().activeEpisodeId;
+    if (!epId && !filePath) return false;
+    try {
+      await rtClient.request(Actions.STUDIO_OPEN_EXPORT_FOLDER, {
+        episode_id: epId ?? "",
+        ...(filePath ? { file_path: filePath } : {}),
+      });
+      return true;
+    } catch (err) {
+      set({ error: toActionError(err) });
+      return false;
+    }
+  },
+
+  receiveTimelineChanged: (evt) => {
+    const activeEp = get().activeEpisodeId;
+    if (activeEp && evt.episode_id !== activeEp) return;
+    set((s) => {
+      const prev = s.timelineResult;
+      return {
+        timelineResult: {
+          project_id: evt.project_id,
+          episode_id: evt.episode_id,
+          revision: evt.revision,
+          can_undo: evt.can_undo,
+          can_redo: evt.can_redo,
+          duration_ms: evt.duration_ms,
+          timeline_path: prev?.episode_id === evt.episode_id ? prev.timeline_path : undefined,
+          timeline: evt.timeline,
+          revisions: prev?.episode_id === evt.episode_id ? prev.revisions : undefined,
+          updated_at: Date.now(),
+        },
+      };
+    });
   },
 }));
