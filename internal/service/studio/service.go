@@ -21,6 +21,7 @@ import (
 	"app/internal/engine"
 	"app/internal/fsutil"
 	"app/internal/progress"
+	"app/internal/safego"
 	"app/internal/service/media"
 	mediagennodes "app/internal/tools/mediagen"
 	studionodes "app/internal/tools/studio"
@@ -595,6 +596,11 @@ func (s *Service) UpsertAsset(ctx context.Context, p contracts.StudioAssetUpsert
 	if err != nil {
 		return contracts.StudioAssetUpsertResult{}, err
 	}
+	if primary := strings.TrimSpace(p.PrimaryPath); primary != "" {
+		if cerr := engine.CheckFile(ctx, primary, false); cerr != nil {
+			return contracts.StudioAssetUpsertResult{}, cerr
+		}
+	}
 	kind := p.Kind
 	if kind == "" {
 		kind = domainstudio.AssetCharacter
@@ -644,6 +650,13 @@ func (s *Service) UpsertShot(ctx context.Context, p contracts.StudioShotUpsertPa
 	proj, err := s.repo.GetProject(ctx, ep.ProjectID)
 	if err != nil {
 		return contracts.StudioShotUpsertResult{}, err
+	}
+	for _, ptr := range []*string{p.KeyframePath, p.VideoPath, p.AudioPath} {
+		if ptr != nil && strings.TrimSpace(*ptr) != "" {
+			if cerr := engine.CheckFile(ctx, strings.TrimSpace(*ptr), false); cerr != nil {
+				return contracts.StudioShotUpsertResult{}, cerr
+			}
+		}
 	}
 
 	var cur domainstudio.Shot
@@ -1507,12 +1520,15 @@ func (s *Service) runGenerateVideos(ctx context.Context, proj domainstudio.Proje
 	model := firstNonEmpty(p.Model, proj.DefaultVideoModel)
 
 	// Run bounded workers up to config studio.max_concurrent_batch.
-	workers := s.cfg.MaxConcurrentBatch
-	if workers <= 0 {
-		workers = 1
-	}
-	if workers > len(targets) && len(targets) > 0 {
-		workers = len(targets)
+	workers := 0
+	if len(targets) > 0 {
+		workers = s.cfg.MaxConcurrentBatch
+		if workers <= 0 {
+			workers = 1
+		}
+		if workers > len(targets) {
+			workers = len(targets)
+		}
 	}
 
 	var (
@@ -1532,7 +1548,7 @@ func (s *Service) runGenerateVideos(ctx context.Context, proj domainstudio.Proje
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
-		go func() {
+		safego.Go("studio.generate_videos", func() {
 			defer wg.Done()
 			for shot := range jobCh {
 				if ctx.Err() != nil {
@@ -1602,9 +1618,12 @@ func (s *Service) runGenerateVideos(ctx context.Context, proj domainstudio.Proje
 				stateMu.Unlock()
 				s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), curDone, len(targets), shot.ID, fmt.Sprintf("Generated shot #%d video", shot.Seq), "running")
 			}
-		}()
+		})
 	}
 	wg.Wait()
+	if ctx.Err() != nil {
+		return contracts.StudioRunStageResult{}, ctx.Err()
+	}
 
 	if refreshed, lerr := s.repo.ListShots(ctx, ep.ID); lerr == nil {
 		_ = s.syncEpisodeShotsToDisk(proj, ep, refreshed)

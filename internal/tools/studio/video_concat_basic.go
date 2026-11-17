@@ -58,14 +58,9 @@ func (p *pipeProgressParser) ParseLine(line string) (float64, string, bool) {
 
 // NewVideoConcatBasicNode builds the tool.video_concat_basic workflow node for MVP MP4 assembly.
 func NewVideoConcatBasicNode(opts Options) engine.Node {
+	opts.StudioConfig = withStudioDefaults(opts.StudioConfig)
 	defaultRes := opts.StudioConfig.DefaultResolution
-	if strings.TrimSpace(defaultRes) == "" {
-		defaultRes = "1920x1080"
-	}
 	defaultFPS := opts.StudioConfig.DefaultFPS
-	if defaultFPS <= 0 {
-		defaultFPS = 24
-	}
 
 	spec := engine.Spec{
 		Type:        NodeTypeVideoConcatBasic,

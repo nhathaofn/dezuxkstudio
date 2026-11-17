@@ -232,6 +232,46 @@ func TestStudioMCPTools_CRUDAndApprovalGate(t *testing.T) {
 		t.Fatal("expected IsError when narration_audio_path is outside trusted directories")
 	}
 
+	ep2 := callMCPJSON(t, cs, "studio_episode_create", map[string]any{
+		"project_id": projID,
+		"code":       "ep02",
+		"title":      "Episode 2",
+	})
+	if ep2["episode"].(map[string]any)["code"] != "ep02" {
+		t.Fatalf("expected studio_episode_create ep02, got %+v", ep2)
+	}
+
+	badAssetRes, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name: "studio_asset_upsert",
+		Arguments: map[string]any{
+			"project_id":   projID,
+			"kind":         "character",
+			"name":         "Evil",
+			"primary_path": outsideAudio,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !badAssetRes.IsError {
+		t.Fatal("expected IsError when studio_asset_upsert primary_path is outside trusted directories")
+	}
+
+	badShotRes, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name: "studio_shot_upsert",
+		Arguments: map[string]any{
+			"episode_id": epID,
+			"title":      "Evil Shot",
+			"video_path": filepath.Join(projObj["root_dir"].(string), "payload.exe"),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !badShotRes.IsError {
+		t.Fatal("expected IsError when studio_shot_upsert video_path has forbidden extension")
+	}
+
 	// 5. AutoApproveBatches=true inside trusted workspace projectsDir executes directly without needs_approval
 	trustedProj := callMCPJSON(t, cs, "studio_project_create", map[string]any{
 		"title":                "Auto Trusted Film",

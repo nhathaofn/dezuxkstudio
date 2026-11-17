@@ -114,4 +114,16 @@ func TestStudioModule_RegisterDispatchAndFileGuard(t *testing.T) {
 	if err == nil || !apperr.IsCode(err, apperr.CodeUnauthorized) {
 		t.Fatalf("expected ERR_UNAUTHORIZED from FileGuard, got %v", err)
 	}
+
+	hAssetUpsert, _ := reg.Lookup(contracts.ActionStudioAssetUpsert)
+	_, err = hAssetUpsert(context.Background(), &realtime.Request{}, []byte(`{"project_id":"`+created.Project.ID+`","kind":"character","name":"Minh","primary_path":"C:\\Windows\\System32\\cmd.exe"}`))
+	if err == nil || !apperr.IsCode(err, apperr.CodeUnauthorized) {
+		t.Fatalf("expected ERR_UNAUTHORIZED from FileGuard on asset_upsert primary_path, got %v", err)
+	}
+
+	hShotUpsert, _ := reg.Lookup(contracts.ActionStudioShotUpsert)
+	_, err = hShotUpsert(context.Background(), &realtime.Request{}, []byte(`{"episode_id":"`+epID+`","title":"Bad","video_path":"C:\\Users\\owner\\.ssh\\id_rsa"}`))
+	if err == nil || !apperr.IsCode(err, apperr.CodeUnauthorized) {
+		t.Fatalf("expected ERR_UNAUTHORIZED from FileGuard on shot_upsert video_path, got %v", err)
+	}
 }

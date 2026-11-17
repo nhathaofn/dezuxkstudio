@@ -70,12 +70,12 @@ func (s Studio) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionStudioAssetUpsert,
 		func(ctx context.Context, _ *realtime.Request, p contracts.StudioAssetUpsertPayload) (contracts.StudioAssetUpsertResult, error) {
-			return s.Service.UpsertAsset(ctx, p)
+			return s.Service.UpsertAsset(engine.WithFileGuard(ctx, s.FileGuard), p)
 		})
 
 	realtime.Handle(r, contracts.ActionStudioShotUpsert,
 		func(ctx context.Context, _ *realtime.Request, p contracts.StudioShotUpsertPayload) (contracts.StudioShotUpsertResult, error) {
-			return s.Service.UpsertShot(ctx, p)
+			return s.Service.UpsertShot(engine.WithFileGuard(ctx, s.FileGuard), p)
 		})
 
 	realtime.Handle(r, contracts.ActionStudioShotReorder,

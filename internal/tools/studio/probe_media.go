@@ -36,6 +36,7 @@ type ffprobeRaw struct {
 
 // NewProbeMediaNode builds the tool.probe_media workflow node backed by binaries.Service (IDFFprobe).
 func NewProbeMediaNode(opts Options) engine.Node {
+	opts.StudioConfig = withStudioDefaults(opts.StudioConfig)
 	spec := engine.Spec{
 		Type:        NodeTypeProbeMedia,
 		Provider:    "tool",

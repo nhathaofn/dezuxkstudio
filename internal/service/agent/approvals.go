@@ -429,7 +429,7 @@ func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) 
 		if err := json.Unmarshal([]byte(rec.InputJSON), &p); err != nil {
 			execErr = fmt.Errorf("invalid studio stage input: %w", err)
 		} else {
-			res, execErr = s.studio.RunStage(ctx, p)
+			res, execErr = s.studio.RunStage(engine.WithFileGuard(ctx, s.CheckTrustedFile), p)
 		}
 	} else {
 		execErr = fmt.Errorf("no executor available for approved action %s", rec.ToolName)

@@ -7,6 +7,7 @@ import (
 
 	"app/internal/contracts"
 	domainstudio "app/internal/domain/studio"
+	"app/internal/engine"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -22,6 +23,12 @@ type studioProjectCreateToolInput struct {
 	StylePrompt         string `json:"style_prompt,omitempty" jsonschema:"Global visual style bible prompt applied across shots and sheets"`
 	AutoApproveBatches  bool   `json:"auto_approve_batches,omitempty" jsonschema:"If true, trusted workspace studio batches skip interactive confirmation"`
 	InitialEpisodeTitle string `json:"initial_episode_title,omitempty" jsonschema:"Optional starter episode title (default: Episode 1)"`
+}
+
+type studioEpisodeCreateToolInput struct {
+	ProjectID string `json:"project_id" jsonschema:"Studio project ID"`
+	Code      string `json:"code,omitempty" jsonschema:"Optional episode code (e.g. ep02)"`
+	Title     string `json:"title,omitempty" jsonschema:"Episode title"`
 }
 
 type studioEpisodeGetToolInput struct {
@@ -162,13 +169,38 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 			return mcpJSON(res)
 		})
 
+	addMCPTool(server, "studio_episode_create",
+		"Create a new episode inside an existing studio project.",
+		func(ctx context.Context, in studioEpisodeCreateToolInput) (*mcp.CallToolResult, any, error) {
+			if s.studio == nil {
+				return mcpError("studio service is unavailable")
+			}
+			res, err := s.studio.CreateEpisode(ctx, contracts.StudioEpisodeCreatePayload{
+				ProjectID: in.ProjectID,
+				Code:      in.Code,
+				Title:     in.Title,
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
 	addMCPTool(server, "studio_asset_upsert",
 		"Create, update, or delete an Asset Bible entry (character, scene, prop with @Tag) and sync asset_bible.json.",
 		func(ctx context.Context, in studioAssetUpsertToolInput) (*mcp.CallToolResult, any, error) {
 			if s.studio == nil {
 				return mcpError("studio service is unavailable")
 			}
-			res, err := s.studio.UpsertAsset(ctx, contracts.StudioAssetUpsertPayload{
+			primaryPath := strings.TrimSpace(in.PrimaryPath)
+			if !in.Delete && primaryPath != "" {
+				resolved, verr := s.policy.ValidateRead(primaryPath)
+				if verr != nil {
+					return mcpError(verr.Error())
+				}
+				primaryPath = resolved
+			}
+			res, err := s.studio.UpsertAsset(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioAssetUpsertPayload{
 				ID:             in.ID,
 				ProjectID:      in.ProjectID,
 				Kind:           domainstudio.AssetKind(strings.TrimSpace(in.Kind)),
@@ -177,7 +209,7 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 				Description:    in.Description,
 				Prompt:         in.Prompt,
 				PrimaryAssetID: in.PrimaryAssetID,
-				PrimaryPath:    in.PrimaryPath,
+				PrimaryPath:    primaryPath,
 				VoiceProvider:  in.VoiceProvider,
 				VoiceID:        in.VoiceID,
 				VoiceStyle:     in.VoiceStyle,
@@ -195,12 +227,34 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 			if s.studio == nil {
 				return mcpError("studio service is unavailable")
 			}
+			validateOptPath := func(ptr *string) (*string, error) {
+				if ptr == nil || strings.TrimSpace(*ptr) == "" {
+					return ptr, nil
+				}
+				resolved, verr := s.policy.ValidateRead(*ptr)
+				if verr != nil {
+					return nil, verr
+				}
+				return &resolved, nil
+			}
+			keyframePath, err := validateOptPath(in.KeyframePath)
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			videoPath, err := validateOptPath(in.VideoPath)
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			audioPath, err := validateOptPath(in.AudioPath)
+			if err != nil {
+				return mcpError(err.Error())
+			}
 			var statusPtr *domainstudio.ShotStatus
 			if in.Status != nil && strings.TrimSpace(*in.Status) != "" {
 				st := domainstudio.ShotStatus(strings.TrimSpace(*in.Status))
 				statusPtr = &st
 			}
-			res, err := s.studio.UpsertShot(ctx, contracts.StudioShotUpsertPayload{
+			res, err := s.studio.UpsertShot(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioShotUpsertPayload{
 				ID:              in.ID,
 				EpisodeID:       in.EpisodeID,
 				Seq:             in.Seq,
@@ -214,11 +268,11 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 				Dialogues:       in.Dialogues,
 				RefAssetTags:    in.RefAssetTags,
 				KeyframeAssetID: in.KeyframeAssetID,
-				KeyframePath:    in.KeyframePath,
+				KeyframePath:    keyframePath,
 				VideoAssetID:    in.VideoAssetID,
-				VideoPath:       in.VideoPath,
+				VideoPath:       videoPath,
 				AudioAssetID:    in.AudioAssetID,
-				AudioPath:       in.AudioPath,
+				AudioPath:       audioPath,
 				Status:          statusPtr,
 			})
 			if err != nil {
@@ -272,15 +326,16 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 
 			// Validate any explicit external audio path with the agent file policy.
 			if p.NarrationAudioPath != "" {
-				resolvedAudio, rerr := s.policy.Resolve(p.NarrationAudioPath)
+				resolvedAudio, rerr := s.policy.ValidateRead(p.NarrationAudioPath)
 				if rerr != nil {
 					return mcpError(rerr.Error())
 				}
 				p.NarrationAudioPath = resolvedAudio
 			}
 
+			guardedCtx := engine.WithFileGuard(ctx, s.CheckTrustedFile)
 			if p.Stage == contracts.StudioStageProbeShots {
-				res, rerr := s.studio.RunStage(ctx, p)
+				res, rerr := s.studio.RunStage(guardedCtx, p)
 				if rerr != nil {
 					return mcpError(rerr.Error())
 				}
@@ -289,7 +344,7 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 
 			prep := studioStageTargets(epDetail, p)
 			if epDetail.Project.AutoApproveBatches && allFileTargetsTrusted(s.policy, prep) {
-				res, rerr := s.studio.RunStage(ctx, p)
+				res, rerr := s.studio.RunStage(guardedCtx, p)
 				if rerr != nil {
 					return mcpError(rerr.Error())
 				}
@@ -304,7 +359,7 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 				summary = fmt.Sprintf("%s (%d asset(s))", summary, len(p.AssetIDs))
 			}
 			return s.needsApproval(ctx, "studio_episode_run_stage", "", p, title, summary, func(execCtx context.Context) (any, error) {
-				return s.studio.RunStage(execCtx, p)
+				return s.studio.RunStage(engine.WithFileGuard(execCtx, s.CheckTrustedFile), p)
 			})
 		})
 }

@@ -502,6 +502,50 @@ func TestProbeMediaAndVideoConcatBasic(t *testing.T) {
 	}
 }
 
+func TestDirectNodeConstructorsApplyStudioDefaults(t *testing.T) {
+	mediaDir := t.TempDir()
+	binDir := t.TempDir()
+	clip := filepath.Join(mediaDir, "clip.mp4")
+	if err := os.WriteFile(clip, []byte("mp4"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ffprobeExe, ffmpegExe := writeFakeFFmpegPair(t, binDir, true)
+	directOpts := Options{
+		Binaries: &stubBinaryResolver{
+			paths: map[domainbinaries.BinaryID]string{
+				domainbinaries.IDFFprobe: ffprobeExe,
+				domainbinaries.IDFFmpeg:  ffmpegExe,
+			},
+		},
+		MediaDir: mediaDir,
+	}
+
+	reg := engine.NewRegistry()
+	if err := reg.Register(NewProbeMediaNode(directOpts), NewVideoConcatBasicNode(directOpts)); err != nil {
+		t.Fatal(err)
+	}
+
+	probeRaw, err := reg.Run(context.Background(), NodeTypeProbeMedia, mustJSON(t, map[string]any{
+		"media": map[string]any{"kind": "video", "localUrl": clip},
+	}))
+	if err != nil {
+		t.Fatalf("direct NewProbeMediaNode with empty StudioConfig failed: %v", err)
+	}
+	if probeRaw.(contracts.ProbeMediaOutput).DurationSec != 6.0 {
+		t.Fatalf("unexpected probe duration: %+v", probeRaw)
+	}
+
+	concatRaw, err := reg.Run(context.Background(), NodeTypeVideoConcatBasic, mustJSON(t, map[string]any{
+		"clips_manifest_json": []string{clip},
+	}))
+	if err != nil {
+		t.Fatalf("direct NewVideoConcatBasicNode with empty StudioConfig failed: %v", err)
+	}
+	if concatRaw.(contracts.VideoConcatBasicOutput).ClipCount != 1 {
+		t.Fatalf("unexpected concat output: %+v", concatRaw)
+	}
+}
+
 func mustJSON(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(v)
