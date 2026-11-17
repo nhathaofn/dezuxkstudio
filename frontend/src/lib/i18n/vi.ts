@@ -924,6 +924,14 @@ export const vi: Record<MessageKey, string> = {
   "errors.studio.shot_not_found": "Không tìm thấy shot.",
   "errors.studio.binary_unavailable": "Dịch vụ công cụ ngoài ({id}) hiện không khả dụng.",
   "errors.studio.binary_missing": "Chưa cài đặt {id}. Vui lòng cấu hình trong Cài đặt -> Công cụ.",
+  "errors.studio.duplicate_slug": "Đã tồn tại dự án phim với slug này.",
+
+  "studio.progress.script_normalize": "Đang phân tích và chuẩn hóa kịch bản…",
+  "studio.progress.extract_assets": "Đang rút trích nhân vật, bối cảnh và đạo cụ…",
+  "studio.progress.author_shots": "Đang soạn prompt storyboard và video…",
+  "studio.progress.concat_probe": "Đang kiểm tra thông số các video clip…",
+  "studio.progress.concat_render": "Đang xuất ghép tệp video hoàn chỉnh…",
+  "studio.progress.done": "Hoàn tất",
 
   "studio.title": "Xưởng phim AI",
   "studio.subtitle": "Quy trình sản xuất 5 bước kiểu ArcReel",
@@ -931,6 +939,7 @@ export const vi: Record<MessageKey, string> = {
   "studio.sidebar.noProjects": "Chưa có dự án nào",
   "studio.sidebar.newProject": "Tạo dự án mới",
   "studio.sidebar.episodes": "Danh sách tập",
+  "studio.sidebar.episodeDefaultTitle": "Tập {num}",
   "studio.sidebar.newEpisode": "Thêm tập",
   "studio.sidebar.stages": "Chặng sản xuất",
   "studio.sidebar.settings": "Cấu hình dự án",
@@ -995,6 +1004,7 @@ export const vi: Record<MessageKey, string> = {
   "studio.assets.extract": "Rút trích từ kịch bản",
   "studio.assets.generateAll": "Sinh toàn bộ Sheet thiếu",
   "studio.assets.addAsset": "Thêm tài sản",
+  "studio.assets.defaultName": "Nhân vật {num}",
   "studio.assets.empty":
     "Chưa có tài sản nào. Hãy rút trích từ kịch bản hoặc thêm nhân vật, bối cảnh, đạo cụ.",
   "studio.assets.kind": "Loại",
@@ -1013,6 +1023,7 @@ export const vi: Record<MessageKey, string> = {
   "studio.storyboard.author": "Soạn Shot Prompts",
   "studio.storyboard.generateKeyframes": "Sinh Keyframe còn thiếu",
   "studio.storyboard.addShot": "Thêm Shot",
+  "studio.storyboard.defaultShotTitle": "Cảnh quay {num}",
   "studio.storyboard.empty":
     "Chưa có shot nào. Nhấn Soạn Shot Prompts để chuyển kịch bản & @Tag thành storyboard.",
   "studio.storyboard.shotTitle": "Tiêu đề Shot",

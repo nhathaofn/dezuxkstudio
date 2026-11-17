@@ -922,6 +922,14 @@ export const en = {
   "errors.studio.shot_not_found": "Studio shot not found.",
   "errors.studio.binary_unavailable": "Required external tool service ({id}) is unavailable.",
   "errors.studio.binary_missing": "{id} is not installed. Configure it in Settings -> Tools.",
+  "errors.studio.duplicate_slug": "A studio project with this slug already exists.",
+
+  "studio.progress.script_normalize": "Analyzing and normalizing screenplay…",
+  "studio.progress.extract_assets": "Extracting characters, scenes, and props…",
+  "studio.progress.author_shots": "Authoring storyboard and video prompts…",
+  "studio.progress.concat_probe": "Inspecting video clips…",
+  "studio.progress.concat_render": "Rendering assembled video…",
+  "studio.progress.done": "Completed",
 
   "studio.title": "AI Film Studio",
   "studio.subtitle": "ArcReel 5-Stage Production Pipeline",
@@ -929,6 +937,7 @@ export const en = {
   "studio.sidebar.noProjects": "No film projects yet",
   "studio.sidebar.newProject": "New Project",
   "studio.sidebar.episodes": "Episodes",
+  "studio.sidebar.episodeDefaultTitle": "Episode {num}",
   "studio.sidebar.newEpisode": "New Episode",
   "studio.sidebar.stages": "Production Stages",
   "studio.sidebar.settings": "Project Settings",
@@ -993,6 +1002,7 @@ export const en = {
   "studio.assets.extract": "Extract from Script",
   "studio.assets.generateAll": "Generate Missing Sheets",
   "studio.assets.addAsset": "Add Asset",
+  "studio.assets.defaultName": "Character {num}",
   "studio.assets.empty":
     "No assets yet. Extract from the normalized script or add a character, scene, or prop.",
   "studio.assets.kind": "Kind",
@@ -1011,6 +1021,7 @@ export const en = {
   "studio.storyboard.author": "Author Shot Prompts",
   "studio.storyboard.generateKeyframes": "Generate Missing Keyframes",
   "studio.storyboard.addShot": "Add Shot",
+  "studio.storyboard.defaultShotTitle": "Shot {num}",
   "studio.storyboard.empty":
     "No shots yet. Click Author Shot Prompts to convert script beats and @Tags into shots.",
   "studio.storyboard.shotTitle": "Shot Title",

@@ -10,6 +10,7 @@ import {
   type StudioProject,
 } from "../../contracts/generated";
 import { rtClient } from "../../lib/rtClient";
+import { usePreferencesStore } from "../preferences/usePreferencesStore";
 import { useNodeSpecsStore } from "../workflow/useNodeSpecs";
 import { StudioView } from "./StudioView";
 import { useStudioStore } from "./useStudioStore";
@@ -291,5 +292,19 @@ describe("/studio feature MVP", () => {
       expect(html).toContain("Neon Courier");
       expect(html).toContain("ep01");
     }
+
+    usePreferencesStore.setState({ prefs: { theme: "light", language: "vi" } });
+    useStudioStore.setState({
+      activeStage: "script",
+      runningStage: "script_normalize",
+      actionProgress: {
+        percent: 25,
+        message: "English fallback",
+        msg_key: "studio.progress.script_normalize",
+        msg_params: {},
+      },
+    });
+    const viHtml = renderToStaticMarkup(React.createElement(StudioView));
+    expect(viHtml).toContain("Đang phân tích và chuẩn hóa kịch bản…");
   });
 });

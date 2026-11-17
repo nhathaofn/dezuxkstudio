@@ -22,7 +22,7 @@ import {
   type StudioGenre,
   type StudioProductionMode,
 } from "../../contracts/generated";
-import { useT } from "../../lib/i18n";
+import { translateServerMessage, useT } from "../../lib/i18n";
 import { useAgentScreenContext } from "../agent/screenContext";
 import { MediaModelSelect } from "../mediagen/MediaModelSelect";
 import { useMediaLibraryStore } from "../media/useMediaLibraryStore";
@@ -100,10 +100,6 @@ export const StudioView: React.FC = () => {
 
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const [textModel, setTextModel] = useState("");
-  const [imageModel, setImageModel] = useState("");
-  const [videoModel, setVideoModel] = useState("");
-  const [ttsModel, setTtsModel] = useState("");
 
   useEffect(() => {
     void fetchProjects();
@@ -111,6 +107,10 @@ export const StudioView: React.FC = () => {
 
   const activeProj = episodeDetail?.project ?? projectDetail?.project ?? null;
   const activeEp = episodeDetail?.episode ?? null;
+  const textModel = activeProj?.default_text_model ?? "";
+  const imageModel = activeProj?.default_image_model ?? "";
+  const videoModel = activeProj?.default_video_model ?? "";
+  const ttsModel = activeProj?.default_tts_model ?? "";
 
   const selectedFiles: string[] = [];
   if (episodeDetail) {
@@ -154,13 +154,24 @@ export const StudioView: React.FC = () => {
           : ttsModel;
 
   const setCurrentModelVal = (val: string) => {
-    if (modelPurpose === "text") setTextModel(val);
-    else if (modelPurpose === "image") setImageModel(val);
-    else if (modelPurpose === "video") setVideoModel(val);
-    else setTtsModel(val);
+    if (!activeProj) return;
+    if (modelPurpose === "text") {
+      void updateProject({ id: activeProj.id, default_text_model: val });
+    } else if (modelPurpose === "image") {
+      void updateProject({ id: activeProj.id, default_image_model: val });
+    } else if (modelPurpose === "video") {
+      void updateProject({ id: activeProj.id, default_video_model: val });
+    } else {
+      void updateProject({ id: activeProj.id, default_tts_model: val });
+    }
   };
 
   const progressPct = batchProgress?.percent ?? actionProgress?.percent ?? (runningStage ? 15 : 0);
+
+  const translatedActionMsg = actionProgress
+    ? (translateServerMessage(t, actionProgress.msg_key, actionProgress.msg_params) ??
+      actionProgress.message)
+    : "";
 
   const progressLabel = batchProgress
     ? t("studio.common.batchProgress", {
@@ -169,7 +180,7 @@ export const StudioView: React.FC = () => {
         total: batchProgress.total,
         message: batchProgress.message,
       })
-    : actionProgress?.message || t("studio.common.running");
+    : translatedActionMsg || t("studio.common.running");
 
   return (
     <div className="studio-layout">
@@ -213,7 +224,9 @@ export const StudioView: React.FC = () => {
                   onClick={() =>
                     void createEpisode(
                       activeProj.id,
-                      `Episode ${projectDetail.episodes.length + 1}`
+                      t("studio.sidebar.episodeDefaultTitle", {
+                        num: projectDetail.episodes.length + 1,
+                      })
                     )
                   }
                   disabled={saving}

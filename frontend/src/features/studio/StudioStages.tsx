@@ -62,9 +62,11 @@ export const CreateProjectDialog: React.FC<{
   const [title, setTitle] = useState("");
   const [genre, setGenre] = useState<StudioGenre>("drama");
   const [productionMode, setProductionMode] = useState<StudioProductionMode>("storyboard_i2v");
-  const [aspectRatio, setAspectRatio] = useState(aspectParam?.default ?? "16:9");
+  const [aspectRatio, setAspectRatio] = useState("");
   const [stylePrompt, setStylePrompt] = useState("");
   const [autoApproveBatches, setAutoApproveBatches] = useState(false);
+
+  const effectiveAspectRatio = aspectRatio || aspectParam?.default || "16:9";
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -73,7 +75,7 @@ export const CreateProjectDialog: React.FC<{
       title: title.trim(),
       genre,
       production_mode: productionMode,
-      aspect_ratio: aspectRatio,
+      aspect_ratio: effectiveAspectRatio,
       style_prompt: stylePrompt.trim(),
       auto_approve_batches: autoApproveBatches,
     });
@@ -161,7 +163,7 @@ export const CreateProjectDialog: React.FC<{
             <select
               id="studio-new-aspect"
               className="input-control"
-              value={aspectRatio}
+              value={effectiveAspectRatio}
               onChange={(e) => setAspectRatio(e.target.value)}
             >
               {aspectOptions.map((ar) => (
@@ -581,7 +583,7 @@ export const AssetsStagePanel: React.FC<{
     await upsertAsset({
       project_id: detail.project.id,
       kind: "character",
-      name: `Character ${detail.assets.length + 1}`,
+      name: t("studio.assets.defaultName", { num: detail.assets.length + 1 }),
     });
   };
 
@@ -898,7 +900,7 @@ export const StoryboardStagePanel: React.FC<{
               void upsertShot({
                 episode_id: detail.episode.id,
                 scene_code: "S01",
-                title: `Shot ${detail.shots.length + 1}`,
+                title: t("studio.storyboard.defaultShotTitle", { num: detail.shots.length + 1 }),
                 shot_mode: detail.project.production_mode === "r2v" ? "r2v" : "single",
               })
             }
@@ -943,7 +945,8 @@ export const VideoShotsStagePanel: React.FC<{
   const videoSpec = useNodeSpec(NodeTypes.VIDEO_GENERATE);
   const resParam = findParam(videoSpec, "resolution");
   const resOptions = resParam?.options ?? ["720p", "1080p", "480p"];
-  const [resolution, setResolution] = useState(resParam?.default ?? resOptions[0] ?? "720p");
+  const [resolution, setResolution] = useState("");
+  const effectiveResolution = resolution || resParam?.default || resOptions[0] || "720p";
 
   const runStage = useStudioStore((s) => s.runStage);
   const probeShot = useStudioStore((s) => s.probeShot);
@@ -987,7 +990,7 @@ export const VideoShotsStagePanel: React.FC<{
         <div className="studio-toolbar">
           <select
             className="input-control"
-            value={resolution}
+            value={effectiveResolution}
             onChange={(e) => setResolution(e.target.value)}
             aria-label={t("studio.video.resolution")}
             disabled={busy}
@@ -1016,7 +1019,7 @@ export const VideoShotsStagePanel: React.FC<{
             size="sm"
             onClick={() =>
               void runStage("generate_videos", {
-                resolution,
+                resolution: effectiveResolution,
                 ...(videoModel ? { model: videoModel } : {}),
               })
             }
@@ -1078,7 +1081,7 @@ export const VideoShotsStagePanel: React.FC<{
                     onClick={() =>
                       void runStage("generate_videos", {
                         shot_ids: [shot.id],
-                        resolution,
+                        resolution: effectiveResolution,
                         force: true,
                         ...(videoModel ? { model: videoModel } : {}),
                       })
@@ -1141,11 +1144,16 @@ export const ExportStagePanel: React.FC<{
   const t = useT();
   const concatSpec = useNodeSpec(NodeTypes.VIDEO_CONCAT_BASIC);
   const resDefault = findParam(concatSpec, "resolution")?.default ?? "1920x1080";
-  const fpsDefault = Number(findParam(concatSpec, "fps")?.default ?? "24") || 24;
+  const fpsParam = findParam(concatSpec, "fps");
+  const fpsMin = fpsParam?.min ?? 1;
+  const fpsMax = fpsParam?.max ?? 120;
+  const fpsDefault = Number(fpsParam?.default ?? "24") || 24;
 
-  const [resolution, setResolution] = useState(resDefault);
-  const [fps, setFps] = useState(fpsDefault);
+  const [resolution, setResolution] = useState("");
+  const [fps, setFps] = useState<number | null>(null);
   const [narrationPath, setNarrationPath] = useState("");
+  const effectiveResolution = resolution || resDefault;
+  const effectiveFPS = fps ?? fpsDefault;
   const runStage = useStudioStore((s) => s.runStage);
   const runningStage = useStudioStore((s) => s.runningStage);
   const openFolder = useSystemStore((s) => s.openFolder);
@@ -1176,7 +1184,7 @@ export const ExportStagePanel: React.FC<{
             <input
               id="studio-export-res"
               className="input-control"
-              value={resolution}
+              value={effectiveResolution}
               onChange={(e) => setResolution(e.target.value)}
               disabled={busy}
             />
@@ -1189,11 +1197,11 @@ export const ExportStagePanel: React.FC<{
             <input
               id="studio-export-fps"
               type="number"
-              min={1}
-              max={120}
+              min={fpsMin}
+              max={fpsMax}
               className="input-control"
-              value={fps}
-              onChange={(e) => setFps(Number(e.target.value) || 24)}
+              value={effectiveFPS}
+              onChange={(e) => setFps(Number(e.target.value) || fpsDefault)}
               disabled={busy}
             />
           </div>
@@ -1224,8 +1232,8 @@ export const ExportStagePanel: React.FC<{
             variant="primary"
             onClick={() =>
               void runStage("concat_video", {
-                resolution,
-                fps,
+                resolution: effectiveResolution,
+                fps: effectiveFPS,
                 ...(narrationPath ? { narration_audio_path: narrationPath } : {}),
               })
             }
