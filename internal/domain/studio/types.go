@@ -632,4 +632,6 @@ type Repository interface {
 	UpsertShot(ctx context.Context, s Shot) (Shot, error)
 	ReplaceShots(ctx context.Context, episodeID string, shots []Shot) ([]Shot, error)
 	ReorderShots(ctx context.Context, episodeID string, shotIDs []string) ([]Shot, error)
+
+	Phase2Repository
 }

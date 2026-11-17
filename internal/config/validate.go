@@ -72,6 +72,7 @@ func (c *Config) Validate() error {
 			"mediagen.text_timeout":                 c.MediaGen.TextTimeout,
 			"studio.ffmpeg_timeout":                 c.Studio.FFmpegTimeout,
 			"studio.ffprobe_timeout":                c.Studio.FFprobeTimeout,
+			"studio.queue_poll_interval":            c.Studio.QueuePollInterval,
 			"network.idle_conn_timeout":             c.Network.IdleConnTimeout,
 			"agent.turn_timeout":                    c.Agent.TurnTimeout,
 			"agent.initialize_timeout":              c.Agent.InitializeTimeout,
@@ -98,6 +99,8 @@ func (c *Config) Validate() error {
 			"mediagen.text_max_tokens":        c.MediaGen.TextMaxTokens,
 			"studio.default_fps":              c.Studio.DefaultFPS,
 			"studio.max_concurrent_batch":     c.Studio.MaxConcurrentBatch,
+			"studio.queue_workers":            c.Studio.QueueWorkers,
+			"studio.queue_max_attempts":       c.Studio.QueueMaxAttempts,
 		})
 		switch strings.ToLower(strings.TrimSpace(c.Agent.Mode)) {
 		case "", "assistant":

@@ -162,7 +162,7 @@ type MediaGenConfig struct {
 	TextTemperature   float64       // default sampling temperature for LLM text generation
 }
 
-// StudioConfig tunes film studio FFmpeg/FFprobe processing and batch concurrency.
+// StudioConfig tunes film studio FFmpeg/FFprobe processing, batch concurrency and queue workers.
 type StudioConfig struct {
 	DefaultFPS         int           // default output frame rate (e.g. 24)
 	DefaultResolution  string        // default output WxH resolution (e.g. "1920x1080")
@@ -171,6 +171,9 @@ type StudioConfig struct {
 	FFmpegTimeout      time.Duration // max duration for FFmpeg studio commands
 	FFprobeTimeout     time.Duration // max duration for FFprobe media inspection commands
 	MaxConcurrentBatch int           // max parallel items during studio batch generation
+	QueueWorkers       int           // concurrent studio queue worker goroutines
+	QueuePollInterval  time.Duration // polling/backoff interval for active queue jobs
+	QueueMaxAttempts   int           // max submission retry attempts before marking job failed
 }
 
 // MediaConfig tunes the media assets library, signed ticket streaming, and staging GC.
@@ -334,6 +337,9 @@ func Default(mode Mode) *Config {
 			FFmpegTimeout:      15 * time.Minute,
 			FFprobeTimeout:     30 * time.Second,
 			MaxConcurrentBatch: 4,
+			QueueWorkers:       2,
+			QueuePollInterval:  2 * time.Second,
+			QueueMaxAttempts:   3,
 		},
 		Watermark: WatermarkConfig{
 			MaxWorkers:        4,

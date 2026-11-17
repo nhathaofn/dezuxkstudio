@@ -136,3 +136,140 @@ func TestStudioRepositoryCRUDAndCascade(t *testing.T) {
 		t.Fatalf("expected assets deleted on cascade, got %d", len(asts))
 	}
 }
+
+func TestStudioPhase2JobsBillingVersionsQC(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStudioDB(t)
+	repo := NewStudioRepository(db)
+
+	var schemaVer int
+	if err := db.sql.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM _schema_migrations`).Scan(&schemaVer); err != nil || schemaVer < 20 {
+		t.Fatalf("schema version = %d, err = %v, want >= 20", schemaVer, err)
+	}
+
+	proj, err := repo.CreateProject(ctx, studio.Project{Title: "Phase2 Film"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	ep, err := repo.CreateEpisode(ctx, studio.Episode{ProjectID: proj.ID, Code: "ep01"})
+	if err != nil {
+		t.Fatalf("CreateEpisode: %v", err)
+	}
+
+	// Queue lifecycle + idempotency + crash recovery lookup + pause/resume preserving provider_job_id
+	j1, err := repo.CreateJob(ctx, studio.Job{
+		ProjectID:      proj.ID,
+		EpisodeID:      ep.ID,
+		ShotID:         "shot-1",
+		JobKind:        studio.JobVideo,
+		ProviderID:     "kling",
+		ModelRef:       "kling:kling-v2",
+		IdempotencyKey: "ep01-shot1-v1",
+		EstimatedUSD:   0.35,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if _, err := repo.CreateJob(ctx, studio.Job{
+		ProjectID:      proj.ID,
+		JobKind:        studio.JobVideo,
+		IdempotencyKey: "ep01-shot1-v1",
+	}); err == nil {
+		t.Fatal("expected duplicate idempotency_key conflict")
+	}
+
+	claimed, ok, err := repo.ClaimNextQueuedJob(ctx, 1000)
+	if err != nil || !ok || claimed.ID != j1.ID || claimed.Status != studio.JobSubmitted || claimed.Attempts != 1 {
+		t.Fatalf("ClaimNextQueuedJob = %+v ok=%v err=%v", claimed, ok, err)
+	}
+	// Second claim sees nothing queued
+	if _, ok2, _ := repo.ClaimNextQueuedJob(ctx, 1001); ok2 {
+		t.Fatal("expected no second claim for already claimed job")
+	}
+
+	sub, err := repo.SetJobProviderSubmission(ctx, j1.ID, "remote-123", `{"protocol":"kling-video"}`, studio.JobPolling, 2000)
+	if err != nil || sub.ProviderJobID != "remote-123" || sub.Status != studio.JobPolling {
+		t.Fatalf("SetJobProviderSubmission = %+v err=%v", sub, err)
+	}
+
+	rec, err := repo.ListRecoverableJobs(ctx)
+	if err != nil || len(rec) != 1 || rec[0].ProviderJobID != "remote-123" {
+		t.Fatalf("ListRecoverableJobs = %+v err=%v", rec, err)
+	}
+
+	if paused, err := repo.PauseEpisodeJobs(ctx, proj.ID, ep.ID); err != nil || paused != 1 {
+		t.Fatalf("PauseEpisodeJobs = %d err=%v", paused, err)
+	}
+	if resumed, err := repo.ResumeEpisodeJobs(ctx, proj.ID, ep.ID); err != nil || resumed != 1 {
+		t.Fatalf("ResumeEpisodeJobs = %d err=%v", resumed, err)
+	}
+	afterResume, _ := repo.GetJob(ctx, j1.ID)
+	if afterResume.Status != studio.JobPolling || afterResume.ProviderJobID != "remote-123" {
+		t.Fatalf("resumed job with provider_job_id must return to polling without losing handle: %+v", afterResume)
+	}
+
+	pollClaim, ok, err := repo.ClaimNextPollJob(ctx, afterResume.NextPollAt+1, 30_000)
+	if err != nil || !ok || pollClaim.ID != j1.ID {
+		t.Fatalf("ClaimNextPollJob = %+v ok=%v err=%v", pollClaim, ok, err)
+	}
+
+	// Pricing lookup specificity & Cost ledger
+	price, ok, err := repo.ResolveUnitPrice(ctx, "openai", "sora-2", "video", "second")
+	if err != nil || !ok || price.UnitPriceUSD != 0.10 {
+		t.Fatalf("ResolveUnitPrice exact = %+v ok=%v err=%v", price, ok, err)
+	}
+	wildPrice, ok, err := repo.ResolveUnitPrice(ctx, "custom:1", "unknown-model", "image", "image")
+	if err != nil || !ok || wildPrice.UnitPriceUSD != 0.04 {
+		t.Fatalf("ResolveUnitPrice wildcard = %+v ok=%v err=%v", wildPrice, ok, err)
+	}
+	if _, err := repo.RecordCost(ctx, studio.CostLedgerEntry{
+		ProjectID: proj.ID, EpisodeID: ep.ID, JobID: j1.ID,
+		ProviderID: "openai", ModelID: "sora-2", Capability: "video",
+		Operation: "generate_video", OutputUnits: 5, Unit: "second",
+		EstimatedUSD: 0.50, ActualUSD: 0.50,
+	}); err != nil {
+		t.Fatalf("RecordCost: %v", err)
+	}
+	sum, err := repo.SummarizeCosts(ctx, proj.ID, ep.ID)
+	if err != nil || sum.ActualTotalUSD != 0.50 || sum.EntryCount != 1 {
+		t.Fatalf("SummarizeCosts = %+v err=%v", sum, err)
+	}
+
+	// Media versions atomic selection & QC link
+	seed1, seed2 := 42, 99
+	v1, err := repo.CreateMediaVersion(ctx, studio.MediaVersion{
+		ProjectID: proj.ID, EpisodeID: ep.ID, TargetKind: studio.TargetKeyframe, TargetID: "shot-1",
+		MediaPath: "/tmp/k1.png", Seed: &seed1, IsSelected: true,
+	})
+	if err != nil || v1.VersionNum != 1 || !v1.IsSelected {
+		t.Fatalf("CreateMediaVersion v1 = %+v err=%v", v1, err)
+	}
+	v2, err := repo.CreateMediaVersion(ctx, studio.MediaVersion{
+		ProjectID: proj.ID, EpisodeID: ep.ID, TargetKind: studio.TargetKeyframe, TargetID: "shot-1",
+		MediaPath: "/tmp/k2.png", Seed: &seed2, IsSelected: false,
+	})
+	if err != nil || v2.VersionNum != 2 || v2.IsSelected {
+		t.Fatalf("CreateMediaVersion v2 = %+v err=%v", v2, err)
+	}
+	if _, err := repo.SelectMediaVersion(ctx, v2.ID); err != nil {
+		t.Fatalf("SelectMediaVersion: %v", err)
+	}
+	vers, _ := repo.ListMediaVersions(ctx, studio.TargetKeyframe, "shot-1")
+	if len(vers) != 2 || !vers[0].IsSelected || vers[0].ID != v2.ID || vers[1].IsSelected {
+		t.Fatalf("expected v2 selected exclusively, got %+v", vers)
+	}
+
+	rep, err := repo.CreateQCReport(ctx, studio.QCReport{
+		ProjectID: proj.ID, EpisodeID: ep.ID, TargetKind: studio.TargetKeyframe, TargetID: "shot-1",
+		MediaVersionID: v2.ID, MediaPath: "/tmp/k2.png", Verdict: studio.QCPass, OverallScore: 9.2,
+		Issues:       []studio.QCIssue{{Severity: "info", Category: "technical", Message: "crisp"}},
+		SampleFrames: []string{"/tmp/f1.png"},
+	})
+	if err != nil || rep.ID == "" {
+		t.Fatalf("CreateQCReport: %v", err)
+	}
+	v2After, _ := repo.GetMediaVersion(ctx, v2.ID)
+	if v2After.QCStatus != studio.QCPass {
+		t.Fatalf("expected version qc_status updated to pass, got %q", v2After.QCStatus)
+	}
+}
