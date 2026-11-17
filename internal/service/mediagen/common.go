@@ -173,6 +173,15 @@ func withMediaGenDefaults(cfg config.MediaGenConfig) config.MediaGenConfig {
 	if cfg.MaxReferenceBytes <= 0 {
 		cfg.MaxReferenceBytes = def.MaxReferenceBytes
 	}
+	if cfg.TextTimeout <= 0 {
+		cfg.TextTimeout = def.TextTimeout
+	}
+	if cfg.TextMaxTokens <= 0 {
+		cfg.TextMaxTokens = def.TextMaxTokens
+		if cfg.TextTemperature == 0 {
+			cfg.TextTemperature = def.TextTemperature
+		}
+	}
 	return cfg
 }
 
@@ -254,6 +263,8 @@ func builtinProtocolFor(providerID string, purpose domainprovider.Purpose) (stri
 	switch providerID {
 	case domainprovider.IDOpenAI:
 		switch purpose {
+		case domainprovider.PurposeText:
+			return "openai-chat", nil
 		case domainprovider.PurposeImage:
 			return "openai-images", nil
 		case domainprovider.PurposeVideo:
@@ -263,6 +274,8 @@ func builtinProtocolFor(providerID string, purpose domainprovider.Purpose) (stri
 		}
 	case domainprovider.IDGeminiAIStudio:
 		switch purpose {
+		case domainprovider.PurposeText:
+			return "gemini-aistudio-text", nil
 		case domainprovider.PurposeImage:
 			return "gemini-aistudio-image", nil
 		case domainprovider.PurposeVideo:
@@ -272,6 +285,8 @@ func builtinProtocolFor(providerID string, purpose domainprovider.Purpose) (stri
 		}
 	case domainprovider.IDGeminiVertex:
 		switch purpose {
+		case domainprovider.PurposeText:
+			return "gemini-vertex-text", nil
 		case domainprovider.PurposeImage:
 			return "gemini-vertex-image", nil
 		case domainprovider.PurposeVideo:
@@ -279,8 +294,14 @@ func builtinProtocolFor(providerID string, purpose domainprovider.Purpose) (stri
 		case domainprovider.PurposeTTS:
 			return "gemini-vertex-tts", nil
 		}
+	case domainprovider.IDAnthropic:
+		if purpose == domainprovider.PurposeText {
+			return "anthropic-messages", nil
+		}
 	case domainprovider.IDArk, domainprovider.IDArkAgentPlan:
 		switch purpose {
+		case domainprovider.PurposeText:
+			return "ark-chat", nil
 		case domainprovider.PurposeImage:
 			return "ark-image", nil
 		case domainprovider.PurposeVideo:
@@ -288,6 +309,8 @@ func builtinProtocolFor(providerID string, purpose domainprovider.Purpose) (stri
 		}
 	case domainprovider.IDDashScope:
 		switch purpose {
+		case domainprovider.PurposeText:
+			return "dashscope-chat", nil
 		case domainprovider.PurposeImage:
 			return "dashscope-image", nil
 		case domainprovider.PurposeVideo:
@@ -297,6 +320,8 @@ func builtinProtocolFor(providerID string, purpose domainprovider.Purpose) (stri
 		}
 	case domainprovider.IDMiniMax:
 		switch purpose {
+		case domainprovider.PurposeText:
+			return "minimax-text", nil
 		case domainprovider.PurposeImage:
 			return "minimax-image", nil
 		case domainprovider.PurposeVideo:
@@ -320,6 +345,8 @@ func builtinProtocolFor(providerID string, purpose domainprovider.Purpose) (stri
 		}
 	case domainprovider.IDGrok:
 		switch purpose {
+		case domainprovider.PurposeText:
+			return "openai-chat", nil
 		case domainprovider.PurposeImage:
 			return "grok-image", nil
 		case domainprovider.PurposeVideo:
@@ -327,6 +354,8 @@ func builtinProtocolFor(providerID string, purpose domainprovider.Purpose) (stri
 		}
 	case domainprovider.IDAgnes:
 		switch purpose {
+		case domainprovider.PurposeText:
+			return "openai-chat", nil
 		case domainprovider.PurposeImage:
 			return "agnes-image", nil
 		case domainprovider.PurposeVideo:
@@ -339,6 +368,14 @@ func builtinProtocolFor(providerID string, purpose domainprovider.Purpose) (stri
 
 func customProtocolFor(format domainprovider.DiscoveryFormat, ep domainprovider.Endpoint, purpose domainprovider.Purpose) (string, error) {
 	switch ep {
+	case domainprovider.EndpointOpenAIChat:
+		return "openai-chat", nil
+	case domainprovider.EndpointOpenAIResponses:
+		return "openai-responses", nil
+	case domainprovider.EndpointGeminiGenerate:
+		return "gemini-aistudio-text", nil
+	case domainprovider.EndpointAnthropicMessages:
+		return "anthropic-messages", nil
 	case domainprovider.EndpointOpenAIImages:
 		return "openai-images", nil
 	case domainprovider.EndpointOpenAIImagesGenerations:
@@ -364,6 +401,8 @@ func customProtocolFor(format domainprovider.DiscoveryFormat, ep domainprovider.
 	// Fallback when custom model endpoint wasn't specified explicitly
 	if format == domainprovider.DiscoveryGemini {
 		switch purpose {
+		case domainprovider.PurposeText:
+			return "gemini-aistudio-text", nil
 		case domainprovider.PurposeImage:
 			return "gemini-aistudio-image", nil
 		case domainprovider.PurposeVideo:
@@ -372,8 +411,13 @@ func customProtocolFor(format domainprovider.DiscoveryFormat, ep domainprovider.
 			return "gemini-aistudio-tts", nil
 		}
 	}
+	if format == domainprovider.DiscoveryAnthropic && purpose == domainprovider.PurposeText {
+		return "anthropic-messages", nil
+	}
 	if format == domainprovider.DiscoveryOpenAI || format == "" {
 		switch purpose {
+		case domainprovider.PurposeText:
+			return "openai-chat", nil
 		case domainprovider.PurposeImage:
 			return "openai-images", nil
 		case domainprovider.PurposeVideo:

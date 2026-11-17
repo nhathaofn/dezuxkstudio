@@ -2,10 +2,13 @@
 // image, video and text-to-speech generation across configured providers.
 package mediagen
 
+import "encoding/json"
+
 // Kind identifies which media capability a generation request uses.
 type Kind string
 
 const (
+	KindText  Kind = "text"
 	KindImage Kind = "image"
 	KindVideo Kind = "video"
 	KindTTS   Kind = "tts"
@@ -84,6 +87,29 @@ type TTSRequest struct {
 	Speed     float64
 	Language  string
 	OutputDir string
+}
+
+// TextRequest describes a structured or free-form LLM text generation call.
+type TextRequest struct {
+	ModelRef       string
+	SystemPrompt   string
+	UserPrompt     string
+	JSONSchemaName string
+	JSONSchema     json.RawMessage
+	ImageInputs    []string
+	Temperature    *float64
+	MaxTokens      int
+}
+
+// TextResult holds the response and metadata from an LLM text generation call.
+type TextResult struct {
+	Text         string          `json:"text"`
+	ParsedJSON   json.RawMessage `json:"parsed_json,omitempty"`
+	InputTokens  int             `json:"input_tokens,omitempty"`
+	OutputTokens int             `json:"output_tokens,omitempty"`
+	Provider     string          `json:"provider"`
+	Model        string          `json:"model"`
+	ElapsedMs    int64           `json:"elapsed_ms"`
 }
 
 // Result describes one generated media file saved on disk.

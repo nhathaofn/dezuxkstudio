@@ -2,7 +2,9 @@ package mediagen
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"math"
 	"net/url"
 	"slices"
 	"strconv"
@@ -117,6 +119,42 @@ func NormalizeTTSRequest(req TTSRequest) (TTSRequest, error) {
 		req.Speed = DefaultTTSSpeed
 	} else if req.Speed < minTTSSpeed || req.Speed > maxTTSSpeed {
 		return req, validationErr("errors.mediagen.invalid_speed", fmt.Sprintf("Speed must be between %.2f and %.2f", minTTSSpeed, maxTTSSpeed), nil)
+	}
+	return req, nil
+}
+
+// NormalizeTextRequest validates and normalizes an LLM text generation request.
+func NormalizeTextRequest(req TextRequest) (TextRequest, error) {
+	req.ModelRef = strings.TrimSpace(req.ModelRef)
+	req.SystemPrompt = strings.TrimSpace(req.SystemPrompt)
+	req.UserPrompt = strings.TrimSpace(req.UserPrompt)
+	req.JSONSchemaName = strings.TrimSpace(req.JSONSchemaName)
+	req.ImageInputs = trimNonEmpty(req.ImageInputs)
+
+	if req.UserPrompt == "" {
+		return req, validationErr("errors.mediagen.prompt_required", "Prompt is required", nil)
+	}
+	if len(req.JSONSchema) > 0 {
+		trimmed := strings.TrimSpace(string(req.JSONSchema))
+		if trimmed == "" || trimmed == "null" {
+			req.JSONSchema = nil
+		} else if !json.Valid([]byte(trimmed)) {
+			return req, validationErr("errors.mediagen.invalid_json_schema", "JSON schema must be valid JSON", nil)
+		} else {
+			req.JSONSchema = json.RawMessage(trimmed)
+			if req.JSONSchemaName == "" {
+				req.JSONSchemaName = "structured_output"
+			}
+		}
+	}
+	if req.Temperature != nil {
+		t := *req.Temperature
+		if math.IsNaN(t) || math.IsInf(t, 0) || t < 0 || t > 2 {
+			return req, validationErr("errors.mediagen.invalid_temperature", "Temperature must be between 0 and 2", nil)
+		}
+	}
+	if req.MaxTokens < 0 {
+		return req, validationErr("errors.mediagen.invalid_max_tokens", "max_tokens must be zero or positive", nil)
 	}
 	return req, nil
 }
