@@ -485,12 +485,13 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 	}
 
 	studioSvc = studiosvc.New(studiosvc.Options{
-		Repo:         studioRepo,
-		Workflow:     wfSvc,
-		Media:        mediaSvc,
-		VideoMedia:   mediaGenSvc,
-		StudioConfig: cfg.Studio,
-		ProjectsDir:  tree.ProjectsDir,
+		Repo:          studioRepo,
+		Workflow:      wfSvc,
+		Media:         mediaSvc,
+		VideoMedia:    mediaGenSvc,
+		OpenDirectory: o.OpenDirectory,
+		StudioConfig:  cfg.Studio,
+		ProjectsDir:   tree.ProjectsDir,
 		OnEvent: func(eventName string, data any) {
 			c.hub.Publish(eventName, data)
 		},
@@ -577,7 +578,7 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		},
 		modules.Providers{Service: provSvc},
 		modules.Media{Service: mediaSvc},
-		modules.Studio{Service: studioSvc, FileGuard: workflowFileGuard(cfg.Mode, agentSvc)},
+		modules.Studio{Service: studioSvc, FileGuard: workflowFileGuard(cfg.Mode, agentSvc), LockHostAdmin: lockRemoteHost},
 	}, nil
 }
 

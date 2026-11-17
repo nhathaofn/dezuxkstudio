@@ -204,6 +204,21 @@ func (c *Config) Validate() error {
 		if !validResolutionWxH(c.Studio.DefaultResolution) {
 			add("studio.default_resolution must be WxH (e.g. 1920x1080), got %q", c.Studio.DefaultResolution)
 		}
+		if c.Studio.ExportMaxZipBytes <= 0 {
+			add("studio.export_max_zip_bytes must be > 0")
+		}
+		if math.IsNaN(c.Studio.ExportLoudnormLUFS) || math.IsInf(c.Studio.ExportLoudnormLUFS, 0) || c.Studio.ExportLoudnormLUFS < -36 || c.Studio.ExportLoudnormLUFS > -5 {
+			add("studio.export_loudnorm_lufs must be between -36 and -5, got %v", c.Studio.ExportLoudnormLUFS)
+		}
+		if c.Studio.ExportSubtitleFontSize < 8 || c.Studio.ExportSubtitleFontSize > 96 {
+			add("studio.export_subtitle_font_size must be between 8 and 96, got %d", c.Studio.ExportSubtitleFontSize)
+		}
+		if math.IsNaN(c.Studio.TimelineThumbIntervalSec) || math.IsInf(c.Studio.TimelineThumbIntervalSec, 0) || c.Studio.TimelineThumbIntervalSec <= 0 {
+			add("studio.timeline_thumb_interval_sec must be > 0, got %v", c.Studio.TimelineThumbIntervalSec)
+		}
+		if c.Studio.TimelinePeakBins < 16 || c.Studio.TimelinePeakBins > 4096 {
+			add("studio.timeline_peak_bins must be between 16 and 4096, got %d", c.Studio.TimelinePeakBins)
+		}
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("invalid configuration:\n%w", errors.Join(errs...))

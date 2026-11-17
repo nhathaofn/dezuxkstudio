@@ -14,6 +14,8 @@ type Studio struct {
 	Service *studiosvc.Service
 	// FileGuard, when set (headless server mode), constrains node file access during RunStage.
 	FileGuard engine.FileGuard
+	// LockHostAdmin disables studio:open_export_folder in headless server mode unless server.allow_host_admin is enabled.
+	LockHostAdmin bool
 }
 
 func (Studio) Name() string { return "studio" }
@@ -146,5 +148,53 @@ func (s Studio) Register(r *realtime.Registry) {
 	realtime.Handle(r, contracts.ActionStudioBatchPreflight,
 		func(ctx context.Context, _ *realtime.Request, p contracts.StudioBatchPreflightPayload) (contracts.BatchPreflightOutput, error) {
 			return s.Service.RunBatchPreflight(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioTimelineGet,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioIDPayload) (contracts.StudioTimelineResult, error) {
+			return s.Service.GetTimeline(engine.WithFileGuard(ctx, s.FileGuard), p.ID)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioTimelineApplyOps,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioTimelineApplyOpsPayload) (contracts.StudioTimelineResult, error) {
+			return s.Service.ApplyTimelineOps(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioTimelineUndo,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioTimelineRevisionNavPayload) (contracts.StudioTimelineResult, error) {
+			return s.Service.UndoTimeline(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioTimelineRedo,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioTimelineRevisionNavPayload) (contracts.StudioTimelineResult, error) {
+			return s.Service.RedoTimeline(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioTimelineAutoAssemble,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioTimelineAutoAssemblePayload) (contracts.StudioTimelineResult, error) {
+			return s.Service.AutoAssembleTimeline(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioMediaPeaksThumbs,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioMediaPeaksThumbsPayload) (contracts.MediaPeaksThumbsOutput, error) {
+			return s.Service.ComputeMediaPeaksThumbs(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioTimelineRender,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioTimelineRenderPayload) (contracts.StudioTimelineRenderResult, error) {
+			return s.Service.RenderTimeline(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioTimelineExportNLE,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioTimelineExportNLEPayload) (contracts.ExportNLEDraftOutput, error) {
+			return s.Service.ExportNLEDraft(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioOpenExportFolder,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioOpenExportFolderPayload) (contracts.Empty, error) {
+			if s.LockHostAdmin {
+				return contracts.Empty{}, hostAdminLockedError()
+			}
+			return contracts.Empty{}, s.Service.OpenExportFolder(engine.WithFileGuard(ctx, s.FileGuard), p)
 		})
 }

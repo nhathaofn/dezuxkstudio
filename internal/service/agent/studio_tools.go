@@ -153,6 +153,102 @@ type studioBatchPreflightToolInput struct {
 	ItemCount int    `json:"item_count,omitempty" jsonschema:"Optional explicit item count"`
 }
 
+type studioTimelineGetToolInput struct {
+	EpisodeID string `json:"episode_id" jsonschema:"Studio episode ID"`
+}
+
+type studioTimelineClipToolInput struct {
+	ID              string  `json:"id,omitempty"`
+	ShotID          string  `json:"shot_id,omitempty"`
+	AssetID         string  `json:"asset_id,omitempty"`
+	Label           string  `json:"label,omitempty"`
+	FilePath        string  `json:"file_path,omitempty"`
+	TimelineStartMs int64   `json:"timeline_start_ms,omitempty"`
+	SourceInMs      int64   `json:"source_in_ms,omitempty"`
+	SourceOutMs     int64   `json:"source_out_ms,omitempty"`
+	Speed           float64 `json:"speed,omitempty"`
+	Volume          float64 `json:"volume,omitempty"`
+	TransitionIn    string  `json:"transition_in,omitempty"`
+	TransitionMs    int64   `json:"transition_ms,omitempty"`
+	KenBurnsPreset  string  `json:"ken_burns_preset,omitempty"`
+	SpritePath      string  `json:"sprite_path,omitempty"`
+	SpriteAssetID   string  `json:"sprite_asset_id,omitempty"`
+}
+
+type studioTimelineTrackToolInput struct {
+	ID     string                        `json:"id,omitempty"`
+	Name   string                        `json:"name,omitempty"`
+	Kind   string                        `json:"kind,omitempty"`
+	Muted  bool                          `json:"muted,omitempty"`
+	Solo   bool                          `json:"solo,omitempty"`
+	Locked bool                          `json:"locked,omitempty"`
+	Volume float64                       `json:"volume,omitempty"`
+	Clips  []studioTimelineClipToolInput `json:"clips,omitempty"`
+}
+
+type studioSubtitleCueToolInput struct {
+	ID          string `json:"id,omitempty"`
+	StartMs     int64  `json:"start_ms,omitempty"`
+	EndMs       int64  `json:"end_ms,omitempty"`
+	Speaker     string `json:"speaker,omitempty"`
+	Text        string `json:"text,omitempty"`
+	StylePreset string `json:"style_preset,omitempty"`
+}
+
+type studioEditTimelineToolInput struct {
+	Version   int                              `json:"version,omitempty"`
+	FPS       int                              `json:"fps,omitempty"`
+	Width     int                              `json:"width,omitempty"`
+	Height    int                              `json:"height,omitempty"`
+	Tracks    []studioTimelineTrackToolInput   `json:"tracks,omitempty"`
+	Subtitles []studioSubtitleCueToolInput     `json:"subtitles,omitempty"`
+	Markers   []contracts.StudioTimelineMarker `json:"markers,omitempty"`
+}
+
+type studioTimelineOpToolInput struct {
+	Op              string                          `json:"op" jsonschema:"replace_timeline|set_format|add_track|update_track|remove_track|add_clip|update_clip|move_clip|remove_clip|split_clip|add_subtitle|update_subtitle|remove_subtitle|add_marker|remove_marker"`
+	Timeline        *studioEditTimelineToolInput    `json:"timeline,omitempty"`
+	FPS             *int                            `json:"fps,omitempty"`
+	Width           *int                            `json:"width,omitempty"`
+	Height          *int                            `json:"height,omitempty"`
+	TrackID         string                          `json:"track_id,omitempty"`
+	TargetTrackID   string                          `json:"target_track_id,omitempty"`
+	TrackKind       domainstudio.TrackKind          `json:"track_kind,omitempty"`
+	TrackName       *string                         `json:"track_name,omitempty"`
+	Muted           *bool                           `json:"muted,omitempty"`
+	Solo            *bool                           `json:"solo,omitempty"`
+	Locked          *bool                           `json:"locked,omitempty"`
+	Volume          *float64                        `json:"volume,omitempty"`
+	ClipID          string                          `json:"clip_id,omitempty"`
+	NewClipID       string                          `json:"new_clip_id,omitempty"`
+	Clip            *studioTimelineClipToolInput    `json:"clip,omitempty"`
+	TimelineStartMs *int64                          `json:"timeline_start_ms,omitempty"`
+	SourceInMs      *int64                          `json:"source_in_ms,omitempty"`
+	SourceOutMs     *int64                          `json:"source_out_ms,omitempty"`
+	Speed           *float64                        `json:"speed,omitempty"`
+	TransitionIn    *domainstudio.TransitionType    `json:"transition_in,omitempty"`
+	TransitionMs    *int64                          `json:"transition_ms,omitempty"`
+	KenBurnsPreset  *domainstudio.KenBurnsPreset    `json:"ken_burns_preset,omitempty"`
+	Label           *string                         `json:"label,omitempty"`
+	SplitAtMs       int64                           `json:"split_at_ms,omitempty"`
+	SubtitleID      string                          `json:"subtitle_id,omitempty"`
+	Subtitle        *studioSubtitleCueToolInput     `json:"subtitle,omitempty"`
+	MarkerID        string                          `json:"marker_id,omitempty"`
+	Marker          *contracts.StudioTimelineMarker `json:"marker,omitempty"`
+}
+
+type studioTimelineApplyOpsToolInput struct {
+	EpisodeID        string                      `json:"episode_id" jsonschema:"Studio episode ID"`
+	ExpectedRevision int                         `json:"expected_revision" jsonschema:"Current timeline revision number required for optimistic concurrency"`
+	Summary          string                      `json:"summary,omitempty" jsonschema:"Short human-readable summary of this timeline edit"`
+	Ops              []studioTimelineOpToolInput `json:"ops" jsonschema:"Ordered atomic timeline operations"`
+}
+
+type studioTimelineRevisionNavToolInput struct {
+	EpisodeID        string `json:"episode_id" jsonschema:"Studio episode ID"`
+	ExpectedRevision int    `json:"expected_revision" jsonschema:"Current timeline revision number required for optimistic concurrency"`
+}
+
 func (s *Service) registerStudioTools(server *mcpToolset) {
 	addMCPTool(server, "studio_project_list",
 		"List all AI film studio projects and the active workspace projects directory.",
@@ -598,6 +694,213 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 			}
 			return mcpJSON(res)
 		})
+
+	addMCPTool(server, "studio_timeline_get",
+		"Get an episode's multi-track EditTimeline JSON, current revision number, Undo/Redo state, and recent revision summaries.",
+		func(ctx context.Context, in studioTimelineGetToolInput) (*mcp.CallToolResult, any, error) {
+			p3, ok := s.studio.(StudioPhase3Manager)
+			if !ok {
+				return mcpError("studio timeline management unavailable")
+			}
+			res, err := p3.GetTimeline(engine.WithFileGuard(ctx, s.CheckTrustedFile), strings.TrimSpace(in.EpisodeID))
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "studio_timeline_apply_ops",
+		"Apply atomic EditTimeline mutations (add/move/split/trim/remove clip, update track mute/solo/volume, edit Vietnamese subtitle cues, add markers) while enforcing expected_revision concurrency.",
+		func(ctx context.Context, in studioTimelineApplyOpsToolInput) (*mcp.CallToolResult, any, error) {
+			p3, ok := s.studio.(StudioPhase3Manager)
+			if !ok {
+				return mcpError("studio timeline management unavailable")
+			}
+			ops, err := s.validateAndConvertTimelineOpInputs(in.Ops)
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			res, err := p3.ApplyTimelineOps(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioTimelineApplyOpsPayload{
+				EpisodeID:        strings.TrimSpace(in.EpisodeID),
+				ExpectedRevision: in.ExpectedRevision,
+				Actor:            string(domainstudio.ActorAgent),
+				Summary:          strings.TrimSpace(in.Summary),
+				Ops:              ops,
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "studio_timeline_undo",
+		"Undo the latest saved EditTimeline revision for an episode while enforcing expected_revision.",
+		func(ctx context.Context, in studioTimelineRevisionNavToolInput) (*mcp.CallToolResult, any, error) {
+			p3, ok := s.studio.(StudioPhase3Manager)
+			if !ok {
+				return mcpError("studio timeline management unavailable")
+			}
+			res, err := p3.UndoTimeline(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioTimelineRevisionNavPayload{
+				EpisodeID:        strings.TrimSpace(in.EpisodeID),
+				ExpectedRevision: in.ExpectedRevision,
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "studio_timeline_redo",
+		"Redo the next undone EditTimeline revision for an episode while enforcing expected_revision.",
+		func(ctx context.Context, in studioTimelineRevisionNavToolInput) (*mcp.CallToolResult, any, error) {
+			p3, ok := s.studio.(StudioPhase3Manager)
+			if !ok {
+				return mcpError("studio timeline management unavailable")
+			}
+			res, err := p3.RedoTimeline(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioTimelineRevisionNavPayload{
+				EpisodeID:        strings.TrimSpace(in.EpisodeID),
+				ExpectedRevision: in.ExpectedRevision,
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+}
+
+func (s *Service) validateAndConvertTimelineOpInputs(in []studioTimelineOpToolInput) ([]contracts.StudioTimelineOp, error) {
+	convClip := func(c *studioTimelineClipToolInput) (*contracts.StudioTimelineClip, error) {
+		if c == nil {
+			return nil, nil
+		}
+		fp := strings.TrimSpace(c.FilePath)
+		if fp != "" && s.policy != nil {
+			resolved, err := s.policy.ValidateRead(fp)
+			if err != nil {
+				return nil, err
+			}
+			fp = resolved
+		}
+		sp := strings.TrimSpace(c.SpritePath)
+		if sp != "" && s.policy != nil {
+			resolved, err := s.policy.ValidateRead(sp)
+			if err != nil {
+				return nil, err
+			}
+			sp = resolved
+		}
+		return &contracts.StudioTimelineClip{
+			ID:              c.ID,
+			ShotID:          c.ShotID,
+			AssetID:         c.AssetID,
+			Label:           c.Label,
+			FilePath:        fp,
+			TimelineStartMs: c.TimelineStartMs,
+			SourceInMs:      c.SourceInMs,
+			SourceOutMs:     c.SourceOutMs,
+			Speed:           c.Speed,
+			Volume:          c.Volume,
+			TransitionIn:    domainstudio.TransitionType(c.TransitionIn),
+			TransitionMs:    c.TransitionMs,
+			KenBurnsPreset:  domainstudio.KenBurnsPreset(c.KenBurnsPreset),
+			SpritePath:      sp,
+			SpriteAssetID:   c.SpriteAssetID,
+		}, nil
+	}
+	out := make([]contracts.StudioTimelineOp, len(in))
+	for i, op := range in {
+		clipDTO, err := convClip(op.Clip)
+		if err != nil {
+			return nil, err
+		}
+		var tlDTO *contracts.StudioEditTimeline
+		if op.Timeline != nil {
+			tracks := make([]contracts.StudioTimelineTrack, len(op.Timeline.Tracks))
+			for ti, tr := range op.Timeline.Tracks {
+				clips := make([]contracts.StudioTimelineClip, len(tr.Clips))
+				for ci := range tr.Clips {
+					c, cerr := convClip(&tr.Clips[ci])
+					if cerr != nil {
+						return nil, cerr
+					}
+					clips[ci] = *c
+				}
+				tracks[ti] = contracts.StudioTimelineTrack{
+					ID:     tr.ID,
+					Name:   tr.Name,
+					Kind:   domainstudio.TrackKind(tr.Kind),
+					Muted:  tr.Muted,
+					Solo:   tr.Solo,
+					Locked: tr.Locked,
+					Volume: tr.Volume,
+					Clips:  clips,
+				}
+			}
+			subs := make([]contracts.StudioSubtitleCue, len(op.Timeline.Subtitles))
+			for si, sub := range op.Timeline.Subtitles {
+				subs[si] = contracts.StudioSubtitleCue{
+					ID:          sub.ID,
+					StartMs:     sub.StartMs,
+					EndMs:       sub.EndMs,
+					Speaker:     sub.Speaker,
+					Text:        sub.Text,
+					StylePreset: sub.StylePreset,
+				}
+			}
+			tlDTO = &contracts.StudioEditTimeline{
+				Version:   op.Timeline.Version,
+				FPS:       op.Timeline.FPS,
+				Width:     op.Timeline.Width,
+				Height:    op.Timeline.Height,
+				Tracks:    tracks,
+				Subtitles: subs,
+				Markers:   op.Timeline.Markers,
+			}
+		}
+		var subDTO *contracts.StudioSubtitleCue
+		if op.Subtitle != nil {
+			subDTO = &contracts.StudioSubtitleCue{
+				ID:          op.Subtitle.ID,
+				StartMs:     op.Subtitle.StartMs,
+				EndMs:       op.Subtitle.EndMs,
+				Speaker:     op.Subtitle.Speaker,
+				Text:        op.Subtitle.Text,
+				StylePreset: op.Subtitle.StylePreset,
+			}
+		}
+		out[i] = contracts.StudioTimelineOp{
+			Op:              op.Op,
+			Timeline:        tlDTO,
+			FPS:             op.FPS,
+			Width:           op.Width,
+			Height:          op.Height,
+			TrackID:         op.TrackID,
+			TargetTrackID:   op.TargetTrackID,
+			TrackKind:       op.TrackKind,
+			TrackName:       op.TrackName,
+			Muted:           op.Muted,
+			Solo:            op.Solo,
+			Locked:          op.Locked,
+			Volume:          op.Volume,
+			ClipID:          op.ClipID,
+			NewClipID:       op.NewClipID,
+			Clip:            clipDTO,
+			TimelineStartMs: op.TimelineStartMs,
+			SourceInMs:      op.SourceInMs,
+			SourceOutMs:     op.SourceOutMs,
+			Speed:           op.Speed,
+			TransitionIn:    op.TransitionIn,
+			TransitionMs:    op.TransitionMs,
+			KenBurnsPreset:  op.KenBurnsPreset,
+			Label:           op.Label,
+			SplitAtMs:       op.SplitAtMs,
+			SubtitleID:      op.SubtitleID,
+			Subtitle:        subDTO,
+			MarkerID:        op.MarkerID,
+			Marker:          op.Marker,
+		}
+	}
+	return out, nil
 }
 
 func studioStageTargets(ep contracts.StudioEpisodeDetailResult, p contracts.StudioEpisodeRunStagePayload) preparedNodeInput {

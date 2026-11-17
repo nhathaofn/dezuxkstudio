@@ -94,6 +94,18 @@ export type StudioEpisodeStage = (typeof StudioEpisodeStageValues)[number];
 export const StudioRunStageActionValues = ["script_normalize", "extract_assets", "author_shots", "generate_assets", "generate_keyframes", "generate_videos", "generate_tts", "probe_shots", "concat_video"] as const;
 export type StudioRunStageAction = (typeof StudioRunStageActionValues)[number];
 
+export const StudioTrackKindValues = ["video", "audio_dialogue", "audio_narration", "audio_bgm", "audio_sfx", "text"] as const;
+export type StudioTrackKind = (typeof StudioTrackKindValues)[number];
+
+export const StudioTransitionTypeValues = ["none", "fade", "crossfade", "wipeleft", "slideleft"] as const;
+export type StudioTransitionType = (typeof StudioTransitionTypeValues)[number];
+
+export const StudioKenBurnsPresetValues = ["none", "zoom_in", "zoom_out", "pan_left", "pan_right"] as const;
+export type StudioKenBurnsPreset = (typeof StudioKenBurnsPresetValues)[number];
+
+export const StudioNLEExportFormatValues = ["capcut", "jianying", "fcpxml", "otio"] as const;
+export type StudioNLEExportFormat = (typeof StudioNLEExportFormatValues)[number];
+
 export interface ActionProgress {
   percent: number;
   message: string;
@@ -540,6 +552,22 @@ export interface EventMessage {
   timestamp: number;
 }
 
+export interface ExportNLEDraftInput {
+  timeline_json: string;
+  format?: string;
+  output_dir?: string;
+  project_name?: string;
+  include_media_copy?: boolean;
+}
+
+export interface ExportNLEDraftOutput {
+  export_path: string;
+  asset_id?: string;
+  format: string;
+  file_count: number;
+  total_bytes: number;
+}
+
 export interface ExtractAssetsInput {
   normalized_script_json: string;
   style_prompt?: string;
@@ -716,6 +744,26 @@ export interface MediaListPayload {
 export interface MediaListResult {
   assets: MediaAssetItem[];
   total: number;
+}
+
+export interface MediaPeaksThumbsInput {
+  media?: ImageInputRef;
+  audio?: ImageInputRef;
+  thumb_interval_sec?: number;
+  peak_bins?: number;
+  thumb_height?: number;
+  output_dir?: string;
+}
+
+export interface MediaPeaksThumbsOutput {
+  peaks_thumbs_json: string;
+  sprite_sheet_path?: string;
+  sprite_asset_id?: string;
+  peaks_json_path: string;
+  peaks: number[];
+  thumb_count: number;
+  thumb_interval_sec: number;
+  duration_ms: number;
 }
 
 export interface MediaRef {
@@ -996,6 +1044,26 @@ export interface RemoverOutput {
   results?: RemoverItem[];
 }
 
+export interface RenderTimelineInput {
+  timeline_json: string;
+  output_dir?: string;
+  filename?: string;
+  burn_subtitles?: boolean;
+  subtitle_font_size?: number;
+  loudnorm_lufs?: number;
+  crf?: number;
+  preset?: string;
+}
+
+export interface RenderTimelineOutput {
+  video: MediaRef;
+  output_path: string;
+  asset_id?: string;
+  srt_path?: string;
+  ass_path?: string;
+  duration_sec: number;
+}
+
 export interface ResponseMessage {
   type: MessageType;
   id: string;
@@ -1181,6 +1249,16 @@ export interface StudioDialogueLine {
   cue?: string;
 }
 
+export interface StudioEditTimeline {
+  version: number;
+  fps: number;
+  width: number;
+  height: number;
+  tracks: StudioTimelineTrack[];
+  subtitles: StudioSubtitleCue[];
+  markers?: StudioTimelineMarker[];
+}
+
 export interface StudioEpisode {
   id: string;
   project_id: string;
@@ -1321,6 +1399,14 @@ export interface StudioMaskEditResult {
   episode?: StudioEpisodeDetailResult;
 }
 
+export interface StudioMediaPeaksThumbsPayload {
+  episode_id: string;
+  media_path: string;
+  clip_id?: string;
+  thumb_interval_sec?: number;
+  peak_bins?: number;
+}
+
 export interface StudioMediaVersion {
   id: string;
   project_id: string;
@@ -1353,6 +1439,11 @@ export interface StudioNormalizedScript {
   language?: string;
   characters?: string[];
   scenes: StudioScriptScene[];
+}
+
+export interface StudioOpenExportFolderPayload {
+  episode_id: string;
+  file_path?: string;
 }
 
 export interface StudioPricingEntry {
@@ -1612,6 +1703,167 @@ export interface StudioShotUpsertResult {
   shots: StudioShot[];
 }
 
+export interface StudioSubtitleCue {
+  id: string;
+  start_ms: number;
+  end_ms: number;
+  speaker?: string;
+  text: string;
+  style_preset?: string;
+}
+
+export interface StudioTimelineApplyOpsPayload {
+  episode_id: string;
+  expected_revision: number;
+  actor?: string;
+  summary?: string;
+  ops: StudioTimelineOp[];
+}
+
+export interface StudioTimelineAutoAssemblePayload {
+  episode_id: string;
+  expected_revision?: number;
+  resolution?: string;
+  fps?: number;
+  transition_default?: StudioTransitionType;
+  transition_ms?: number;
+  bgm_path?: string;
+  bgm_volume?: number;
+}
+
+export interface StudioTimelineChangedEvent {
+  project_id: string;
+  episode_id: string;
+  revision: number;
+  can_undo: boolean;
+  can_redo: boolean;
+  duration_ms: number;
+  actor: string;
+  summary: string;
+  timeline: StudioEditTimeline;
+}
+
+export interface StudioTimelineClip {
+  id: string;
+  shot_id?: string;
+  asset_id?: string;
+  label?: string;
+  file_path: string;
+  timeline_start_ms: number;
+  source_in_ms: number;
+  source_out_ms: number;
+  speed: number;
+  volume: number;
+  transition_in: StudioTransitionType;
+  transition_ms: number;
+  ken_burns_preset?: StudioKenBurnsPreset;
+  sprite_path?: string;
+  sprite_asset_id?: string;
+  peaks?: number[];
+}
+
+export interface StudioTimelineExportNLEPayload {
+  episode_id: string;
+  format: StudioNLEExportFormat;
+  project_name?: string;
+  include_media_copy?: boolean;
+}
+
+export interface StudioTimelineMarker {
+  id: string;
+  time_ms: number;
+  label: string;
+  color?: string;
+}
+
+export interface StudioTimelineOp {
+  op: string;
+  timeline?: StudioEditTimeline;
+  fps?: number;
+  width?: number;
+  height?: number;
+  track_id?: string;
+  target_track_id?: string;
+  track_kind?: StudioTrackKind;
+  track_name?: string;
+  muted?: boolean;
+  solo?: boolean;
+  locked?: boolean;
+  volume?: number;
+  clip_id?: string;
+  new_clip_id?: string;
+  clip?: StudioTimelineClip;
+  timeline_start_ms?: number;
+  source_in_ms?: number;
+  source_out_ms?: number;
+  speed?: number;
+  transition_in?: StudioTransitionType;
+  transition_ms?: number;
+  ken_burns_preset?: StudioKenBurnsPreset;
+  label?: string;
+  split_at_ms?: number;
+  subtitle_id?: string;
+  subtitle?: StudioSubtitleCue;
+  marker_id?: string;
+  marker?: StudioTimelineMarker;
+}
+
+export interface StudioTimelineRenderPayload {
+  episode_id: string;
+  filename?: string;
+  burn_subtitles?: boolean;
+  subtitle_font_size?: number;
+  loudnorm_lufs?: number;
+  crf?: number;
+  preset?: string;
+}
+
+export interface StudioTimelineRenderResult {
+  output_path: string;
+  asset_id?: string;
+  srt_path?: string;
+  ass_path?: string;
+  duration_sec: number;
+  episode: StudioEpisodeDetailResult;
+}
+
+export interface StudioTimelineResult {
+  project_id: string;
+  episode_id: string;
+  revision: number;
+  can_undo: boolean;
+  can_redo: boolean;
+  duration_ms: number;
+  timeline_path?: string;
+  timeline: StudioEditTimeline;
+  revisions?: StudioTimelineRevisionSummary[];
+  updated_at: number;
+}
+
+export interface StudioTimelineRevisionNavPayload {
+  episode_id: string;
+  expected_revision: number;
+}
+
+export interface StudioTimelineRevisionSummary {
+  id: string;
+  revision: number;
+  actor: string;
+  summary: string;
+  created_at: number;
+}
+
+export interface StudioTimelineTrack {
+  id: string;
+  name?: string;
+  kind: StudioTrackKind;
+  muted: boolean;
+  solo?: boolean;
+  locked: boolean;
+  volume: number;
+  clips: StudioTimelineClip[];
+}
+
 export interface StudioVersionSelectPayload {
   version_id: string;
 }
@@ -1703,6 +1955,28 @@ export interface TTSGenerateOutput {
   model: string;
   sizeBytes: number;
   asset_id?: string;
+}
+
+export interface TimelineAutoAssembleInput {
+  shots_json: string;
+  audio_manifest_json?: string;
+  episode_id?: string;
+  resolution?: string;
+  fps?: number;
+  transition_default?: string;
+  transition_ms?: number;
+  bgm_path?: string;
+  bgm_volume?: number;
+  project_dir?: string;
+}
+
+export interface TimelineAutoAssembleOutput {
+  timeline_json: string;
+  timeline_path?: string;
+  duration_ms: number;
+  track_count: number;
+  clip_count: number;
+  subtitle_count: number;
 }
 
 export interface UpdateCredentialPayload {
@@ -2003,6 +2277,24 @@ export const Actions = {
   STUDIO_QC_REVIEW: "studio:qc_review",
   /** Validates active providers and estimates USD cost before batch execution. */
   STUDIO_BATCH_PREFLIGHT: "studio:batch_preflight",
+  /** Gets an episode's multi-track EditTimeline, current revision, and Undo/Redo history. */
+  STUDIO_TIMELINE_GET: "studio:timeline_get",
+  /** Applies atomic EditTimeline operations with optimistic revision concurrency checking. */
+  STUDIO_TIMELINE_APPLY_OPS: "studio:timeline_apply_ops",
+  /** Undoes the latest timeline revision while enforcing expected_revision. */
+  STUDIO_TIMELINE_UNDO: "studio:timeline_undo",
+  /** Redoes the next timeline revision while enforcing expected_revision. */
+  STUDIO_TIMELINE_REDO: "studio:timeline_redo",
+  /** Auto-assembles an EditTimeline from episode shots, TTS audio, subtitles, and optional BGM. */
+  STUDIO_TIMELINE_AUTO_ASSEMBLE: "studio:timeline_auto_assemble",
+  /** Generates audio waveform peaks and thumbnail sprite strip for timeline scrubbing. */
+  STUDIO_MEDIA_PEAKS_THUMBS: "studio:media_peaks_thumbs",
+  /** Renders the episode EditTimeline via FFmpeg filter_complex with transitions, loudnorm, and optional Vietnamese subtitle burn-in. */
+  STUDIO_TIMELINE_RENDER: "studio:timeline_render",
+  /** Exports the episode EditTimeline as a CapCut/Jianying draft zip, FCPXML, or OTIO file. */
+  STUDIO_TIMELINE_EXPORT_NLE: "studio:timeline_export_nle",
+  /** Reveals the episode exports folder in the OS file manager (desktop/host admin only). */
+  STUDIO_OPEN_EXPORT_FOLDER: "studio:open_export_folder",
 } as const;
 export type ActionName = (typeof Actions)[keyof typeof Actions];
 
@@ -2016,6 +2308,10 @@ export const LongActions: readonly ActionName[] = [
   "studio:episode_run_stage",
   "studio:mask_edit",
   "studio:qc_review",
+  "studio:timeline_auto_assemble",
+  "studio:media_peaks_thumbs",
+  "studio:timeline_render",
+  "studio:timeline_export_nle",
 ];
 
 export interface ActionMap {
@@ -2114,6 +2410,15 @@ export interface ActionMap {
   "studio:extract_last_frame": { payload: StudioExtractLastFramePayload; result: StudioExtractLastFrameResult };
   "studio:qc_review": { payload: StudioQCReviewPayload; result: StudioQCReport };
   "studio:batch_preflight": { payload: StudioBatchPreflightPayload; result: BatchPreflightOutput };
+  "studio:timeline_get": { payload: StudioIDPayload; result: StudioTimelineResult };
+  "studio:timeline_apply_ops": { payload: StudioTimelineApplyOpsPayload; result: StudioTimelineResult };
+  "studio:timeline_undo": { payload: StudioTimelineRevisionNavPayload; result: StudioTimelineResult };
+  "studio:timeline_redo": { payload: StudioTimelineRevisionNavPayload; result: StudioTimelineResult };
+  "studio:timeline_auto_assemble": { payload: StudioTimelineAutoAssemblePayload; result: StudioTimelineResult };
+  "studio:media_peaks_thumbs": { payload: StudioMediaPeaksThumbsPayload; result: MediaPeaksThumbsOutput };
+  "studio:timeline_render": { payload: StudioTimelineRenderPayload; result: StudioTimelineRenderResult };
+  "studio:timeline_export_nle": { payload: StudioTimelineExportNLEPayload; result: ExportNLEDraftOutput };
+  "studio:open_export_folder": { payload: StudioOpenExportFolderPayload; result: Empty };
 }
 
 /** Built-in workflow node types (contracts.Nodes). Settings come from workflow:specs. */
@@ -2135,6 +2440,10 @@ export const NodeTypes = {
   LIPSYNC_GENERATE: "tool.lipsync_generate",
   QC_REVIEW: "tool.qc_review",
   VIDEO_WATERMARK_REMOVE: "tool.video_watermark_remove",
+  TIMELINE_AUTO_ASSEMBLE: "tool.timeline_auto_assemble",
+  MEDIA_PEAKS_THUMBS: "tool.media_peaks_thumbs",
+  RENDER_TIMELINE: "tool.render_timeline",
+  EXPORT_NLE_DRAFT: "tool.export_nle_draft",
 } as const;
 export type NodeType = (typeof NodeTypes)[keyof typeof NodeTypes];
 
@@ -2156,6 +2465,10 @@ export interface NodeMap {
   "tool.lipsync_generate": { input: LipSyncGenerateInput; output: LipSyncGenerateOutput };
   "tool.qc_review": { input: QCReviewInput; output: QCReviewOutput };
   "tool.video_watermark_remove": { input: VideoWatermarkRemoveInput; output: VideoWatermarkRemoveOutput };
+  "tool.timeline_auto_assemble": { input: TimelineAutoAssembleInput; output: TimelineAutoAssembleOutput };
+  "tool.media_peaks_thumbs": { input: MediaPeaksThumbsInput; output: MediaPeaksThumbsOutput };
+  "tool.render_timeline": { input: RenderTimelineInput; output: RenderTimelineOutput };
+  "tool.export_nle_draft": { input: ExportNLEDraftInput; output: ExportNLEDraftOutput };
 }
 
 export const Events = {
@@ -2189,6 +2502,8 @@ export const Events = {
   STUDIO_QUEUE_UPDATED: "studio:queue_updated",
   /** Studio cost ledger totals updated. */
   STUDIO_COST_UPDATED: "studio:cost_updated",
+  /** Episode multi-track EditTimeline was updated, undone, redone, or auto-assembled. */
+  STUDIO_TIMELINE_CHANGED: "studio:timeline_changed",
 } as const;
 export type EventName = (typeof Events)[keyof typeof Events];
 
@@ -2208,6 +2523,7 @@ export interface EventMap {
   "studio:batch_progress": StudioBatchProgressEvent;
   "studio:queue_updated": StudioQueueUpdatedEvent;
   "studio:cost_updated": StudioCostUpdatedEvent;
+  "studio:timeline_changed": StudioTimelineChangedEvent;
 }
 
 export const NativeEvents = {

@@ -162,18 +162,23 @@ type MediaGenConfig struct {
 	TextTemperature   float64       // default sampling temperature for LLM text generation
 }
 
-// StudioConfig tunes film studio FFmpeg/FFprobe processing, batch concurrency and queue workers.
+// StudioConfig tunes film studio FFmpeg/FFprobe processing, batch concurrency, queue workers, and timeline exports.
 type StudioConfig struct {
-	DefaultFPS         int           // default output frame rate (e.g. 24)
-	DefaultResolution  string        // default output WxH resolution (e.g. "1920x1080")
-	FFmpegPreset       string        // libx264 preset (e.g. "medium")
-	FFmpegCRF          int           // constant rate factor 0..51 (e.g. 20)
-	FFmpegTimeout      time.Duration // max duration for FFmpeg studio commands
-	FFprobeTimeout     time.Duration // max duration for FFprobe media inspection commands
-	MaxConcurrentBatch int           // max parallel items during studio batch generation
-	QueueWorkers       int           // concurrent studio queue worker goroutines
-	QueuePollInterval  time.Duration // polling/backoff interval for active queue jobs
-	QueueMaxAttempts   int           // max submission retry attempts before marking job failed
+	DefaultFPS               int           // default output frame rate (e.g. 24)
+	DefaultResolution        string        // default output WxH resolution (e.g. "1920x1080")
+	FFmpegPreset             string        // libx264 preset (e.g. "medium")
+	FFmpegCRF                int           // constant rate factor 0..51 (e.g. 20)
+	FFmpegTimeout            time.Duration // max duration for FFmpeg studio commands
+	FFprobeTimeout           time.Duration // max duration for FFprobe media inspection commands
+	MaxConcurrentBatch       int           // max parallel items during studio batch generation
+	QueueWorkers             int           // concurrent studio queue worker goroutines
+	QueuePollInterval        time.Duration // polling/backoff interval for active queue jobs
+	QueueMaxAttempts         int           // max submission retry attempts before marking job failed
+	ExportMaxZipBytes        int64         // safety cap on packed NLE draft zip archives in bytes
+	ExportLoudnormLUFS       float64       // integrated loudness target in LUFS for timeline renders (e.g. -14.0)
+	ExportSubtitleFontSize   int           // default subtitle font size for timeline .ass burn-in
+	TimelineThumbIntervalSec float64       // default thumbnail sampling interval in seconds for timeline strips
+	TimelinePeakBins         int           // default waveform peak bins count per media clip
 }
 
 // MediaConfig tunes the media assets library, signed ticket streaming, and staging GC.
@@ -330,16 +335,21 @@ func Default(mode Mode) *Config {
 			StagingGCInterval:  1 * time.Hour,
 		},
 		Studio: StudioConfig{
-			DefaultFPS:         24,
-			DefaultResolution:  "1920x1080",
-			FFmpegPreset:       "medium",
-			FFmpegCRF:          20,
-			FFmpegTimeout:      15 * time.Minute,
-			FFprobeTimeout:     30 * time.Second,
-			MaxConcurrentBatch: 4,
-			QueueWorkers:       2,
-			QueuePollInterval:  2 * time.Second,
-			QueueMaxAttempts:   3,
+			DefaultFPS:               24,
+			DefaultResolution:        "1920x1080",
+			FFmpegPreset:             "medium",
+			FFmpegCRF:                20,
+			FFmpegTimeout:            15 * time.Minute,
+			FFprobeTimeout:           30 * time.Second,
+			MaxConcurrentBatch:       4,
+			QueueWorkers:             2,
+			QueuePollInterval:        2 * time.Second,
+			QueueMaxAttempts:         3,
+			ExportMaxZipBytes:        512 << 20, // 512 MiB
+			ExportLoudnormLUFS:       -14.0,
+			ExportSubtitleFontSize:   24,
+			TimelineThumbIntervalSec: 2.0,
+			TimelinePeakBins:         120,
 		},
 		Watermark: WatermarkConfig{
 			MaxWorkers:        4,

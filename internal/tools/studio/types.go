@@ -35,6 +35,10 @@ const (
 	NodeTypeTTSDubMux         = contracts.NodeTypeTTSDubMux
 	NodeTypeLipSyncGenerate   = contracts.NodeTypeLipSyncGenerate
 	NodeTypeQCReview          = contracts.NodeTypeQCReview
+	NodeTypeTimelineAutoAssem = contracts.NodeTypeTimelineAutoAssem
+	NodeTypeMediaPeaksThumbs  = contracts.NodeTypeMediaPeaksThumbs
+	NodeTypeRenderTimeline    = contracts.NodeTypeRenderTimeline
+	NodeTypeExportNLEDraft    = contracts.NodeTypeExportNLEDraft
 )
 
 // TextGenerator executes structured LLM calls (satisfied by *service/mediagen.Service).
@@ -93,7 +97,7 @@ type Options struct {
 	WorkspaceTreeFunc func() paths.WorkspaceTree
 }
 
-// NewNodes returns all Film Studio engine nodes (Phase 1 + Phase 2).
+// NewNodes returns all Film Studio engine nodes (Phase 1 + Phase 2 + Phase 3).
 func NewNodes(opts Options) []engine.Node {
 	opts.StudioConfig = withStudioDefaults(opts.StudioConfig)
 	return []engine.Node{
@@ -109,6 +113,10 @@ func NewNodes(opts Options) []engine.Node {
 		NewTTSDubMuxNode(opts),
 		NewLipSyncGenerateNode(opts),
 		NewQCReviewNode(opts),
+		NewTimelineAutoAssembleNode(opts),
+		NewMediaPeaksThumbsNode(opts),
+		NewRenderTimelineNode(opts),
+		NewExportNLEDraftNode(opts),
 	}
 }
 
@@ -135,6 +143,21 @@ func withStudioDefaults(cfg config.StudioConfig) config.StudioConfig {
 	}
 	if cfg.MaxConcurrentBatch <= 0 {
 		cfg.MaxConcurrentBatch = def.MaxConcurrentBatch
+	}
+	if cfg.ExportMaxZipBytes <= 0 {
+		cfg.ExportMaxZipBytes = def.ExportMaxZipBytes
+	}
+	if cfg.ExportLoudnormLUFS == 0 {
+		cfg.ExportLoudnormLUFS = def.ExportLoudnormLUFS
+	}
+	if cfg.ExportSubtitleFontSize <= 0 {
+		cfg.ExportSubtitleFontSize = def.ExportSubtitleFontSize
+	}
+	if cfg.TimelineThumbIntervalSec <= 0 {
+		cfg.TimelineThumbIntervalSec = def.TimelineThumbIntervalSec
+	}
+	if cfg.TimelinePeakBins <= 0 {
+		cfg.TimelinePeakBins = def.TimelinePeakBins
 	}
 	return cfg
 }

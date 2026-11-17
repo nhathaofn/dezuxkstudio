@@ -95,6 +95,10 @@ func LongActions() []string {
 		ActionStudioEpisodeRunStage,
 		ActionStudioMaskEdit,
 		ActionStudioQCReview,
+		ActionStudioTimelineAutoAssemble,
+		ActionStudioMediaPeaksThumbs,
+		ActionStudioTimelineRender,
+		ActionStudioTimelineExportNLE,
 	}
 }
 
@@ -257,6 +261,15 @@ func Actions() []ActionSpec {
 		{ActionStudioExtractLastFrame, "Extracts the final frame of a shot video to seed the next shot keyframe.", t[StudioExtractLastFramePayload](), t[StudioExtractLastFrameResult]()},
 		{ActionStudioQCReview, "Runs FFprobe + multimodal Vision QC review and saves a QC report.", t[StudioQCReviewPayload](), t[StudioQCReport]()},
 		{ActionStudioBatchPreflight, "Validates active providers and estimates USD cost before batch execution.", t[StudioBatchPreflightPayload](), t[BatchPreflightOutput]()},
+		{ActionStudioTimelineGet, "Gets an episode's multi-track EditTimeline, current revision, and Undo/Redo history.", t[StudioIDPayload](), t[StudioTimelineResult]()},
+		{ActionStudioTimelineApplyOps, "Applies atomic EditTimeline operations with optimistic revision concurrency checking.", t[StudioTimelineApplyOpsPayload](), t[StudioTimelineResult]()},
+		{ActionStudioTimelineUndo, "Undoes the latest timeline revision while enforcing expected_revision.", t[StudioTimelineRevisionNavPayload](), t[StudioTimelineResult]()},
+		{ActionStudioTimelineRedo, "Redoes the next timeline revision while enforcing expected_revision.", t[StudioTimelineRevisionNavPayload](), t[StudioTimelineResult]()},
+		{ActionStudioTimelineAutoAssemble, "Auto-assembles an EditTimeline from episode shots, TTS audio, subtitles, and optional BGM.", t[StudioTimelineAutoAssemblePayload](), t[StudioTimelineResult]()},
+		{ActionStudioMediaPeaksThumbs, "Generates audio waveform peaks and thumbnail sprite strip for timeline scrubbing.", t[StudioMediaPeaksThumbsPayload](), t[MediaPeaksThumbsOutput]()},
+		{ActionStudioTimelineRender, "Renders the episode EditTimeline via FFmpeg filter_complex with transitions, loudnorm, and optional Vietnamese subtitle burn-in.", t[StudioTimelineRenderPayload](), t[StudioTimelineRenderResult]()},
+		{ActionStudioTimelineExportNLE, "Exports the episode EditTimeline as a CapCut/Jianying draft zip, FCPXML, or OTIO file.", t[StudioTimelineExportNLEPayload](), t[ExportNLEDraftOutput]()},
+		{ActionStudioOpenExportFolder, "Reveals the episode exports folder in the OS file manager (desktop/host admin only).", t[StudioOpenExportFolderPayload](), t[Empty]()},
 	}
 }
 
@@ -278,6 +291,7 @@ func Events() []EventSpec {
 		{EventStudioBatchProgress, "Progress of a multi-item studio stage batch execution.", t[StudioBatchProgressEvent]()},
 		{EventStudioQueueUpdated, "A durable studio queue job changed status or progress.", t[StudioQueueUpdatedEvent]()},
 		{EventStudioCostUpdated, "Studio cost ledger totals updated.", t[StudioCostUpdatedEvent]()},
+		{EventStudioTimelineChanged, "Episode multi-track EditTimeline was updated, undone, redone, or auto-assembled.", t[StudioTimelineChangedEvent]()},
 	}
 }
 
@@ -335,6 +349,10 @@ func Enums() []EnumSpec {
 		{"StudioShotStatus", t[domainstudio.ShotStatus](), stringsOf(domainstudio.ShotStatuses())},
 		{"StudioEpisodeStage", t[domainstudio.EpisodeStage](), stringsOf(domainstudio.EpisodeStages())},
 		{"StudioRunStageAction", t[StudioRunStageAction](), stringsOf(StudioRunStageActions())},
+		{"StudioTrackKind", t[domainstudio.TrackKind](), stringsOf(domainstudio.TrackKinds())},
+		{"StudioTransitionType", t[domainstudio.TransitionType](), stringsOf(domainstudio.TransitionTypes())},
+		{"StudioKenBurnsPreset", t[domainstudio.KenBurnsPreset](), stringsOf(domainstudio.KenBurnsPresets())},
+		{"StudioNLEExportFormat", t[domainstudio.NLEExportFormat](), stringsOf(domainstudio.NLEExportFormats())},
 	}
 }
 

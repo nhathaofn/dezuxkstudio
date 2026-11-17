@@ -338,3 +338,249 @@ func qcReportToDTO(r domainstudio.QCReport) contracts.StudioQCReport {
 		CreatedAt:      r.CreatedAt,
 	}
 }
+
+func editTimelineToDTO(tl domainstudio.EditTimeline) contracts.StudioEditTimeline {
+	tracks := make([]contracts.StudioTimelineTrack, len(tl.Tracks))
+	for i, tr := range tl.Tracks {
+		clips := make([]contracts.StudioTimelineClip, len(tr.Clips))
+		for j, cl := range tr.Clips {
+			clips[j] = contracts.StudioTimelineClip{
+				ID:              cl.ID,
+				ShotID:          cl.ShotID,
+				AssetID:         cl.AssetID,
+				Label:           cl.Label,
+				FilePath:        cl.FilePath,
+				TimelineStartMs: cl.TimelineStartMs,
+				SourceInMs:      cl.SourceInMs,
+				SourceOutMs:     cl.SourceOutMs,
+				Speed:           cl.Speed,
+				Volume:          cl.Volume,
+				TransitionIn:    cl.TransitionIn,
+				TransitionMs:    cl.TransitionMs,
+				KenBurnsPreset:  cl.KenBurnsPreset,
+				SpritePath:      cl.SpritePath,
+				SpriteAssetID:   cl.SpriteAssetID,
+				Peaks:           append([]float64(nil), cl.Peaks...),
+			}
+		}
+		tracks[i] = contracts.StudioTimelineTrack{
+			ID:     tr.ID,
+			Name:   tr.Name,
+			Kind:   tr.Kind,
+			Muted:  tr.Muted,
+			Solo:   tr.Solo,
+			Locked: tr.Locked,
+			Volume: tr.Volume,
+			Clips:  clips,
+		}
+	}
+	subs := make([]contracts.StudioSubtitleCue, len(tl.Subtitles))
+	for i, s := range tl.Subtitles {
+		subs[i] = contracts.StudioSubtitleCue{
+			ID:          s.ID,
+			StartMs:     s.StartMs,
+			EndMs:       s.EndMs,
+			Speaker:     s.Speaker,
+			Text:        s.Text,
+			StylePreset: s.StylePreset,
+		}
+	}
+	markers := make([]contracts.StudioTimelineMarker, len(tl.Markers))
+	for i, m := range tl.Markers {
+		markers[i] = contracts.StudioTimelineMarker{
+			ID:     m.ID,
+			TimeMs: m.TimeMs,
+			Label:  m.Label,
+			Color:  m.Color,
+		}
+	}
+	return contracts.StudioEditTimeline{
+		Version:   tl.Version,
+		FPS:       tl.FPS,
+		Width:     tl.Width,
+		Height:    tl.Height,
+		Tracks:    tracks,
+		Subtitles: subs,
+		Markers:   markers,
+	}
+}
+
+func editTimelineFromDTO(tl *contracts.StudioEditTimeline) *domainstudio.EditTimeline {
+	if tl == nil {
+		return nil
+	}
+	tracks := make([]domainstudio.Track, len(tl.Tracks))
+	for i, tr := range tl.Tracks {
+		clips := make([]domainstudio.TimelineClip, len(tr.Clips))
+		for j, cl := range tr.Clips {
+			clips[j] = domainstudio.TimelineClip{
+				ID:              cl.ID,
+				ShotID:          cl.ShotID,
+				AssetID:         cl.AssetID,
+				Label:           cl.Label,
+				FilePath:        cl.FilePath,
+				TimelineStartMs: cl.TimelineStartMs,
+				SourceInMs:      cl.SourceInMs,
+				SourceOutMs:     cl.SourceOutMs,
+				Speed:           cl.Speed,
+				Volume:          cl.Volume,
+				TransitionIn:    cl.TransitionIn,
+				TransitionMs:    cl.TransitionMs,
+				KenBurnsPreset:  cl.KenBurnsPreset,
+				SpritePath:      cl.SpritePath,
+				SpriteAssetID:   cl.SpriteAssetID,
+				Peaks:           append([]float64(nil), cl.Peaks...),
+			}
+		}
+		tracks[i] = domainstudio.Track{
+			ID:     tr.ID,
+			Name:   tr.Name,
+			Kind:   tr.Kind,
+			Muted:  tr.Muted,
+			Solo:   tr.Solo,
+			Locked: tr.Locked,
+			Volume: tr.Volume,
+			Clips:  clips,
+		}
+	}
+	subs := make([]domainstudio.SubtitleCue, len(tl.Subtitles))
+	for i, s := range tl.Subtitles {
+		subs[i] = domainstudio.SubtitleCue{
+			ID:          s.ID,
+			StartMs:     s.StartMs,
+			EndMs:       s.EndMs,
+			Speaker:     s.Speaker,
+			Text:        s.Text,
+			StylePreset: s.StylePreset,
+		}
+	}
+	markers := make([]domainstudio.TimelineMarker, len(tl.Markers))
+	for i, m := range tl.Markers {
+		markers[i] = domainstudio.TimelineMarker{
+			ID:     m.ID,
+			TimeMs: m.TimeMs,
+			Label:  m.Label,
+			Color:  m.Color,
+		}
+	}
+	return &domainstudio.EditTimeline{
+		Version:   tl.Version,
+		FPS:       tl.FPS,
+		Width:     tl.Width,
+		Height:    tl.Height,
+		Tracks:    tracks,
+		Subtitles: subs,
+		Markers:   markers,
+	}
+}
+
+func timelineClipFromDTO(cl *contracts.StudioTimelineClip) *domainstudio.TimelineClip {
+	if cl == nil {
+		return nil
+	}
+	return &domainstudio.TimelineClip{
+		ID:              cl.ID,
+		ShotID:          cl.ShotID,
+		AssetID:         cl.AssetID,
+		Label:           cl.Label,
+		FilePath:        cl.FilePath,
+		TimelineStartMs: cl.TimelineStartMs,
+		SourceInMs:      cl.SourceInMs,
+		SourceOutMs:     cl.SourceOutMs,
+		Speed:           cl.Speed,
+		Volume:          cl.Volume,
+		TransitionIn:    cl.TransitionIn,
+		TransitionMs:    cl.TransitionMs,
+		KenBurnsPreset:  cl.KenBurnsPreset,
+		SpritePath:      cl.SpritePath,
+		SpriteAssetID:   cl.SpriteAssetID,
+		Peaks:           append([]float64(nil), cl.Peaks...),
+	}
+}
+
+func timelineOpFromDTO(op contracts.StudioTimelineOp) domainstudio.TimelineOp {
+	var sub *domainstudio.SubtitleCue
+	if op.Subtitle != nil {
+		sub = &domainstudio.SubtitleCue{
+			ID:          op.Subtitle.ID,
+			StartMs:     op.Subtitle.StartMs,
+			EndMs:       op.Subtitle.EndMs,
+			Speaker:     op.Subtitle.Speaker,
+			Text:        op.Subtitle.Text,
+			StylePreset: op.Subtitle.StylePreset,
+		}
+	}
+	var mrk *domainstudio.TimelineMarker
+	if op.Marker != nil {
+		mrk = &domainstudio.TimelineMarker{
+			ID:     op.Marker.ID,
+			TimeMs: op.Marker.TimeMs,
+			Label:  op.Marker.Label,
+			Color:  op.Marker.Color,
+		}
+	}
+	return domainstudio.TimelineOp{
+		Op:              op.Op,
+		Timeline:        editTimelineFromDTO(op.Timeline),
+		FPS:             op.FPS,
+		Width:           op.Width,
+		Height:          op.Height,
+		TrackID:         op.TrackID,
+		TargetTrackID:   op.TargetTrackID,
+		TrackKind:       op.TrackKind,
+		TrackName:       op.TrackName,
+		Muted:           op.Muted,
+		Solo:            op.Solo,
+		Locked:          op.Locked,
+		Volume:          op.Volume,
+		ClipID:          op.ClipID,
+		NewClipID:       op.NewClipID,
+		Clip:            timelineClipFromDTO(op.Clip),
+		TimelineStartMs: op.TimelineStartMs,
+		SourceInMs:      op.SourceInMs,
+		SourceOutMs:     op.SourceOutMs,
+		Speed:           op.Speed,
+		TransitionIn:    op.TransitionIn,
+		TransitionMs:    op.TransitionMs,
+		KenBurnsPreset:  op.KenBurnsPreset,
+		Label:           op.Label,
+		SplitAtMs:       op.SplitAtMs,
+		SubtitleID:      op.SubtitleID,
+		Subtitle:        sub,
+		MarkerID:        op.MarkerID,
+		Marker:          mrk,
+	}
+}
+
+func timelineOpsFromDTO(ops []contracts.StudioTimelineOp) []domainstudio.TimelineOp {
+	out := make([]domainstudio.TimelineOp, len(ops))
+	for i := range ops {
+		out[i] = timelineOpFromDTO(ops[i])
+	}
+	return out
+}
+
+func timelineResultToDTO(projectID, timelinePath string, rec domainstudio.TimelineRecord, revs []domainstudio.TimelineRevision) contracts.StudioTimelineResult {
+	revSummaries := make([]contracts.StudioTimelineRevisionSummary, len(revs))
+	for i, r := range revs {
+		revSummaries[i] = contracts.StudioTimelineRevisionSummary{
+			ID:        r.ID,
+			Revision:  r.Revision,
+			Actor:     string(r.Actor),
+			Summary:   r.Summary,
+			CreatedAt: r.CreatedAt,
+		}
+	}
+	return contracts.StudioTimelineResult{
+		ProjectID:    projectID,
+		EpisodeID:    rec.EpisodeID,
+		Revision:     rec.Revision,
+		CanUndo:      rec.CanUndo,
+		CanRedo:      rec.CanRedo,
+		DurationMs:   rec.Timeline.DurationMs(),
+		TimelinePath: timelinePath,
+		Timeline:     editTimelineToDTO(rec.Timeline),
+		Revisions:    revSummaries,
+		UpdatedAt:    rec.UpdatedAt,
+	}
+}

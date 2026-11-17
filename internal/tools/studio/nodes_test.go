@@ -226,8 +226,8 @@ func writeFakeFFmpegPair(t *testing.T, dir string, withAudio bool) (ffprobeExe, 
 
 func TestNewNodesValidateSpecs(t *testing.T) {
 	nodes := NewNodes(Options{})
-	if len(nodes) != 12 {
-		t.Fatalf("expected 12 studio nodes, got %d", len(nodes))
+	if len(nodes) != 16 {
+		t.Fatalf("expected 16 studio nodes, got %d", len(nodes))
 	}
 	reg := engine.NewRegistry()
 	for _, n := range nodes {

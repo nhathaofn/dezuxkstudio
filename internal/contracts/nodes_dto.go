@@ -29,6 +29,10 @@ const (
 	NodeTypeLipSyncGenerate   = "tool.lipsync_generate"
 	NodeTypeQCReview          = "tool.qc_review"
 	NodeTypeVideoWMRemove     = "tool.video_watermark_remove"
+	NodeTypeTimelineAutoAssem = "tool.timeline_auto_assemble"
+	NodeTypeMediaPeaksThumbs  = "tool.media_peaks_thumbs"
+	NodeTypeRenderTimeline    = "tool.render_timeline"
+	NodeTypeExportNLEDraft    = "tool.export_nle_draft"
 )
 
 // RemoverInput is the input payload for the watermark remover node.
@@ -471,6 +475,92 @@ type VideoWatermarkRemoveOutput struct {
 	DurationSec float64         `json:"duration_sec,omitempty"`
 }
 
+// TimelineAutoAssembleInput is the input+params contract for tool.timeline_auto_assemble.
+type TimelineAutoAssembleInput struct {
+	ShotsJSON         string  `json:"shots_json"`
+	AudioManifestJSON string  `json:"audio_manifest_json,omitempty"`
+	EpisodeID         string  `json:"episode_id,omitempty"`
+	Resolution        string  `json:"resolution,omitempty"`
+	FPS               int     `json:"fps,omitempty"`
+	TransitionDefault string  `json:"transition_default,omitempty"`
+	TransitionMs      int64   `json:"transition_ms,omitempty"`
+	BGMPath           string  `json:"bgm_path,omitempty"`
+	BGMVolume         float64 `json:"bgm_volume,omitempty"`
+	ProjectDir        string  `json:"project_dir,omitempty"`
+}
+
+// TimelineAutoAssembleOutput is returned by tool.timeline_auto_assemble.
+type TimelineAutoAssembleOutput struct {
+	TimelineJSON  string `json:"timeline_json"`
+	TimelinePath  string `json:"timeline_path,omitempty"`
+	DurationMs    int64  `json:"duration_ms"`
+	TrackCount    int    `json:"track_count"`
+	ClipCount     int    `json:"clip_count"`
+	SubtitleCount int    `json:"subtitle_count"`
+}
+
+// MediaPeaksThumbsInput is the input+params contract for tool.media_peaks_thumbs.
+type MediaPeaksThumbsInput struct {
+	Media            engine.ImageInputRef `json:"media,omitempty"`
+	Audio            engine.ImageInputRef `json:"audio,omitempty"`
+	ThumbIntervalSec float64              `json:"thumb_interval_sec,omitempty"`
+	PeakBins         int                  `json:"peak_bins,omitempty"`
+	ThumbHeight      int                  `json:"thumb_height,omitempty"`
+	OutputDir        string               `json:"output_dir,omitempty"`
+}
+
+// MediaPeaksThumbsOutput is returned by tool.media_peaks_thumbs.
+type MediaPeaksThumbsOutput struct {
+	PeaksThumbsJSON  string    `json:"peaks_thumbs_json"`
+	SpriteSheetPath  string    `json:"sprite_sheet_path,omitempty"`
+	SpriteAssetID    string    `json:"sprite_asset_id,omitempty"`
+	PeaksJSONPath    string    `json:"peaks_json_path"`
+	Peaks            []float64 `json:"peaks"`
+	ThumbCount       int       `json:"thumb_count"`
+	ThumbIntervalSec float64   `json:"thumb_interval_sec"`
+	DurationMs       int64     `json:"duration_ms"`
+}
+
+// RenderTimelineInput is the input+params contract for tool.render_timeline.
+type RenderTimelineInput struct {
+	TimelineJSON     string  `json:"timeline_json"`
+	OutputDir        string  `json:"output_dir,omitempty"`
+	Filename         string  `json:"filename,omitempty"`
+	BurnSubtitles    bool    `json:"burn_subtitles,omitempty"`
+	SubtitleFontSize int     `json:"subtitle_font_size,omitempty"`
+	LoudnormLUFS     float64 `json:"loudnorm_lufs,omitempty"`
+	CRF              int     `json:"crf,omitempty"`
+	Preset           string  `json:"preset,omitempty"`
+}
+
+// RenderTimelineOutput is returned by tool.render_timeline.
+type RenderTimelineOutput struct {
+	Video       engine.MediaRef `json:"video"`
+	OutputPath  string          `json:"output_path"`
+	AssetID     string          `json:"asset_id,omitempty"`
+	SRTPath     string          `json:"srt_path,omitempty"`
+	ASSPath     string          `json:"ass_path,omitempty"`
+	DurationSec float64         `json:"duration_sec"`
+}
+
+// ExportNLEDraftInput is the input+params contract for tool.export_nle_draft.
+type ExportNLEDraftInput struct {
+	TimelineJSON     string `json:"timeline_json"`
+	Format           string `json:"format,omitempty"`
+	OutputDir        string `json:"output_dir,omitempty"`
+	ProjectName      string `json:"project_name,omitempty"`
+	IncludeMediaCopy *bool  `json:"include_media_copy,omitempty"`
+}
+
+// ExportNLEDraftOutput is returned by tool.export_nle_draft.
+type ExportNLEDraftOutput struct {
+	ExportPath string `json:"export_path"`
+	AssetID    string `json:"asset_id,omitempty"`
+	Format     string `json:"format"`
+	FileCount  int    `json:"file_count"`
+	TotalBytes int64  `json:"total_bytes"`
+}
+
 func decodeTextOrJSON(raw json.RawMessage) string {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" || trimmed == "null" {
@@ -545,5 +635,140 @@ func (in *VideoConcatBasicInput) UnmarshalJSON(data []byte) error {
 	in.NarrationAudioPath = r.NarrationAudioPath
 	in.Resolution = r.Resolution
 	in.FPS = r.FPS
+	return nil
+}
+
+func parseFlexibleFloat(raw any) (float64, error) {
+	switch v := raw.(type) {
+	case nil:
+		return 0, nil
+	case float64:
+		return v, nil
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			return 0, nil
+		}
+		f, err := strconv.ParseFloat(trimmed, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid number %q: %w", v, err)
+		}
+		return f, nil
+	default:
+		return 0, fmt.Errorf("expected number or numeric string, got %T", raw)
+	}
+}
+
+// UnmarshalJSON accepts shots_json/audio_manifest_json as strings or inline JSON and numeric strings for floats.
+func (in *TimelineAutoAssembleInput) UnmarshalJSON(data []byte) error {
+	type raw struct {
+		ShotsJSON         json.RawMessage `json:"shots_json"`
+		AudioManifestJSON json.RawMessage `json:"audio_manifest_json,omitempty"`
+		EpisodeID         string          `json:"episode_id,omitempty"`
+		Resolution        string          `json:"resolution,omitempty"`
+		FPS               int             `json:"fps,omitempty"`
+		TransitionDefault string          `json:"transition_default,omitempty"`
+		TransitionMs      int64           `json:"transition_ms,omitempty"`
+		BGMPath           string          `json:"bgm_path,omitempty"`
+		BGMVolume         any             `json:"bgm_volume,omitempty"`
+		ProjectDir        string          `json:"project_dir,omitempty"`
+	}
+	var r raw
+	if err := json.Unmarshal(data, &r); err != nil {
+		return err
+	}
+	in.ShotsJSON = decodeTextOrJSON(r.ShotsJSON)
+	in.AudioManifestJSON = decodeTextOrJSON(r.AudioManifestJSON)
+	in.EpisodeID = r.EpisodeID
+	in.Resolution = r.Resolution
+	in.FPS = r.FPS
+	in.TransitionDefault = r.TransitionDefault
+	in.TransitionMs = r.TransitionMs
+	in.BGMPath = r.BGMPath
+	in.ProjectDir = r.ProjectDir
+	vol, err := parseFlexibleFloat(r.BGMVolume)
+	if err != nil {
+		return err
+	}
+	in.BGMVolume = vol
+	return nil
+}
+
+// UnmarshalJSON accepts thumb_interval_sec encoded as either number or string.
+func (in *MediaPeaksThumbsInput) UnmarshalJSON(data []byte) error {
+	type raw struct {
+		Media            engine.ImageInputRef `json:"media,omitempty"`
+		Audio            engine.ImageInputRef `json:"audio,omitempty"`
+		ThumbIntervalSec any                  `json:"thumb_interval_sec,omitempty"`
+		PeakBins         int                  `json:"peak_bins,omitempty"`
+		ThumbHeight      int                  `json:"thumb_height,omitempty"`
+		OutputDir        string               `json:"output_dir,omitempty"`
+	}
+	var r raw
+	if err := json.Unmarshal(data, &r); err != nil {
+		return err
+	}
+	in.Media = r.Media
+	in.Audio = r.Audio
+	in.PeakBins = r.PeakBins
+	in.ThumbHeight = r.ThumbHeight
+	in.OutputDir = r.OutputDir
+	interval, err := parseFlexibleFloat(r.ThumbIntervalSec)
+	if err != nil {
+		return err
+	}
+	in.ThumbIntervalSec = interval
+	return nil
+}
+
+// UnmarshalJSON accepts timeline_json as string or inline JSON object and loudnorm_lufs as number or string.
+func (in *RenderTimelineInput) UnmarshalJSON(data []byte) error {
+	type raw struct {
+		TimelineJSON     json.RawMessage `json:"timeline_json"`
+		OutputDir        string          `json:"output_dir,omitempty"`
+		Filename         string          `json:"filename,omitempty"`
+		BurnSubtitles    bool            `json:"burn_subtitles,omitempty"`
+		SubtitleFontSize int             `json:"subtitle_font_size,omitempty"`
+		LoudnormLUFS     any             `json:"loudnorm_lufs,omitempty"`
+		CRF              int             `json:"crf,omitempty"`
+		Preset           string          `json:"preset,omitempty"`
+	}
+	var r raw
+	if err := json.Unmarshal(data, &r); err != nil {
+		return err
+	}
+	in.TimelineJSON = decodeTextOrJSON(r.TimelineJSON)
+	in.OutputDir = r.OutputDir
+	in.Filename = r.Filename
+	in.BurnSubtitles = r.BurnSubtitles
+	in.SubtitleFontSize = r.SubtitleFontSize
+	in.CRF = r.CRF
+	in.Preset = r.Preset
+	lufs, err := parseFlexibleFloat(r.LoudnormLUFS)
+	if err != nil {
+		return err
+	}
+	in.LoudnormLUFS = lufs
+	return nil
+}
+
+// UnmarshalJSON accepts timeline_json as either a JSON string or an inline JSON object.
+func (in *ExportNLEDraftInput) UnmarshalJSON(data []byte) error {
+	type raw struct {
+		TimelineJSON     json.RawMessage `json:"timeline_json"`
+		Format           string          `json:"format,omitempty"`
+		OutputDir        string          `json:"output_dir,omitempty"`
+		ProjectName      string          `json:"project_name,omitempty"`
+		IncludeMediaCopy *bool           `json:"include_media_copy,omitempty"`
+	}
+	var r raw
+	if err := json.Unmarshal(data, &r); err != nil {
+		return err
+	}
+	in.TimelineJSON = decodeTextOrJSON(r.TimelineJSON)
+	in.Format = r.Format
+	in.OutputDir = r.OutputDir
+	in.ProjectName = r.ProjectName
+	in.IncludeMediaCopy = r.IncludeMediaCopy
 	return nil
 }

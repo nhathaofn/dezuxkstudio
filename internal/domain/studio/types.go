@@ -634,4 +634,5 @@ type Repository interface {
 	ReorderShots(ctx context.Context, episodeID string, shotIDs []string) ([]Shot, error)
 
 	Phase2Repository
+	Phase3Repository
 }

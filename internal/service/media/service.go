@@ -727,6 +727,14 @@ func detectMimeType(filePath string) string {
 		return "audio/flac"
 	case ".ogg":
 		return "audio/ogg"
+	case ".zip":
+		return "application/zip"
+	case ".fcpxml":
+		return "application/xml"
+	case ".otio", ".json":
+		return "application/json"
+	case ".srt", ".ass":
+		return "text/plain"
 	}
 	return "application/octet-stream"
 }

@@ -41,27 +41,29 @@ type MediaRegistrar interface {
 
 // Options configures a studio.Service instance.
 type Options struct {
-	Repo         domainstudio.Repository
-	Workflow     WorkflowRunner
-	Media        MediaRegistrar
-	VideoMedia   VideoQueueMedia
-	FileGuard    engine.FileGuard
-	StudioConfig config.StudioConfig
-	ProjectsDir  string
-	OnEvent      func(eventName string, data any)
-	Logger       *slog.Logger
+	Repo          domainstudio.Repository
+	Workflow      WorkflowRunner
+	Media         MediaRegistrar
+	VideoMedia    VideoQueueMedia
+	FileGuard     engine.FileGuard
+	OpenDirectory func(dir string) error
+	StudioConfig  config.StudioConfig
+	ProjectsDir   string
+	OnEvent       func(eventName string, data any)
+	Logger        *slog.Logger
 }
 
 // Service manages projects, episodes, asset bibles, shots, workspace sync, and stage execution.
 type Service struct {
-	repo       domainstudio.Repository
-	wf         WorkflowRunner
-	media      MediaRegistrar
-	videoMedia VideoQueueMedia
-	fileGuard  engine.FileGuard
-	cfg        config.StudioConfig
-	onEvent    func(eventName string, data any)
-	log        *slog.Logger
+	repo          domainstudio.Repository
+	wf            WorkflowRunner
+	media         MediaRegistrar
+	videoMedia    VideoQueueMedia
+	fileGuard     engine.FileGuard
+	openDirectory func(dir string) error
+	cfg           config.StudioConfig
+	onEvent       func(eventName string, data any)
+	log           *slog.Logger
 
 	mu          sync.RWMutex
 	projectsDir string
@@ -104,6 +106,21 @@ func New(opts Options) *Service {
 	if cfg.QueueMaxAttempts <= 0 {
 		cfg.QueueMaxAttempts = def.QueueMaxAttempts
 	}
+	if cfg.ExportMaxZipBytes <= 0 {
+		cfg.ExportMaxZipBytes = def.ExportMaxZipBytes
+	}
+	if cfg.ExportLoudnormLUFS == 0 {
+		cfg.ExportLoudnormLUFS = def.ExportLoudnormLUFS
+	}
+	if cfg.ExportSubtitleFontSize <= 0 {
+		cfg.ExportSubtitleFontSize = def.ExportSubtitleFontSize
+	}
+	if cfg.TimelineThumbIntervalSec <= 0 {
+		cfg.TimelineThumbIntervalSec = def.TimelineThumbIntervalSec
+	}
+	if cfg.TimelinePeakBins <= 0 {
+		cfg.TimelinePeakBins = def.TimelinePeakBins
+	}
 
 	projectsDir := strings.TrimSpace(opts.ProjectsDir)
 	if projectsDir != "" {
@@ -112,17 +129,18 @@ func New(opts Options) *Service {
 	}
 
 	return &Service{
-		repo:        opts.Repo,
-		wf:          opts.Workflow,
-		media:       opts.Media,
-		videoMedia:  opts.VideoMedia,
-		fileGuard:   opts.FileGuard,
-		cfg:         cfg,
-		onEvent:     opts.OnEvent,
-		log:         log,
-		projectsDir: projectsDir,
-		runningEps:  make(map[string]bool),
-		wakeCh:      make(chan struct{}, 1),
+		repo:          opts.Repo,
+		wf:            opts.Workflow,
+		media:         opts.Media,
+		videoMedia:    opts.VideoMedia,
+		fileGuard:     opts.FileGuard,
+		openDirectory: opts.OpenDirectory,
+		cfg:           cfg,
+		onEvent:       opts.OnEvent,
+		log:           log,
+		projectsDir:   projectsDir,
+		runningEps:    make(map[string]bool),
+		wakeCh:        make(chan struct{}, 1),
 	}
 }
 
@@ -435,7 +453,7 @@ func (s *Service) createEpisodeInternal(ctx context.Context, proj domainstudio.P
 	}
 
 	epRoot := s.resolveEpisodeRoot(proj, code)
-	var rawPath, scriptJSONPath, assetsJSONPath, shotsJSONPath string
+	var rawPath, scriptJSONPath, assetsJSONPath, shotsJSONPath, timelineJSONPath string
 	if epRoot != "" {
 		if err := ensureEpisodeDirs(epRoot); err != nil {
 			return contracts.StudioEpisodeDetailResult{}, apperr.Internal(err)
@@ -444,17 +462,19 @@ func (s *Service) createEpisodeInternal(ctx context.Context, proj domainstudio.P
 		scriptJSONPath = filepath.Join(epRoot, "script", "normalized_script.json")
 		assetsJSONPath = filepath.Join(epRoot, "assets", "asset_bible.json")
 		shotsJSONPath = filepath.Join(epRoot, "storyboard", "shots.json")
+		timelineJSONPath = filepath.Join(epRoot, "timeline", "timeline.json")
 	}
 
 	ep, err := s.repo.CreateEpisode(ctx, domainstudio.Episode{
-		ProjectID:      proj.ID,
-		Code:           code,
-		Title:          title,
-		Stage:          domainstudio.StageScript,
-		RawScriptPath:  rawPath,
-		ScriptJSONPath: scriptJSONPath,
-		AssetsJSONPath: assetsJSONPath,
-		ShotsJSONPath:  shotsJSONPath,
+		ProjectID:        proj.ID,
+		Code:             code,
+		Title:            title,
+		Stage:            domainstudio.StageScript,
+		RawScriptPath:    rawPath,
+		ScriptJSONPath:   scriptJSONPath,
+		AssetsJSONPath:   assetsJSONPath,
+		ShotsJSONPath:    shotsJSONPath,
+		TimelineJSONPath: timelineJSONPath,
 	})
 	if err != nil {
 		return contracts.StudioEpisodeDetailResult{}, err
@@ -971,19 +991,27 @@ func (s *Service) syncSingleProjectFromDisk(ctx context.Context, proj domainstud
 			ep, exists := epByCode[epCode]
 			if !exists {
 				created, cerr := s.repo.CreateEpisode(ctx, domainstudio.Episode{
-					ProjectID:      proj.ID,
-					Code:           epCode,
-					Title:          strings.ToUpper(epCode),
-					Stage:          domainstudio.StageScript,
-					RawScriptPath:  filepath.Join(epRoot, "script", "raw_screenplay.txt"),
-					ScriptJSONPath: filepath.Join(epRoot, "script", "normalized_script.json"),
-					AssetsJSONPath: filepath.Join(epRoot, "assets", "asset_bible.json"),
-					ShotsJSONPath:  filepath.Join(epRoot, "storyboard", "shots.json"),
+					ProjectID:        proj.ID,
+					Code:             epCode,
+					Title:            strings.ToUpper(epCode),
+					Stage:            domainstudio.StageScript,
+					RawScriptPath:    filepath.Join(epRoot, "script", "raw_screenplay.txt"),
+					ScriptJSONPath:   filepath.Join(epRoot, "script", "normalized_script.json"),
+					AssetsJSONPath:   filepath.Join(epRoot, "assets", "asset_bible.json"),
+					ShotsJSONPath:    filepath.Join(epRoot, "storyboard", "shots.json"),
+					TimelineJSONPath: filepath.Join(epRoot, "timeline", "timeline.json"),
 				})
 				if cerr != nil {
 					continue
 				}
 				ep = created
+			}
+			timelinePath := filepath.Join(epRoot, "timeline", "timeline.json")
+			if ep.TimelineJSONPath == "" {
+				ep.TimelineJSONPath = timelinePath
+				if updatedEp, uerr := s.repo.UpdateEpisode(ctx, ep); uerr == nil {
+					ep = updatedEp
+				}
 			}
 			if b, serr := os.ReadFile(filepath.Join(epRoot, "storyboard", "shots.json")); serr == nil {
 				var sp domainstudio.ShotPromptPackage
@@ -1025,6 +1053,21 @@ func (s *Service) syncSingleProjectFromDisk(ctx context.Context, proj domainstud
 						merged = append(merged, ds)
 					}
 					_, _ = s.repo.ReplaceShots(ctx, ep.ID, merged)
+				}
+			}
+			if tb, terr := os.ReadFile(timelinePath); terr == nil {
+				var diskTL domainstudio.EditTimeline
+				if json.Unmarshal(tb, &diskTL) == nil && len(diskTL.Tracks) > 0 {
+					diskTL.Normalize()
+					diskCanon, _ := json.Marshal(diskTL)
+					if curRec, rerr := s.repo.GetTimeline(ctx, ep.ID); rerr == nil {
+						curCanon, _ := json.Marshal(curRec.Timeline)
+						if string(diskCanon) != string(curCanon) {
+							if _, serr := s.repo.SaveTimelineRevision(ctx, ep.ID, curRec.Revision, domainstudio.ActorUser, "disk sync", diskTL); serr == nil {
+								s.log.Debug("reconciled timeline.json from disk", "episode_id", ep.ID)
+							}
+						}
+					}
 				}
 			}
 		}
@@ -2138,6 +2181,8 @@ func ensureEpisodeDirs(epRoot string) error {
 		filepath.Join(epRoot, "media", "keyframes"),
 		filepath.Join(epRoot, "media", "videos"),
 		filepath.Join(epRoot, "media", "tts"),
+		filepath.Join(epRoot, "media", "thumbs"),
+		filepath.Join(epRoot, "timeline"),
 		filepath.Join(epRoot, "exports"),
 	} {
 		if err := os.MkdirAll(sub, 0o755); err != nil {

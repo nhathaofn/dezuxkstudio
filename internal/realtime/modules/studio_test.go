@@ -99,6 +99,15 @@ func TestStudioModule_RegisterDispatchAndFileGuard(t *testing.T) {
 		contracts.ActionStudioExtractLastFrame,
 		contracts.ActionStudioQCReview,
 		contracts.ActionStudioBatchPreflight,
+		contracts.ActionStudioTimelineGet,
+		contracts.ActionStudioTimelineApplyOps,
+		contracts.ActionStudioTimelineUndo,
+		contracts.ActionStudioTimelineRedo,
+		contracts.ActionStudioTimelineAutoAssemble,
+		contracts.ActionStudioMediaPeaksThumbs,
+		contracts.ActionStudioTimelineRender,
+		contracts.ActionStudioTimelineExportNLE,
+		contracts.ActionStudioOpenExportFolder,
 	} {
 		if h, ok := reg.Lookup(action); !ok || h == nil {
 			t.Fatalf("missing handler for %q", action)
@@ -137,5 +146,12 @@ func TestStudioModule_RegisterDispatchAndFileGuard(t *testing.T) {
 	_, err = hShotUpsert(context.Background(), &realtime.Request{}, []byte(`{"episode_id":"`+epID+`","title":"Bad","video_path":"C:\\Users\\owner\\.ssh\\id_rsa"}`))
 	if err == nil || !apperr.IsCode(err, apperr.CodeUnauthorized) {
 		t.Fatalf("expected ERR_UNAUTHORIZED from FileGuard on shot_upsert video_path, got %v", err)
+	}
+
+	lockedReg := realtime.NewRegistry(contracts.ActionNames())
+	modules.Studio{Service: svc, LockHostAdmin: true}.Register(lockedReg)
+	hOpenFolder, _ := lockedReg.Lookup(contracts.ActionStudioOpenExportFolder)
+	if _, err := hOpenFolder(context.Background(), &realtime.Request{}, []byte(`{"episode_id":"`+epID+`"}`)); !apperr.IsCode(err, apperr.CodeUnavailable) {
+		t.Fatalf("expected ERR_UNAVAILABLE when LockHostAdmin is true, got %v", err)
 	}
 }

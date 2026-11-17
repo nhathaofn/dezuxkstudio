@@ -32,5 +32,9 @@ func Nodes() []NodeSpec {
 		{"LIPSYNC_GENERATE", NodeTypeLipSyncGenerate, t[LipSyncGenerateInput](), t[LipSyncGenerateOutput]()},
 		{"QC_REVIEW", NodeTypeQCReview, t[QCReviewInput](), t[QCReviewOutput]()},
 		{"VIDEO_WATERMARK_REMOVE", NodeTypeVideoWMRemove, t[VideoWatermarkRemoveInput](), t[VideoWatermarkRemoveOutput]()},
+		{"TIMELINE_AUTO_ASSEMBLE", NodeTypeTimelineAutoAssem, t[TimelineAutoAssembleInput](), t[TimelineAutoAssembleOutput]()},
+		{"MEDIA_PEAKS_THUMBS", NodeTypeMediaPeaksThumbs, t[MediaPeaksThumbsInput](), t[MediaPeaksThumbsOutput]()},
+		{"RENDER_TIMELINE", NodeTypeRenderTimeline, t[RenderTimelineInput](), t[RenderTimelineOutput]()},
+		{"EXPORT_NLE_DRAFT", NodeTypeExportNLEDraft, t[ExportNLEDraftInput](), t[ExportNLEDraftOutput]()},
 	}
 }

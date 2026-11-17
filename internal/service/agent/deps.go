@@ -75,3 +75,11 @@ type StudioPhase2Manager interface {
 	RunQCReview(ctx context.Context, p contracts.StudioQCReviewPayload) (contracts.StudioQCReport, error)
 	RunBatchPreflight(ctx context.Context, p contracts.StudioBatchPreflightPayload) (contracts.BatchPreflightOutput, error)
 }
+
+// StudioPhase3Manager exposes multi-track EditTimeline read and revision-checked mutations to MCP tools.
+type StudioPhase3Manager interface {
+	GetTimeline(ctx context.Context, episodeID string) (contracts.StudioTimelineResult, error)
+	ApplyTimelineOps(ctx context.Context, p contracts.StudioTimelineApplyOpsPayload) (contracts.StudioTimelineResult, error)
+	UndoTimeline(ctx context.Context, p contracts.StudioTimelineRevisionNavPayload) (contracts.StudioTimelineResult, error)
+	RedoTimeline(ctx context.Context, p contracts.StudioTimelineRevisionNavPayload) (contracts.StudioTimelineResult, error)
+}
