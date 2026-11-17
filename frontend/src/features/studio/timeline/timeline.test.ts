@@ -3,11 +3,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   Actions,
+  NodeTypes,
   type StudioEditTimeline,
   type StudioEpisodeDetailResult,
   type StudioTimelineResult,
 } from "../../../contracts/generated";
 import { rtClient } from "../../../lib/rtClient";
+import { useNodeSpecsStore } from "../../workflow/useNodeSpecs";
 import { useStudioStore } from "../useStudioStore";
 import {
   buildClipTrimOp,
@@ -18,7 +20,7 @@ import {
   formatTimecodeMs,
   resolvePreviewStateAtTime,
 } from "./timelineHelpers";
-import { TimelineWorkspace } from "./TimelineWorkspace";
+import { RenderTimelineDialog, TimelineWorkspace } from "./TimelineWorkspace";
 
 function makeSampleTimeline(): StudioEditTimeline {
   return {
@@ -391,5 +393,51 @@ describe("useStudioStore Phase 3 timeline & export flows", () => {
     expect(html).toContain("Đêm nay trời mưa tầm tã.");
     expect(html).toContain("dem_mua_capcut_draft.zip");
     expect(html).toContain("timeline-clip-waveform");
+  });
+
+  it("derives RenderTimelineDialog defaults and bounds from tool.render_timeline node spec", () => {
+    useNodeSpecsStore.setState({
+      specs: [
+        {
+          type: NodeTypes.RENDER_TIMELINE,
+          provider: "studio",
+          label: "Timeline FFmpeg Renderer",
+          description: "Render timeline",
+          inputs: [],
+          outputs: [],
+          params: [
+            {
+              name: "subtitle_font_size",
+              label: "Font",
+              kind: "integer",
+              min: 12,
+              max: 64,
+              default: "30",
+            },
+            { name: "loudnorm_lufs", label: "LUFS", kind: "text", default: "-16.0" },
+            { name: "crf", label: "CRF", kind: "integer", min: 14, max: 32, default: "18" },
+            {
+              name: "preset",
+              label: "Preset",
+              kind: "select",
+              options: ["veryfast", "medium", "slow"],
+              default: "veryfast",
+            },
+          ],
+        },
+      ],
+    });
+
+    const html = renderToStaticMarkup(
+      createElement(RenderTimelineDialog, {
+        defaultFilename: "ep01_custom.mp4",
+        onClose: () => {},
+      })
+    );
+    expect(html).toContain('value="30"');
+    expect(html).toContain('max="64"');
+    expect(html).toContain('value="-16"');
+    expect(html).toContain('value="18"');
+    expect(html).toContain('value="veryfast"');
   });
 });

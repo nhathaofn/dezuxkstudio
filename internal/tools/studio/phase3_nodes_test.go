@@ -370,4 +370,31 @@ func TestPhase3TimelineAutoAssemblePeaksRenderAndNLEExport(t *testing.T) {
 	if !strings.Contains(string(otioBytes), `"OTIO_SCHEMA": "Timeline.1"`) {
 		t.Fatalf("invalid OTIO output: %s", string(otioBytes))
 	}
+
+	// 5. TrackVideo.Muted mutes video track audio while preserving video frames (no black fallback)
+	var mutedTL domainstudio.EditTimeline
+	if err := json.Unmarshal([]byte(assemOut.TimelineJSON), &mutedTL); err != nil {
+		t.Fatal(err)
+	}
+	mutedTL.Tracks[0].Muted = true
+	mutedBytes, _ := json.Marshal(mutedTL)
+	_ = os.Remove(argsLog)
+	if _, err := NewRenderTimelineNode(opts).Run(context.Background(), mustJSON(t, contracts.RenderTimelineInput{
+		TimelineJSON: string(mutedBytes),
+		OutputDir:    filepath.Join(projDir, "exports"),
+		Filename:     "ep01_muted_video_audio.mp4",
+	})); err != nil {
+		t.Fatalf("render_timeline with muted video audio: %v", err)
+	}
+	mutedArgsBytes, _ := os.ReadFile(argsLog)
+	mutedArgsText := string(mutedArgsBytes)
+	if strings.Contains(mutedArgsText, "color=c=black") {
+		t.Fatalf("expected muted TrackVideo to keep video visuals rather than falling back to black screen:\n%s", mutedArgsText)
+	}
+	if !strings.Contains(mutedArgsText, "[0:a]") && strings.Contains(mutedArgsText, "amix") {
+		// ok: 0:a omitted
+	}
+	if strings.Contains(mutedArgsText, "[0:a]atrim") {
+		t.Fatalf("expected muted TrackVideo input 0 audio to be excluded from audio mix:\n%s", mutedArgsText)
+	}
 }

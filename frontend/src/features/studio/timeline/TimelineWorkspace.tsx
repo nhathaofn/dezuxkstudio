@@ -33,6 +33,7 @@ import {
   StudioKenBurnsPresetValues,
   StudioNLEExportFormatValues,
   StudioTransitionTypeValues,
+  type Param,
   type StudioEditTimeline,
   type StudioEpisodeDetailResult,
   type StudioKenBurnsPreset,
@@ -67,7 +68,13 @@ interface RenderDialogProps {
   onClose: () => void;
 }
 
-const RenderTimelineDialog: React.FC<RenderDialogProps> = ({ defaultFilename, onClose }) => {
+function parseParamNumber(param: Param | undefined, fallback: number): number {
+  if (param?.default === undefined || param.default === "") return fallback;
+  const n = Number(param.default);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+export const RenderTimelineDialog: React.FC<RenderDialogProps> = ({ defaultFilename, onClose }) => {
   const t = useT();
   const spec = useNodeSpec(NodeTypes.RENDER_TIMELINE);
   const renderTimeline = useStudioStore((s) => s.renderTimeline);
@@ -80,18 +87,15 @@ const RenderTimelineDialog: React.FC<RenderDialogProps> = ({ defaultFilename, on
 
   const [filename, setFilename] = useState(defaultFilename);
   const [burnSubtitles, setBurnSubtitles] = useState(true);
-  const [fontSize, setFontSize] = useState<number>(
-    typeof fontParam?.default === "number" ? fontParam.default : 24
-  );
-  const [loudnormLUFS, setLoudnormLUFS] = useState<number>(
-    typeof lufsParam?.default === "number" ? lufsParam.default : -14
-  );
-  const [crf, setCrf] = useState<number>(
-    typeof crfParam?.default === "number" ? crfParam.default : 20
-  );
-  const [preset, setPreset] = useState<string>(
-    typeof presetParam?.default === "string" ? presetParam.default : "medium"
-  );
+  const [fontSizeOverride, setFontSizeOverride] = useState<number | null>(null);
+  const [lufsOverride, setLufsOverride] = useState<number | null>(null);
+  const [crfOverride, setCrfOverride] = useState<number | null>(null);
+  const [presetOverride, setPresetOverride] = useState<string | null>(null);
+
+  const fontSize = fontSizeOverride ?? parseParamNumber(fontParam, 24);
+  const loudnormLUFS = lufsOverride ?? parseParamNumber(lufsParam, -14);
+  const crf = crfOverride ?? parseParamNumber(crfParam, 20);
+  const preset = presetOverride ?? (presetParam?.default || "medium");
 
   const presetOptions =
     presetParam?.options && presetParam.options.length > 0
@@ -154,7 +158,7 @@ const RenderTimelineDialog: React.FC<RenderDialogProps> = ({ defaultFilename, on
               max={lufsParam?.max ?? -5}
               className="input-control"
               value={loudnormLUFS}
-              onChange={(e) => setLoudnormLUFS(Number(e.target.value))}
+              onChange={(e) => setLufsOverride(Number(e.target.value))}
               disabled={rendering}
             />
           </div>
@@ -170,7 +174,7 @@ const RenderTimelineDialog: React.FC<RenderDialogProps> = ({ defaultFilename, on
               max={fontParam?.max ?? 72}
               className="input-control"
               value={fontSize}
-              onChange={(e) => setFontSize(Number(e.target.value))}
+              onChange={(e) => setFontSizeOverride(Number(e.target.value))}
               disabled={rendering}
             />
           </div>
@@ -188,7 +192,7 @@ const RenderTimelineDialog: React.FC<RenderDialogProps> = ({ defaultFilename, on
               max={crfParam?.max ?? 36}
               className="input-control"
               value={crf}
-              onChange={(e) => setCrf(Number(e.target.value))}
+              onChange={(e) => setCrfOverride(Number(e.target.value))}
               disabled={rendering}
             />
           </div>
@@ -201,7 +205,7 @@ const RenderTimelineDialog: React.FC<RenderDialogProps> = ({ defaultFilename, on
               id="tl-render-preset"
               className="input-control"
               value={preset}
-              onChange={(e) => setPreset(e.target.value)}
+              onChange={(e) => setPresetOverride(e.target.value)}
               disabled={rendering}
             >
               {presetOptions.map((opt) => (

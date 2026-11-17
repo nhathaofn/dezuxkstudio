@@ -289,7 +289,7 @@ func buildRenderTimelineArgs(
 	var audioClips []resolvedTimelineClip
 	anyAudioSolo := false
 	for _, tr := range tl.Tracks {
-		if tr.Kind != domainstudio.TrackVideo && tr.Kind != domainstudio.TrackText && tr.Solo {
+		if tr.Kind != domainstudio.TrackText && tr.Solo {
 			anyAudioSolo = true
 			break
 		}
@@ -298,11 +298,9 @@ func buildRenderTimelineArgs(
 	for _, rc := range resolved {
 		switch rc.track.Kind {
 		case domainstudio.TrackVideo:
-			if !rc.track.Muted {
-				videoClips = append(videoClips, rc)
-				if rc.hasAudio && !anyAudioSolo {
-					audioClips = append(audioClips, rc)
-				}
+			videoClips = append(videoClips, rc)
+			if rc.hasAudio && !rc.track.Muted && (!anyAudioSolo || rc.track.Solo) {
+				audioClips = append(audioClips, rc)
 			}
 		case domainstudio.TrackAudioDialogue, domainstudio.TrackAudioNarration, domainstudio.TrackAudioBGM, domainstudio.TrackAudioSFX:
 			if !rc.track.Muted && (!anyAudioSolo || rc.track.Solo) {
