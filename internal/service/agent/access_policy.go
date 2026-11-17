@@ -26,6 +26,7 @@ type AccessPolicy struct {
 	dataDir      string
 	workspaceDir string
 	mediaDir     string
+	stagingDir   string
 	profilesDir  string
 	trustedDirs  []string
 	protected    []string // absolute directories that are always off-limits
@@ -39,10 +40,63 @@ func (p *AccessPolicy) SetDeveloperMode(enabled bool) {
 	p.devMode = enabled
 }
 
+// AddProtectedDirs appends additional directories (such as custom config or log roots)
+// to the protected deny-list under mutex lock.
+func (p *AccessPolicy) AddProtectedDirs(dirs ...string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	seen := make(map[string]struct{}, len(p.protected))
+	for _, existing := range p.protected {
+		seen[pathKey(existing)] = struct{}{}
+	}
+	for _, d := range dirs {
+		norm := normalizeAbsPath(d)
+		if norm == "" {
+			continue
+		}
+		if resolved, err := resolvePathFollowAncestors(norm); err == nil {
+			norm = resolved
+		}
+		key := pathKey(norm)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		p.protected = append(p.protected, norm)
+	}
+}
+
 func (p *AccessPolicy) isDeveloperMode() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.devMode
+}
+
+func (p *AccessPolicy) getWorkspaceDir() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.workspaceDir
+}
+
+func (p *AccessPolicy) getMediaDir() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.mediaDir
+}
+
+func (p *AccessPolicy) getStagingDir() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.stagingDir
+}
+
+// SetWorkspaceDirs updates DezuxkStudio's workspace, media, and staging directories at runtime under mutex lock.
+func (p *AccessPolicy) SetWorkspaceDirs(workspaceDir, mediaDir, stagingDir string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.workspaceDir = normalizeAbsPath(workspaceDir)
+	p.mediaDir = normalizeAbsPath(mediaDir)
+	p.stagingDir = normalizeAbsPath(stagingDir)
 }
 
 // FileClass groups file extensions by what the agent may do with them.
@@ -167,6 +221,53 @@ var forbiddenSegmentNames = map[string]bool{
 	"$recycle.bin": true, "system volume information": true, "recovery": true, "windowsapps": true,
 }
 
+// dosDeviceNames contains Windows legacy DOS reserved device names (case-insensitive).
+var dosDeviceNames = map[string]bool{
+	"con": true, "prn": true, "aux": true, "nul": true,
+	"com1": true, "com2": true, "com3": true, "com4": true,
+	"com5": true, "com6": true, "com7": true, "com8": true, "com9": true,
+	"lpt1": true, "lpt2": true, "lpt3": true, "lpt4": true,
+	"lpt5": true, "lpt6": true, "lpt7": true, "lpt8": true, "lpt9": true,
+	"conin$": true, "conout$": true,
+}
+
+// isDOSDeviceSegment reports whether a path segment matches a Windows DOS reserved device name,
+// with or without file extensions (e.g. CON, con.txt, PRN, AUX, NUL, COM1-9, LPT1-9).
+func isDOSDeviceSegment(seg string) bool {
+	s := strings.Trim(seg, " \t\r\n.:")
+	if s == "" {
+		return false
+	}
+	lower := strings.ToLower(s)
+	if dosDeviceNames[lower] {
+		return true
+	}
+	if idx := strings.IndexByte(lower, '.'); idx != -1 {
+		base := strings.Trim(lower[:idx], " \t\r\n.:")
+		if dosDeviceNames[base] {
+			return true
+		}
+	}
+	return false
+}
+
+// containsDOSDeviceSegment reports whether any segment of path p matches a Windows DOS reserved device name.
+func containsDOSDeviceSegment(p string) bool {
+	clean := strings.ReplaceAll(p, `\`, `/`)
+	if len(clean) >= 2 && clean[1] == ':' && ((clean[0] >= 'a' && clean[0] <= 'z') || (clean[0] >= 'A' && clean[0] <= 'Z')) {
+		clean = clean[2:]
+	}
+	for _, part := range strings.Split(clean, "/") {
+		if part == "" || part == "." || part == ".." {
+			continue
+		}
+		if isDOSDeviceSegment(part) {
+			return true
+		}
+	}
+	return false
+}
+
 // NewAccessPolicy constructs the policy. allowedDirs are user-granted trusted folders.
 func NewAccessPolicy(dataDir, workspaceDir, mediaDir, profilesDir string, allowedDirs []string) *AccessPolicy {
 	p := &AccessPolicy{
@@ -189,7 +290,7 @@ func (p *AccessPolicy) buildProtectedDirs() []string {
 	}
 	add(p.profilesDir)
 	if p.dataDir != "" {
-		for _, sub := range []string{"backups", "diagnostics", "logs", "tools", "agent-profiles"} {
+		for _, sub := range []string{"backups", "diagnostics", "logs", "tools", "agent-profiles", "agent-customizations", "agent-cli"} {
 			add(filepath.Join(p.dataDir, sub))
 		}
 	}
@@ -239,18 +340,32 @@ func (p *AccessPolicy) SetAllowedDirs(dirs []string) {
 	p.trustedDirs = cleaned
 }
 
-// Roots returns the trusted roots (workspace, media, user-granted folders).
+// Roots returns the trusted roots (workspace, media, staging, user-granted folders).
 func (p *AccessPolicy) Roots() []string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	var out []string
-	if p.workspaceDir != "" {
-		out = append(out, p.workspaceDir)
+	seen := make(map[string]struct{})
+	add := func(dir string) {
+		norm := normalizeAbsPath(dir)
+		if norm == "" {
+			return
+		}
+		key := pathKey(norm)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, norm)
 	}
-	if p.mediaDir != "" && pathKey(p.mediaDir) != pathKey(p.workspaceDir) {
-		out = append(out, p.mediaDir)
+
+	add(p.workspaceDir)
+	add(p.mediaDir)
+	add(p.stagingDir)
+	for _, td := range p.trustedDirs {
+		add(td)
 	}
-	return append(out, p.trustedDirs...)
+	return out
 }
 
 // IsTrusted reports whether an already-resolved path lies inside a trusted root.
@@ -280,6 +395,108 @@ func (p *AccessPolicy) ValidateAllowedDirCandidate(dir string) (string, error) {
 	return resolved, nil
 }
 
+// ValidateWorkspaceRootCandidate verifies a candidate master workspace root path.
+// It accepts non-existent directories if their existing ancestor is valid, and rejects:
+//   - empty paths or paths with NUL bytes;
+//   - device namespaces (\\?\, \\.\, \??\) and network paths;
+//   - NTFS Alternate Data Streams (:);
+//   - Windows DOS reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9);
+//   - whole drive / volume roots (e.g. C:\, D:\, \, /);
+//   - existing regular files;
+//   - paths containing forbidden directory segments (.git, .ssh, .aws, etc.);
+//   - paths inside protected system or application data folders (Windows, ProgramFiles, ProgramData, AppData, LocalAppData, dataDir).
+func (p *AccessPolicy) ValidateWorkspaceRootCandidate(raw string) (string, error) {
+	trimmed := strings.Trim(strings.TrimSpace(raw), `"'`)
+	if strings.ContainsRune(trimmed, 0) {
+		return "", fmt.Errorf("access denied: workspace root candidate contains NUL bytes")
+	}
+	if trimmed == "" {
+		return "", fmt.Errorf("access denied: workspace root cannot be empty")
+	}
+
+	if strings.HasPrefix(trimmed, "~") {
+		if home, err := os.UserHomeDir(); err == nil {
+			trimmed = filepath.Join(home, strings.TrimLeft(trimmed[1:], `/\`))
+		}
+	}
+
+	slashed := strings.ReplaceAll(trimmed, "/", `\`)
+	if strings.HasPrefix(slashed, `\\?\`) || strings.HasPrefix(slashed, `\\.\`) || strings.HasPrefix(slashed, `\??\`) {
+		return "", fmt.Errorf("access denied: %q uses a Windows device path; use a normal path", raw)
+	}
+	if strings.HasPrefix(slashed, `\\`) {
+		return "", fmt.Errorf("access denied: %q is a network location; workspace root must be a local directory", raw)
+	}
+	if vol := filepath.VolumeName(trimmed); strings.Contains(trimmed[len(vol):], ":") {
+		return "", fmt.Errorf("access denied: %q contains ':' (alternate data streams are not allowed)", raw)
+	}
+
+	candidate := filepath.Clean(trimmed)
+	if !filepath.IsAbs(candidate) {
+		return "", fmt.Errorf("access denied: workspace root must be an absolute path, got %q", raw)
+	}
+
+	if containsDOSDeviceSegment(candidate) {
+		return "", fmt.Errorf("access denied: workspace root candidate %q contains a Windows reserved device name", raw)
+	}
+
+	resolved, err := resolvePathFollowAncestors(candidate)
+	if err != nil {
+		return "", fmt.Errorf("access denied: cannot resolve candidate path %q: %w", raw, err)
+	}
+	resolved = filepath.Clean(resolved)
+
+	// Re-verify device path / network / ADS on the resolved path.
+	resSlashed := strings.ReplaceAll(resolved, "/", `\`)
+	if strings.HasPrefix(resSlashed, `\\?\`) || strings.HasPrefix(resSlashed, `\\.\`) || strings.HasPrefix(resSlashed, `\??\`) {
+		return "", fmt.Errorf("access denied: %q resolves to a Windows device path", raw)
+	}
+	if strings.HasPrefix(resSlashed, `\\`) {
+		return "", fmt.Errorf("access denied: %q resolves to a network location", raw)
+	}
+	if vol := filepath.VolumeName(resolved); strings.Contains(resolved[len(vol):], ":") {
+		return "", fmt.Errorf("access denied: %q contains ':' (alternate data streams are not allowed)", raw)
+	}
+	if containsDOSDeviceSegment(resolved) {
+		return "", fmt.Errorf("access denied: workspace root candidate %q contains a Windows reserved device name", raw)
+	}
+
+	if isVolumeRoot(resolved) {
+		return "", fmt.Errorf("access denied: a whole drive cannot be used as workspace root; choose a folder")
+	}
+
+	st, err := os.Stat(resolved)
+	if err == nil {
+		if !st.IsDir() {
+			return "", fmt.Errorf("access denied: %q is a regular file; workspace root must be a directory", raw)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("access denied: cannot access candidate path %q: %w", raw, err)
+	}
+
+	if hasForbiddenSegment(resolved, false) {
+		return "", fmt.Errorf("access denied: %q contains forbidden directory names", raw)
+	}
+
+	// Check protected directories: dataDir, OS system folders, AppData
+	if p.dataDir != "" && isWithinDir(resolved, p.dataDir) {
+		return "", fmt.Errorf("access denied: workspace root cannot be inside DezuxkStudio internal data directory (%q)", resolved)
+	}
+
+	p.mu.RLock()
+	protectedList := make([]string, len(p.protected))
+	copy(protectedList, p.protected)
+	p.mu.RUnlock()
+
+	for _, dir := range protectedList {
+		if isWithinDir(resolved, dir) {
+			return "", fmt.Errorf("access denied: workspace root cannot be inside protected system or application data folder (%q)", resolved)
+		}
+	}
+
+	return resolved, nil
+}
+
 // Resolve turns a user/agent supplied path into a clean absolute path and enforces that
 // it stays inside DezuxkStudio's workspace, media, or user-trusted folders and outside protected paths.
 // Relative paths are resolved against the agent workspace.
@@ -292,11 +509,12 @@ func (p *AccessPolicy) resolve(raw string, allowNetwork bool) (string, error) {
 	if strings.ContainsRune(trimmed, 0) {
 		return "", fmt.Errorf("access denied: invalid path %q", raw)
 	}
+	ws := p.getWorkspaceDir()
 	if trimmed == "" {
-		if p.workspaceDir == "" {
+		if ws == "" {
 			return "", fmt.Errorf("access denied: path is required")
 		}
-		trimmed = p.workspaceDir
+		trimmed = ws
 	}
 	if strings.HasPrefix(trimmed, "~") {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -305,10 +523,10 @@ func (p *AccessPolicy) resolve(raw string, allowNetwork bool) (string, error) {
 	}
 	candidate := filepath.Clean(trimmed)
 	if !filepath.IsAbs(candidate) {
-		if p.workspaceDir == "" {
+		if ws == "" {
 			return "", fmt.Errorf("access denied: relative path %q needs an absolute path", raw)
 		}
-		candidate = filepath.Join(p.workspaceDir, candidate)
+		candidate = filepath.Join(ws, candidate)
 	}
 	// Checked before touching the filesystem: merely resolving a network path makes Windows connect to it.
 	if reason := p.windowsPathProblem(candidate, allowNetwork); reason != "" {
@@ -353,6 +571,9 @@ func windowsPathProblemFor(path string, allowNetwork bool) string {
 	if strings.Contains(path[len(filepath.VolumeName(path)):], ":") {
 		return "contains ':' (alternate data streams are not allowed)"
 	}
+	if containsDOSDeviceSegment(path) {
+		return "contains a Windows reserved device name"
+	}
 	return ""
 }
 
@@ -376,6 +597,14 @@ func (p *AccessPolicy) protectedReason(resolved string) string {
 		base := strings.ToLower(filepath.Base(resolved))
 		if strings.HasPrefix(base, "app.db") || strings.HasSuffix(base, ".db") {
 			return "DezuxkStudio's internal database"
+		}
+		if pathKey(resolved) == pathKey(p.dataDir) {
+			return "DezuxkStudio's internal data directory"
+		}
+		for _, sub := range []string{"backups", "diagnostics", "logs", "tools", "agent-profiles", "agent-customizations", "agent-cli"} {
+			if isWithinDir(resolved, filepath.Join(p.dataDir, sub)) {
+				return "DezuxkStudio's internal " + sub + " location"
+			}
 		}
 	}
 	trusted := p.IsTrusted(resolved)
@@ -544,10 +773,27 @@ func (p *AccessPolicy) ValidateDelete(raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	targetKey := pathKey(target)
 	for _, root := range p.Roots() {
-		if pathKey(root) == pathKey(target) {
+		if pathKey(root) == targetKey {
 			return "", fmt.Errorf("access denied: cannot delete a DezuxkStudio root folder")
 		}
+	}
+	p.mu.RLock()
+	ws := p.workspaceDir
+	media := p.mediaDir
+	staging := p.stagingDir
+	p.mu.RUnlock()
+	if ws != "" {
+		if parent := filepath.Dir(ws); parent != ws && pathKey(parent) == targetKey {
+			return "", fmt.Errorf("access denied: cannot delete DezuxkStudio workspace root folder")
+		}
+	}
+	if media != "" && pathKey(media) == targetKey {
+		return "", fmt.Errorf("access denied: cannot delete DezuxkStudio media directory")
+	}
+	if staging != "" && pathKey(staging) == targetKey {
+		return "", fmt.Errorf("access denied: cannot delete DezuxkStudio staging directory")
 	}
 	if p.classifyForPolicy(target) == FileClassForbidden {
 		return "", fmt.Errorf("access denied: cannot delete source code, executables, or secret files")
@@ -579,7 +825,14 @@ func hasForbiddenSegment(path string, devMode bool) bool {
 
 func isVolumeRoot(p string) bool {
 	clean := filepath.Clean(p)
-	return filepath.Dir(clean) == clean
+	if filepath.Dir(clean) == clean {
+		return true
+	}
+	vol := filepath.VolumeName(clean)
+	if vol != "" && (clean == vol || clean == vol+string(filepath.Separator) || clean == vol+`\`) {
+		return true
+	}
+	return clean == "/" || clean == `\`
 }
 
 func resolvePathFollowAncestors(path string) (string, error) {

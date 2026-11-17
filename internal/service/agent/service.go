@@ -49,9 +49,12 @@ type Options struct {
 	DataDir                  string
 	WorkspaceDir             string
 	MediaDir                 string
+	StagingDir               string
 	ProfilesDir              string
 	CustomizationsDir        string
+	ProtectedDirs            []string
 	DeveloperMode            bool // opt-in unrestricted developer/coding mode (disabled by default)
+	SkipTrustedApproval      bool
 	AppVersion               string
 	Limits                   Limits        // zero fields use DefaultLimits
 	Secrets                  secrets.Store // OS credential store for provider API keys (in-memory when nil)
@@ -85,6 +88,9 @@ type Service struct {
 	dataDir                 string
 	workspaceDir            string
 	mediaDir                string
+	stagingDir              string
+	dirsMu                  sync.RWMutex
+	skipApproval            atomic.Bool
 	profilesDir             string
 	customizationsDir       string
 	developerMode           bool
@@ -207,6 +213,7 @@ func New(o Options) (*Service, error) {
 		dataDir:                  o.DataDir,
 		workspaceDir:             o.WorkspaceDir,
 		mediaDir:                 o.MediaDir,
+		stagingDir:               o.StagingDir,
 		profilesDir:              o.ProfilesDir,
 		customizationsDir:        custDir,
 		developerMode:            o.DeveloperMode,
@@ -254,6 +261,9 @@ func New(o Options) (*Service, error) {
 		spawnCodexAppServer:  startCodexAppServer,
 	}
 	s.drivers = newDrivers(s)
+	if len(o.ProtectedDirs) > 0 {
+		s.policy.AddProtectedDirs(o.ProtectedDirs...)
+	}
 	if s.spawnTransport == nil {
 		// The process outlives the Connect call that starts it, so it is not bound to that call's ctx;
 		// Disconnect/Close end it.
@@ -278,6 +288,10 @@ func New(o Options) (*Service, error) {
 	s.statusRevision.Store(time.Now().UnixMicro())
 	s.loadModelSelections(context.Background())
 	s.policy.SetDeveloperMode(o.DeveloperMode)
+	s.skipApproval.Store(o.SkipTrustedApproval)
+	if o.StagingDir != "" {
+		s.policy.SetWorkspaceDirs(o.WorkspaceDir, o.MediaDir, o.StagingDir)
+	}
 	if s.approvalRepo != nil {
 		if recErr := s.approvalRepo.RecoverAmbiguousApprovals(context.Background()); recErr != nil {
 			s.log.Warn("agent: failed to recover ambiguous approvals", "error", recErr)
@@ -288,6 +302,58 @@ func New(o Options) (*Service, error) {
 
 // DeveloperMode reports whether the agent runs in opt-in developer mode.
 func (s *Service) DeveloperMode() bool { return s.developerMode }
+
+func (s *Service) getWorkspaceDir() string {
+	s.dirsMu.RLock()
+	defer s.dirsMu.RUnlock()
+	return s.workspaceDir
+}
+
+func (s *Service) getMediaDir() string {
+	s.dirsMu.RLock()
+	defer s.dirsMu.RUnlock()
+	return s.mediaDir
+}
+
+func (s *Service) getStagingDir() string {
+	s.dirsMu.RLock()
+	defer s.dirsMu.RUnlock()
+	return s.stagingDir
+}
+
+// SetWorkspaceDirs updates workspace and media directories, updates the policy, and resets sessions.
+func (s *Service) SetWorkspaceDirs(workspaceDir, mediaDir string) {
+	s.dirsMu.Lock()
+	s.workspaceDir = workspaceDir
+	s.mediaDir = mediaDir
+	staging := s.stagingDir
+	s.dirsMu.Unlock()
+
+	s.policy.SetWorkspaceDirs(workspaceDir, mediaDir, staging)
+
+	s.mu.Lock()
+	s.activeSessionID = ""
+	s.activeSessionPromptHash = ""
+	s.sessionPrimed = false
+	s.cliSessions = make(map[domainagent.ProviderID]string)
+	s.mu.Unlock()
+
+	s.closeCodexAppServer()
+}
+
+// SetSkipTrustedApproval updates whether destructive file operations in trusted directories can be auto-approved.
+func (s *Service) SetSkipTrustedApproval(skip bool) {
+	s.skipApproval.Store(skip)
+}
+
+func (s *Service) skipTrustedApproval() bool {
+	return s.skipApproval.Load()
+}
+
+// ValidateWorkspaceRoot validates a candidate workspace root path against access policy rules.
+func (s *Service) ValidateWorkspaceRoot(raw string) (string, error) {
+	return s.policy.ValidateWorkspaceRootCandidate(raw)
+}
 
 // Close shuts down the active agent subprocess, MCP server, and clears ephemeral tokens.
 func (s *Service) Close() error {
@@ -358,7 +424,8 @@ func (s *Service) ensureMCPServer() (*localMCPServer, error) {
 }
 
 func (s *Service) ensureWorkspaceDir() (string, error) {
-	if s.workspaceDir == "" {
+	ws := s.getWorkspaceDir()
+	if ws == "" {
 		// Created once and reused for every turn (stable cwd for resumed sessions); removed on Close.
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -374,10 +441,10 @@ func (s *Service) ensureWorkspaceDir() (string, error) {
 		s.tempWorkspace = dir
 		return dir, nil
 	}
-	if err := os.MkdirAll(s.workspaceDir, 0o700); err != nil {
+	if err := os.MkdirAll(ws, 0o700); err != nil {
 		return "", fmt.Errorf("agent: create workspace dir: %w", err)
 	}
-	return s.workspaceDir, nil
+	return ws, nil
 }
 
 func errText(err error) string {

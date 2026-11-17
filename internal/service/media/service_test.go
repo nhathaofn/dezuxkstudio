@@ -363,3 +363,188 @@ func TestMediaServiceRegisterInputAndSignURL(t *testing.T) {
 		t.Fatal("expected ResolveAssetFile to fail for non-existent asset")
 	}
 }
+
+func TestMediaServiceDynamicMediaDirAndRootRetention(t *testing.T) {
+	tmpDir := t.TempDir()
+	rootA := filepath.Join(tmpDir, "mediaA")
+	rootB := filepath.Join(tmpDir, "mediaB")
+	stagingDir := filepath.Join(tmpDir, "staging")
+	if err := os.MkdirAll(rootA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(rootB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	fileA := filepath.Join(rootA, "imageA.png")
+	if err := os.WriteFile(fileA, []byte("image-a-content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fileB := filepath.Join(rootB, "imageB.png")
+	if err := os.WriteFile(fileB, []byte("image-b-content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := newMemoryMediaRepo()
+	signer := security.NewTicketSigner([]byte("test-key-32-bytes-long-for-test-media"))
+	svc := media.New(media.Options{
+		Repo:       repo,
+		Signer:     signer,
+		MediaDir:   rootA,
+		StagingDir: stagingDir,
+	})
+
+	if svc.MediaDir() != rootA {
+		t.Fatalf("expected MediaDir=%s, got %s", rootA, svc.MediaDir())
+	}
+	if svc.StagingDir() != stagingDir {
+		t.Fatalf("expected StagingDir=%s, got %s", stagingDir, svc.StagingDir())
+	}
+
+	ctx := context.Background()
+	itemA, err := svc.RegisterAsset(ctx, media.RegisterAssetParams{
+		FilePath:       fileA,
+		Kind:           "image",
+		SourceNode:     "test",
+		RegisteredRoot: rootA,
+	})
+	if err != nil {
+		t.Fatalf("register asset A failed: %v", err)
+	}
+
+	// Update to rootB
+	svc.SetMediaDir(rootB)
+	if svc.MediaDir() != rootB {
+		t.Fatalf("expected updated MediaDir=%s, got %s", rootB, svc.MediaDir())
+	}
+
+	// Register file in rootB without explicitly specifying registered root (defaults to dynamic mediaDir)
+	itemB, err := svc.RegisterAsset(ctx, media.RegisterAssetParams{
+		FilePath:   fileB,
+		Kind:       "image",
+		SourceNode: "test",
+	})
+	if err != nil {
+		t.Fatalf("register asset B failed: %v", err)
+	}
+
+	// Both paths and staging must be authorized
+	if !svc.IsPathAuthorized(fileA) {
+		t.Error("old media file in rootA should remain authorized")
+	}
+	if !svc.IsPathAuthorized(fileB) {
+		t.Error("new media file in rootB must be authorized")
+	}
+	if !svc.IsPathAuthorized(stagingDir) {
+		t.Error("stagingDir must be authorized")
+	}
+
+	// Verify resolve asset file still works for old asset A
+	resolvedA, _, _, _, err := svc.ResolveAssetFile(ctx, itemA.ID)
+	if err != nil {
+		t.Fatalf("ResolveAssetFile for item A failed: %v", err)
+	}
+	if resolvedA != fileA {
+		t.Errorf("expected %s, got %s", fileA, resolvedA)
+	}
+
+	resolvedB, _, _, _, err := svc.ResolveAssetFile(ctx, itemB.ID)
+	if err != nil {
+		t.Fatalf("ResolveAssetFile for item B failed: %v", err)
+	}
+	if resolvedB != fileB {
+		t.Errorf("expected %s, got %s", fileB, resolvedB)
+	}
+}
+
+func TestMediaServiceEvictionProtectsCurrentMediaDirAndStagingDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	rootA := filepath.Join(tmpDir, "mediaA")
+	stagingDir := filepath.Join(tmpDir, "staging")
+	extra1 := filepath.Join(tmpDir, "extra1")
+	extra2 := filepath.Join(tmpDir, "extra2")
+	rootB := filepath.Join(tmpDir, "mediaB")
+
+	for _, d := range []string{rootA, stagingDir, extra1, extra2, rootB} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	repo := newMemoryMediaRepo()
+	svc := media.New(media.Options{
+		Repo:         repo,
+		MediaDir:     rootA,
+		StagingDir:   stagingDir,
+		AllowedRoots: []string{extra1},
+		Config: config.MediaConfig{
+			RegisteredRootsMax: 3,
+		},
+	})
+
+	// Roots now: [rootA, stagingDir, extra1] (total 3 = max)
+	if !svc.IsPathAuthorized(rootA) || !svc.IsPathAuthorized(stagingDir) || !svc.IsPathAuthorized(extra1) {
+		t.Fatal("initial roots should all be authorized")
+	}
+
+	// Add extra2: should evict extra1, leaving rootA and stagingDir untouched
+	svc.AddAllowedRoot(extra2)
+	if !svc.IsPathAuthorized(rootA) {
+		t.Error("current mediaDir rootA must not be evicted")
+	}
+	if !svc.IsPathAuthorized(stagingDir) {
+		t.Error("current stagingDir must not be evicted")
+	}
+	if !svc.IsPathAuthorized(extra2) {
+		t.Error("newly added extra2 must be authorized")
+	}
+	if svc.IsPathAuthorized(extra1) {
+		t.Error("extra1 should have been evicted")
+	}
+
+	// Now switch mediaDir to rootB: should add rootB and evict extra2
+	svc.SetMediaDir(rootB)
+	if !svc.IsPathAuthorized(rootB) {
+		t.Error("new mediaDir rootB must be authorized")
+	}
+	if !svc.IsPathAuthorized(rootA) {
+		t.Error("old mediaDir rootA should remain authorized")
+	}
+	if !svc.IsPathAuthorized(stagingDir) {
+		t.Error("stagingDir must not be evicted")
+	}
+	if svc.IsPathAuthorized(extra2) {
+		t.Error("extra2 should have been evicted")
+	}
+}
+
+func TestMediaServiceConcurrency(t *testing.T) {
+	tmpDir := t.TempDir()
+	staging := filepath.Join(tmpDir, "staging")
+	_ = os.MkdirAll(staging, 0o755)
+
+	svc := media.New(media.Options{
+		Repo:       newMemoryMediaRepo(),
+		MediaDir:   filepath.Join(tmpDir, "initial"),
+		StagingDir: staging,
+	})
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 100; i++ {
+			svc.SetMediaDir(filepath.Join(tmpDir, "dir", "a"))
+			svc.AddAllowedRoot(filepath.Join(tmpDir, "dir", "b"))
+		}
+		close(done)
+	}()
+
+	for i := 0; i < 100; i++ {
+		_ = svc.MediaDir()
+		_ = svc.StagingDir()
+		_ = svc.IsPathAuthorized(filepath.Join(tmpDir, "dir", "a", "file.png"))
+	}
+	<-done
+}

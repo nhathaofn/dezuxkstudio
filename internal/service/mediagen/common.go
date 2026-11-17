@@ -59,6 +59,7 @@ type Options struct {
 	Providers         ProviderResolver
 	HTTPClient        *http.Client
 	MediaDir          string
+	StagingDir        string
 	Registrar         MediaRegistrar
 	MediaRepo         MediaRegistrar
 	Config            config.MediaGenConfig
@@ -78,7 +79,9 @@ type cachedVertexToken struct {
 type Service struct {
 	providers         ProviderResolver
 	httpClient        *http.Client
+	mediaMu           sync.RWMutex
 	mediaDir          string
+	stagingDir        string
 	registrar         MediaRegistrar
 	cfg               config.MediaGenConfig
 	log               *slog.Logger
@@ -127,10 +130,20 @@ func New(o Options) *Service {
 		stagingGCInterval = 1 * time.Hour
 	}
 
+	stagingDir := strings.TrimSpace(o.StagingDir)
+	if stagingDir == "" {
+		if strings.TrimSpace(o.MediaDir) != "" {
+			stagingDir = filepath.Join(o.MediaDir, "staging")
+		} else {
+			stagingDir = filepath.Join(os.TempDir(), "staging")
+		}
+	}
+
 	return &Service{
 		providers:         o.Providers,
 		httpClient:        clientCopy,
 		mediaDir:          o.MediaDir,
+		stagingDir:        stagingDir,
 		registrar:         reg,
 		cfg:               cfg,
 		log:               log,
@@ -1007,6 +1020,7 @@ func (s *Service) saveOutput(kind domainmedia.Kind, outputDir, prefix, mimeType,
 		ext = fallbackExt
 	}
 
+	mediaDir := s.getMediaDir()
 	dir := strings.TrimSpace(outputDir)
 	if dir == "" {
 		sub := "images"
@@ -1016,10 +1030,10 @@ func (s *Service) saveOutput(kind domainmedia.Kind, outputDir, prefix, mimeType,
 		case domainmedia.KindTTS:
 			sub = "tts"
 		}
-		dir = filepath.Join(s.mediaDir, "generated", sub)
+		dir = filepath.Join(mediaDir, sub)
 	}
-	if !filepath.IsAbs(dir) && s.mediaDir != "" {
-		dir = filepath.Join(s.mediaDir, dir)
+	if !filepath.IsAbs(dir) && mediaDir != "" {
+		dir = filepath.Join(mediaDir, dir)
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return domainmedia.Result{}, apperr.Internal(err)
@@ -1041,7 +1055,7 @@ func (s *Service) saveOutput(kind domainmedia.Kind, outputDir, prefix, mimeType,
 		case domainmedia.KindTTS:
 			sourceNode = "tool.generate_tts"
 		}
-		regRoot := s.mediaDir
+		regRoot := mediaDir
 		if strings.TrimSpace(outputDir) != "" {
 			regRoot = outputDir
 		}
@@ -1139,8 +1153,31 @@ func (s *Service) pollUntil(ctx context.Context, msgKey string, fallbackMsg stri
 	}
 }
 
-// StagingDir returns the absolute path to the active staging directory under mediaDir.
+// SetMediaDir updates the root media directory thread-safely.
+func (s *Service) SetMediaDir(dir string) {
+	s.mediaMu.Lock()
+	defer s.mediaMu.Unlock()
+	s.mediaDir = dir
+}
+
+// MediaDir returns the currently configured media directory.
+func (s *Service) MediaDir() string {
+	return s.getMediaDir()
+}
+
+func (s *Service) getMediaDir() string {
+	s.mediaMu.RLock()
+	defer s.mediaMu.RUnlock()
+	return s.mediaDir
+}
+
+// StagingDir returns the absolute path to the active staging directory.
 func (s *Service) StagingDir() string {
+	s.mediaMu.RLock()
+	defer s.mediaMu.RUnlock()
+	if strings.TrimSpace(s.stagingDir) != "" {
+		return s.stagingDir
+	}
 	base := s.mediaDir
 	if strings.TrimSpace(base) == "" {
 		base = os.TempDir()

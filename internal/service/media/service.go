@@ -54,6 +54,7 @@ type Options struct {
 	Signer       *security.TicketSigner
 	Config       config.MediaConfig
 	MediaDir     string
+	StagingDir   string
 	AllowedRoots []string
 	OnChanged    func()
 	Logger       *slog.Logger
@@ -66,6 +67,8 @@ type Service struct {
 	signer       *security.TicketSigner
 	cfg          config.MediaConfig
 	mediaDir     string
+	stagingDir   string
+	mediaRoots   []string
 	allowedRoots []string
 	onChanged    func()
 	log          *slog.Logger
@@ -94,33 +97,104 @@ func New(opts Options) *Service {
 		log = slog.Default()
 	}
 
-	roots := make([]string, 0, len(opts.AllowedRoots)+1)
+	cleanMediaDir := ""
 	if strings.TrimSpace(opts.MediaDir) != "" {
-		if realMediaDir, err := filepath.EvalSymlinks(filepath.Clean(opts.MediaDir)); err == nil {
-			roots = append(roots, realMediaDir)
-		} else {
-			roots = append(roots, filepath.Clean(opts.MediaDir))
+		cleanMediaDir = filepath.Clean(opts.MediaDir)
+		if realMediaDir, err := filepath.EvalSymlinks(cleanMediaDir); err == nil {
+			cleanMediaDir = realMediaDir
 		}
 	}
-	for _, r := range opts.AllowedRoots {
-		if strings.TrimSpace(r) != "" {
-			if realR, err := filepath.EvalSymlinks(filepath.Clean(r)); err == nil {
-				roots = append(roots, realR)
-			} else {
-				roots = append(roots, filepath.Clean(r))
+
+	cleanStagingDir := ""
+	if strings.TrimSpace(opts.StagingDir) != "" {
+		cleanStagingDir = filepath.Clean(opts.StagingDir)
+		if realStagingDir, err := filepath.EvalSymlinks(cleanStagingDir); err == nil {
+			cleanStagingDir = realStagingDir
+		}
+	}
+
+	roots := make([]string, 0, len(opts.AllowedRoots)+2)
+	addRoot := func(candidate string) {
+		if candidate == "" {
+			return
+		}
+		for _, existing := range roots {
+			if strings.EqualFold(existing, candidate) {
+				return
 			}
 		}
+		roots = append(roots, candidate)
+	}
+
+	addRoot(cleanMediaDir)
+	addRoot(cleanStagingDir)
+
+	for _, r := range opts.AllowedRoots {
+		if strings.TrimSpace(r) != "" {
+			cleanR := filepath.Clean(r)
+			if realR, err := filepath.EvalSymlinks(cleanR); err == nil {
+				cleanR = realR
+			}
+			addRoot(cleanR)
+		}
+	}
+
+	var mediaRoots []string
+	if cleanMediaDir != "" {
+		mediaRoots = append(mediaRoots, cleanMediaDir)
 	}
 
 	return &Service{
 		repo:         opts.Repo,
 		signer:       opts.Signer,
 		cfg:          cfg,
-		mediaDir:     opts.MediaDir,
+		mediaDir:     cleanMediaDir,
+		stagingDir:   cleanStagingDir,
+		mediaRoots:   mediaRoots,
 		allowedRoots: roots,
 		onChanged:    opts.OnChanged,
 		log:          log,
 	}
+}
+
+func (s *Service) appendAllowedRootLocked(clean string) {
+	for _, existing := range s.allowedRoots {
+		if strings.EqualFold(existing, clean) {
+			return
+		}
+	}
+	if len(s.allowedRoots) >= s.cfg.RegisteredRootsMax {
+		isMediaRoot := func(r string) bool {
+			for _, m := range s.mediaRoots {
+				if strings.EqualFold(m, r) {
+					return true
+				}
+			}
+			return false
+		}
+
+		// Phase 1: Evict oldest root that is not current mediaDir, stagingDir, or any historic mediaRoot
+		evictedIdx := -1
+		for i, r := range s.allowedRoots {
+			if !strings.EqualFold(r, s.mediaDir) && !strings.EqualFold(r, s.stagingDir) && !isMediaRoot(r) {
+				evictedIdx = i
+				break
+			}
+		}
+		// Phase 2: If all candidates are historic media roots, evict oldest historic media root
+		if evictedIdx < 0 {
+			for i, r := range s.allowedRoots {
+				if !strings.EqualFold(r, s.mediaDir) && !strings.EqualFold(r, s.stagingDir) {
+					evictedIdx = i
+					break
+				}
+			}
+		}
+		if evictedIdx >= 0 {
+			s.allowedRoots = append(s.allowedRoots[:evictedIdx], s.allowedRoots[evictedIdx+1:]...)
+		}
+	}
+	s.allowedRoots = append(s.allowedRoots, clean)
 }
 
 // AddAllowedRoot registers a new root directory as authorized for media inspection.
@@ -136,18 +210,56 @@ func (s *Service) AddAllowedRoot(root string) {
 	if err == nil {
 		clean = realRoot
 	}
-	for _, existing := range s.allowedRoots {
-		if strings.EqualFold(existing, clean) {
-			return
+	s.appendAllowedRootLocked(clean)
+}
+
+// SetMediaDir updates the active media root directory and ensures old roots remain authorized.
+func (s *Service) SetMediaDir(newMediaDir string) {
+	if strings.TrimSpace(newMediaDir) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	clean := filepath.Clean(newMediaDir)
+	realDir, err := filepath.EvalSymlinks(clean)
+	if err == nil {
+		clean = realDir
+	}
+	s.mediaDir = clean
+
+	found := false
+	for _, m := range s.mediaRoots {
+		if strings.EqualFold(m, clean) {
+			found = true
+			break
 		}
 	}
-	if len(s.allowedRoots) >= s.cfg.RegisteredRootsMax {
-		// Replace oldest non-mediaDir root
-		if len(s.allowedRoots) > 1 {
-			s.allowedRoots = append(s.allowedRoots[:1], s.allowedRoots[2:]...)
-		}
+	if !found {
+		s.mediaRoots = append(s.mediaRoots, clean)
 	}
-	s.allowedRoots = append(s.allowedRoots, clean)
+
+	s.appendAllowedRootLocked(clean)
+}
+
+// MediaDir returns the currently configured media root directory.
+func (s *Service) MediaDir() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.mediaDir
+}
+
+// StagingDir returns the currently configured staging directory.
+func (s *Service) StagingDir() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.stagingDir
+}
+
+func (s *Service) getMediaDir() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.mediaDir
 }
 
 // isRootAuthorized checks if realRoot is an authorized registered root or subdirectory of one.
@@ -203,7 +315,7 @@ func (s *Service) RegisterAsset(ctx context.Context, req RegisterAssetParams) (*
 
 	rootCandidate := strings.TrimSpace(req.RegisteredRoot)
 	if rootCandidate == "" {
-		rootCandidate = s.mediaDir
+		rootCandidate = s.getMediaDir()
 	}
 	if rootCandidate == "" {
 		rootCandidate = filepath.Dir(cleanFile)
@@ -283,7 +395,7 @@ func (s *Service) RegisterInput(ctx context.Context, p contracts.MediaRegisterIn
 	if err := p.Validate(); err != nil {
 		return contracts.MediaAssetItem{}, err
 	}
-	root := s.mediaDir
+	root := s.getMediaDir()
 	if root == "" {
 		root = filepath.Dir(p.FilePath)
 	}

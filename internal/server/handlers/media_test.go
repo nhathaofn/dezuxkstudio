@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -658,5 +659,173 @@ func TestMediaDownloadPurposePreviewVsDownload(t *testing.T) {
 	}
 	if !strings.HasPrefix(recDl.Header().Get("Content-Disposition"), "attachment") {
 		t.Fatalf("download expected attachment disposition, got %q", recDl.Header().Get("Content-Disposition"))
+	}
+}
+
+type fakeAuthorizingResolver struct {
+	allowedRoots []string
+}
+
+func (f *fakeAuthorizingResolver) ResolveAsset(_ context.Context, _ string) (string, string, error) {
+	return "", "", errors.New("not implemented")
+}
+
+func (f *fakeAuthorizingResolver) IsPathAuthorized(target string) bool {
+	cleanTarget := filepath.Clean(target)
+	for _, root := range f.allowedRoots {
+		cleanRoot := filepath.Clean(root)
+		if strings.HasPrefix(strings.ToLower(cleanTarget), strings.ToLower(cleanRoot)) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestMediaDownloadDynamicMediaDirAndAuthorizedRoots(t *testing.T) {
+	tmpDir := t.TempDir()
+	mediaDir1 := filepath.Join(tmpDir, "workspace1", "media")
+	mediaDir2 := filepath.Join(tmpDir, "workspace2", "media")
+	oldRootDir := filepath.Join(tmpDir, "old_workspace", "media")
+	outsideDir := filepath.Join(tmpDir, "forbidden")
+
+	for _, d := range []string{mediaDir1, mediaDir2, oldRootDir, outsideDir} {
+		_ = os.MkdirAll(d, 0o755)
+	}
+
+	setupTestAsset(t, mediaDir1, "img1.png", []byte("img1-bytes"))
+	setupTestAsset(t, mediaDir2, "img2.png", []byte("img2-bytes"))
+	oldFile := setupTestAsset(t, oldRootDir, "old.png", []byte("old-bytes"))
+	unauthorizedFile := setupTestAsset(t, outsideDir, "secret.png", []byte("secret-bytes"))
+
+	currentMedia := mediaDir1
+	mediaGetter := func() string {
+		return currentMedia
+	}
+
+	authResolver := &fakeAuthorizingResolver{
+		allowedRoots: []string{oldRootDir},
+	}
+
+	handler := MediaDownload(
+		mediaDir1,
+		WithMediaDirFunc(mediaGetter),
+		WithAssetResolver(authResolver),
+	)
+
+	// 1. Download relative to mediaDir1
+	req1 := httptest.NewRequest(http.MethodGet, "/api/media/download?path=img1.png", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200 downloading from mediaDir1, got %d", rec1.Code)
+	}
+
+	// 2. Switch dynamic media dir to mediaDir2
+	currentMedia = mediaDir2
+	req2 := httptest.NewRequest(http.MethodGet, "/api/media/download?path=img2.png", nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 downloading from dynamic mediaDir2, got %d", rec2.Code)
+	}
+
+	// 3. Absolute path to oldRootDir authorized via IsPathAuthorized
+	reqOld := httptest.NewRequest(http.MethodGet, "/api/media/download?path="+url.QueryEscape(oldFile), nil)
+	recOld := httptest.NewRecorder()
+	handler.ServeHTTP(recOld, reqOld)
+	if recOld.Code != http.StatusOK {
+		t.Fatalf("expected 200 for authorized old root path, got %d", recOld.Code)
+	}
+
+	// 4. Absolute path to outsideDir NOT authorized
+	reqEvil := httptest.NewRequest(http.MethodGet, "/api/media/download?path="+url.QueryEscape(unauthorizedFile), nil)
+	recEvil := httptest.NewRecorder()
+	handler.ServeHTTP(recEvil, reqEvil)
+	if recEvil.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for unauthorized path outside media dir, got %d", recEvil.Code)
+	}
+}
+
+func TestMediaUploadAndStagingCleanupWithDedicatedStagingDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	stagingDir := filepath.Join(tmpDir, "data", "staging")
+	_ = os.MkdirAll(stagingDir, 0o755)
+
+	pngData := makeTestPNG(t)
+	uploadHandler := MediaUpload(stagingDir, 0)
+
+	req := multipartUploadRequest(t, "file", "test_upload.png", pngData)
+	rec := httptest.NewRecorder()
+	uploadHandler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp mediaUploadResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	// Verify file is placed inside stagingDir directly (stagingDir/<jobID>/test_upload.png)
+	cleanStaging := filepath.Clean(stagingDir)
+	cleanDest := filepath.Clean(resp.Path)
+	if !strings.HasPrefix(strings.ToLower(cleanDest), strings.ToLower(cleanStaging)) {
+		t.Fatalf("expected path inside stagingDir %s, got %s", cleanStaging, cleanDest)
+	}
+	// Verify no double "staging/staging"
+	rel, err := filepath.Rel(cleanStaging, cleanDest)
+	if err != nil || strings.HasPrefix(rel, "staging") {
+		t.Fatalf("unexpected nested staging path: %s", rel)
+	}
+
+	// Test RunStagingCleanup directly on dedicated stagingDir
+	now := time.Now()
+	expiredJob := writeAgedStagingJob(t, stagingDir, "expired-job", "old.png", now.Add(-2*time.Hour))
+	freshJob := writeAgedStagingJob(t, stagingDir, "fresh-job", "new.png", now)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunStagingCleanup(ctx, stagingDir, time.Hour, 15*time.Millisecond, nil)
+	}()
+
+	waitUntilRemoved(t, expiredJob)
+	if _, err := os.Stat(freshJob); err != nil {
+		t.Fatalf("fresh job directory must remain: %v", err)
+	}
+	cancel()
+	<-done
+}
+
+func TestStagingCleanupWhere_ProtectsGuardedEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+	stagingDir := filepath.Join(tmpDir, "data", "staging")
+	_ = os.MkdirAll(stagingDir, 0o755)
+
+	now := time.Now()
+	expiredUpload := writeAgedStagingJob(t, stagingDir, "expired-upload", "old.png", now.Add(-48*time.Hour))
+	expiredMediagen := writeAgedStagingJob(t, stagingDir, "mediagen", "long_job.bin", now.Add(-48*time.Hour))
+	expiredLeased := writeAgedStagingJob(t, stagingDir, "leased-job", "active.bin", now.Add(-48*time.Hour))
+
+	err := CleanupStagingDirWhere(stagingDir, 24*time.Hour, now, func(p string) bool {
+		base := filepath.Base(filepath.Clean(p))
+		return base == "mediagen" || base == "leased-job"
+	})
+	if err != nil {
+		t.Fatalf("CleanupStagingDirWhere failed: %v", err)
+	}
+
+	if _, err := os.Stat(expiredUpload); !os.IsNotExist(err) {
+		t.Fatalf("expected unguarded expired upload %q to be removed", expiredUpload)
+	}
+	if _, err := os.Stat(expiredMediagen); err != nil {
+		t.Fatalf("expected guarded mediagen dir %q to remain: %v", expiredMediagen, err)
+	}
+	if _, err := os.Stat(expiredLeased); err != nil {
+		t.Fatalf("expected guarded leased dir %q to remain: %v", expiredLeased, err)
 	}
 }

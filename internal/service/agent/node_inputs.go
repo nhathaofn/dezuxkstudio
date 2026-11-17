@@ -323,9 +323,10 @@ func portTypeHint(t engine.PortType) string {
 // expandMediaPath validates one path; folders expand to their matching media files (sorted).
 func (s *Service) expandMediaPath(raw string, portType engine.PortType, recursive bool) ([]string, string, error) {
 	p := raw
-	if !filepath.IsAbs(strings.TrimSpace(p)) && s.mediaDir != "" {
+	mediaDir := s.getMediaDir()
+	if !filepath.IsAbs(strings.TrimSpace(p)) && mediaDir != "" {
 		// Same convention as the nodes: relative media paths live in DezuxkStudio's media dir.
-		p = filepath.Join(s.mediaDir, strings.TrimPrefix(strings.TrimPrefix(filepath.ToSlash(p), "media/"), "/"))
+		p = filepath.Join(mediaDir, strings.TrimPrefix(strings.TrimPrefix(filepath.ToSlash(p), "media/"), "/"))
 	}
 	resolved, err := s.policy.Resolve(p)
 	if err != nil {
@@ -405,4 +406,36 @@ func (s *Service) prepareGraph(specs []engine.Spec, g engine.Graph, recursive bo
 		prepared = append(prepared, prep)
 	}
 	return out, prepared, nil
+}
+
+// allFileTargetsTrusted reports whether all input files, folders, and output directories
+// of a prepared node input resolve cleanly via the policy and are located within trusted roots.
+// The node must operate on at least one file/folder/output target to qualify.
+func allFileTargetsTrusted(policy *AccessPolicy, prep preparedNodeInput) bool {
+	if policy == nil {
+		return false
+	}
+	totalTargets := len(prep.Files) + len(prep.Folders) + len(prep.OutputDirs)
+	if totalTargets == 0 {
+		return false
+	}
+	for _, f := range prep.Files {
+		resolved, err := policy.Resolve(f)
+		if err != nil || !policy.IsTrusted(resolved) {
+			return false
+		}
+	}
+	for _, folder := range prep.Folders {
+		resolved, err := policy.Resolve(folder)
+		if err != nil || !policy.IsTrusted(resolved) {
+			return false
+		}
+	}
+	for _, outDir := range prep.OutputDirs {
+		resolved, err := policy.Resolve(outDir)
+		if err != nil || !policy.IsTrusted(resolved) {
+			return false
+		}
+	}
+	return true
 }

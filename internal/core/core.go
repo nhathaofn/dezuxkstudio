@@ -13,11 +13,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"app/internal/apperr"
 	"app/internal/buildinfo"
 	"app/internal/config"
 	"app/internal/contracts"
@@ -71,13 +74,16 @@ func (o Options) validate() error {
 
 // Core is a fully wired, not yet started application core.
 type Core struct {
-	log      *slog.Logger
-	db       *sqlite.DB
-	hub      *realtime.Hub
-	srv      *server.Server
-	agentSvc *agentsvc.Service
-	provSvc  *providersvc.Service
-	mediaSvc *mediasvc.Service
+	log           *slog.Logger
+	db            *sqlite.DB
+	hub           *realtime.Hub
+	srv           *server.Server
+	agentSvc      *agentsvc.Service
+	provSvc       *providersvc.Service
+	mediaSvc      *mediasvc.Service
+	mediaGenSvc   *mediagensvc.Service
+	prefSvc       *preferences.Service
+	workspaceTree atomic.Pointer[paths.WorkspaceTree]
 	// background work tied to the core lifetime (e.g. the start-up provider key check)
 	bgCtx     context.Context
 	bgCancel  context.CancelFunc
@@ -85,6 +91,23 @@ type Core struct {
 	shutdown  time.Duration
 	startedAt time.Time
 }
+
+// WorkspaceTree returns the active workspace tree snapshot.
+func (c *Core) WorkspaceTree() paths.WorkspaceTree {
+	if ptr := c.workspaceTree.Load(); ptr != nil {
+		return *ptr
+	}
+	return paths.WorkspaceTree{}
+}
+
+// Preferences returns the core preferences service.
+func (c *Core) Preferences() *preferences.Service { return c.prefSvc }
+
+// Agent returns the core agent service.
+func (c *Core) Agent() *agentsvc.Service { return c.agentSvc }
+
+// MediaGen returns the core media generation service.
+func (c *Core) MediaGen() *mediagensvc.Service { return c.mediaGenSvc }
 
 // New opens storage, builds services and mounts every module. On error, everything
 // opened so far is released.
@@ -144,7 +167,7 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 	}
 	ticketSigner := security.NewTicketSigner(ticketSecret)
 
-	mods, err := c.modules(o, ticketSigner)
+	mods, err := c.modules(ctx, o, ticketSigner)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +201,9 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 				LongAction:   cfg.Realtime.LongActionTimeout,
 				PingInterval: cfg.Realtime.PingInterval,
 			},
-			MediaDir:       o.Paths.Media(),
+			MediaDir:       c.WorkspaceTree().MediaDir,
+			MediaDirFunc:   func() string { return c.WorkspaceTree().MediaDir },
+			StagingDir:     o.Paths.Staging(),
 			MaxUploadBytes: cfg.Server.MaxMediaUploadBytes,
 			TicketSigner:   ticketSigner,
 			AssetResolver:  c.mediaSvc,
@@ -187,16 +212,29 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 	if err != nil {
 		return nil, err
 	}
-	if mediaDir := o.Paths.Media(); mediaDir != "" {
+	if stagingDir := o.Paths.Staging(); stagingDir != "" {
+		mediaGenStagingDir := filepath.Clean(o.Paths.MediaGenStaging())
 		c.background("media-staging-cleanup", func(ctx context.Context) {
-			handlers.RunStagingCleanup(ctx, mediaDir, cfg.Server.MediaStagingTTL, cfg.Server.MediaStagingCleanupInterval, o.Logger)
+			handlers.RunStagingCleanupWithGuard(
+				ctx,
+				stagingDir,
+				cfg.Server.MediaStagingTTL,
+				cfg.Server.MediaStagingCleanupInterval,
+				o.Logger,
+				func(p string) bool {
+					if strings.EqualFold(filepath.Clean(p), mediaGenStagingDir) {
+						return true
+					}
+					return c.mediaGenSvc != nil && c.mediaGenSvc.IsLeased(p)
+				},
+			)
 		})
 	}
 	return c, nil
 }
 
 // modules is the single list of feature modules mounted into the hub.
-func (c *Core) modules(o Options, ticketSigner *security.TicketSigner) ([]realtime.Module, error) {
+func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.TicketSigner) ([]realtime.Module, error) {
 	cfg := o.Config
 	// One secret store for every service: OS keyring, else an encrypted file in the data dir, else memory.
 	secretStore := o.Secrets
@@ -204,7 +242,103 @@ func (c *Core) modules(o Options, ticketSigner *security.TicketSigner) ([]realti
 		secretStore = secrets.NewDurableStore(buildinfo.AppID, secrets.Dir(o.Paths.Data))
 	}
 
-	sysSvc := system.New(cfg.Mode, o.Paths, o.OpenDirectory)
+	var (
+		prefMu      sync.Mutex
+		lastPrefs   domainprefs.Preferences
+		agentSvc    *agentsvc.Service
+		mediaSvc    *mediasvc.Service
+		mediaGenSvc *mediagensvc.Service
+	)
+
+	onChange := func(p domainprefs.Preferences) {
+		prefMu.Lock()
+		oldPrefs := lastPrefs
+		lastPrefs = p
+		prefMu.Unlock()
+
+		rootChanged := p.WorkspaceRoot != oldPrefs.WorkspaceRoot
+		skipChanged := p.AgentSkipTrustedApproval != oldPrefs.AgentSkipTrustedApproval
+
+		if rootChanged {
+			// 1. If previous root was custom (prevRoot != ""), automatically add it to agentSvc.AddAllowedDir
+			if oldPrefs.WorkspaceRoot != "" && agentSvc != nil {
+				if _, err := agentSvc.AddAllowedDir(context.Background(), oldPrefs.WorkspaceRoot); err != nil {
+					o.Logger.Warn("preferences: failed to keep previous workspace root in allowed dirs", "dir", oldPrefs.WorkspaceRoot, "error", err)
+				}
+			}
+			// 2. Update atomic pointer to new tree and ensure directories exist
+			newTree := paths.ResolveWorkspaceTree(o.Paths, p.WorkspaceRoot, cfg.Agent.WorkspaceDir)
+			if err := newTree.Ensure(); err != nil {
+				o.Logger.Error("preferences: failed to ensure new workspace tree directories", "root", newTree.Root, "error", err)
+			}
+			c.workspaceTree.Store(&newTree)
+
+			// 3. Call mediaSvc.SetMediaDir, mediaGenSvc.SetMediaDir, and agentSvc.SetWorkspaceDirs
+			if mediaSvc != nil {
+				mediaSvc.SetMediaDir(newTree.MediaDir)
+			}
+			if mediaGenSvc != nil {
+				mediaGenSvc.SetMediaDir(newTree.MediaDir)
+			}
+			if agentSvc != nil {
+				agentSvc.SetWorkspaceDirs(newTree.WorkspaceDir, newTree.MediaDir)
+			}
+		}
+
+		if skipChanged {
+			if agentSvc != nil {
+				agentSvc.SetSkipTrustedApproval(p.AgentSkipTrustedApproval)
+			}
+		}
+
+		c.hub.Publish(contracts.EventPreferencesUpdated, contracts.NewPreferences(p))
+	}
+
+	validator := func(raw string) (string, error) {
+		var norm string
+		if strings.TrimSpace(raw) != "" {
+			if agentSvc != nil {
+				var err error
+				norm, err = agentSvc.ValidateWorkspaceRoot(raw)
+				if err != nil {
+					return "", apperr.Validation(err.Error())
+				}
+			} else {
+				norm = filepath.Clean(strings.TrimSpace(raw))
+			}
+		}
+		candidateTree := paths.ResolveWorkspaceTree(o.Paths, norm, cfg.Agent.WorkspaceDir)
+		if err := candidateTree.Ensure(); err != nil {
+			return "", apperr.Validation(err.Error())
+		}
+		return norm, nil
+	}
+
+	prefSvc, err := preferences.New(
+		sqlite.NewPreferencesRepository(c.db),
+		onChange,
+		preferences.WithWorkspaceRootValidator(validator),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("core: preferences service: %w", err)
+	}
+	c.prefSvc = prefSvc
+
+	initPrefs, err := prefSvc.Get(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("core: preferences initial get: %w", err)
+	}
+	prefMu.Lock()
+	lastPrefs = initPrefs
+	prefMu.Unlock()
+
+	tree := paths.ResolveWorkspaceTree(o.Paths, initPrefs.WorkspaceRoot, cfg.Agent.WorkspaceDir)
+	if err := tree.Ensure(); err != nil {
+		return nil, fmt.Errorf("core: workspace tree: %w", err)
+	}
+	c.workspaceTree.Store(&tree)
+
+	sysSvc := system.New(cfg.Mode, o.Paths, o.OpenDirectory, system.WithWorkspaceTreeFunc(c.WorkspaceTree))
 
 	updateClient := httpclient.WithTimeout(o.HTTPClient, cfg.Update.Timeout)
 	updSvc, err := update.New(update.Options{
@@ -212,13 +346,6 @@ func (c *Core) modules(o Options, ticketSigner *security.TicketSigner) ([]realti
 		CurrentVersion: buildinfo.Version,
 		UserAgent:      buildinfo.ProductName + "/" + buildinfo.Version,
 		Client:         updateClient,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	prefSvc, err := preferences.New(sqlite.NewPreferencesRepository(c.db), func(p domainprefs.Preferences) {
-		c.hub.Publish(contracts.EventPreferencesUpdated, contracts.NewPreferences(p))
 	})
 	if err != nil {
 		return nil, err
@@ -249,8 +376,11 @@ func (c *Core) modules(o Options, ticketSigner *security.TicketSigner) ([]realti
 		Client:      o.HTTPClient,
 		TestTimeout: cfg.Providers.TestTimeout,
 		AutoCheck:   cfg.Providers.AutoCheck,
-		LimitDefaults: domainprovider.LimitDefaults{MaxWorkers: cfg.Providers.DefaultMaxWorkers,
-			RPM: cfg.Providers.DefaultRPM, RequestGapMs: cfg.Providers.DefaultRequestGapMs},
+		LimitDefaults: domainprovider.LimitDefaults{
+			MaxWorkers:   cfg.Providers.DefaultMaxWorkers,
+			RPM:          cfg.Providers.DefaultRPM,
+			RequestGapMs: cfg.Providers.DefaultRequestGapMs,
+		},
 		OnChanged: func() {
 			// Runs after the mutation committed; a fresh snapshot keeps every client in sync.
 			if snap, err := provSvc.List(context.Background()); err == nil {
@@ -269,23 +399,36 @@ func (c *Core) modules(o Options, ticketSigner *security.TicketSigner) ([]realti
 		})
 	}
 
-	workDir := o.Paths.AgentWorkspace()
-	if customWS := strings.TrimSpace(cfg.Agent.WorkspaceDir); customWS != "" {
-		if !filepath.IsAbs(customWS) {
-			workDir = filepath.Join(o.Paths.Data, customWS)
-		} else {
-			workDir = filepath.Clean(customWS)
+	agentRepo := sqlite.NewAgentRepository(c.db)
+	allowedRoots := []string{tree.MediaDir, o.Paths.Staging(), tree.WorkspaceDir}
+	if storedDirs, err := agentRepo.ListAllowedDirs(ctx); err == nil {
+		allowedRoots = append(allowedRoots, storedDirs...)
+	}
+	for _, fallbackMedia := range []string{o.Paths.Media(), filepath.Join(o.Paths.DefaultStudioRoot(), "media")} {
+		if fallbackMedia != "" {
+			if fi, err := os.Stat(fallbackMedia); err == nil && fi.IsDir() {
+				allowedRoots = append(allowedRoots, fallbackMedia)
+			}
+		}
+	}
+	seenRoots := make(map[string]bool)
+	var dedupedRoots []string
+	for _, root := range allowedRoots {
+		cleaned := filepath.Clean(strings.TrimSpace(root))
+		if cleaned != "" && !seenRoots[cleaned] {
+			seenRoots[cleaned] = true
+			dedupedRoots = append(dedupedRoots, cleaned)
 		}
 	}
 
 	mediaRepo := sqlite.NewMediaRepository(c.db)
-	allowedRoots := []string{o.Paths.Media(), workDir}
-	mediaSvc := mediasvc.New(mediasvc.Options{
+	mediaSvc = mediasvc.New(mediasvc.Options{
 		Repo:         mediaRepo,
 		Signer:       ticketSigner,
 		Config:       cfg.Media,
-		MediaDir:     o.Paths.Media(),
-		AllowedRoots: allowedRoots,
+		MediaDir:     tree.MediaDir,
+		StagingDir:   o.Paths.Staging(),
+		AllowedRoots: dedupedRoots,
 		Logger:       o.Logger,
 		OnChanged: func() {
 			c.hub.Publish(contracts.EventMediaAssetsChanged, contracts.Empty{})
@@ -293,29 +436,31 @@ func (c *Core) modules(o Options, ticketSigner *security.TicketSigner) ([]realti
 	})
 	c.mediaSvc = mediaSvc
 
-	mediaGenSvc := mediagensvc.New(mediagensvc.Options{
+	mediaGenSvc = mediagensvc.New(mediagensvc.Options{
 		Providers:         provSvc,
 		HTTPClient:        o.HTTPClient,
-		MediaDir:          o.Paths.Media(),
+		MediaDir:          tree.MediaDir,
+		StagingDir:        o.Paths.MediaGenStaging(),
 		Registrar:         mediaSvc,
 		Config:            cfg.MediaGen,
 		Logger:            o.Logger,
 		StagingTTL:        cfg.MediaStagingTTL(),
 		StagingGCInterval: cfg.MediaStagingGCInterval(),
 	})
-	if mediaDir := o.Paths.Media(); mediaDir != "" {
-		stagedDir := mediaGenSvc.StagingDir()
+	c.mediaGenSvc = mediaGenSvc
+	if stagedDir := mediaGenSvc.StagingDir(); stagedDir != "" {
 		c.background("mediagen-staging-gc", func(ctx context.Context) {
-			mediagensvc.StartStagingGC(ctx, stagedDir, cfg.MediaStagingTTL(), cfg.MediaStagingGCInterval())
+			mediaGenSvc.StartStagingGCAuto(ctx)
 		})
 	}
 
 	wfSvc, err := workflow.New(workflow.Options{
-		Paths:     o.Paths,
-		Logger:    o.Logger,
-		Providers: provSvc,
-		MediaGen:  mediaGenSvc,
-		Registrar: mediaSvc,
+		Paths:             o.Paths,
+		Logger:            o.Logger,
+		Providers:         provSvc,
+		MediaGen:          mediaGenSvc,
+		Registrar:         mediaSvc,
+		WorkspaceTreeFunc: c.WorkspaceTree,
 	})
 	if err != nil {
 		return nil, err
@@ -326,26 +471,29 @@ func (c *Core) modules(o Options, ticketSigner *security.TicketSigner) ([]realti
 		Dir: o.Paths.AgentCLIs(), Client: o.HTTPClient, Logger: o.Logger, UserAgent: buildinfo.ProductName + "/" + buildinfo.Version,
 	})
 
-	agentSvc, err := agentsvc.New(agentsvc.Options{
-		Repo:              sqlite.NewAgentRepository(c.db),
-		DataDir:           o.Paths.Data,
-		WorkspaceDir:      workDir,
-		MediaDir:          o.Paths.Media(),
-		ProfilesDir:       o.Paths.AgentProfiles(),
-		CustomizationsDir: o.Paths.AgentCustomizations(),
-		DeveloperMode:     cfg.DeveloperMode(),
-		AppVersion:        buildinfo.Version,
-		Secrets:           secretStore,
-		Limits:            agentsvc.LimitsFrom(cfg),
-		Logger:            o.Logger,
-		Workflow:          wfSvc,
-		Binaries:          binSvc,
-		Managed:           agentCLIs,
-		AutoInstall:       cfg.Agent.AutoInstallCLI,
-		AutoUpdate:        cfg.Agent.AutoUpdateCLI,
-		Preferences:       prefSvc,
-		System:            sysSvc,
-		Diagnostics:       diagSvc,
+	agentSvc, err = agentsvc.New(agentsvc.Options{
+		Repo:                agentRepo,
+		DataDir:             o.Paths.Data,
+		WorkspaceDir:        tree.WorkspaceDir,
+		MediaDir:            tree.MediaDir,
+		StagingDir:          o.Paths.Staging(),
+		SkipTrustedApproval: initPrefs.AgentSkipTrustedApproval,
+		ProfilesDir:         o.Paths.AgentProfiles(),
+		CustomizationsDir:   o.Paths.AgentCustomizations(),
+		ProtectedDirs:       []string{o.Paths.Config, o.Paths.Logs},
+		DeveloperMode:       cfg.DeveloperMode(),
+		AppVersion:          buildinfo.Version,
+		Secrets:             secretStore,
+		Limits:              agentsvc.LimitsFrom(cfg),
+		Logger:              o.Logger,
+		Workflow:            wfSvc,
+		Binaries:            binSvc,
+		Managed:             agentCLIs,
+		AutoInstall:         cfg.Agent.AutoInstallCLI,
+		AutoUpdate:          cfg.Agent.AutoUpdateCLI,
+		Preferences:         prefSvc,
+		System:              sysSvc,
+		Diagnostics:         diagSvc,
 		OnStatusChanged: func(info domainagent.ProviderInfo) {
 			c.hub.Publish(contracts.EventAgentStatusChanged, contracts.NewAgentProviderInfo(info))
 		},
@@ -365,6 +513,7 @@ func (c *Core) modules(o Options, ticketSigner *security.TicketSigner) ([]realti
 	if err != nil {
 		return nil, err
 	}
+	prefSvc.SetWorkspaceRootValidator(validator)
 	agentSvc.SetProviderLinks(sqlite.NewProviderRepository(c.db))
 	agentSvc.SetMediaInspector(&mediaInspectorAdapter{svc: mediaSvc})
 	c.agentSvc = agentSvc
@@ -377,7 +526,10 @@ func (c *Core) modules(o Options, ticketSigner *security.TicketSigner) ([]realti
 
 	return []realtime.Module{
 		modules.System{Info: sysSvc, Update: updSvc, LockHostAdmin: lockRemoteHost},
-		modules.Preferences{Service: prefSvc},
+		modules.Preferences{
+			Service:            prefSvc,
+			LockTrustedFolders: cfg.Mode == config.ModeServer,
+		},
 		modules.Diagnostics{Service: diagSvc},
 		modules.Binaries{Service: binSvc, LockHostAdmin: lockRemoteHost},
 		modules.Workflow{Service: wfSvc, FileGuard: workflowFileGuard(cfg.Mode, agentSvc)},

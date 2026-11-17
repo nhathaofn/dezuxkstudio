@@ -56,8 +56,8 @@ func (s *Service) systemPrompt(ctx context.Context, id domainagent.ProviderID) s
 	fmt.Fprintf(&sb, "name: %s\nversion: %s\nplatform: %s\n", clientName, s.appVersion, runtime.GOOS)
 	if s.developerMode {
 		sb.WriteString("mode: developer\n")
-		if s.workspaceDir != "" {
-			fmt.Fprintf(&sb, "workspace_dir: %s\n", s.workspaceDir)
+		if ws := s.getWorkspaceDir(); ws != "" {
+			fmt.Fprintf(&sb, "workspace_dir: %s\n", ws)
 		}
 	}
 	if s.preferences != nil {

@@ -36,6 +36,8 @@ type RouterOptions struct {
 	WSURL                 func() string
 	Timeouts              handlers.Timeouts
 	MediaDir              string
+	MediaDirFunc          func() string
+	StagingDir            string
 	MaxUploadBytes        int64
 	TicketSigner          *security.TicketSigner
 	AssetResolver         handlers.AssetResolver
@@ -57,14 +59,33 @@ func NewRouter(o RouterOptions) http.Handler {
 				middleware.RequireJSON(
 					handlers.Broadcast(o.Hub, o.DeclaredEvents, o.MaxBroadcastBodyBytes)))))
 	}
-	if o.MediaDir != "" {
+
+	stagingDir := o.StagingDir
+	if stagingDir == "" && o.MediaDir != "" {
+		stagingDir = o.MediaDir
+	}
+
+	mediaDirGetter := o.MediaDirFunc
+	if mediaDirGetter == nil && o.MediaDir != "" {
+		mediaDirGetter = func() string { return o.MediaDir }
+	}
+
+	if stagingDir != "" {
 		auth := middleware.RequireAuth(o.AuthToken, o.AllowAnonymous)
-		mux.Handle(PathMediaUpload, cors(auth(handlers.MediaUpload(o.MediaDir, o.MaxUploadBytes))))
-		mux.Handle(PathMediaDownload, cors(handlers.MediaDownload(
-			o.MediaDir,
+		mux.Handle(PathMediaUpload, cors(auth(handlers.MediaUpload(stagingDir, o.MaxUploadBytes))))
+	}
+	if mediaDirGetter != nil || o.MediaDir != "" {
+		opts := []handlers.MediaDownloadOption{
 			handlers.WithTicketSigner(o.TicketSigner),
 			handlers.WithAssetResolver(o.AssetResolver),
 			handlers.WithAuth(o.AuthToken, o.AllowAnonymous),
+		}
+		if mediaDirGetter != nil {
+			opts = append(opts, handlers.WithMediaDirFunc(mediaDirGetter))
+		}
+		mux.Handle(PathMediaDownload, cors(handlers.MediaDownload(
+			o.MediaDir,
+			opts...,
 		)))
 	}
 

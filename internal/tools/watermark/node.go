@@ -33,11 +33,27 @@ type MediaRegistrar interface {
 
 // Options configures default directories for the node.
 type Options struct {
-	MediaDir  string // Application media storage directory
-	OutputDir string // Default folder to save cleaned images
-	Templates []watermark.Template
-	Registrar MediaRegistrar
-	Config    *config.Config
+	MediaDir      string // Application media storage directory
+	MediaDirFunc  func() string
+	OutputDir     string // Default folder to save cleaned images
+	OutputDirFunc func() string
+	Templates     []watermark.Template
+	Registrar     MediaRegistrar
+	Config        *config.Config
+}
+
+func resolveMediaDir(opts Options) string {
+	if opts.MediaDirFunc != nil {
+		return opts.MediaDirFunc()
+	}
+	return opts.MediaDir
+}
+
+func resolveOutputDir(opts Options) string {
+	if opts.OutputDirFunc != nil {
+		return opts.OutputDirFunc()
+	}
+	return opts.OutputDir
 }
 
 // RemoverImage accepts either an engine.MediaRef object or a plain string path.
@@ -72,7 +88,7 @@ func NewNode(opts Options) engine.Node {
 		},
 		Params: []engine.Param{
 			{Name: "inplace", Label: "Overwrite original file", Kind: engine.ParamToggle, Default: "false", Destructive: true},
-			{Name: "output_dir", Label: "Output directory (empty = next to each source image)", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
+			{Name: "output_dir", Label: "Output directory (empty = workspace watermark folder)", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
 			{Name: "workers", Label: "CPU worker threads (0 = Auto)", Kind: engine.ParamInteger, Min: 0, Max: 64, Default: "0"},
 			{
 				Name: "corner", Label: "Scan corner", Kind: engine.ParamSelect,
@@ -126,14 +142,15 @@ func NewNode(opts Options) engine.Node {
 			return RemoverOutput{}, ctx.Err()
 		}
 
+		mediaDir := resolveMediaDir(opts)
 		targetDir := in.OutputDir
-		if targetDir == "" {
-			targetDir = opts.OutputDir
+		if targetDir == "" && !in.InPlace {
+			targetDir = resolveOutputDir(opts)
 		}
 		if targetDir != "" {
 			// Anchor a relative folder exactly like the input paths, so the file guard checks the
 			// same folder the node then creates and writes (never the server's working directory).
-			resolved := engine.ResolveMediaPath(targetDir, opts.MediaDir)
+			resolved := engine.ResolveMediaPath(targetDir, mediaDir)
 			if resolved == "" || !filepath.IsAbs(resolved) {
 				return RemoverOutput{}, engine.Invalid("output_dir must be an absolute path or a folder inside the media folder")
 			}
@@ -170,7 +187,7 @@ func NewNode(opts Options) engine.Node {
 		safego.Go("watermark.node.reader", func() {
 			defer close(itemsCh)
 			for i, p := range rawPaths {
-				resPath, data, err := readInput(streamCtx, p, opts.MediaDir)
+				resPath, data, err := readInput(streamCtx, p, mediaDir)
 				resolvedPaths[i] = resPath
 				if err != nil {
 					if streamCtx.Err() != nil {
@@ -457,7 +474,7 @@ func registerWatermarkAsset(ctx context.Context, nodeOpts []Options, destDir, ou
 		return ""
 	}
 	opts := nodeOpts[0]
-	root := opts.MediaDir
+	root := resolveMediaDir(opts)
 	if strings.TrimSpace(destDir) != "" {
 		root = destDir
 	}

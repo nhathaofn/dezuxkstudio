@@ -37,6 +37,7 @@ func (f AssetResolverFunc) ResolveAsset(ctx context.Context, assetID string) (st
 }
 
 type mediaDownloadConfig struct {
+	mediaDirFunc   func() string
 	ticketSigner   *security.TicketSigner
 	assetResolver  AssetResolver
 	authToken      string
@@ -46,6 +47,13 @@ type mediaDownloadConfig struct {
 
 // MediaDownloadOption configures MediaDownload.
 type MediaDownloadOption func(*mediaDownloadConfig)
+
+// WithMediaDirFunc sets the dynamic getter function for the active media directory.
+func WithMediaDirFunc(fn func() string) MediaDownloadOption {
+	return func(c *mediaDownloadConfig) {
+		c.mediaDirFunc = fn
+	}
+}
 
 // WithTicketSigner sets the TicketSigner used to verify HMAC signed media tickets.
 func WithTicketSigner(signer *security.TicketSigner) MediaDownloadOption {
@@ -308,6 +316,13 @@ func MediaDownload(mediaDir string, opts ...MediaDownloadOption) http.Handler {
 			}
 		}
 
+		currentMediaDir := mediaDir
+		if cfg.mediaDirFunc != nil {
+			if dyn := strings.TrimSpace(cfg.mediaDirFunc()); dyn != "" {
+				currentMediaDir = dyn
+			}
+		}
+
 		var targetPath string
 		var targetRoot string
 
@@ -321,19 +336,19 @@ func MediaDownload(mediaDir string, opts ...MediaDownloadOption) http.Handler {
 				targetPath = p
 				targetRoot = rRoot
 			} else {
-				targetPath = filepath.Join(mediaDir, filepath.FromSlash(assetID))
-				targetRoot = mediaDir
+				targetPath = filepath.Join(currentMediaDir, filepath.FromSlash(assetID))
+				targetRoot = currentMediaDir
 			}
 			if targetRoot == "" {
-				targetRoot = mediaDir
+				targetRoot = currentMediaDir
 			}
 		} else {
 			targetPath = rawPath
-			targetRoot = mediaDir
+			targetRoot = currentMediaDir
 		}
 
-		realRoot, err := resolveExistingDir(targetRoot)
-		if err != nil {
+		realRoot, _ := resolveExistingDir(targetRoot)
+		if realRoot == "" && !filepath.IsAbs(targetPath) {
 			writeError(w, http.StatusNotFound, apperr.NotFound("media folder not found"))
 			return
 		}
@@ -354,7 +369,7 @@ func MediaDownload(mediaDir string, opts ...MediaDownloadOption) http.Handler {
 			return
 		}
 
-		if !isStrictSubPath(realRoot, realTarget) {
+		if realRoot == "" || !isStrictSubPath(realRoot, realTarget) {
 			authorized := false
 			if auth, ok := cfg.assetResolver.(interface{ IsPathAuthorized(string) bool }); ok {
 				authorized = auth.IsPathAuthorized(realTarget)
@@ -410,9 +425,15 @@ func MediaDownload(mediaDir string, opts ...MediaDownloadOption) http.Handler {
 	})
 }
 
-// RunStagingCleanup deletes expired directories under <mediaDir>/staging periodically until ctx is cancelled.
+// RunStagingCleanup deletes expired directories under stagingDir periodically until ctx is cancelled.
 // Non-positive ttl or interval values fall back to config.Default(config.ModeDesktop).Server.
-func RunStagingCleanup(ctx context.Context, mediaDir string, ttl, interval time.Duration, log *slog.Logger) {
+func RunStagingCleanup(ctx context.Context, dir string, ttl, interval time.Duration, log *slog.Logger) {
+	RunStagingCleanupWithGuard(ctx, dir, ttl, interval, log, nil)
+}
+
+// RunStagingCleanupWithGuard deletes expired unguarded entries under stagingDir periodically until ctx is cancelled.
+// Any entry for which shouldSkip returns true is preserved (e.g. dedicated mediagen subdir or actively leased paths).
+func RunStagingCleanupWithGuard(ctx context.Context, dir string, ttl, interval time.Duration, log *slog.Logger, shouldSkip func(path string) bool) {
 	if ttl <= 0 || interval <= 0 {
 		def := config.Default(config.ModeDesktop).Server
 		if ttl <= 0 {
@@ -422,9 +443,12 @@ func RunStagingCleanup(ctx context.Context, mediaDir string, ttl, interval time.
 			interval = def.MediaStagingCleanupInterval
 		}
 	}
-	stagingDir := filepath.Join(mediaDir, MediaStagingSubdir)
+	stagingDir := dir
+	if filepath.Base(filepath.Clean(dir)) != MediaStagingSubdir {
+		stagingDir = filepath.Join(dir, MediaStagingSubdir)
+	}
 	clean := func() {
-		if err := CleanupStagingDir(stagingDir, ttl, time.Now()); err != nil && log != nil {
+		if err := CleanupStagingDirWhere(stagingDir, ttl, time.Now(), shouldSkip); err != nil && log != nil {
 			log.Warn("media: staging cleanup failed", "error", err)
 		}
 	}
@@ -444,6 +468,11 @@ func RunStagingCleanup(ctx context.Context, mediaDir string, ttl, interval time.
 
 // CleanupStagingDir removes staging entries whose newest file mtime is older than maxAge relative to now.
 func CleanupStagingDir(stagingDir string, maxAge time.Duration, now time.Time) error {
+	return CleanupStagingDirWhere(stagingDir, maxAge, now, nil)
+}
+
+// CleanupStagingDirWhere removes staging entries older than maxAge unless shouldSkip returns true for their path.
+func CleanupStagingDirWhere(stagingDir string, maxAge time.Duration, now time.Time, shouldSkip func(path string) bool) error {
 	if maxAge <= 0 || strings.TrimSpace(stagingDir) == "" {
 		return nil
 	}
@@ -458,6 +487,9 @@ func CleanupStagingDir(stagingDir string, maxAge time.Duration, now time.Time) e
 	cutoff := now.Add(-maxAge)
 	for _, entry := range entries {
 		p := filepath.Join(stagingDir, entry.Name())
+		if shouldSkip != nil && shouldSkip(p) {
+			continue
+		}
 		latest, err := latestModTime(p)
 		if err != nil {
 			continue
@@ -494,17 +526,20 @@ func latestModTime(root string) (time.Time, error) {
 	return latest, nil
 }
 
-func allocateStagingPath(mediaDir, safeName string) (string, string, error) {
-	if err := os.MkdirAll(mediaDir, 0o700); err != nil {
+func allocateStagingPath(dir, safeName string) (string, string, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", "", err
 	}
-	realMedia, err := resolveExistingDir(mediaDir)
+	realDir, err := resolveExistingDir(dir)
 	if err != nil {
 		return "", "", err
 	}
-	stagingRoot := filepath.Join(realMedia, MediaStagingSubdir)
-	if err := os.MkdirAll(stagingRoot, 0o700); err != nil {
-		return "", "", err
+	stagingRoot := realDir
+	if filepath.Base(realDir) != MediaStagingSubdir {
+		stagingRoot = filepath.Join(realDir, MediaStagingSubdir)
+		if err := os.MkdirAll(stagingRoot, 0o700); err != nil {
+			return "", "", err
+		}
 	}
 
 	var rnd [16]byte

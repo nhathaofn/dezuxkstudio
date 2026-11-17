@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -21,8 +22,10 @@ import (
 	"app/internal/config"
 	"app/internal/contracts"
 	"app/internal/core"
+	domainprefs "app/internal/domain/preferences"
 	"app/internal/paths"
 	"app/internal/security"
+	"app/internal/storage/sqlite"
 	"app/internal/tools/watermark"
 )
 
@@ -72,6 +75,65 @@ type testFrame struct {
 	Error   *contracts.ErrorBody  `json:"error"`
 }
 
+func dialCoreWS(t *testing.T, wsURL, token string) (*websocket.Conn, func(action string, payload any) (testFrame, error)) {
+	t.Helper()
+	var subprotocols []string
+	if token != "" {
+		subprotocols = []string{contracts.ProtocolVersion, contracts.AuthSubprotocolPrefix + token}
+	} else {
+		subprotocols = []string{contracts.ProtocolVersion}
+	}
+
+	wsConn, _, err := websocket.Dial(context.Background(), wsURL, &websocket.DialOptions{
+		Subprotocols: subprotocols,
+	})
+	if err != nil {
+		t.Fatalf("websocket.Dial: %v", err)
+	}
+
+	seq := 0
+	caller := func(action string, payload any) (testFrame, error) {
+		t.Helper()
+		seq++
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return testFrame{}, err
+		}
+		id := action + "-" + string(rune('a'+seq))
+		req := contracts.ClientMessage{
+			Type:    contracts.MessageAction,
+			ID:      id,
+			Action:  action,
+			Payload: raw,
+		}
+		data, err := json.Marshal(req)
+		if err != nil {
+			return testFrame{}, err
+		}
+		if err := wsConn.Write(context.Background(), websocket.MessageText, data); err != nil {
+			return testFrame{}, err
+		}
+
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, respBytes, err := wsConn.Read(ctx)
+			cancel()
+			if err != nil {
+				return testFrame{}, err
+			}
+			var resp testFrame
+			if err := json.Unmarshal(respBytes, &resp); err != nil {
+				continue
+			}
+			if resp.Type == contracts.MessageResponse && resp.ID == id {
+				return resp, nil
+			}
+		}
+	}
+
+	return wsConn, caller
+}
+
 func TestCore_PreferencesAndWatermarkWiring(t *testing.T) {
 	tempDir := t.TempDir()
 	p, err := paths.Resolve("core_test", paths.Overrides{DataDir: filepath.Join(tempDir, "data"), LogDir: filepath.Join(tempDir, "logs")})
@@ -111,53 +173,8 @@ func TestCore_PreferencesAndWatermarkWiring(t *testing.T) {
 		}
 	}()
 
-	wsConn, _, err := websocket.Dial(context.Background(), c.WSURL(), &websocket.DialOptions{
-		Subprotocols: []string{contracts.ProtocolVersion, contracts.AuthSubprotocolPrefix + token},
-	})
-	if err != nil {
-		t.Fatalf("websocket.Dial: %v", err)
-	}
+	wsConn, call := dialCoreWS(t, c.WSURL(), token)
 	defer wsConn.CloseNow()
-
-	seq := 0
-	call := func(action string, payload any) (testFrame, error) {
-		t.Helper()
-		seq++
-		raw, err := json.Marshal(payload)
-		if err != nil {
-			return testFrame{}, err
-		}
-		id := action + "-" + string(rune('a'+seq))
-		req := contracts.ClientMessage{
-			Type:    contracts.MessageAction,
-			ID:      id,
-			Action:  action,
-			Payload: raw,
-		}
-		data, err := json.Marshal(req)
-		if err != nil {
-			return testFrame{}, err
-		}
-		if err := wsConn.Write(context.Background(), websocket.MessageText, data); err != nil {
-			return testFrame{}, err
-		}
-
-		for {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_, respBytes, err := wsConn.Read(ctx)
-			cancel()
-			if err != nil {
-				return testFrame{}, err
-			}
-			var resp testFrame
-			if err := json.Unmarshal(respBytes, &resp); err != nil {
-				continue
-			}
-			if resp.Type == contracts.MessageResponse && resp.ID == id {
-				return resp, nil
-			}
-		}
-	}
 
 	// 1. Update theme & language preferences
 	patchResp, err := call(contracts.ActionPreferencesUpdate, map[string]string{
@@ -214,7 +231,7 @@ func TestCore_StagingGCAndBinariesWiring(t *testing.T) {
 		t.Fatalf("ensure paths: %v", err)
 	}
 
-	stagingDir := filepath.Join(p.Media(), "staging")
+	stagingDir := p.Staging()
 	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
 		t.Fatalf("mkdir staging: %v", err)
 	}
@@ -276,6 +293,27 @@ func TestCore_StagingGCAndBinariesWiring(t *testing.T) {
 		t.Errorf("expected freshFile to exist, got err: %v", err)
 	}
 
+	// Verify an aged file inside MediaGenStaging is protected by MediaGen's LeaseRegistry
+	// and never removed by HTTP media-staging-cleanup even if older than TTL.
+	leasedMediaGenDir := p.MediaGenStaging()
+	if err := os.MkdirAll(leasedMediaGenDir, 0o755); err != nil {
+		t.Fatalf("mkdir mediagen staging: %v", err)
+	}
+	leasedFile := filepath.Join(leasedMediaGenDir, "long_video_job.tmp")
+	releaseLease := c.MediaGen().LeaseFile(leasedFile)
+	defer releaseLease()
+	if err := os.WriteFile(leasedFile, []byte("active render chunk"), 0o644); err != nil {
+		t.Fatalf("write leased mediagen file: %v", err)
+	}
+	if err := os.Chtimes(leasedFile, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes leased file: %v", err)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	if _, err := os.Stat(leasedFile); err != nil {
+		t.Errorf("expected leased mediagen staging file %q to survive both GC loops: %v", leasedFile, err)
+	}
+
 	// Verify clean shutdown
 	closeStart := time.Now()
 	if err := c.Close(); err != nil {
@@ -283,5 +321,487 @@ func TestCore_StagingGCAndBinariesWiring(t *testing.T) {
 	}
 	if time.Since(closeStart) > 3*time.Second {
 		t.Errorf("core.Close took longer than expected: %v", time.Since(closeStart))
+	}
+}
+
+func createTestWorkspace(t *testing.T, name string) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	var base string
+	if err == nil && home != "" {
+		docs := filepath.Join(home, "Documents")
+		if fi, err := os.Stat(docs); err == nil && fi.IsDir() {
+			base = docs
+		} else {
+			base = home
+		}
+	} else {
+		base = filepath.Join(os.TempDir(), "..", "..", "TestWorkspaces")
+	}
+	dir := filepath.Join(base, fmt.Sprintf("test_ws_%s_%d", name, time.Now().UnixNano()))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("createTestWorkspace: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(dir)
+	})
+	return dir
+}
+
+func TestCore_DynamicTreeResolution_DefaultAndCustom(t *testing.T) {
+	// 1. Core startup with default preferences
+	tempDir1 := t.TempDir()
+	p1, err := paths.Resolve("core_tree_default", paths.Overrides{
+		DataDir: filepath.Join(tempDir1, "data"),
+		LogDir:  filepath.Join(tempDir1, "logs"),
+	})
+	if err != nil {
+		t.Fatalf("resolve paths: %v", err)
+	}
+	p1.Config = filepath.Join(tempDir1, "config")
+	_ = p1.Ensure()
+
+	cfg1 := config.Default(config.ModeDesktop)
+	cfg1.Agent.AutoInstallCLI, cfg1.Agent.AutoUpdateCLI = false, false
+	cfg1.Server.Host = "127.0.0.1"
+	cfg1.Server.Port = 0
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	token1, _ := security.NewToken()
+
+	c1, err := core.New(context.Background(), core.Options{
+		Config:        cfg1,
+		Paths:         p1,
+		Logger:        logger,
+		AuthToken:     token1,
+		OpenDirectory: func(string) error { return nil },
+		HTTPClient:    http.DefaultClient,
+	})
+	if err != nil {
+		t.Fatalf("core.New default: %v", err)
+	}
+	defer c1.Close()
+
+	tree1 := c1.WorkspaceTree()
+	if tree1.Root != p1.DefaultStudioRoot() {
+		t.Fatalf("expected root=%q, got %q", p1.DefaultStudioRoot(), tree1.Root)
+	}
+	// Verify directory existence
+	for _, dir := range []string{tree1.Root, tree1.MediaDir, tree1.ImagesDir, tree1.VideosDir, tree1.TTSDir, tree1.WatermarkDir, tree1.WorkspaceDir} {
+		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+			t.Fatalf("expected directory %q to exist, err=%v", dir, err)
+		}
+	}
+
+	// 2. Core startup with pre-seeded custom workspace root
+	tempDir2 := t.TempDir()
+	p2, err := paths.Resolve("core_tree_custom", paths.Overrides{
+		DataDir: filepath.Join(tempDir2, "data"),
+		LogDir:  filepath.Join(tempDir2, "logs"),
+	})
+	if err != nil {
+		t.Fatalf("resolve paths: %v", err)
+	}
+	p2.Config = filepath.Join(tempDir2, "config")
+	_ = p2.Ensure()
+
+	customRoot := createTestWorkspace(t, "seed")
+	// Pre-seed SQLite preferences
+	cfg2 := config.Default(config.ModeDesktop)
+	cfg2.Agent.AutoInstallCLI, cfg2.Agent.AutoUpdateCLI = false, false
+	cfg2.Server.Host = "127.0.0.1"
+	cfg2.Server.Port = 0
+
+	dbPath := filepath.Join(p2.Data, cfg2.Storage.DBFile)
+	db, err := sqlite.Open(context.Background(), sqlite.Options{
+		Path:          dbPath,
+		BackupDir:     p2.Backups(),
+		BackupsToKeep: cfg2.Storage.BackupsToKeep,
+		BusyTimeout:   cfg2.Storage.BusyTimeout,
+		Logger:        logger,
+	})
+	if err != nil {
+		t.Fatalf("seed db open: %v", err)
+	}
+	repo := sqlite.NewPreferencesRepository(db)
+	seededPrefs := domainprefs.Defaults()
+	seededPrefs.WorkspaceRoot = customRoot
+	if err := repo.Save(context.Background(), seededPrefs); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed preferences save: %v", err)
+	}
+	_ = db.Close()
+
+	token2, _ := security.NewToken()
+	c2, err := core.New(context.Background(), core.Options{
+		Config:        cfg2,
+		Paths:         p2,
+		Logger:        logger,
+		AuthToken:     token2,
+		OpenDirectory: func(string) error { return nil },
+		HTTPClient:    http.DefaultClient,
+	})
+	if err != nil {
+		t.Fatalf("core.New custom: %v", err)
+	}
+	defer c2.Close()
+
+	tree2 := c2.WorkspaceTree()
+	if tree2.Root != customRoot {
+		t.Fatalf("expected custom root=%q, got %q", customRoot, tree2.Root)
+	}
+	for _, dir := range []string{tree2.Root, tree2.MediaDir, tree2.ImagesDir, tree2.VideosDir, tree2.TTSDir, tree2.WatermarkDir, tree2.WorkspaceDir} {
+		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+			t.Fatalf("expected custom directory %q to exist, err=%v", dir, err)
+		}
+	}
+}
+
+func TestCore_HotReloadPropagation_OnPreferencesUpdate(t *testing.T) {
+	tempDir := t.TempDir()
+	p, err := paths.Resolve("core_hotreload", paths.Overrides{
+		DataDir: filepath.Join(tempDir, "data"),
+		LogDir:  filepath.Join(tempDir, "logs"),
+	})
+	if err != nil {
+		t.Fatalf("resolve paths: %v", err)
+	}
+	p.Config = filepath.Join(tempDir, "config")
+	_ = p.Ensure()
+
+	cfg := config.Default(config.ModeDesktop)
+	cfg.Agent.AutoInstallCLI, cfg.Agent.AutoUpdateCLI = false, false
+	cfg.Server.Host = "127.0.0.1"
+	cfg.Server.Port = 0
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	token, _ := security.NewToken()
+
+	c, err := core.New(context.Background(), core.Options{
+		Config:        cfg,
+		Paths:         p,
+		Logger:        logger,
+		AuthToken:     token,
+		OpenDirectory: func(string) error { return nil },
+		HTTPClient:    http.DefaultClient,
+	})
+	if err != nil {
+		t.Fatalf("core.New: %v", err)
+	}
+	if err := c.Start(); err != nil {
+		t.Fatalf("core.Start: %v", err)
+	}
+	defer c.Close()
+
+	wsConn, call := dialCoreWS(t, c.WSURL(), token)
+	defer wsConn.CloseNow()
+
+	// 1. Initial system:info matches default studio root
+	infoResp, err := call(contracts.ActionSystemInfo, contracts.Empty{})
+	if err != nil {
+		t.Fatalf("system:info initial failed: %v", err)
+	}
+	var sysInfo contracts.SystemInfo
+	if err := json.Unmarshal(infoResp.Data, &sysInfo); err != nil {
+		t.Fatalf("unmarshal sysInfo: %v", err)
+	}
+	if sysInfo.Paths.WorkspaceRoot != p.DefaultStudioRoot() {
+		t.Fatalf("expected initial WorkspaceRoot=%q, got %q", p.DefaultStudioRoot(), sysInfo.Paths.WorkspaceRoot)
+	}
+
+	// 2. Update to custom workspace root 1
+	custom1 := createTestWorkspace(t, "hot1")
+	patchResp, err := call(contracts.ActionPreferencesUpdate, map[string]any{
+		"workspace_root": custom1,
+	})
+	if err != nil {
+		t.Fatalf("preferences:update custom1 failed: %v", err)
+	}
+	if !patchResp.Success {
+		t.Fatalf("preferences:update custom1 returned error: %+v", patchResp.Error)
+	}
+	var updated1 contracts.Preferences
+	if err := json.Unmarshal(patchResp.Data, &updated1); err != nil {
+		t.Fatalf("unmarshal updated1: %v", err)
+	}
+	if updated1.WorkspaceRoot != custom1 {
+		t.Fatalf("expected updated1.WorkspaceRoot=%q, got %q", custom1, updated1.WorkspaceRoot)
+	}
+
+	// Dynamic tree snapshot must now reflect custom1
+	if c.WorkspaceTree().Root != custom1 {
+		t.Fatalf("c.WorkspaceTree().Root=%q, want %q", c.WorkspaceTree().Root, custom1)
+	}
+	// Verify directory was created
+	if fi, err := os.Stat(filepath.Join(custom1, "media", "images")); err != nil || !fi.IsDir() {
+		t.Fatalf("expected custom1 images dir to exist: %v", err)
+	}
+
+	// system:info must dynamically reflect custom1
+	infoResp2, err := call(contracts.ActionSystemInfo, contracts.Empty{})
+	if err != nil {
+		t.Fatalf("system:info 2 failed: %v", err)
+	}
+	var sysInfo2 contracts.SystemInfo
+	if err := json.Unmarshal(infoResp2.Data, &sysInfo2); err != nil {
+		t.Fatalf("unmarshal sysInfo2: %v", err)
+	}
+	if sysInfo2.Paths.WorkspaceRoot != custom1 {
+		t.Fatalf("expected sysInfo2.WorkspaceRoot=%q, got %q", custom1, sysInfo2.Paths.WorkspaceRoot)
+	}
+	if sysInfo2.Paths.MediaDir != filepath.Join(custom1, "media") {
+		t.Fatalf("expected sysInfo2.MediaDir=%q, got %q", filepath.Join(custom1, "media"), sysInfo2.Paths.MediaDir)
+	}
+
+	// 3. Update to custom workspace root 2: custom1 should be automatically added to allowed dirs
+	custom2 := createTestWorkspace(t, "hot2")
+	patchResp2, err := call(contracts.ActionPreferencesUpdate, map[string]any{
+		"workspace_root": custom2,
+	})
+	if err != nil {
+		t.Fatalf("preferences:update custom2 failed: %v", err)
+	}
+	if !patchResp2.Success {
+		t.Fatalf("preferences:update custom2 returned error: %+v", patchResp2.Error)
+	}
+
+	if c.WorkspaceTree().Root != custom2 {
+		t.Fatalf("c.WorkspaceTree().Root=%q, want %q", c.WorkspaceTree().Root, custom2)
+	}
+
+	// Query agent:list_allowed_dirs to confirm custom1 was added to keep media read permissions
+	allowedResp, err := call(contracts.ActionAgentListAllowedDirs, contracts.Empty{})
+	if err != nil {
+		t.Fatalf("agent:list_allowed_dirs failed: %v", err)
+	}
+	var allowedDirs contracts.AgentAllowedDirsResult
+	if err := json.Unmarshal(allowedResp.Data, &allowedDirs); err != nil {
+		t.Fatalf("unmarshal allowedDirs: %v", err)
+	}
+	foundCustom1 := false
+	for _, d := range allowedDirs.Dirs {
+		if filepath.Clean(d) == filepath.Clean(custom1) {
+			foundCustom1 = true
+			break
+		}
+	}
+	if !foundCustom1 {
+		t.Fatalf("expected previous custom root %q in allowed dirs, got: %v", custom1, allowedDirs.Dirs)
+	}
+
+	// 4. Update agent_skip_trusted_approval
+	patchResp3, err := call(contracts.ActionPreferencesUpdate, map[string]any{
+		"agent_skip_trusted_approval": true,
+	})
+	if err != nil {
+		t.Fatalf("preferences:update skip_trusted failed: %v", err)
+	}
+	if !patchResp3.Success {
+		t.Fatalf("preferences:update skip_trusted returned error: %+v", patchResp3.Error)
+	}
+	var updated3 contracts.Preferences
+	if err := json.Unmarshal(patchResp3.Data, &updated3); err != nil {
+		t.Fatalf("unmarshal updated3: %v", err)
+	}
+	if !updated3.AgentSkipTrustedApproval {
+		t.Fatalf("expected AgentSkipTrustedApproval=true, got false")
+	}
+}
+
+func TestCore_ServerMode_PreferencesLockdown(t *testing.T) {
+	tempDir := t.TempDir()
+	p, err := paths.Resolve("core_server_lock", paths.Overrides{
+		DataDir: filepath.Join(tempDir, "data"),
+		LogDir:  filepath.Join(tempDir, "logs"),
+	})
+	if err != nil {
+		t.Fatalf("resolve paths: %v", err)
+	}
+	p.Config = filepath.Join(tempDir, "config")
+	_ = p.Ensure()
+
+	cfg := config.Default(config.ModeServer)
+	cfg.Agent.AutoInstallCLI, cfg.Agent.AutoUpdateCLI = false, false
+	cfg.Server.Host = "127.0.0.1"
+	cfg.Server.Port = 0
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	token, _ := security.NewToken()
+
+	c, err := core.New(context.Background(), core.Options{
+		Config:        cfg,
+		Paths:         p,
+		Logger:        logger,
+		AuthToken:     token,
+		OpenDirectory: func(string) error { return nil },
+		HTTPClient:    http.DefaultClient,
+	})
+	if err != nil {
+		t.Fatalf("core.New: %v", err)
+	}
+	if err := c.Start(); err != nil {
+		t.Fatalf("core.Start: %v", err)
+	}
+	defer c.Close()
+
+	wsConn, call := dialCoreWS(t, c.WSURL(), token)
+	defer wsConn.CloseNow()
+
+	const wantMsg = "trusted folders and workspace settings can only be changed in the desktop app on this machine"
+
+	assertUnavailable := func(name string, payload any) {
+		t.Helper()
+		resp, err := call(contracts.ActionPreferencesUpdate, payload)
+		if err != nil {
+			t.Fatalf("%s: call failed: %v", name, err)
+		}
+		if resp.Success {
+			t.Fatalf("%s: expected failure, got success", name)
+		}
+		if resp.Error == nil || resp.Error.Code != "ERR_UNAVAILABLE" {
+			t.Fatalf("%s: expected ERR_UNAVAILABLE, got %+v", name, resp.Error)
+		}
+		if resp.Error.Message != wantMsg {
+			t.Fatalf("%s: expected error message %q, got %q", name, wantMsg, resp.Error.Message)
+		}
+	}
+
+	assertUnavailable("workspace_root", map[string]any{"workspace_root": filepath.Join(tempDir, "custom")})
+	assertUnavailable("onboarding_completed", map[string]any{"onboarding_completed": true})
+	assertUnavailable("agent_skip_trusted_approval", map[string]any{"agent_skip_trusted_approval": true})
+
+	// Theme update in server mode must be allowed
+	themeResp, err := call(contracts.ActionPreferencesUpdate, map[string]any{"theme": "dark"})
+	if err != nil {
+		t.Fatalf("theme update call failed: %v", err)
+	}
+	if !themeResp.Success {
+		t.Fatalf("expected theme update to succeed, got error: %+v", themeResp.Error)
+	}
+}
+
+func TestCore_DefaultStudioMediaRetentionAcrossRestart_And_TempDirRejected(t *testing.T) {
+	tempDir := t.TempDir()
+	p, err := paths.Resolve("core_restart_retention", paths.Overrides{
+		DataDir: filepath.Join(tempDir, "data"),
+		LogDir:  filepath.Join(tempDir, "logs"),
+	})
+	if err != nil {
+		t.Fatalf("resolve paths: %v", err)
+	}
+	p.Config = filepath.Join(tempDir, "config")
+	_ = p.Ensure()
+
+	cfg := config.Default(config.ModeDesktop)
+	cfg.Agent.AutoInstallCLI, cfg.Agent.AutoUpdateCLI = false, false
+	cfg.Server.Host = "127.0.0.1"
+	cfg.Server.Port = 0
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	token1, _ := security.NewToken()
+
+	c1, err := core.New(context.Background(), core.Options{
+		Config:        cfg,
+		Paths:         p,
+		Logger:        logger,
+		AuthToken:     token1,
+		OpenDirectory: func(string) error { return nil },
+		HTTPClient:    http.DefaultClient,
+	})
+	if err != nil {
+		t.Fatalf("core.New #1: %v", err)
+	}
+	if err := c1.Start(); err != nil {
+		t.Fatalf("core.Start #1: %v", err)
+	}
+
+	ws1, call1 := dialCoreWS(t, c1.WSURL(), token1)
+
+	// 1. Register an asset while using System Default (<Data>/studio/media)
+	defaultImg := filepath.Join(p.DefaultStudioRoot(), "media", "images", "default_created.png")
+	if err := os.MkdirAll(filepath.Dir(defaultImg), 0o755); err != nil {
+		t.Fatalf("mkdir default studio media: %v", err)
+	}
+	imgBytes := generateTestPNG(t)
+	if err := os.WriteFile(defaultImg, imgBytes, 0o644); err != nil {
+		t.Fatalf("write default png: %v", err)
+	}
+	regResp, err := call1(contracts.ActionMediaRegisterInput, contracts.MediaRegisterInputPayload{
+		FilePath:   defaultImg,
+		Kind:       "image",
+		SourceNode: "test",
+	})
+	if err != nil || !regResp.Success {
+		t.Fatalf("register default studio asset failed: err=%v resp=%+v", err, regResp.Error)
+	}
+	var asset contracts.MediaAssetItem
+	if err := json.Unmarshal(regResp.Data, &asset); err != nil {
+		t.Fatalf("unmarshal asset: %v", err)
+	}
+
+	// 2. Verify os.TempDir() inside LocalAppData cannot bypass WorkspaceRoot protection
+	if localApp := os.Getenv("LOCALAPPDATA"); localApp != "" {
+		tempSub := filepath.Join(localApp, "Temp", "dezuxk_should_reject")
+		rejResp, err := call1(contracts.ActionPreferencesUpdate, map[string]any{
+			"workspace_root": tempSub,
+		})
+		if err != nil {
+			t.Fatalf("preferences:update tempSub call failed: %v", err)
+		}
+		if rejResp.Success || rejResp.Error == nil || rejResp.Error.Code != "ERR_VALIDATION" {
+			t.Fatalf("expected ERR_VALIDATION for Temp dir inside LocalAppData, got success=%v err=%+v", rejResp.Success, rejResp.Error)
+		}
+	}
+
+	// 3. Switch away from System Default to a custom WorkspaceRoot
+	customRoot := createTestWorkspace(t, "after_default")
+	updResp, err := call1(contracts.ActionPreferencesUpdate, map[string]any{
+		"workspace_root":       customRoot,
+		"onboarding_completed": true,
+	})
+	if err != nil || !updResp.Success {
+		t.Fatalf("switch to custom root failed: err=%v resp=%+v", err, updResp.Error)
+	}
+
+	ws1.CloseNow()
+	if err := c1.Close(); err != nil {
+		t.Fatalf("core.Close #1: %v", err)
+	}
+
+	// 4. Restart Core with the same DB/paths and verify old System Default asset is still downloadable
+	token2, _ := security.NewToken()
+	c2, err := core.New(context.Background(), core.Options{
+		Config:        cfg,
+		Paths:         p,
+		Logger:        logger,
+		AuthToken:     token2,
+		OpenDirectory: func(string) error { return nil },
+		HTTPClient:    http.DefaultClient,
+	})
+	if err != nil {
+		t.Fatalf("core.New #2: %v", err)
+	}
+	if err := c2.Start(); err != nil {
+		t.Fatalf("core.Start #2: %v", err)
+	}
+	defer func() {
+		if err := c2.Close(); err != nil {
+			t.Errorf("core.Close #2: %v", err)
+		}
+	}()
+
+	httpBase := "http" + c2.WSURL()[len("ws"):len(c2.WSURL())-len("/ws")]
+	req, _ := http.NewRequest(http.MethodGet, httpBase+"/api/media/download?asset_id="+asset.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+token2)
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("download asset after restart: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK for default studio asset after switching root and restarting, got %d", resp.StatusCode)
+	}
+	gotBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if !bytes.Equal(gotBytes, imgBytes) {
+		t.Fatalf("downloaded asset bytes mismatch after restart")
 	}
 }
