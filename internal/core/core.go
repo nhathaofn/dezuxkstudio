@@ -45,6 +45,7 @@ import (
 	mediagensvc "app/internal/service/mediagen"
 	"app/internal/service/preferences"
 	providersvc "app/internal/service/provider"
+	studiosvc "app/internal/service/studio"
 	"app/internal/service/system"
 	"app/internal/service/update"
 	"app/internal/service/workflow"
@@ -82,6 +83,7 @@ type Core struct {
 	provSvc       *providersvc.Service
 	mediaSvc      *mediasvc.Service
 	mediaGenSvc   *mediagensvc.Service
+	studioSvc     *studiosvc.Service
 	prefSvc       *preferences.Service
 	workspaceTree atomic.Pointer[paths.WorkspaceTree]
 	// background work tied to the core lifetime (e.g. the start-up provider key check)
@@ -108,6 +110,9 @@ func (c *Core) Agent() *agentsvc.Service { return c.agentSvc }
 
 // MediaGen returns the core media generation service.
 func (c *Core) MediaGen() *mediagensvc.Service { return c.mediaGenSvc }
+
+// Studio returns the core AI film studio service.
+func (c *Core) Studio() *studiosvc.Service { return c.studioSvc }
 
 // New opens storage, builds services and mounts every module. On error, everything
 // opened so far is released.
@@ -248,6 +253,7 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		agentSvc    *agentsvc.Service
 		mediaSvc    *mediasvc.Service
 		mediaGenSvc *mediagensvc.Service
+		studioSvc   *studiosvc.Service
 	)
 
 	onChange := func(p domainprefs.Preferences) {
@@ -273,15 +279,20 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 			}
 			c.workspaceTree.Store(&newTree)
 
-			// 3. Call mediaSvc.SetMediaDir, mediaGenSvc.SetMediaDir, and agentSvc.SetWorkspaceDirs
+			// 3. Call mediaSvc.SetMediaDir, mediaGenSvc.SetMediaDir, agentSvc.SetWorkspaceDirs, and studioSvc.SetProjectsDir
 			if mediaSvc != nil {
 				mediaSvc.SetMediaDir(newTree.MediaDir)
+				mediaSvc.AddAllowedRoot(newTree.WorkspaceDir)
+				mediaSvc.AddAllowedRoot(newTree.ProjectsDir)
 			}
 			if mediaGenSvc != nil {
 				mediaGenSvc.SetMediaDir(newTree.MediaDir)
 			}
 			if agentSvc != nil {
 				agentSvc.SetWorkspaceDirs(newTree.WorkspaceDir, newTree.MediaDir)
+			}
+			if studioSvc != nil {
+				studioSvc.SetProjectsDir(newTree.ProjectsDir)
 			}
 		}
 
@@ -400,7 +411,7 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 	}
 
 	agentRepo := sqlite.NewAgentRepository(c.db)
-	allowedRoots := []string{tree.MediaDir, o.Paths.Staging(), tree.WorkspaceDir}
+	allowedRoots := []string{tree.MediaDir, o.Paths.Staging(), tree.WorkspaceDir, tree.ProjectsDir}
 	if storedDirs, err := agentRepo.ListAllowedDirs(ctx); err == nil {
 		allowedRoots = append(allowedRoots, storedDirs...)
 	}
@@ -459,12 +470,27 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		Logger:            o.Logger,
 		Providers:         provSvc,
 		MediaGen:          mediaGenSvc,
+		Binaries:          binSvc,
+		StudioConfig:      cfg.Studio,
 		Registrar:         mediaSvc,
 		WorkspaceTreeFunc: c.WorkspaceTree,
 	})
 	if err != nil {
 		return nil, err
 	}
+
+	studioSvc = studiosvc.New(studiosvc.Options{
+		Repo:         sqlite.NewStudioRepository(c.db),
+		Workflow:     wfSvc,
+		Media:        mediaSvc,
+		StudioConfig: cfg.Studio,
+		ProjectsDir:  tree.ProjectsDir,
+		OnEvent: func(eventName string, data any) {
+			c.hub.Publish(eventName, data)
+		},
+		Logger: o.Logger,
+	})
+	c.studioSvc = studioSvc
 
 	// The app's own copies of the agent CLIs live in one folder of its data; nothing installed elsewhere is touched.
 	agentCLIs := agentclisvc.New(agentclisvc.Options{
@@ -494,6 +520,7 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		Preferences:         prefSvc,
 		System:              sysSvc,
 		Diagnostics:         diagSvc,
+		Studio:              studioSvc,
 		OnStatusChanged: func(info domainagent.ProviderInfo) {
 			c.hub.Publish(contracts.EventAgentStatusChanged, contracts.NewAgentProviderInfo(info))
 		},
@@ -541,6 +568,7 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		},
 		modules.Providers{Service: provSvc},
 		modules.Media{Service: mediaSvc},
+		modules.Studio{Service: studioSvc, FileGuard: workflowFileGuard(cfg.Mode, agentSvc)},
 	}, nil
 }
 

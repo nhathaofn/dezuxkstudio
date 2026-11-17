@@ -49,3 +49,17 @@ type SystemInspector interface {
 type DiagnosticsExporter interface {
 	Export(ctx context.Context) (contracts.DiagnosticsBundle, error)
 }
+
+// StudioManager exposes AI film studio projects, episodes, assets, shots, workspace sync, and stage execution.
+type StudioManager interface {
+	ListProjects(ctx context.Context) (contracts.StudioProjectListResult, error)
+	CreateProject(ctx context.Context, p contracts.StudioProjectCreatePayload) (contracts.StudioProjectDetailResult, error)
+	GetProject(ctx context.Context, idOrSlug string) (contracts.StudioProjectDetailResult, error)
+	CreateEpisode(ctx context.Context, p contracts.StudioEpisodeCreatePayload) (contracts.StudioEpisodeDetailResult, error)
+	GetEpisode(ctx context.Context, episodeID string) (contracts.StudioEpisodeDetailResult, error)
+	SaveScript(ctx context.Context, p contracts.StudioEpisodeSaveScriptPayload) (contracts.StudioEpisodeDetailResult, error)
+	UpsertAsset(ctx context.Context, p contracts.StudioAssetUpsertPayload) (contracts.StudioAssetUpsertResult, error)
+	UpsertShot(ctx context.Context, p contracts.StudioShotUpsertPayload) (contracts.StudioShotUpsertResult, error)
+	SyncWorkspace(ctx context.Context, projectID string) (*contracts.StudioProjectDetailResult, error)
+	RunStage(ctx context.Context, p contracts.StudioEpisodeRunStagePayload) (contracts.StudioRunStageResult, error)
+}

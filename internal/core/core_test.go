@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -803,5 +804,92 @@ func TestCore_DefaultStudioMediaRetentionAcrossRestart_And_TempDirRejected(t *te
 	}
 	if !bytes.Equal(gotBytes, imgBytes) {
 		t.Fatalf("downloaded asset bytes mismatch after restart")
+	}
+}
+
+func TestCore_StudioWorkspaceRootHotReloadAndWorkflowGuard(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	p := paths.Paths{
+		Config: filepath.Join(tmp, "config"),
+		Data:   filepath.Join(tmp, "data"),
+		Logs:   filepath.Join(tmp, "logs"),
+	}
+	if err := p.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default(config.ModeDesktop)
+	cfg.Providers.CheckOnStartup = false
+	cfg.Providers.AutoCheck = false
+	token, _ := security.NewToken()
+
+	c, err := core.New(ctx, core.Options{
+		Config:        cfg,
+		Paths:         p,
+		Logger:        slog.New(slog.DiscardHandler),
+		AuthToken:     token,
+		OpenDirectory: func(string) error { return nil },
+		HTTPClient:    http.DefaultClient,
+	})
+	if err != nil {
+		t.Fatalf("core.New: %v", err)
+	}
+	if err := c.Start(); err != nil {
+		t.Fatalf("core.Start: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	initProjectsDir := c.WorkspaceTree().ProjectsDir
+	if initProjectsDir == "" || c.Studio().ProjectsDir() != initProjectsDir {
+		t.Fatalf("expected initial ProjectsDir=%q matching studioSvc=%q", initProjectsDir, c.Studio().ProjectsDir())
+	}
+
+	ws, call := dialCoreWS(t, c.WSURL(), token)
+	defer ws.CloseNow()
+
+	// Create initial project in default ProjectsDir
+	r1, err := call(contracts.ActionStudioProjectCreate, map[string]any{"title": "First Film"})
+	if err != nil || !r1.Success {
+		t.Fatalf("studio:project_create #1 failed: err=%v resp=%+v", err, r1.Error)
+	}
+
+	// Switch WorkspaceRoot via preferences:update
+	newRoot := createTestWorkspace(t, "studio_hot_reload")
+	upd, err := call(contracts.ActionPreferencesUpdate, map[string]any{
+		"workspace_root":       newRoot,
+		"onboarding_completed": true,
+	})
+	if err != nil || !upd.Success {
+		t.Fatalf("preferences:update failed: err=%v resp=%+v", err, upd.Error)
+	}
+
+	wantNewProjectsDir := filepath.Join(newRoot, "workspace", "projects")
+	if !strings.EqualFold(filepath.Clean(c.Studio().ProjectsDir()), filepath.Clean(wantNewProjectsDir)) {
+		t.Fatalf("expected hot-reloaded ProjectsDir=%q, got %q", wantNewProjectsDir, c.Studio().ProjectsDir())
+	}
+
+	// New project should be created inside the updated ProjectsDir
+	r2, err := call(contracts.ActionStudioProjectCreate, map[string]any{"title": "Second Film"})
+	if err != nil || !r2.Success {
+		t.Fatalf("studio:project_create #2 failed: err=%v resp=%+v", err, r2.Error)
+	}
+	var detail2 contracts.StudioProjectDetailResult
+	if err := json.Unmarshal(r2.Data, &detail2); err != nil {
+		t.Fatal(err)
+	}
+	expectedPrefix := filepath.Clean(wantNewProjectsDir)
+	if !strings.HasPrefix(strings.ToLower(filepath.Clean(detail2.Project.RootDir)), strings.ToLower(expectedPrefix)) {
+		t.Fatalf("expected new project RootDir inside %q, got %q", expectedPrefix, detail2.Project.RootDir)
+	}
+
+	// Workflow FileGuard (CheckTrustedFile) must permit files in new ProjectsDir & reject untrusted external dirs
+	newScriptArtifact := filepath.Join(detail2.Project.RootDir, "episodes", "ep01", "script", "normalized_script.json")
+	if err := c.Agent().CheckTrustedFile(newScriptArtifact, true); err != nil {
+		t.Fatalf("CheckTrustedFile should permit new ProjectsDir path %q, got %v", newScriptArtifact, err)
+	}
+	untrustedDir := t.TempDir()
+	outsideFile := filepath.Join(untrustedDir, "evil.json")
+	if err := c.Agent().CheckTrustedFile(outsideFile, true); err == nil {
+		t.Fatalf("CheckTrustedFile should reject untrusted path %q", outsideFile)
 	}
 }

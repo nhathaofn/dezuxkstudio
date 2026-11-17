@@ -424,6 +424,13 @@ func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) 
 		} else {
 			res, execErr = s.binaries.Download(ctx, domainbinaries.BinaryID(in.ID))
 		}
+	} else if s.studio != nil && rec.ToolName == "studio_episode_run_stage" {
+		var p contracts.StudioEpisodeRunStagePayload
+		if err := json.Unmarshal([]byte(rec.InputJSON), &p); err != nil {
+			execErr = fmt.Errorf("invalid studio stage input: %w", err)
+		} else {
+			res, execErr = s.studio.RunStage(ctx, p)
+		}
 	} else {
 		execErr = fmt.Errorf("no executor available for approved action %s", rec.ToolName)
 	}

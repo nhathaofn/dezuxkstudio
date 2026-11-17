@@ -67,6 +67,7 @@ type Options struct {
 	Preferences              PreferencesManager
 	System                   SystemInspector
 	Diagnostics              DiagnosticsExporter
+	Studio                   StudioManager
 	OnStatusChanged          func(domainagent.ProviderInfo)
 	OnChatEvent              func(domainagent.ChatEvent)
 	OnApprovalsChanged       func([]domainagent.ApprovalRequest)
@@ -109,6 +110,7 @@ type Service struct {
 	preferences             PreferencesManager
 	system                  SystemInspector
 	diagnostics             DiagnosticsExporter
+	studio                  StudioManager
 	onStatusChanged         func(domainagent.ProviderInfo)
 	onChatEvent             func(domainagent.ChatEvent)
 	onApprovalsChanged      func([]domainagent.ApprovalRequest)
@@ -231,6 +233,7 @@ func New(o Options) (*Service, error) {
 		preferences:              o.Preferences,
 		system:                   o.System,
 		diagnostics:              o.Diagnostics,
+		studio:                   o.Studio,
 		onStatusChanged:          o.OnStatusChanged,
 		onChatEvent:              o.OnChatEvent,
 		onApprovalsChanged:       o.OnApprovalsChanged,

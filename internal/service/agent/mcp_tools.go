@@ -614,6 +614,8 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 			return mcpJSON(res)
 		})
 
+	s.registerStudioTools(server)
+
 	return server
 }
 
@@ -672,6 +674,11 @@ func (s *Service) buildCapabilitiesSnapshot(ctx context.Context) map[string]any 
 
 	if providers := s.providerSnapshot(ctx); providers != nil {
 		appFeatures["providers"] = providers
+	}
+	if s.studio != nil {
+		if studioList, err := s.studio.ListProjects(ctx); err == nil {
+			appFeatures["studio"] = studioList
+		}
 	}
 
 	// Group 2: what the assistant does by itself. These are NOT DezuxkStudio features and must never be presented as such.

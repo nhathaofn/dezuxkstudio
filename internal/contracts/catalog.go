@@ -10,6 +10,7 @@ import (
 	"app/internal/domain/binaries"
 	"app/internal/domain/preferences"
 	"app/internal/domain/provider"
+	domainstudio "app/internal/domain/studio"
 	"app/internal/secrets"
 )
 
@@ -91,6 +92,7 @@ func LongActions() []string {
 		ActionWorkflowRunGraph,
 		ActionDiagnosticsExport,
 		ActionAgentResolveApproval, // an approved action runs a workflow node or graph
+		ActionStudioEpisodeRunStage,
 	}
 }
 
@@ -229,6 +231,18 @@ func Actions() []ActionSpec {
 		{ActionAgentUnlinkProvider, "Removes the opt-in provider link for an agent provider.", t[AgentProviderIDPayload](), t[Empty]()},
 		{ActionAgentListProviderLinks, "Lists all configured agent provider links.", t[Empty](), t[AgentProviderLinksResult]()},
 		{ActionAgentCompatibleProviders, "Lists allowed target providers for an agent provider.", t[AgentProviderIDPayload](), t[AgentCompatibleProvidersResult]()},
+		{ActionStudioProjectList, "Lists all AI film studio projects and the active workspace projects directory.", t[Empty](), t[StudioProjectListResult]()},
+		{ActionStudioProjectCreate, "Creates a new AI film studio project with its workspace folder and initial episode.", t[StudioProjectCreatePayload](), t[StudioProjectDetailResult]()},
+		{ActionStudioProjectGet, "Gets a studio project with its episodes, assets, and default episode detail.", t[StudioIDPayload](), t[StudioProjectDetailResult]()},
+		{ActionStudioProjectUpdate, "Updates studio project metadata and default models.", t[StudioProjectUpdatePayload](), t[StudioProjectDetailResult]()},
+		{ActionStudioProjectDelete, "Deletes a studio project record and optionally removes its workspace directory.", t[StudioProjectDeletePayload](), t[Empty]()},
+		{ActionStudioEpisodeCreate, "Creates a new episode inside a studio project.", t[StudioEpisodeCreatePayload](), t[StudioEpisodeDetailResult]()},
+		{ActionStudioEpisodeGet, "Gets full episode detail including script, asset bible, shots, and export path.", t[StudioIDPayload](), t[StudioEpisodeDetailResult]()},
+		{ActionStudioEpisodeSaveScript, "Saves raw screenplay text or structured script edits for an episode.", t[StudioEpisodeSaveScriptPayload](), t[StudioEpisodeDetailResult]()},
+		{ActionStudioAssetUpsert, "Creates, updates, or deletes a studio project asset bible entry.", t[StudioAssetUpsertPayload](), t[StudioAssetUpsertResult]()},
+		{ActionStudioShotUpsert, "Creates or updates a storyboard shot inside an episode.", t[StudioShotUpsertPayload](), t[StudioShotUpsertResult]()},
+		{ActionStudioShotReorder, "Reorders storyboard shots in an episode.", t[StudioShotReorderPayload](), t[StudioShotListResult]()},
+		{ActionStudioEpisodeRunStage, "Executes a Phase 1 production stage or batch across episode shots and assets.", t[StudioEpisodeRunStagePayload](), t[StudioRunStageResult]()},
 	}
 }
 
@@ -245,6 +259,9 @@ func Events() []EventSpec {
 		{EventProvidersChanged, "Provider credentials or custom providers changed.", t[ProvidersListResult]()},
 		{EventMediaAssetsChanged, "Media assets library content changed.", t[Empty]()},
 		{EventBinariesProgress, "Download progress of an external binary.", t[BinaryProgress]()},
+		{EventStudioProjectChanged, "A studio project was created, updated, deleted, or synced.", t[StudioProjectChangedEvent]()},
+		{EventStudioEpisodeUpdated, "Studio episode script, assets, storyboard, or export state changed.", t[StudioEpisodeUpdatedEvent]()},
+		{EventStudioBatchProgress, "Progress of a multi-item studio stage batch execution.", t[StudioBatchProgressEvent]()},
 	}
 }
 
@@ -295,6 +312,13 @@ func Enums() []EnumSpec {
 		{"ProviderTestOutcome", t[provider.Outcome](), stringsOf(provider.Outcomes())},
 		{"ProviderPurpose", t[provider.Purpose](), stringsOf(provider.Purposes())},
 		{"SecretBackend", t[secrets.Backend](), stringsOf(secrets.Backends())},
+		{"StudioGenre", t[domainstudio.Genre](), stringsOf(domainstudio.Genres())},
+		{"StudioProductionMode", t[domainstudio.ProductionMode](), stringsOf(domainstudio.ProductionModes())},
+		{"StudioAssetKind", t[domainstudio.AssetKind](), stringsOf(domainstudio.AssetKinds())},
+		{"StudioShotMode", t[domainstudio.ShotMode](), stringsOf(domainstudio.ShotModes())},
+		{"StudioShotStatus", t[domainstudio.ShotStatus](), stringsOf(domainstudio.ShotStatuses())},
+		{"StudioEpisodeStage", t[domainstudio.EpisodeStage](), stringsOf(domainstudio.EpisodeStages())},
+		{"StudioRunStageAction", t[StudioRunStageAction](), stringsOf(StudioRunStageActions())},
 	}
 }
 
