@@ -97,6 +97,62 @@ type studioEpisodeRunStageToolInput struct {
 	Force              bool     `json:"force,omitempty" jsonschema:"Re-run even for targets that already have generated outputs"`
 }
 
+type studioQueueEnqueueToolInput struct {
+	EpisodeID string   `json:"episode_id" jsonschema:"Studio episode ID"`
+	Stage     string   `json:"stage" jsonschema:"generate_assets|generate_keyframes|generate_videos|generate_tts|lipsync"`
+	AssetIDs  []string `json:"asset_ids,omitempty" jsonschema:"Optional asset IDs filter"`
+	ShotIDs   []string `json:"shot_ids,omitempty" jsonschema:"Optional shot IDs filter"`
+	Model     string   `json:"model,omitempty" jsonschema:"Optional provider/model override"`
+	Force     bool     `json:"force,omitempty" jsonschema:"Re-enqueue even if target already has output"`
+}
+
+type studioQueueListToolInput struct {
+	ProjectID string `json:"project_id,omitempty" jsonschema:"Optional studio project ID filter"`
+	EpisodeID string `json:"episode_id,omitempty" jsonschema:"Optional episode ID filter"`
+	Status    string `json:"status,omitempty" jsonschema:"queued|submitted|polling|paused|succeeded|failed|canceled"`
+}
+
+type studioQueueControlToolInput struct {
+	Action    string `json:"action" jsonschema:"pause|resume|cancel|retry"`
+	ProjectID string `json:"project_id,omitempty" jsonschema:"Project ID for episode/project pause/resume"`
+	EpisodeID string `json:"episode_id,omitempty" jsonschema:"Episode ID for batch pause/resume"`
+	JobID     string `json:"job_id,omitempty" jsonschema:"Specific job ID for single-job control"`
+}
+
+type studioCostSummaryToolInput struct {
+	ProjectID string `json:"project_id" jsonschema:"Studio project ID"`
+	EpisodeID string `json:"episode_id,omitempty" jsonschema:"Optional episode ID filter"`
+}
+
+type studioVersionsListToolInput struct {
+	TargetKind string `json:"target_kind" jsonschema:"asset|keyframe|video|dub_audio|lipsync_video|grid_panel"`
+	TargetID   string `json:"target_id" jsonschema:"Asset ID or Shot ID"`
+}
+
+type studioVersionSelectToolInput struct {
+	VersionID string `json:"version_id" jsonschema:"Media version ID to activate"`
+}
+
+type studioQCReviewToolInput struct {
+	ProjectID      string   `json:"project_id" jsonschema:"Studio project ID"`
+	EpisodeID      string   `json:"episode_id,omitempty" jsonschema:"Optional episode ID"`
+	TargetKind     string   `json:"target_kind,omitempty" jsonschema:"keyframe|video|asset|dub_audio|lipsync_video"`
+	TargetID       string   `json:"target_id,omitempty" jsonschema:"Target asset or shot ID"`
+	MediaVersionID string   `json:"media_version_id,omitempty" jsonschema:"Optional linked media version ID"`
+	MediaPath      string   `json:"media_path" jsonschema:"Path to the image or video file to review"`
+	ReferencePaths []string `json:"reference_paths,omitempty" jsonschema:"Optional canonical reference images for continuity checking"`
+	PromptExpected string   `json:"prompt_expected,omitempty" jsonschema:"Expected visual content or prompt description"`
+	SkipVision     bool     `json:"skip_vision,omitempty" jsonschema:"Run FFprobe technical inspection only without Vision LLM"`
+}
+
+type studioBatchPreflightToolInput struct {
+	ProjectID string `json:"project_id" jsonschema:"Studio project ID"`
+	EpisodeID string `json:"episode_id,omitempty" jsonschema:"Optional episode ID"`
+	Stage     string `json:"stage" jsonschema:"generate_assets|generate_keyframes|generate_videos|generate_tts|lipsync"`
+	Model     string `json:"model,omitempty" jsonschema:"Optional provider/model override"`
+	ItemCount int    `json:"item_count,omitempty" jsonschema:"Optional explicit item count"`
+}
+
 func (s *Service) registerStudioTools(server *mcpToolset) {
 	addMCPTool(server, "studio_project_list",
 		"List all AI film studio projects and the active workspace projects directory.",
@@ -344,6 +400,7 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 
 			prep := studioStageTargets(epDetail, p)
 			if epDetail.Project.AutoApproveBatches && allFileTargetsTrusted(s.policy, prep) {
+				p.Approved = true
 				res, rerr := s.studio.RunStage(guardedCtx, p)
 				if rerr != nil {
 					return mcpError(rerr.Error())
@@ -359,8 +416,182 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 				summary = fmt.Sprintf("%s (%d asset(s))", summary, len(p.AssetIDs))
 			}
 			return s.needsApproval(ctx, "studio_episode_run_stage", "", p, title, summary, func(execCtx context.Context) (any, error) {
+				p.Approved = true
 				return s.studio.RunStage(engine.WithFileGuard(execCtx, s.CheckTrustedFile), p)
 			})
+		})
+
+	addMCPTool(server, "studio_batch_preflight",
+		"Verify active provider credentials, pricing, and USD cost estimate before running a batch stage or enqueuing jobs.",
+		func(ctx context.Context, in studioBatchPreflightToolInput) (*mcp.CallToolResult, any, error) {
+			p2, ok := s.studio.(StudioPhase2Manager)
+			if !ok {
+				return mcpError("studio phase 2 preflight is unavailable")
+			}
+			out, err := p2.RunBatchPreflight(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioBatchPreflightPayload{
+				ProjectID: strings.TrimSpace(in.ProjectID),
+				EpisodeID: strings.TrimSpace(in.EpisodeID),
+				Stage:     strings.TrimSpace(in.Stage),
+				Model:     strings.TrimSpace(in.Model),
+				ItemCount: in.ItemCount,
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(out)
+		})
+
+	addMCPTool(server, "studio_queue_enqueue",
+		"Enqueue durable crash-recoverable studio generation jobs into the background worker queue (respecting project approval gate).",
+		func(ctx context.Context, in studioQueueEnqueueToolInput) (*mcp.CallToolResult, any, error) {
+			if s.studio == nil {
+				return mcpError("studio service is unavailable")
+			}
+			p2, ok := s.studio.(StudioPhase2Manager)
+			if !ok {
+				return mcpError("studio phase 2 queue is unavailable")
+			}
+			p := contracts.StudioQueueEnqueuePayload{
+				EpisodeID: strings.TrimSpace(in.EpisodeID),
+				Stage:     strings.TrimSpace(in.Stage),
+				AssetIDs:  in.AssetIDs,
+				ShotIDs:   in.ShotIDs,
+				Model:     strings.TrimSpace(in.Model),
+				Force:     in.Force,
+			}
+			if err := p.Validate(); err != nil {
+				return mcpError(err.Error())
+			}
+			epDetail, err := s.studio.GetEpisode(ctx, p.EpisodeID)
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			prep := studioStageTargets(epDetail, contracts.StudioEpisodeRunStagePayload{EpisodeID: p.EpisodeID})
+			if epDetail.Project.AutoApproveBatches && allFileTargetsTrusted(s.policy, prep) {
+				p.Approved = true
+				res, qerr := p2.EnqueueBatch(engine.WithFileGuard(ctx, s.CheckTrustedFile), p)
+				if qerr != nil {
+					return mcpError(qerr.Error())
+				}
+				return mcpJSON(res)
+			}
+			title := fmt.Sprintf("Enqueue durable batch %s", p.Stage)
+			summary := fmt.Sprintf("Enqueue durable %q jobs on %s / %s", p.Stage, epDetail.Project.Title, epDetail.Episode.Code)
+			return s.needsApproval(ctx, "studio_queue_enqueue", "", p, title, summary, func(execCtx context.Context) (any, error) {
+				p.Approved = true
+				return p2.EnqueueBatch(engine.WithFileGuard(execCtx, s.CheckTrustedFile), p)
+			})
+		})
+
+	addMCPTool(server, "studio_queue_list",
+		"List durable studio queue jobs filtered by project, episode, or status.",
+		func(ctx context.Context, in studioQueueListToolInput) (*mcp.CallToolResult, any, error) {
+			p2, ok := s.studio.(StudioPhase2Manager)
+			if !ok {
+				return mcpError("studio phase 2 queue is unavailable")
+			}
+			res, err := p2.ListJobs(ctx, contracts.StudioQueueListPayload{
+				ProjectID: strings.TrimSpace(in.ProjectID),
+				EpisodeID: strings.TrimSpace(in.EpisodeID),
+				Status:    strings.TrimSpace(in.Status),
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "studio_queue_control",
+		"Pause, resume, cancel, or retry durable studio queue jobs without duplicating already-submitted remote video tasks.",
+		func(ctx context.Context, in studioQueueControlToolInput) (*mcp.CallToolResult, any, error) {
+			p2, ok := s.studio.(StudioPhase2Manager)
+			if !ok {
+				return mcpError("studio phase 2 queue is unavailable")
+			}
+			res, err := p2.ControlQueue(ctx, contracts.StudioQueueControlPayload{
+				Action:    strings.TrimSpace(in.Action),
+				ProjectID: strings.TrimSpace(in.ProjectID),
+				EpisodeID: strings.TrimSpace(in.EpisodeID),
+				JobID:     strings.TrimSpace(in.JobID),
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "studio_cost_summary",
+		"Get cumulative USD cost totals, per-capability breakdown, ledger rows, and unit pricing for a studio project or episode.",
+		func(ctx context.Context, in studioCostSummaryToolInput) (*mcp.CallToolResult, any, error) {
+			p2, ok := s.studio.(StudioPhase2Manager)
+			if !ok {
+				return mcpError("studio billing ledger is unavailable")
+			}
+			res, err := p2.GetCostSummary(ctx, contracts.StudioCostSummaryPayload{
+				ProjectID: strings.TrimSpace(in.ProjectID),
+				EpisodeID: strings.TrimSpace(in.EpisodeID),
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "studio_versions_list",
+		"List version history (v1, v2, ...) and latest QC report for an asset, keyframe, video, or audio slot.",
+		func(ctx context.Context, in studioVersionsListToolInput) (*mcp.CallToolResult, any, error) {
+			p2, ok := s.studio.(StudioPhase2Manager)
+			if !ok {
+				return mcpError("studio media versions unavailable")
+			}
+			res, err := p2.ListVersions(ctx, contracts.StudioVersionsListPayload{
+				TargetKind: strings.TrimSpace(in.TargetKind),
+				TargetID:   strings.TrimSpace(in.TargetID),
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "studio_version_select",
+		"Switch the active selected output version for an asset or shot slot.",
+		func(ctx context.Context, in studioVersionSelectToolInput) (*mcp.CallToolResult, any, error) {
+			p2, ok := s.studio.(StudioPhase2Manager)
+			if !ok {
+				return mcpError("studio media versions unavailable")
+			}
+			res, err := p2.SelectVersion(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioVersionSelectPayload{
+				VersionID: strings.TrimSpace(in.VersionID),
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "studio_qc_review",
+		"Inspect an image or MP4 clip with FFprobe + sampled FFmpeg frames + multimodal Vision critique and record the QC report.",
+		func(ctx context.Context, in studioQCReviewToolInput) (*mcp.CallToolResult, any, error) {
+			p2, ok := s.studio.(StudioPhase2Manager)
+			if !ok {
+				return mcpError("studio QC review unavailable")
+			}
+			res, err := p2.RunQCReview(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioQCReviewPayload{
+				ProjectID:      strings.TrimSpace(in.ProjectID),
+				EpisodeID:      strings.TrimSpace(in.EpisodeID),
+				TargetKind:     strings.TrimSpace(in.TargetKind),
+				TargetID:       strings.TrimSpace(in.TargetID),
+				MediaVersionID: strings.TrimSpace(in.MediaVersionID),
+				MediaPath:      strings.TrimSpace(in.MediaPath),
+				ReferencePaths: in.ReferencePaths,
+				PromptExpected: strings.TrimSpace(in.PromptExpected),
+				SkipVision:     in.SkipVision,
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
 		})
 }
 

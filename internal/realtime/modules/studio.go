@@ -87,4 +87,64 @@ func (s Studio) Register(r *realtime.Registry) {
 		func(ctx context.Context, _ *realtime.Request, p contracts.StudioEpisodeRunStagePayload) (contracts.StudioRunStageResult, error) {
 			return s.Service.RunStage(engine.WithFileGuard(ctx, s.FileGuard), p)
 		})
+
+	realtime.Handle(r, contracts.ActionStudioQueueEnqueue,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioQueueEnqueuePayload) (contracts.StudioQueueEnqueueResult, error) {
+			return s.Service.EnqueueBatch(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioQueueList,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioQueueListPayload) (contracts.StudioQueueListResult, error) {
+			return s.Service.ListJobs(ctx, p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioQueueControl,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioQueueControlPayload) (contracts.StudioQueueControlResult, error) {
+			return s.Service.ControlQueue(ctx, p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioCostSummary,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioCostSummaryPayload) (contracts.StudioCostSummaryResult, error) {
+			return s.Service.GetCostSummary(ctx, p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioPricingUpsert,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioPricingUpsertPayload) (contracts.StudioPricingEntry, error) {
+			return s.Service.UpsertPricing(ctx, p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioVersionsList,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioVersionsListPayload) (contracts.StudioVersionsListResult, error) {
+			return s.Service.ListVersions(ctx, p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioVersionSelect,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioVersionSelectPayload) (contracts.StudioVersionSelectResult, error) {
+			return s.Service.SelectVersion(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioGridSplit,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioGridSplitPayload) (contracts.StudioGridSplitResult, error) {
+			return s.Service.SplitGrid(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioMaskEdit,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioMaskEditPayload) (contracts.StudioMaskEditResult, error) {
+			return s.Service.ApplyMaskEdit(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioExtractLastFrame,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioExtractLastFramePayload) (contracts.StudioExtractLastFrameResult, error) {
+			return s.Service.ExtractLastFrame(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioQCReview,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioQCReviewPayload) (contracts.StudioQCReport, error) {
+			return s.Service.RunQCReview(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioBatchPreflight,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioBatchPreflightPayload) (contracts.BatchPreflightOutput, error) {
+			return s.Service.RunBatchPreflight(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
 }

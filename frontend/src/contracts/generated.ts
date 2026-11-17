@@ -1107,6 +1107,14 @@ export interface StudioAssetUpsertResult {
   assets: StudioAsset[];
 }
 
+export interface StudioBatchPreflightPayload {
+  project_id: string;
+  episode_id?: string;
+  stage: string;
+  model?: string;
+  item_count?: number;
+}
+
 export interface StudioBatchProgressEvent {
   project_id: string;
   episode_id: string;
@@ -1117,6 +1125,52 @@ export interface StudioBatchProgressEvent {
   percent: number;
   message: string;
   status: string;
+}
+
+export interface StudioCostLedgerEntry {
+  id: string;
+  project_id?: string;
+  episode_id?: string;
+  shot_id?: string;
+  job_id?: string;
+  provider_id: string;
+  model_id?: string;
+  capability: string;
+  operation?: string;
+  input_units: number;
+  output_units: number;
+  unit: string;
+  estimated_usd: number;
+  actual_usd: number;
+  status: string;
+  created_at: number;
+}
+
+export interface StudioCostSummaryPayload {
+  project_id: string;
+  episode_id?: string;
+  limit?: number;
+}
+
+export interface StudioCostSummaryResult {
+  project_id: string;
+  episode_id?: string;
+  currency: string;
+  estimated_total_usd: number;
+  actual_total_usd: number;
+  entry_count: number;
+  by_capability: Record<string, number>;
+  by_provider: Record<string, number>;
+  entries: StudioCostLedgerEntry[];
+  pricing: StudioPricingEntry[];
+}
+
+export interface StudioCostUpdatedEvent {
+  project_id: string;
+  episode_id?: string;
+  actual_total_usd: number;
+  estimated_total_usd: number;
+  entry_count: number;
 }
 
 export interface StudioDialogueLine {
@@ -1169,6 +1223,7 @@ export interface StudioEpisodeRunStagePayload {
   fps?: number;
   narration_audio_path?: string;
   force?: boolean;
+  approved?: boolean;
 }
 
 export interface StudioEpisodeSaveScriptPayload {
@@ -1185,8 +1240,102 @@ export interface StudioEpisodeUpdatedEvent {
   reason: string;
 }
 
+export interface StudioExtractLastFramePayload {
+  episode_id: string;
+  source_shot_id: string;
+  target_shot_id?: string;
+}
+
+export interface StudioExtractLastFrameResult {
+  frame_path: string;
+  asset_id?: string;
+  version?: StudioMediaVersion;
+  episode?: StudioEpisodeDetailResult;
+}
+
+export interface StudioGridSplitPayload {
+  project_id: string;
+  episode_id?: string;
+  target_kind?: string;
+  target_id?: string;
+  image_path: string;
+  rows: number;
+  cols: number;
+  margin_px?: number;
+  gutter_px?: number;
+  row_weights?: number[];
+  col_weights?: number[];
+}
+
+export interface StudioGridSplitResult {
+  panels: GridPanel[];
+  versions?: StudioMediaVersion[];
+}
+
 export interface StudioIDPayload {
   id: string;
+}
+
+export interface StudioJob {
+  id: string;
+  project_id: string;
+  episode_id?: string;
+  shot_id?: string;
+  asset_id?: string;
+  job_kind: string;
+  provider_id?: string;
+  model_ref?: string;
+  status: string;
+  provider_job_id?: string;
+  progress: number;
+  attempts: number;
+  max_attempts: number;
+  next_poll_at?: number;
+  output_path?: string;
+  error_text?: string;
+  estimated_usd: number;
+  actual_usd: number;
+  created_at: number;
+  updated_at: number;
+  started_at?: number;
+  finished_at?: number;
+}
+
+export interface StudioMaskEditPayload {
+  project_id: string;
+  episode_id?: string;
+  target_kind?: string;
+  target_id?: string;
+  image_path: string;
+  mask_path?: string;
+  mask_data_base64?: string;
+  prompt: string;
+  model_ref?: string;
+}
+
+export interface StudioMaskEditResult {
+  path: string;
+  asset_id?: string;
+  version?: StudioMediaVersion;
+  episode?: StudioEpisodeDetailResult;
+}
+
+export interface StudioMediaVersion {
+  id: string;
+  project_id: string;
+  episode_id?: string;
+  target_kind: string;
+  target_id: string;
+  version_num: number;
+  media_path: string;
+  source_node?: string;
+  prompt_used?: string;
+  model_ref?: string;
+  seed?: number;
+  cost_usd: number;
+  qc_status: string;
+  is_selected: boolean;
+  created_at: number;
 }
 
 export interface StudioNarrationSegment {
@@ -1203,6 +1352,25 @@ export interface StudioNormalizedScript {
   language?: string;
   characters?: string[];
   scenes: StudioScriptScene[];
+}
+
+export interface StudioPricingEntry {
+  id: string;
+  provider_id: string;
+  model_id: string;
+  capability: string;
+  unit: string;
+  unit_price_usd: number;
+  currency: string;
+  updated_at: number;
+}
+
+export interface StudioPricingUpsertPayload {
+  provider_id: string;
+  model_id: string;
+  capability: string;
+  unit: string;
+  unit_price_usd: number;
 }
 
 export interface StudioProject {
@@ -1273,6 +1441,84 @@ export interface StudioProjectUpdatePayload {
   default_image_model?: string;
   default_video_model?: string;
   default_tts_model?: string;
+}
+
+export interface StudioQCReport {
+  id: string;
+  project_id: string;
+  episode_id?: string;
+  target_kind: string;
+  target_id: string;
+  media_version_id?: string;
+  media_path: string;
+  verdict: string;
+  overall_score: number;
+  issues: QCReviewIssue[];
+  vision_summary?: string;
+  vision_model_ref?: string;
+  sample_frames?: string[];
+  created_at: number;
+}
+
+export interface StudioQCReviewPayload {
+  project_id: string;
+  episode_id?: string;
+  target_kind?: string;
+  target_id?: string;
+  media_version_id?: string;
+  media_path: string;
+  reference_paths?: string[];
+  prompt_expected?: string;
+  vision_model_ref?: string;
+  sample_count?: number;
+  skip_vision?: boolean;
+}
+
+export interface StudioQueueControlPayload {
+  action: string;
+  project_id?: string;
+  episode_id?: string;
+  job_id?: string;
+}
+
+export interface StudioQueueControlResult {
+  affected: number;
+  job?: StudioJob;
+}
+
+export interface StudioQueueEnqueuePayload {
+  episode_id: string;
+  stage: string;
+  asset_ids?: string[];
+  shot_ids?: string[];
+  model?: string;
+  force?: boolean;
+  approved?: boolean;
+}
+
+export interface StudioQueueEnqueueResult {
+  jobs: StudioJob[];
+  skipped: number;
+  estimated_usd: number;
+  summary: string;
+}
+
+export interface StudioQueueListPayload {
+  project_id?: string;
+  episode_id?: string;
+  status?: string;
+  limit?: number;
+}
+
+export interface StudioQueueListResult {
+  jobs: StudioJob[];
+}
+
+export interface StudioQueueUpdatedEvent {
+  project_id: string;
+  episode_id?: string;
+  job?: StudioJob;
+  summary?: string;
 }
 
 export interface StudioRunStageResult {
@@ -1363,6 +1609,25 @@ export interface StudioShotUpsertPayload {
 export interface StudioShotUpsertResult {
   shot: StudioShot;
   shots: StudioShot[];
+}
+
+export interface StudioVersionSelectPayload {
+  version_id: string;
+}
+
+export interface StudioVersionSelectResult {
+  version: StudioMediaVersion;
+  episode?: StudioEpisodeDetailResult;
+}
+
+export interface StudioVersionsListPayload {
+  target_kind: string;
+  target_id: string;
+}
+
+export interface StudioVersionsListResult {
+  versions: StudioMediaVersion[];
+  latest_qc?: StudioQCReport;
 }
 
 export interface SubagentInfo {
@@ -1713,6 +1978,30 @@ export const Actions = {
   STUDIO_SHOT_REORDER: "studio:shot_reorder",
   /** Executes a Phase 1 production stage or batch across episode shots and assets. */
   STUDIO_EPISODE_RUN_STAGE: "studio:episode_run_stage",
+  /** Enqueues durable background studio generation jobs with idempotency keys. */
+  STUDIO_QUEUE_ENQUEUE: "studio:queue_enqueue",
+  /** Lists durable studio queue jobs for a project or episode. */
+  STUDIO_QUEUE_LIST: "studio:queue_list",
+  /** Pauses, resumes, cancels, or retries durable studio queue jobs. */
+  STUDIO_QUEUE_CONTROL: "studio:queue_control",
+  /** Summarizes studio project/episode generation spend and unit pricing. */
+  STUDIO_COST_SUMMARY: "studio:cost_summary",
+  /** Upserts a provider/model unit price rule in studio_pricing_catalog. */
+  STUDIO_PRICING_UPSERT: "studio:pricing_upsert",
+  /** Lists media version history and latest QC report for an asset or shot slot. */
+  STUDIO_VERSIONS_LIST: "studio:versions_list",
+  /** Activates a saved media version as the selected output for its shot or asset. */
+  STUDIO_VERSION_SELECT: "studio:version_select",
+  /** Splits a storyboard grid image into individual frame panels. */
+  STUDIO_GRID_SPLIT: "studio:grid_split",
+  /** Applies canvas-masked inpainting to an asset or keyframe via tool.mask_edit. */
+  STUDIO_MASK_EDIT: "studio:mask_edit",
+  /** Extracts the final frame of a shot video to seed the next shot keyframe. */
+  STUDIO_EXTRACT_LAST_FRAME: "studio:extract_last_frame",
+  /** Runs FFprobe + multimodal Vision QC review and saves a QC report. */
+  STUDIO_QC_REVIEW: "studio:qc_review",
+  /** Validates active providers and estimates USD cost before batch execution. */
+  STUDIO_BATCH_PREFLIGHT: "studio:batch_preflight",
 } as const;
 export type ActionName = (typeof Actions)[keyof typeof Actions];
 
@@ -1724,6 +2013,8 @@ export const LongActions: readonly ActionName[] = [
   "diagnostics:export",
   "agent:resolve_approval",
   "studio:episode_run_stage",
+  "studio:mask_edit",
+  "studio:qc_review",
 ];
 
 export interface ActionMap {
@@ -1810,6 +2101,18 @@ export interface ActionMap {
   "studio:shot_upsert": { payload: StudioShotUpsertPayload; result: StudioShotUpsertResult };
   "studio:shot_reorder": { payload: StudioShotReorderPayload; result: StudioShotListResult };
   "studio:episode_run_stage": { payload: StudioEpisodeRunStagePayload; result: StudioRunStageResult };
+  "studio:queue_enqueue": { payload: StudioQueueEnqueuePayload; result: StudioQueueEnqueueResult };
+  "studio:queue_list": { payload: StudioQueueListPayload; result: StudioQueueListResult };
+  "studio:queue_control": { payload: StudioQueueControlPayload; result: StudioQueueControlResult };
+  "studio:cost_summary": { payload: StudioCostSummaryPayload; result: StudioCostSummaryResult };
+  "studio:pricing_upsert": { payload: StudioPricingUpsertPayload; result: StudioPricingEntry };
+  "studio:versions_list": { payload: StudioVersionsListPayload; result: StudioVersionsListResult };
+  "studio:version_select": { payload: StudioVersionSelectPayload; result: StudioVersionSelectResult };
+  "studio:grid_split": { payload: StudioGridSplitPayload; result: StudioGridSplitResult };
+  "studio:mask_edit": { payload: StudioMaskEditPayload; result: StudioMaskEditResult };
+  "studio:extract_last_frame": { payload: StudioExtractLastFramePayload; result: StudioExtractLastFrameResult };
+  "studio:qc_review": { payload: StudioQCReviewPayload; result: StudioQCReport };
+  "studio:batch_preflight": { payload: StudioBatchPreflightPayload; result: BatchPreflightOutput };
 }
 
 /** Built-in workflow node types (contracts.Nodes). Settings come from workflow:specs. */
@@ -1881,6 +2184,10 @@ export const Events = {
   STUDIO_EPISODE_UPDATED: "studio:episode_updated",
   /** Progress of a multi-item studio stage batch execution. */
   STUDIO_BATCH_PROGRESS: "studio:batch_progress",
+  /** A durable studio queue job changed status or progress. */
+  STUDIO_QUEUE_UPDATED: "studio:queue_updated",
+  /** Studio cost ledger totals updated. */
+  STUDIO_COST_UPDATED: "studio:cost_updated",
 } as const;
 export type EventName = (typeof Events)[keyof typeof Events];
 
@@ -1898,6 +2205,8 @@ export interface EventMap {
   "studio:project_changed": StudioProjectChangedEvent;
   "studio:episode_updated": StudioEpisodeUpdatedEvent;
   "studio:batch_progress": StudioBatchProgressEvent;
+  "studio:queue_updated": StudioQueueUpdatedEvent;
+  "studio:cost_updated": StudioCostUpdatedEvent;
 }
 
 export const NativeEvents = {

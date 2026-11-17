@@ -93,6 +93,8 @@ func LongActions() []string {
 		ActionDiagnosticsExport,
 		ActionAgentResolveApproval, // an approved action runs a workflow node or graph
 		ActionStudioEpisodeRunStage,
+		ActionStudioMaskEdit,
+		ActionStudioQCReview,
 	}
 }
 
@@ -243,6 +245,18 @@ func Actions() []ActionSpec {
 		{ActionStudioShotUpsert, "Creates or updates a storyboard shot inside an episode.", t[StudioShotUpsertPayload](), t[StudioShotUpsertResult]()},
 		{ActionStudioShotReorder, "Reorders storyboard shots in an episode.", t[StudioShotReorderPayload](), t[StudioShotListResult]()},
 		{ActionStudioEpisodeRunStage, "Executes a Phase 1 production stage or batch across episode shots and assets.", t[StudioEpisodeRunStagePayload](), t[StudioRunStageResult]()},
+		{ActionStudioQueueEnqueue, "Enqueues durable background studio generation jobs with idempotency keys.", t[StudioQueueEnqueuePayload](), t[StudioQueueEnqueueResult]()},
+		{ActionStudioQueueList, "Lists durable studio queue jobs for a project or episode.", t[StudioQueueListPayload](), t[StudioQueueListResult]()},
+		{ActionStudioQueueControl, "Pauses, resumes, cancels, or retries durable studio queue jobs.", t[StudioQueueControlPayload](), t[StudioQueueControlResult]()},
+		{ActionStudioCostSummary, "Summarizes studio project/episode generation spend and unit pricing.", t[StudioCostSummaryPayload](), t[StudioCostSummaryResult]()},
+		{ActionStudioPricingUpsert, "Upserts a provider/model unit price rule in studio_pricing_catalog.", t[StudioPricingUpsertPayload](), t[StudioPricingEntry]()},
+		{ActionStudioVersionsList, "Lists media version history and latest QC report for an asset or shot slot.", t[StudioVersionsListPayload](), t[StudioVersionsListResult]()},
+		{ActionStudioVersionSelect, "Activates a saved media version as the selected output for its shot or asset.", t[StudioVersionSelectPayload](), t[StudioVersionSelectResult]()},
+		{ActionStudioGridSplit, "Splits a storyboard grid image into individual frame panels.", t[StudioGridSplitPayload](), t[StudioGridSplitResult]()},
+		{ActionStudioMaskEdit, "Applies canvas-masked inpainting to an asset or keyframe via tool.mask_edit.", t[StudioMaskEditPayload](), t[StudioMaskEditResult]()},
+		{ActionStudioExtractLastFrame, "Extracts the final frame of a shot video to seed the next shot keyframe.", t[StudioExtractLastFramePayload](), t[StudioExtractLastFrameResult]()},
+		{ActionStudioQCReview, "Runs FFprobe + multimodal Vision QC review and saves a QC report.", t[StudioQCReviewPayload](), t[StudioQCReport]()},
+		{ActionStudioBatchPreflight, "Validates active providers and estimates USD cost before batch execution.", t[StudioBatchPreflightPayload](), t[BatchPreflightOutput]()},
 	}
 }
 
@@ -262,6 +276,8 @@ func Events() []EventSpec {
 		{EventStudioProjectChanged, "A studio project was created, updated, deleted, or synced.", t[StudioProjectChangedEvent]()},
 		{EventStudioEpisodeUpdated, "Studio episode script, assets, storyboard, or export state changed.", t[StudioEpisodeUpdatedEvent]()},
 		{EventStudioBatchProgress, "Progress of a multi-item studio stage batch execution.", t[StudioBatchProgressEvent]()},
+		{EventStudioQueueUpdated, "A durable studio queue job changed status or progress.", t[StudioQueueUpdatedEvent]()},
+		{EventStudioCostUpdated, "Studio cost ledger totals updated.", t[StudioCostUpdatedEvent]()},
 	}
 }
 

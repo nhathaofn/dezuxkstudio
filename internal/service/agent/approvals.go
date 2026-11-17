@@ -429,7 +429,21 @@ func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) 
 		if err := json.Unmarshal([]byte(rec.InputJSON), &p); err != nil {
 			execErr = fmt.Errorf("invalid studio stage input: %w", err)
 		} else {
+			p.Approved = true
 			res, execErr = s.studio.RunStage(engine.WithFileGuard(ctx, s.CheckTrustedFile), p)
+		}
+	} else if s.studio != nil && rec.ToolName == "studio_queue_enqueue" {
+		p2, ok := s.studio.(StudioPhase2Manager)
+		if !ok {
+			execErr = fmt.Errorf("studio phase 2 queue unavailable")
+		} else {
+			var p contracts.StudioQueueEnqueuePayload
+			if err := json.Unmarshal([]byte(rec.InputJSON), &p); err != nil {
+				execErr = fmt.Errorf("invalid studio queue input: %w", err)
+			} else {
+				p.Approved = true
+				res, execErr = p2.EnqueueBatch(engine.WithFileGuard(ctx, s.CheckTrustedFile), p)
+			}
 		}
 	} else {
 		execErr = fmt.Errorf("no executor available for approved action %s", rec.ToolName)

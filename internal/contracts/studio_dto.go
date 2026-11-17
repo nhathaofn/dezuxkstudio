@@ -22,8 +22,20 @@ const (
 	ActionStudioEpisodeSaveScript = "studio:episode_save_script"
 	ActionStudioAssetUpsert       = "studio:asset_upsert"
 	ActionStudioShotUpsert        = "studio:shot_upsert"
-	ActionStudioShotReorder       = "studio:shot_reorder"
-	ActionStudioEpisodeRunStage   = "studio:episode_run_stage"
+	ActionStudioShotReorder      = "studio:shot_reorder"
+	ActionStudioEpisodeRunStage  = "studio:episode_run_stage"
+	ActionStudioQueueEnqueue     = "studio:queue_enqueue"
+	ActionStudioQueueList        = "studio:queue_list"
+	ActionStudioQueueControl     = "studio:queue_control"
+	ActionStudioCostSummary      = "studio:cost_summary"
+	ActionStudioPricingUpsert    = "studio:pricing_upsert"
+	ActionStudioVersionsList     = "studio:versions_list"
+	ActionStudioVersionSelect    = "studio:version_select"
+	ActionStudioGridSplit        = "studio:grid_split"
+	ActionStudioMaskEdit         = "studio:mask_edit"
+	ActionStudioExtractLastFrame = "studio:extract_last_frame"
+	ActionStudioQCReview         = "studio:qc_review"
+	ActionStudioBatchPreflight   = "studio:batch_preflight"
 )
 
 // Server-pushed event names for AI Film Studio.
@@ -31,6 +43,8 @@ const (
 	EventStudioProjectChanged = "studio:project_changed"
 	EventStudioEpisodeUpdated = "studio:episode_updated"
 	EventStudioBatchProgress  = "studio:batch_progress"
+	EventStudioQueueUpdated   = "studio:queue_updated"
+	EventStudioCostUpdated    = "studio:cost_updated"
 )
 
 // StudioRunStageAction enumerates the executable stage/step operations accepted by studio:episode_run_stage.
@@ -491,6 +505,7 @@ type StudioEpisodeRunStagePayload struct {
 	FPS                int                  `json:"fps,omitempty"`
 	NarrationAudioPath string               `json:"narration_audio_path,omitempty"`
 	Force              bool                 `json:"force,omitempty"`
+	Approved           bool                 `json:"approved,omitempty"`
 }
 
 // Validate checks StudioEpisodeRunStagePayload.
@@ -540,4 +555,325 @@ type StudioBatchProgressEvent struct {
 	Percent   float64 `json:"percent"`
 	Message   string  `json:"message"`
 	Status    string  `json:"status"` // running | completed | failed
+}
+
+// StudioJob represents a durable Phase 2 queue item synced with studio_jobs.
+type StudioJob struct {
+	ID            string  `json:"id"`
+	ProjectID     string  `json:"project_id"`
+	EpisodeID     string  `json:"episode_id,omitempty"`
+	ShotID        string  `json:"shot_id,omitempty"`
+	AssetID       string  `json:"asset_id,omitempty"`
+	JobKind       string  `json:"job_kind"`
+	ProviderID    string  `json:"provider_id,omitempty"`
+	ModelRef      string  `json:"model_ref,omitempty"`
+	Status        string  `json:"status"`
+	ProviderJobID string  `json:"provider_job_id,omitempty"`
+	Progress      int     `json:"progress"`
+	Attempts      int     `json:"attempts"`
+	MaxAttempts   int     `json:"max_attempts"`
+	NextPollAt    int64   `json:"next_poll_at,omitempty"`
+	OutputPath    string  `json:"output_path,omitempty"`
+	ErrorText     string  `json:"error_text,omitempty"`
+	EstimatedUSD  float64 `json:"estimated_usd"`
+	ActualUSD     float64 `json:"actual_usd"`
+	CreatedAt     int64   `json:"created_at"`
+	UpdatedAt     int64   `json:"updated_at"`
+	StartedAt     int64   `json:"started_at,omitempty"`
+	FinishedAt    int64   `json:"finished_at,omitempty"`
+}
+
+// StudioQueueEnqueuePayload queues durable background jobs for an episode stage or target list.
+type StudioQueueEnqueuePayload struct {
+	EpisodeID string   `json:"episode_id"`
+	Stage     string   `json:"stage"` // generate_assets | generate_keyframes | generate_videos | generate_tts | lipsync
+	AssetIDs  []string `json:"asset_ids,omitempty"`
+	ShotIDs   []string `json:"shot_ids,omitempty"`
+	Model     string   `json:"model,omitempty"`
+	Force     bool     `json:"force,omitempty"`
+	Approved  bool     `json:"approved,omitempty"`
+}
+
+// Validate checks StudioQueueEnqueuePayload fields.
+func (p StudioQueueEnqueuePayload) Validate() error {
+	if strings.TrimSpace(p.EpisodeID) == "" {
+		return apperr.Validation("episode_id is required")
+	}
+	if strings.TrimSpace(p.Stage) == "" {
+		return apperr.Validation("stage is required")
+	}
+	return nil
+}
+
+// StudioQueueEnqueueResult returns queued jobs and preflight total cost.
+type StudioQueueEnqueueResult struct {
+	Jobs         []StudioJob `json:"jobs"`
+	Skipped      int         `json:"skipped"`
+	EstimatedUSD float64     `json:"estimated_usd"`
+	Summary      string      `json:"summary"`
+}
+
+// StudioQueueListPayload filters durable studio jobs.
+type StudioQueueListPayload struct {
+	ProjectID string `json:"project_id,omitempty"`
+	EpisodeID string `json:"episode_id,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
+}
+
+// StudioQueueListResult returns matching studio jobs.
+type StudioQueueListResult struct {
+	Jobs []StudioJob `json:"jobs"`
+}
+
+// StudioQueueControlPayload pauses, resumes, cancels, or retries queue jobs.
+type StudioQueueControlPayload struct {
+	Action    string `json:"action"` // pause | resume | cancel | retry
+	ProjectID string `json:"project_id,omitempty"`
+	EpisodeID string `json:"episode_id,omitempty"`
+	JobID     string `json:"job_id,omitempty"`
+}
+
+// Validate checks StudioQueueControlPayload.
+func (p StudioQueueControlPayload) Validate() error {
+	switch strings.ToLower(strings.TrimSpace(p.Action)) {
+	case "pause", "resume", "cancel", "retry":
+		return nil
+	default:
+		return apperr.Validation("action must be pause, resume, cancel, or retry")
+	}
+}
+
+// StudioQueueControlResult returns affected count and optional updated job.
+type StudioQueueControlResult struct {
+	Affected int        `json:"affected"`
+	Job      *StudioJob `json:"job,omitempty"`
+}
+
+// StudioPricingEntry represents a rate in studio_pricing_catalog.
+type StudioPricingEntry struct {
+	ID           string  `json:"id"`
+	ProviderID   string  `json:"provider_id"`
+	ModelID      string  `json:"model_id"`
+	Capability   string  `json:"capability"`
+	Unit         string  `json:"unit"`
+	UnitPriceUSD float64 `json:"unit_price_usd"`
+	Currency     string  `json:"currency"`
+	UpdatedAt    int64   `json:"updated_at"`
+}
+
+// StudioCostLedgerEntry represents one cost entry in studio_cost_ledger.
+type StudioCostLedgerEntry struct {
+	ID           string  `json:"id"`
+	ProjectID    string  `json:"project_id,omitempty"`
+	EpisodeID    string  `json:"episode_id,omitempty"`
+	ShotID       string  `json:"shot_id,omitempty"`
+	JobID        string  `json:"job_id,omitempty"`
+	ProviderID   string  `json:"provider_id"`
+	ModelID      string  `json:"model_id,omitempty"`
+	Capability   string  `json:"capability"`
+	Operation    string  `json:"operation,omitempty"`
+	InputUnits   float64 `json:"input_units"`
+	OutputUnits  float64 `json:"output_units"`
+	Unit         string  `json:"unit"`
+	EstimatedUSD float64 `json:"estimated_usd"`
+	ActualUSD    float64 `json:"actual_usd"`
+	Status       string  `json:"status"`
+	CreatedAt    int64   `json:"created_at"`
+}
+
+// StudioCostSummaryPayload queries cost totals and recent ledger entries.
+type StudioCostSummaryPayload struct {
+	ProjectID string `json:"project_id"`
+	EpisodeID string `json:"episode_id,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
+}
+
+// Validate validates StudioCostSummaryPayload.
+func (p StudioCostSummaryPayload) Validate() error {
+	if strings.TrimSpace(p.ProjectID) == "" {
+		return apperr.Validation("project_id is required")
+	}
+	return nil
+}
+
+// StudioCostSummaryResult returns cost totals, breakdown maps, recent ledger rows, and catalog pricing.
+type StudioCostSummaryResult struct {
+	ProjectID         string                  `json:"project_id"`
+	EpisodeID         string                  `json:"episode_id,omitempty"`
+	Currency          string                  `json:"currency"`
+	EstimatedTotalUSD float64                 `json:"estimated_total_usd"`
+	ActualTotalUSD    float64                 `json:"actual_total_usd"`
+	EntryCount        int                     `json:"entry_count"`
+	ByCapability      map[string]float64      `json:"by_capability"`
+	ByProvider        map[string]float64      `json:"by_provider"`
+	Entries           []StudioCostLedgerEntry `json:"entries"`
+	Pricing           []StudioPricingEntry    `json:"pricing"`
+}
+
+// StudioPricingUpsertPayload updates or adds a pricing rate in studio_pricing_catalog.
+type StudioPricingUpsertPayload struct {
+	ProviderID   string  `json:"provider_id"`
+	ModelID      string  `json:"model_id"`
+	Capability   string  `json:"capability"`
+	Unit         string  `json:"unit"`
+	UnitPriceUSD float64 `json:"unit_price_usd"`
+}
+
+// StudioMediaVersion represents an output version in studio_media_versions.
+type StudioMediaVersion struct {
+	ID         string  `json:"id"`
+	ProjectID  string  `json:"project_id"`
+	EpisodeID  string  `json:"episode_id,omitempty"`
+	TargetKind string  `json:"target_kind"`
+	TargetID   string  `json:"target_id"`
+	VersionNum int     `json:"version_num"`
+	MediaPath  string  `json:"media_path"`
+	SourceNode string  `json:"source_node,omitempty"`
+	PromptUsed string  `json:"prompt_used,omitempty"`
+	ModelRef   string  `json:"model_ref,omitempty"`
+	Seed       *int    `json:"seed,omitempty"`
+	CostUSD    float64 `json:"cost_usd"`
+	QCStatus   string  `json:"qc_status"`
+	IsSelected bool    `json:"is_selected"`
+	CreatedAt  int64   `json:"created_at"`
+}
+
+// StudioVersionsListPayload lists versions for a target asset or shot slot.
+type StudioVersionsListPayload struct {
+	TargetKind string `json:"target_kind"`
+	TargetID   string `json:"target_id"`
+}
+
+// StudioVersionsListResult returns version history plus latest QC report if any.
+type StudioVersionsListResult struct {
+	Versions []StudioMediaVersion `json:"versions"`
+	LatestQC *StudioQCReport      `json:"latest_qc,omitempty"`
+}
+
+// StudioVersionSelectPayload activates a specific saved media version.
+type StudioVersionSelectPayload struct {
+	VersionID string `json:"version_id"`
+}
+
+// StudioVersionSelectResult returns the newly selected version and updated episode state if applicable.
+type StudioVersionSelectResult struct {
+	Version StudioMediaVersion         `json:"version"`
+	Episode *StudioEpisodeDetailResult `json:"episode,omitempty"`
+}
+
+// StudioGridSplitPayload splits a grid image via tool.grid_split and records versions.
+type StudioGridSplitPayload struct {
+	ProjectID  string    `json:"project_id"`
+	EpisodeID  string    `json:"episode_id,omitempty"`
+	TargetKind string    `json:"target_kind,omitempty"`
+	TargetID   string    `json:"target_id,omitempty"`
+	ImagePath  string    `json:"image_path"`
+	Rows       int       `json:"rows"`
+	Cols       int       `json:"cols"`
+	MarginPx   int       `json:"margin_px,omitempty"`
+	GutterPx   int       `json:"gutter_px,omitempty"`
+	RowWeights []float64 `json:"row_weights,omitempty"`
+	ColWeights []float64 `json:"col_weights,omitempty"`
+}
+
+// StudioGridSplitResult returns split panels and created version records.
+type StudioGridSplitResult struct {
+	Panels   []GridPanel          `json:"panels"`
+	Versions []StudioMediaVersion `json:"versions,omitempty"`
+}
+
+// StudioMaskEditPayload runs canvas-masked inpainting and selects the resulting image version.
+type StudioMaskEditPayload struct {
+	ProjectID      string `json:"project_id"`
+	EpisodeID      string `json:"episode_id,omitempty"`
+	TargetKind     string `json:"target_kind,omitempty"`
+	TargetID       string `json:"target_id,omitempty"`
+	ImagePath      string `json:"image_path"`
+	MaskPath       string `json:"mask_path,omitempty"`
+	MaskDataBase64 string `json:"mask_data_base64,omitempty"`
+	Prompt         string `json:"prompt"`
+	ModelRef       string `json:"model_ref,omitempty"`
+}
+
+// StudioMaskEditResult returns the inpainted file and updated episode state.
+type StudioMaskEditResult struct {
+	Path    string                     `json:"path"`
+	AssetID string                     `json:"asset_id,omitempty"`
+	Version *StudioMediaVersion        `json:"version,omitempty"`
+	Episode *StudioEpisodeDetailResult `json:"episode,omitempty"`
+}
+
+// StudioExtractLastFramePayload extracts the last frame from a shot's video and optionally binds it to the next shot.
+type StudioExtractLastFramePayload struct {
+	EpisodeID    string `json:"episode_id"`
+	SourceShotID string `json:"source_shot_id"`
+	TargetShotID string `json:"target_shot_id,omitempty"`
+}
+
+// StudioExtractLastFrameResult returns the extracted frame and updated episode detail.
+type StudioExtractLastFrameResult struct {
+	FramePath string                     `json:"frame_path"`
+	AssetID   string                     `json:"asset_id,omitempty"`
+	Version   *StudioMediaVersion        `json:"version,omitempty"`
+	Episode   *StudioEpisodeDetailResult `json:"episode,omitempty"`
+}
+
+// StudioQCReviewPayload runs tool.qc_review on a media artifact and saves a studio_qc_reports row.
+type StudioQCReviewPayload struct {
+	ProjectID      string   `json:"project_id"`
+	EpisodeID      string   `json:"episode_id,omitempty"`
+	TargetKind     string   `json:"target_kind,omitempty"`
+	TargetID       string   `json:"target_id,omitempty"`
+	MediaVersionID string   `json:"media_version_id,omitempty"`
+	MediaPath      string   `json:"media_path"`
+	ReferencePaths []string `json:"reference_paths,omitempty"`
+	PromptExpected string   `json:"prompt_expected,omitempty"`
+	VisionModelRef string   `json:"vision_model_ref,omitempty"`
+	SampleCount    int      `json:"sample_count,omitempty"`
+	SkipVision     bool     `json:"skip_vision,omitempty"`
+}
+
+// StudioQCReport represents a saved visual & technical QC report.
+type StudioQCReport struct {
+	ID             string          `json:"id"`
+	ProjectID      string          `json:"project_id"`
+	EpisodeID      string          `json:"episode_id,omitempty"`
+	TargetKind     string          `json:"target_kind"`
+	TargetID       string          `json:"target_id"`
+	MediaVersionID string          `json:"media_version_id,omitempty"`
+	MediaPath      string          `json:"media_path"`
+	Verdict        string          `json:"verdict"`
+	OverallScore   float64         `json:"overall_score"`
+	Issues         []QCReviewIssue `json:"issues"`
+	VisionSummary  string          `json:"vision_summary,omitempty"`
+	VisionModelRef string          `json:"vision_model_ref,omitempty"`
+	SampleFrames   []string        `json:"sample_frames,omitempty"`
+	CreatedAt      int64           `json:"created_at"`
+}
+
+// StudioBatchPreflightPayload computes readiness and estimated cost for an episode stage batch.
+type StudioBatchPreflightPayload struct {
+	ProjectID string `json:"project_id"`
+	EpisodeID string `json:"episode_id,omitempty"`
+	Stage     string `json:"stage"`
+	Model     string `json:"model,omitempty"`
+	ItemCount int    `json:"item_count,omitempty"`
+}
+
+// StudioQueueUpdatedEvent is pushed when queue jobs change state.
+type StudioQueueUpdatedEvent struct {
+	ProjectID string     `json:"project_id"`
+	EpisodeID string     `json:"episode_id,omitempty"`
+	Job       *StudioJob `json:"job,omitempty"`
+	Summary   string     `json:"summary,omitempty"`
+}
+
+// StudioCostUpdatedEvent is pushed when ledger spend updates.
+type StudioCostUpdatedEvent struct {
+	ProjectID         string  `json:"project_id"`
+	EpisodeID         string  `json:"episode_id,omitempty"`
+	ActualTotalUSD    float64 `json:"actual_total_usd"`
+	EstimatedTotalUSD float64 `json:"estimated_total_usd"`
+	EntryCount        int     `json:"entry_count"`
 }

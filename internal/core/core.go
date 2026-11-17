@@ -465,6 +465,9 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		})
 	}
 
+	studioRepo := sqlite.NewStudioRepository(c.db)
+	preflightAdapter := &studioPreflightAdapter{provSvc: provSvc, studioRepo: studioRepo}
+
 	wfSvc, err := workflow.New(workflow.Options{
 		Paths:             o.Paths,
 		Logger:            o.Logger,
@@ -473,6 +476,8 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		Binaries:          binSvc,
 		StudioConfig:      cfg.Studio,
 		Registrar:         mediaSvc,
+		ProviderChecker:   preflightAdapter,
+		CostEstimator:     preflightAdapter,
 		WorkspaceTreeFunc: c.WorkspaceTree,
 	})
 	if err != nil {
@@ -480,9 +485,10 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 	}
 
 	studioSvc = studiosvc.New(studiosvc.Options{
-		Repo:         sqlite.NewStudioRepository(c.db),
+		Repo:         studioRepo,
 		Workflow:     wfSvc,
 		Media:        mediaSvc,
+		VideoMedia:   mediaGenSvc,
 		StudioConfig: cfg.Studio,
 		ProjectsDir:  tree.ProjectsDir,
 		OnEvent: func(eventName string, data any) {
@@ -490,6 +496,7 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		},
 		Logger: o.Logger,
 	})
+	mediaGenSvc.SetUsageHook(studioSvc.HandleMediaUsage)
 	c.studioSvc = studioSvc
 
 	// The app's own copies of the agent CLIs live in one folder of its data; nothing installed elsewhere is touched.
@@ -544,6 +551,8 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 	agentSvc.SetProviderLinks(sqlite.NewProviderRepository(c.db))
 	agentSvc.SetMediaInspector(&mediaInspectorAdapter{svc: mediaSvc})
 	c.agentSvc = agentSvc
+	studioSvc.SetFileGuard(workflowFileGuard(cfg.Mode, agentSvc))
+	c.background("studio-queue-worker", studioSvc.RunQueueWorker)
 	c.background("agent-provision-clis", agentSvc.ProvisionCLIs)
 	if cfg.Agent.RestoreConnection {
 		c.background("agent-restore-connection", agentSvc.RestoreConnection)
@@ -668,4 +677,45 @@ func (m *mediaInspectorAdapter) InspectAsset(ctx context.Context, assetID string
 		DurationSec:    item.DurationSec,
 		Metadata:       metaMap,
 	}, nil
+}
+
+type studioPreflightAdapter struct {
+	provSvc    *providersvc.Service
+	studioRepo *sqlite.StudioRepository
+}
+
+func (a *studioPreflightAdapter) CheckCapability(ctx context.Context, capability domainprovider.Capability, modelRef string) (string, string, error) {
+	if a.provSvc == nil {
+		return "", "", fmt.Errorf("provider service is unavailable")
+	}
+	purpose := domainprovider.PurposeImage
+	switch capability {
+	case domainprovider.CapabilityLLM:
+		purpose = domainprovider.PurposeText
+	case domainprovider.CapabilityImage:
+		purpose = domainprovider.PurposeImage
+	case domainprovider.CapabilityVideo:
+		purpose = domainprovider.PurposeVideo
+	case domainprovider.CapabilityTTS:
+		purpose = domainprovider.PurposeTTS
+	case domainprovider.CapabilityLipSync:
+		purpose = domainprovider.PurposeLipSync
+	}
+	res, err := a.provSvc.ResolveModel(ctx, purpose, modelRef)
+	if err != nil {
+		return "", "", err
+	}
+	return res.Ref.ProviderID, res.Model.ModelID, nil
+}
+
+func (a *studioPreflightAdapter) EstimateUnitPriceUSD(ctx context.Context, providerID, modelID, capability, unit string) (float64, bool, error) {
+	if a.studioRepo == nil {
+		return 0, true, nil
+	}
+	entry, ok, err := a.studioRepo.ResolveUnitPrice(ctx, providerID, modelID, capability, unit)
+	if err != nil || !ok {
+		return 0, true, err
+	}
+	wildcard := entry.ProviderID == "*" || entry.ModelID == "*"
+	return entry.UnitPriceUSD, wildcard, nil
 }

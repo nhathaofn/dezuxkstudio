@@ -221,3 +221,120 @@ func normalizedScriptFromDTO(ns contracts.StudioNormalizedScript) domainstudio.N
 		Scenes:      scenes,
 	}
 }
+
+func jobToDTO(j domainstudio.Job) contracts.StudioJob {
+	return contracts.StudioJob{
+		ID:            j.ID,
+		ProjectID:     j.ProjectID,
+		EpisodeID:     j.EpisodeID,
+		ShotID:        j.ShotID,
+		AssetID:       j.AssetID,
+		JobKind:       string(j.JobKind),
+		ProviderID:    j.ProviderID,
+		ModelRef:      j.ModelRef,
+		Status:        string(j.Status),
+		ProviderJobID: j.ProviderJobID,
+		Progress:      j.Progress,
+		Attempts:      j.Attempts,
+		MaxAttempts:   j.MaxAttempts,
+		NextPollAt:    j.NextPollAt,
+		OutputPath:    j.OutputPath,
+		ErrorText:     j.ErrorText,
+		EstimatedUSD:  j.EstimatedUSD,
+		ActualUSD:     j.ActualUSD,
+		CreatedAt:     j.CreatedAt,
+		UpdatedAt:     j.UpdatedAt,
+		StartedAt:     j.StartedAt,
+		FinishedAt:    j.FinishedAt,
+	}
+}
+
+func jobsToDTO(list []domainstudio.Job) []contracts.StudioJob {
+	out := make([]contracts.StudioJob, len(list))
+	for i := range list {
+		out[i] = jobToDTO(list[i])
+	}
+	return out
+}
+
+func pricingToDTO(p domainstudio.PricingEntry) contracts.StudioPricingEntry {
+	return contracts.StudioPricingEntry{
+		ID:           p.ID,
+		ProviderID:   p.ProviderID,
+		ModelID:      p.ModelID,
+		Capability:   p.Capability,
+		Unit:         p.Unit,
+		UnitPriceUSD: p.UnitPriceUSD,
+		Currency:     p.Currency,
+		UpdatedAt:    p.UpdatedAt,
+	}
+}
+
+func costLedgerToDTO(c domainstudio.CostLedgerEntry) contracts.StudioCostLedgerEntry {
+	return contracts.StudioCostLedgerEntry{
+		ID:           c.ID,
+		ProjectID:    c.ProjectID,
+		EpisodeID:    c.EpisodeID,
+		ShotID:       c.ShotID,
+		JobID:        c.JobID,
+		ProviderID:   c.ProviderID,
+		ModelID:      c.ModelID,
+		Capability:   c.Capability,
+		Operation:    c.Operation,
+		InputUnits:   c.InputUnits,
+		OutputUnits:  c.OutputUnits,
+		Unit:         c.Unit,
+		EstimatedUSD: c.EstimatedUSD,
+		ActualUSD:    c.ActualUSD,
+		Status:       string(c.Status),
+		CreatedAt:    c.CreatedAt,
+	}
+}
+
+func mediaVersionToDTO(v domainstudio.MediaVersion) contracts.StudioMediaVersion {
+	return contracts.StudioMediaVersion{
+		ID:         v.ID,
+		ProjectID:  v.ProjectID,
+		EpisodeID:  v.EpisodeID,
+		TargetKind: string(v.TargetKind),
+		TargetID:   v.TargetID,
+		VersionNum: v.VersionNum,
+		MediaPath:  v.MediaPath,
+		SourceNode: v.SourceNode,
+		PromptUsed: v.PromptUsed,
+		ModelRef:   v.ModelRef,
+		Seed:       v.Seed,
+		CostUSD:    v.CostUSD,
+		QCStatus:   string(v.QCStatus),
+		IsSelected: v.IsSelected,
+		CreatedAt:  v.CreatedAt,
+	}
+}
+
+func qcReportToDTO(r domainstudio.QCReport) contracts.StudioQCReport {
+	issues := make([]contracts.QCReviewIssue, len(r.Issues))
+	for i, iss := range r.Issues {
+		issues[i] = contracts.QCReviewIssue{
+			Severity:  iss.Severity,
+			Category:  iss.Category,
+			Message:   iss.Message,
+			FramePath: iss.FramePath,
+		}
+	}
+	return contracts.StudioQCReport{
+		ID:             r.ID,
+		ProjectID:      r.ProjectID,
+		EpisodeID:      r.EpisodeID,
+		TargetKind:     string(r.TargetKind),
+		TargetID:       r.TargetID,
+		MediaVersionID: r.MediaVersionID,
+		MediaPath:      r.MediaPath,
+		Verdict:        string(r.Verdict),
+		OverallScore:   r.OverallScore,
+		Issues:         issues,
+		VisionSummary:  r.VisionSummary,
+		VisionModelRef: r.VisionModelRef,
+		SampleFrames:   append([]string(nil), r.SampleFrames...),
+		CreatedAt:      r.CreatedAt,
+	}
+}

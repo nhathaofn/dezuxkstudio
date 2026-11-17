@@ -17,6 +17,7 @@ import (
 	"app/internal/apperr"
 	"app/internal/config"
 	"app/internal/contracts"
+	domainmedia "app/internal/domain/mediagen"
 	domainstudio "app/internal/domain/studio"
 	"app/internal/engine"
 	"app/internal/fsutil"
@@ -43,6 +44,8 @@ type Options struct {
 	Repo         domainstudio.Repository
 	Workflow     WorkflowRunner
 	Media        MediaRegistrar
+	VideoMedia   VideoQueueMedia
+	FileGuard    engine.FileGuard
 	StudioConfig config.StudioConfig
 	ProjectsDir  string
 	OnEvent      func(eventName string, data any)
@@ -51,18 +54,22 @@ type Options struct {
 
 // Service manages projects, episodes, asset bibles, shots, workspace sync, and stage execution.
 type Service struct {
-	repo    domainstudio.Repository
-	wf      WorkflowRunner
-	media   MediaRegistrar
-	cfg     config.StudioConfig
-	onEvent func(eventName string, data any)
-	log     *slog.Logger
+	repo       domainstudio.Repository
+	wf         WorkflowRunner
+	media      MediaRegistrar
+	videoMedia VideoQueueMedia
+	fileGuard  engine.FileGuard
+	cfg        config.StudioConfig
+	onEvent    func(eventName string, data any)
+	log        *slog.Logger
 
 	mu          sync.RWMutex
 	projectsDir string
 
 	runMu      sync.Mutex
 	runningEps map[string]bool
+
+	wakeCh chan struct{}
 }
 
 type episodeDiskMeta struct {
@@ -88,6 +95,15 @@ func New(opts Options) *Service {
 	if cfg.MaxConcurrentBatch <= 0 {
 		cfg.MaxConcurrentBatch = def.MaxConcurrentBatch
 	}
+	if cfg.QueueWorkers <= 0 {
+		cfg.QueueWorkers = def.QueueWorkers
+	}
+	if cfg.QueuePollInterval <= 0 {
+		cfg.QueuePollInterval = def.QueuePollInterval
+	}
+	if cfg.QueueMaxAttempts <= 0 {
+		cfg.QueueMaxAttempts = def.QueueMaxAttempts
+	}
 
 	projectsDir := strings.TrimSpace(opts.ProjectsDir)
 	if projectsDir != "" {
@@ -99,11 +115,14 @@ func New(opts Options) *Service {
 		repo:        opts.Repo,
 		wf:          opts.Workflow,
 		media:       opts.Media,
+		videoMedia:  opts.VideoMedia,
+		fileGuard:   opts.FileGuard,
 		cfg:         cfg,
 		onEvent:     opts.OnEvent,
 		log:         log,
 		projectsDir: projectsDir,
 		runningEps:  make(map[string]bool),
+		wakeCh:      make(chan struct{}, 1),
 	}
 }
 
@@ -112,6 +131,13 @@ func (s *Service) ProjectsDir() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.projectsDir
+}
+
+// SetFileGuard configures the FileGuard applied to background queue workers.
+func (s *Service) SetFileGuard(fn engine.FileGuard) {
+	s.mu.Lock()
+	s.fileGuard = fn
+	s.mu.Unlock()
 }
 
 // SetProjectsDir updates the active projects root when the user changes WorkspaceRoot.
@@ -1044,6 +1070,15 @@ func (s *Service) RunStage(ctx context.Context, p contracts.StudioEpisodeRunStag
 	if err != nil {
 		return contracts.StudioRunStageResult{}, err
 	}
+	if !proj.AutoApproveBatches && !p.Approved && isHeavyGenerationStage(p.Stage) {
+		return contracts.StudioRunStageResult{}, apperr.Validation("Batch execution requires approval when auto_approve_batches is disabled").
+			WithDetails(map[string]any{"approval_required": true, "project_id": proj.ID, "stage": string(p.Stage)})
+	}
+	ctx = domainmedia.ContextWithUsageMeta(ctx, domainmedia.UsageMeta{
+		ProjectID: proj.ID,
+		EpisodeID: ep.ID,
+		Operation: string(p.Stage),
+	})
 	epRoot := s.resolveEpisodeRoot(proj, ep.Code)
 	if epRoot != "" {
 		if err := ensureEpisodeDirs(epRoot); err != nil {
@@ -1353,6 +1388,7 @@ func (s *Service) runGenerateAssets(ctx context.Context, proj domainstudio.Proje
 			lastErr = uerr
 			continue
 		}
+		s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetAsset, asset.ID, out.Path, mediagennodes.NodeTypeImage, prompt, p.Model)
 		completed++
 	}
 
@@ -1455,6 +1491,7 @@ func (s *Service) runGenerateKeyframes(ctx context.Context, proj domainstudio.Pr
 		}
 		shot.ErrorText = ""
 		_, _ = s.repo.UpsertShot(ctx, shot)
+		s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetKeyframe, shot.ID, out.Path, mediagennodes.NodeTypeImage, prompt, p.Model)
 		completed++
 	}
 
@@ -1610,6 +1647,7 @@ func (s *Service) runGenerateVideos(ctx context.Context, proj domainstudio.Proje
 				shot.Status = domainstudio.ShotVideoReady
 				shot.ErrorText = ""
 				_, _ = s.repo.UpsertShot(ctx, shot)
+				s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetVideo, shot.ID, out.Path, mediagennodes.NodeTypeVideo, shot.VideoPrompt, p.Model)
 
 				stateMu.Lock()
 				completed++
@@ -1721,6 +1759,7 @@ func (s *Service) runGenerateTTS(ctx context.Context, proj domainstudio.Project,
 			shot.Status = domainstudio.ShotTTSReady
 		}
 		_, _ = s.repo.UpsertShot(ctx, shot)
+		s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetDubAudio, shot.ID, out.Path, mediagennodes.NodeTypeTTS, shotSpeechText(shot), p.Model)
 		completed++
 	}
 

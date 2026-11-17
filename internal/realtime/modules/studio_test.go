@@ -87,6 +87,18 @@ func TestStudioModule_RegisterDispatchAndFileGuard(t *testing.T) {
 		contracts.ActionStudioShotUpsert,
 		contracts.ActionStudioShotReorder,
 		contracts.ActionStudioEpisodeRunStage,
+		contracts.ActionStudioQueueEnqueue,
+		contracts.ActionStudioQueueList,
+		contracts.ActionStudioQueueControl,
+		contracts.ActionStudioCostSummary,
+		contracts.ActionStudioPricingUpsert,
+		contracts.ActionStudioVersionsList,
+		contracts.ActionStudioVersionSelect,
+		contracts.ActionStudioGridSplit,
+		contracts.ActionStudioMaskEdit,
+		contracts.ActionStudioExtractLastFrame,
+		contracts.ActionStudioQCReview,
+		contracts.ActionStudioBatchPreflight,
 	} {
 		if h, ok := reg.Lookup(action); !ok || h == nil {
 			t.Fatalf("missing handler for %q", action)
