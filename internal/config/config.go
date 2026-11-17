@@ -55,6 +55,7 @@ type Config struct {
 	Providers   ProvidersConfig
 	MediaGen    MediaGenConfig
 	Media       MediaConfig
+	Studio      StudioConfig
 	Watermark   WatermarkConfig
 	Network     NetworkConfig
 	Desktop     DesktopConfig
@@ -149,13 +150,27 @@ type BinariesConfig struct {
 	DownloadRetryDelay time.Duration // backoff delay between download retries
 }
 
-// MediaGenConfig tunes image, video, and TTS media generation requests.
+// MediaGenConfig tunes text, image, video, and TTS media generation requests.
 type MediaGenConfig struct {
 	RequestTimeout    time.Duration // HTTP timeout for synchronous generation and submit/poll RPCs
 	VideoTimeout      time.Duration // total deadline for async generation polling + artifact download
 	VideoPollInterval time.Duration // delay between async task status polls
 	MaxOutputBytes    int64         // safety cap on downloaded image, video, or audio payloads
 	MaxReferenceBytes int64         // max bytes allowed per local reference image
+	TextTimeout       time.Duration // HTTP timeout for structured LLM text generation calls
+	TextMaxTokens     int           // default max output tokens for LLM text generation
+	TextTemperature   float64       // default sampling temperature for LLM text generation
+}
+
+// StudioConfig tunes film studio FFmpeg/FFprobe processing and batch concurrency.
+type StudioConfig struct {
+	DefaultFPS         int           // default output frame rate (e.g. 24)
+	DefaultResolution  string        // default output WxH resolution (e.g. "1920x1080")
+	FFmpegPreset       string        // libx264 preset (e.g. "medium")
+	FFmpegCRF          int           // constant rate factor 0..51 (e.g. 20)
+	FFmpegTimeout      time.Duration // max duration for FFmpeg studio commands
+	FFprobeTimeout     time.Duration // max duration for FFprobe media inspection commands
+	MaxConcurrentBatch int           // max parallel items during studio batch generation
 }
 
 // MediaConfig tunes the media assets library, signed ticket streaming, and staging GC.
@@ -298,6 +313,9 @@ func Default(mode Mode) *Config {
 			VideoPollInterval: 4 * time.Second,
 			MaxOutputBytes:    256 << 20, // 256 MiB
 			MaxReferenceBytes: 20 << 20,  // 20 MiB
+			TextTimeout:       120 * time.Second,
+			TextMaxTokens:     8192,
+			TextTemperature:   0.4,
 		},
 		Media: MediaConfig{
 			LibraryMaxItems:    1000,
@@ -307,6 +325,15 @@ func Default(mode Mode) *Config {
 			RegisteredRootsMax: 32,
 			StagingTTL:         24 * time.Hour,
 			StagingGCInterval:  1 * time.Hour,
+		},
+		Studio: StudioConfig{
+			DefaultFPS:         24,
+			DefaultResolution:  "1920x1080",
+			FFmpegPreset:       "medium",
+			FFmpegCRF:          20,
+			FFmpegTimeout:      15 * time.Minute,
+			FFprobeTimeout:     30 * time.Second,
+			MaxConcurrentBatch: 4,
 		},
 		Watermark: WatermarkConfig{
 			MaxWorkers:        4,

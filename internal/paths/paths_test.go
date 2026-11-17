@@ -72,6 +72,9 @@ func TestResolveWorkspaceTree(t *testing.T) {
 			if tree.WorkspaceDir != filepath.Join(expectedRoot, "workspace") {
 				t.Fatalf("expected workspace dir %q, got %q", filepath.Join(expectedRoot, "workspace"), tree.WorkspaceDir)
 			}
+			if tree.ProjectsDir != filepath.Join(expectedRoot, "workspace", "projects") {
+				t.Fatalf("expected projects dir %q, got %q", filepath.Join(expectedRoot, "workspace", "projects"), tree.ProjectsDir)
+			}
 		}
 	})
 
@@ -100,6 +103,9 @@ func TestResolveWorkspaceTree(t *testing.T) {
 		if tree.WorkspaceDir != filepath.Join(custom, "workspace") {
 			t.Fatalf("expected workspace %q, got %q", filepath.Join(custom, "workspace"), tree.WorkspaceDir)
 		}
+		if tree.ProjectsDir != filepath.Join(custom, "workspace", "projects") {
+			t.Fatalf("expected projects %q, got %q", filepath.Join(custom, "workspace", "projects"), tree.ProjectsDir)
+		}
 	})
 
 	t.Run("agent workspace override", func(t *testing.T) {
@@ -112,6 +118,9 @@ func TestResolveWorkspaceTree(t *testing.T) {
 		}
 		if tree.WorkspaceDir != agentOverride {
 			t.Fatalf("expected override workspace %q, got %q", agentOverride, tree.WorkspaceDir)
+		}
+		if tree.ProjectsDir != filepath.Join(agentOverride, "projects") {
+			t.Fatalf("expected override projects %q, got %q", filepath.Join(agentOverride, "projects"), tree.ProjectsDir)
 		}
 	})
 }
@@ -138,6 +147,7 @@ func TestWorkspaceTreeEnsure(t *testing.T) {
 		tree.TTSDir,
 		tree.WatermarkDir,
 		tree.WorkspaceDir,
+		tree.ProjectsDir,
 	} {
 		fi, err := os.Stat(d)
 		if err != nil {

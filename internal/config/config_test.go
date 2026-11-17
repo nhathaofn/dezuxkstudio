@@ -574,3 +574,69 @@ func TestPhase3WaveAConfigFieldsAndAccessors(t *testing.T) {
 		t.Errorf("Media.StagingGCInterval = %v, want 30m (env)", c.Media.StagingGCInterval)
 	}
 }
+
+func TestStudioAndTextMediaGenConfig(t *testing.T) {
+	def := Default(ModeDesktop)
+	if def.MediaGen.TextTimeout != 120*time.Second {
+		t.Fatalf("MediaGen.TextTimeout = %v, want 120s", def.MediaGen.TextTimeout)
+	}
+	if def.MediaGen.TextMaxTokens != 8192 {
+		t.Fatalf("MediaGen.TextMaxTokens = %d, want 8192", def.MediaGen.TextMaxTokens)
+	}
+	if def.MediaGen.TextTemperature != 0.4 {
+		t.Fatalf("MediaGen.TextTemperature = %v, want 0.4", def.MediaGen.TextTemperature)
+	}
+	if def.Studio.DefaultFPS != 24 || def.Studio.DefaultResolution != "1920x1080" ||
+		def.Studio.FFmpegPreset != "medium" || def.Studio.FFmpegCRF != 20 ||
+		def.Studio.FFmpegTimeout != 15*time.Minute || def.Studio.FFprobeTimeout != 30*time.Second ||
+		def.Studio.MaxConcurrentBatch != 4 {
+		t.Fatalf("unexpected default Studio config: %+v", def.Studio)
+	}
+
+	dir := t.TempDir()
+	writeFile(t, dir, FileName, `{
+		"mediagen": {"text_timeout": "90s", "text_max_tokens": 4096, "text_temperature": 0.25},
+		"studio": {"default_fps": 30, "default_resolution": "1280x720", "ffmpeg_preset": "fast", "ffmpeg_crf": 18, "ffmpeg_timeout": "10m", "ffprobe_timeout": "20s", "max_concurrent_batch": 6}
+	}`)
+	res, err := Load(Source{
+		Mode:      ModeDesktop,
+		ConfigDir: dir,
+		EnvPrefix: "T_",
+		LookupEnv: env(map[string]string{
+			"T_MEDIAGEN_TEXT_TEMPERATURE": "0.7",
+			"T_STUDIO_DEFAULT_FPS":        "60",
+		}),
+		Args: []string{"--studio-ffmpeg-crf=22"},
+	})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if res.Config.MediaGen.TextTimeout != 90*time.Second || res.Config.MediaGen.TextMaxTokens != 4096 || res.Config.MediaGen.TextTemperature != 0.7 {
+		t.Fatalf("unexpected loaded MediaGen text config: %+v", res.Config.MediaGen)
+	}
+	if res.Config.Studio.DefaultFPS != 60 || res.Config.Studio.FFmpegCRF != 22 || res.Config.Studio.DefaultResolution != "1280x720" || res.Config.Studio.MaxConcurrentBatch != 6 {
+		t.Fatalf("unexpected loaded Studio config: %+v", res.Config.Studio)
+	}
+
+	for name, mutate := range map[string]func(*Config){
+		"zero text_timeout":     func(c *Config) { c.MediaGen.TextTimeout = 0 },
+		"zero text_max_tokens":  func(c *Config) { c.MediaGen.TextMaxTokens = 0 },
+		"bad text_temperature":  func(c *Config) { c.MediaGen.TextTemperature = 2.5 },
+		"negative text_temp":    func(c *Config) { c.MediaGen.TextTemperature = -0.1 },
+		"zero studio fps":       func(c *Config) { c.Studio.DefaultFPS = 0 },
+		"bad studio resolution": func(c *Config) { c.Studio.DefaultResolution = "1080p" },
+		"empty studio preset":   func(c *Config) { c.Studio.FFmpegPreset = " " },
+		"bad studio crf":        func(c *Config) { c.Studio.FFmpegCRF = 52 },
+		"zero studio ffmpeg":    func(c *Config) { c.Studio.FFmpegTimeout = 0 },
+		"zero studio ffprobe":   func(c *Config) { c.Studio.FFprobeTimeout = 0 },
+		"zero max_concurrent":   func(c *Config) { c.Studio.MaxConcurrentBatch = 0 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := Default(ModeDesktop)
+			mutate(c)
+			if err := c.Validate(); err == nil {
+				t.Fatalf("%s: expected validation error", name)
+			}
+		})
+	}
+}

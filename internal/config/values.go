@@ -48,6 +48,18 @@ func (v int64Value) Set(s string) error {
 	return nil
 }
 
+type float64Value struct{ p *float64 }
+
+func (v float64Value) String() string { return strconv.FormatFloat(*v.p, 'f', -1, 64) }
+func (v float64Value) Set(s string) error {
+	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return fmt.Errorf("expected number, got %q", s)
+	}
+	*v.p = f
+	return nil
+}
+
 type boolValue struct{ p *bool }
 
 func (v boolValue) String() string   { return strconv.FormatBool(*v.p) }

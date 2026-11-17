@@ -18,6 +18,7 @@ type WorkspaceTree struct {
 	TTSDir       string
 	WatermarkDir string
 	WorkspaceDir string
+	ProjectsDir  string
 }
 
 // ResolveWorkspaceTree calculates all creative workspace directories based on customRoot
@@ -46,6 +47,8 @@ func ResolveWorkspaceTree(appPaths Paths, customRoot, agentWorkspaceOverride str
 		workspaceDir = filepath.Join(root, "workspace")
 	}
 
+	projectsDir := filepath.Join(workspaceDir, "projects")
+
 	return WorkspaceTree{
 		Root:         root,
 		MediaDir:     mediaDir,
@@ -54,10 +57,11 @@ func ResolveWorkspaceTree(appPaths Paths, customRoot, agentWorkspaceOverride str
 		TTSDir:       ttsDir,
 		WatermarkDir: watermarkDir,
 		WorkspaceDir: workspaceDir,
+		ProjectsDir:  projectsDir,
 	}
 }
 
-// Ensure creates all 7 directories in the workspace tree with 0o755 permissions.
+// Ensure creates all 8 directories in the workspace tree with 0o755 permissions.
 func (t WorkspaceTree) Ensure() error {
 	dirs := []string{
 		t.Root,
@@ -67,6 +71,7 @@ func (t WorkspaceTree) Ensure() error {
 		t.TTSDir,
 		t.WatermarkDir,
 		t.WorkspaceDir,
+		t.ProjectsDir,
 	}
 	for _, dir := range dirs {
 		if dir == "" {

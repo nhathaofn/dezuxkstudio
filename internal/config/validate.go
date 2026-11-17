@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"net"
 	"net/url"
 	"path/filepath"
@@ -68,6 +69,9 @@ func (c *Config) Validate() error {
 			"mediagen.request_timeout":              c.MediaGen.RequestTimeout,
 			"mediagen.video_timeout":                c.MediaGen.VideoTimeout,
 			"mediagen.video_poll_interval":          c.MediaGen.VideoPollInterval,
+			"mediagen.text_timeout":                 c.MediaGen.TextTimeout,
+			"studio.ffmpeg_timeout":                 c.Studio.FFmpegTimeout,
+			"studio.ffprobe_timeout":                c.Studio.FFprobeTimeout,
 			"network.idle_conn_timeout":             c.Network.IdleConnTimeout,
 			"agent.turn_timeout":                    c.Agent.TurnTimeout,
 			"agent.initialize_timeout":              c.Agent.InitializeTimeout,
@@ -91,6 +95,9 @@ func (c *Config) Validate() error {
 			"agent.history_limit":             c.Agent.HistoryLimit,
 			"agent.max_pending_approvals":     c.Agent.MaxPendingApprovals,
 			"agent.max_concurrent_subagents":  c.Agent.MaxConcurrentSubagents,
+			"mediagen.text_max_tokens":        c.MediaGen.TextMaxTokens,
+			"studio.default_fps":              c.Studio.DefaultFPS,
+			"studio.max_concurrent_batch":     c.Studio.MaxConcurrentBatch,
 		})
 		switch strings.ToLower(strings.TrimSpace(c.Agent.Mode)) {
 		case "", "assistant":
@@ -180,6 +187,20 @@ func (c *Config) Validate() error {
 	}
 	if c.Mode != ModeClient && (c.MediaGen.MaxOutputBytes <= 0 || c.MediaGen.MaxReferenceBytes <= 0) {
 		add("mediagen.max_output_bytes and mediagen.max_reference_bytes must be > 0")
+	}
+	if c.Mode != ModeClient {
+		if math.IsNaN(c.MediaGen.TextTemperature) || math.IsInf(c.MediaGen.TextTemperature, 0) || c.MediaGen.TextTemperature < 0 || c.MediaGen.TextTemperature > 2 {
+			add("mediagen.text_temperature must be between 0 and 2, got %v", c.MediaGen.TextTemperature)
+		}
+		if c.Studio.FFmpegCRF < 0 || c.Studio.FFmpegCRF > 51 {
+			add("studio.ffmpeg_crf must be 0-51, got %d", c.Studio.FFmpegCRF)
+		}
+		if strings.TrimSpace(c.Studio.FFmpegPreset) == "" {
+			add("studio.ffmpeg_preset must not be empty")
+		}
+		if !validResolutionWxH(c.Studio.DefaultResolution) {
+			add("studio.default_resolution must be WxH (e.g. 1920x1080), got %q", c.Studio.DefaultResolution)
+		}
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("invalid configuration:\n%w", errors.Join(errs...))
@@ -280,4 +301,14 @@ func positiveInts(add func(string, ...any), m map[string]int) {
 			add("%s must be > 0", name)
 		}
 	}
+}
+
+func validResolutionWxH(raw string) bool {
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(raw)), "x")
+	if len(parts) != 2 {
+		return false
+	}
+	w, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+	h, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+	return err1 == nil && err2 == nil && w >= 64 && h >= 64 && w <= 16384 && h <= 16384
 }
