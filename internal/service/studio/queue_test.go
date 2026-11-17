@@ -265,8 +265,8 @@ func TestStudioCrashRecoveryQueueSubmitsExactlyOnceAcrossRestart(t *testing.T) {
 	}
 
 	qcRes, err := svc2.RunQCReview(ctx, contracts.StudioQCReviewPayload{
-		ProjectID: created.Project.ID,
-		EpisodeID: epID,
+		ProjectID:  created.Project.ID,
+		EpisodeID:  epID,
 		TargetKind: "video",
 		TargetID:   shotID,
 		MediaPath:  epAfter.Shots[0].VideoPath,

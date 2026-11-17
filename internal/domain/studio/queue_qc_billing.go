@@ -38,16 +38,16 @@ func (s JobStatus) IsTerminal() bool {
 type JobKind string
 
 const (
-	JobImage               JobKind = "image"
-	JobVideo               JobKind = "video"
-	JobTTS                 JobKind = "tts"
-	JobLipSync             JobKind = "lipsync"
-	JobMaskEdit            JobKind = "mask_edit"
-	JobGridSplit           JobKind = "grid_split"
-	JobExtractFrames       JobKind = "extract_frames"
-	JobTTSDubMux           JobKind = "tts_dub_mux"
+	JobImage                JobKind = "image"
+	JobVideo                JobKind = "video"
+	JobTTS                  JobKind = "tts"
+	JobLipSync              JobKind = "lipsync"
+	JobMaskEdit             JobKind = "mask_edit"
+	JobGridSplit            JobKind = "grid_split"
+	JobExtractFrames        JobKind = "extract_frames"
+	JobTTSDubMux            JobKind = "tts_dub_mux"
 	JobVideoWatermarkRemove JobKind = "video_wm_remove"
-	JobQCReview            JobKind = "qc_review"
+	JobQCReview             JobKind = "qc_review"
 )
 
 // Valid reports whether k is a known studio job kind.
@@ -256,8 +256,8 @@ type MediaVersion struct {
 
 // QCIssue describes one technical or visual finding surfaced by tool.qc_review.
 type QCIssue struct {
-	Severity  string `json:"severity"`  // "info" | "warn" | "error"
-	Category  string `json:"category"`  // "technical" | "continuity" | "artifacts" | "audio"
+	Severity  string `json:"severity"` // "info" | "warn" | "error"
+	Category  string `json:"category"` // "technical" | "continuity" | "artifacts" | "audio"
 	Message   string `json:"message"`
 	FramePath string `json:"frame_path,omitempty"`
 }
