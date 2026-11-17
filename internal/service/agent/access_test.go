@@ -556,3 +556,322 @@ func writeZipFixture(t *testing.T, path string, files map[string]string) {
 		t.Fatal(err)
 	}
 }
+
+func TestValidateWorkspaceRootCandidate(t *testing.T) {
+	base := t.TempDir()
+	dataDir := filepath.Join(base, "data")
+	wsDir := filepath.Join(base, "ws")
+	mediaDir := filepath.Join(base, "media")
+	profilesDir := filepath.Join(dataDir, "agent-profiles")
+	systemDir := filepath.Join(base, "Windows")
+	appDataDir := filepath.Join(base, "AppData")
+
+	for _, d := range []string{dataDir, wsDir, mediaDir, profilesDir, systemDir, appDataDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	p := NewAccessPolicy(dataDir, wsDir, mediaDir, profilesDir, nil)
+	p.protected = []string{systemDir, appDataDir, profilesDir}
+
+	// 1. Accept valid existing directory
+	validDir := filepath.Join(base, "CreativeWorkspace")
+	if err := os.MkdirAll(validDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	norm, err := p.ValidateWorkspaceRootCandidate(validDir)
+	if err != nil {
+		t.Fatalf("expected valid existing dir to be accepted, got error: %v", err)
+	}
+	if norm != filepath.Clean(validDir) {
+		t.Fatalf("expected normalized %q, got %q", filepath.Clean(validDir), norm)
+	}
+
+	// 2. Accept non-existent directory under existing valid parent (e.g. Documents\DezuxkStudio)
+	nonExistentChild := filepath.Join(validDir, "DezuxkStudio")
+	norm, err = p.ValidateWorkspaceRootCandidate(nonExistentChild)
+	if err != nil {
+		t.Fatalf("expected non-existent dir under valid parent to be accepted, got error: %v", err)
+	}
+	if norm != filepath.Clean(nonExistentChild) {
+		t.Fatalf("expected normalized %q, got %q", filepath.Clean(nonExistentChild), norm)
+	}
+
+	// 3. Reject empty string or whitespace
+	for _, empty := range []string{"", "   ", "\t\n"} {
+		if _, err := p.ValidateWorkspaceRootCandidate(empty); err == nil {
+			t.Fatalf("expected empty candidate %q to be rejected", empty)
+		}
+	}
+
+	// 4. Reject NUL bytes
+	if _, err := p.ValidateWorkspaceRootCandidate(validDir + "\x00bad"); err == nil {
+		t.Fatal("expected NUL byte candidate to be rejected")
+	}
+
+	// 5. Reject relative path
+	if _, err := p.ValidateWorkspaceRootCandidate("some/relative/path"); err == nil {
+		t.Fatal("expected relative path to be rejected")
+	}
+
+	// 6. Reject volume roots
+	volRoot := filepath.VolumeName(base) + string(filepath.Separator)
+	if _, err := p.ValidateWorkspaceRootCandidate(volRoot); err == nil {
+		t.Fatalf("expected volume root %q to be rejected", volRoot)
+	}
+	if _, err := p.ValidateWorkspaceRootCandidate("/"); err == nil {
+		t.Fatal("expected root '/' to be rejected")
+	}
+	if _, err := p.ValidateWorkspaceRootCandidate(`\`); err == nil {
+		t.Fatal(`expected root '\' to be rejected`)
+	}
+
+	// 7. Reject device paths and network paths
+	devicePaths := []string{
+		`\\?\` + validDir,
+		`\\.\PhysicalDrive0`,
+		`\??\` + validDir,
+		`\\server\share`,
+	}
+	for _, dp := range devicePaths {
+		if _, err := p.ValidateWorkspaceRootCandidate(dp); err == nil {
+			t.Fatalf("expected device/network path %q to be rejected", dp)
+		}
+	}
+
+	// 8. Reject Alternate Data Streams (ADS)
+	adsPath := filepath.Join(validDir, "folder:stream")
+	if _, err := p.ValidateWorkspaceRootCandidate(adsPath); err == nil {
+		t.Fatalf("expected ADS path %q to be rejected", adsPath)
+	}
+
+	// 9. Reject existing regular file
+	filePath := filepath.Join(validDir, "file.txt")
+	mustWrite(t, filePath, "content")
+	if _, err := p.ValidateWorkspaceRootCandidate(filePath); err == nil {
+		t.Fatalf("expected regular file %q to be rejected as workspace root", filePath)
+	}
+
+	// 10. Reject inside dataDir
+	insideData := filepath.Join(dataDir, "custom")
+	if _, err := p.ValidateWorkspaceRootCandidate(insideData); err == nil {
+		t.Fatalf("expected path inside dataDir %q to be rejected", insideData)
+	}
+
+	// 11. Reject inside protected system folder (systemDir, appDataDir)
+	insideSystem := filepath.Join(systemDir, "Sub")
+	if _, err := p.ValidateWorkspaceRootCandidate(insideSystem); err == nil {
+		t.Fatalf("expected path inside systemDir %q to be rejected", insideSystem)
+	}
+	insideAppData := filepath.Join(appDataDir, "Sub")
+	if _, err := p.ValidateWorkspaceRootCandidate(insideAppData); err == nil {
+		t.Fatalf("expected path inside appDataDir %q to be rejected", insideAppData)
+	}
+
+	// 12. Reject forbidden directory segments (.git, .ssh, .aws)
+	for _, seg := range []string{".git", ".ssh", ".aws", "node_modules"} {
+		badSegPath := filepath.Join(validDir, seg, "workspace")
+		if _, err := p.ValidateWorkspaceRootCandidate(badSegPath); err == nil {
+			t.Fatalf("expected path with forbidden segment %q to be rejected", badSegPath)
+		}
+	}
+
+	// 13. Reject path traversal resolving into protected folder
+	traversal := filepath.Join(systemDir, "..", "Windows", "Sub")
+	if _, err := p.ValidateWorkspaceRootCandidate(traversal); err == nil {
+		t.Fatalf("expected traversal path %q to be rejected", traversal)
+	}
+
+	// 14. Reject Windows DOS reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+	dosCandidates := []string{
+		`C:\CON`,
+		`D:\projects\PRN`,
+		`D:\projects\AUX`,
+		`D:\projects\workspace\CON\sub`,
+		`D:\projects\workspace\NUL\sub`,
+		`C:\COM1`,
+		`C:\LPT1`,
+		`C:\path\com1`,
+		`D:\projects\lpt3.txt`,
+		`C:\projects\con.txt`,
+		`D:\workspace\COM9\test`,
+		`C:\workspace\lpt1`,
+		`C:\workspace\lpt9\sub`,
+		`C:\workspace\aux.tar.gz`,
+		`C:\workspace\nul`,
+		`C:\workspace\conin$`,
+		`C:\workspace\conout$`,
+		filepath.Join(validDir, "CON"),
+		filepath.Join(validDir, "PRN", "sub"),
+		filepath.Join(validDir, "nul.txt"),
+		filepath.Join(validDir, "sub", "com5"),
+	}
+	for _, cand := range dosCandidates {
+		if _, err := p.ValidateWorkspaceRootCandidate(cand); err == nil {
+			t.Fatalf("expected DOS device candidate %q to be rejected", cand)
+		} else if !strings.Contains(err.Error(), "contains a Windows reserved device name") {
+			t.Fatalf("expected error containing %q for %q, got: %v", "contains a Windows reserved device name", cand, err)
+		}
+	}
+
+	// Normal valid paths continue to be accepted (even containing substrings like "contact", "console", "constant")
+	validNames := []string{
+		filepath.Join(validDir, "contact"),
+		filepath.Join(validDir, "console"),
+		filepath.Join(validDir, "constant"),
+		filepath.Join(validDir, "com10"),
+		filepath.Join(validDir, "lpt0"),
+		filepath.Join(validDir, "auxiliary"),
+		filepath.Join(validDir, "null_folder"),
+		filepath.Join(validDir, "printer"),
+		filepath.Join(validDir, "confectionery"),
+	}
+	for _, v := range validNames {
+		norm, err := p.ValidateWorkspaceRootCandidate(v)
+		if err != nil {
+			t.Fatalf("expected valid non-device path %q to be accepted, got error: %v", v, err)
+		}
+		if norm != filepath.Clean(v) {
+			t.Fatalf("expected normalized %q, got %q", filepath.Clean(v), norm)
+		}
+	}
+
+	// Also verify that Resolve on DOS device names within workspace is rejected
+	for _, devFile := range []string{
+		filepath.Join(wsDir, "CON"),
+		filepath.Join(wsDir, "con.txt"),
+		filepath.Join(wsDir, "PRN"),
+		filepath.Join(wsDir, "aux.log"),
+		filepath.Join(wsDir, "nul"),
+		filepath.Join(wsDir, "com1"),
+		filepath.Join(wsDir, "lpt2.dat"),
+	} {
+		if _, err := p.Resolve(devFile); err == nil {
+			t.Fatalf("expected Resolve to reject DOS device file %q", devFile)
+		} else if !strings.Contains(err.Error(), "contains a Windows reserved device name") {
+			t.Fatalf("expected error containing %q for %q, got: %v", "contains a Windows reserved device name", devFile, err)
+		}
+	}
+}
+
+func TestSetWorkspaceDirs_HotReload(t *testing.T) {
+	f := newAccessFixture(t)
+	svc := f.svc
+
+	newWS := filepath.Join(f.base, "new_workspace")
+	newMedia := filepath.Join(f.base, "new_media")
+	for _, d := range []string{newWS, newMedia} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Update workspace directories
+	svc.SetWorkspaceDirs(newWS, newMedia)
+
+	if svc.getWorkspaceDir() != newWS {
+		t.Fatalf("expected workspaceDir %q, got %q", newWS, svc.getWorkspaceDir())
+	}
+	if svc.getMediaDir() != newMedia {
+		t.Fatalf("expected mediaDir %q, got %q", newMedia, svc.getMediaDir())
+	}
+
+	// AccessPolicy roots must contain the new directories
+	roots := svc.policy.Roots()
+	hasWS, hasMedia := false, false
+	for _, r := range roots {
+		if pathKey(r) == pathKey(newWS) {
+			hasWS = true
+		}
+		if pathKey(r) == pathKey(newMedia) {
+			hasMedia = true
+		}
+	}
+	if !hasWS || !hasMedia {
+		t.Fatalf("expected policy.Roots() to contain newWS and newMedia: %v", roots)
+	}
+
+	// Capabilities snapshot must reflect the new directories
+	payload, isErr := f.call(t, "studio_list_capabilities", nil)
+	if isErr {
+		t.Fatalf("studio_list_capabilities failed: %v", payload)
+	}
+	if payload["workspace_dir"] != newWS {
+		t.Fatalf("expected capabilities workspace_dir = %q, got %v", newWS, payload["workspace_dir"])
+	}
+	trustedFolders, _ := payload["trusted_folders"].([]any)
+	foundNewWS := false
+	for _, tf := range trustedFolders {
+		if tfStr, ok := tf.(string); ok && pathKey(tfStr) == pathKey(newWS) {
+			foundNewWS = true
+			break
+		}
+	}
+	if !foundNewWS {
+		t.Fatalf("expected trusted_folders to include newWS: %v", trustedFolders)
+	}
+}
+
+func TestValidateDeleteRootGuards(t *testing.T) {
+	base := t.TempDir()
+	dataDir := filepath.Join(base, "data")
+	wsDir := filepath.Join(base, "studio", "workspace")
+	mediaDir := filepath.Join(base, "studio", "media")
+	stagingDir := filepath.Join(dataDir, "staging")
+
+	for _, d := range []string{dataDir, wsDir, mediaDir, stagingDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	p := NewAccessPolicy(dataDir, wsDir, mediaDir, "", nil)
+	p.SetWorkspaceDirs(wsDir, mediaDir, stagingDir)
+
+	// Direct roots cannot be deleted
+	if _, err := p.ValidateDelete(wsDir); err == nil {
+		t.Fatal("expected delete of wsDir to be denied")
+	}
+	if _, err := p.ValidateDelete(mediaDir); err == nil {
+		t.Fatal("expected delete of mediaDir to be denied")
+	}
+	if _, err := p.ValidateDelete(stagingDir); err == nil {
+		t.Fatal("expected delete of stagingDir to be denied")
+	}
+	// Workspace parent (studio root) cannot be deleted
+	if _, err := p.ValidateDelete(filepath.Dir(wsDir)); err == nil {
+		t.Fatal("expected delete of workspace root parent to be denied")
+	}
+
+	// Files inside workspace can be deleted
+	testFile := filepath.Join(wsDir, "sample.txt")
+	mustWrite(t, testFile, "hello")
+	if _, err := p.ValidateDelete(testFile); err != nil {
+		t.Fatalf("expected delete of text file inside wsDir to be allowed: %v", err)
+	}
+}
+
+func TestAddProtectedDirsBlocksCandidateAndResolve(t *testing.T) {
+	base := t.TempDir()
+	dataDir := filepath.Join(base, "data")
+	wsDir := filepath.Join(base, "studio", "workspace")
+	mediaDir := filepath.Join(base, "studio", "media")
+	extLogs := filepath.Join(base, "external_logs")
+	extConfig := filepath.Join(base, "external_config")
+	for _, d := range []string{dataDir, wsDir, mediaDir, extLogs, extConfig} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	p := NewAccessPolicy(dataDir, wsDir, mediaDir, "", nil)
+	p.AddProtectedDirs(extLogs, extConfig)
+
+	if _, err := p.ValidateWorkspaceRootCandidate(filepath.Join(extLogs, "nested")); err == nil {
+		t.Fatal("expected ValidateWorkspaceRootCandidate to reject path inside external logs dir")
+	}
+	if _, err := p.ValidateWorkspaceRootCandidate(filepath.Join(extConfig, "nested")); err == nil {
+		t.Fatal("expected ValidateWorkspaceRootCandidate to reject path inside external config dir")
+	}
+}

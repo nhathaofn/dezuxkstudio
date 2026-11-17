@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { useInRouterContext, useNavigate } from "react-router-dom";
 import {
   Bot,
   FolderPlus,
@@ -7,6 +8,7 @@ import {
   RefreshCw,
   History,
   Plus,
+  Settings,
   Sparkles,
   Trash2,
   X,
@@ -14,6 +16,7 @@ import {
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { ErrorText } from "../../components/ui/ErrorText";
+import { Switch } from "../../components/ui/Switch";
 import { getBridge, isDesktop } from "../../lib/bridge";
 import { useT } from "../../lib/i18n";
 import { useConnectionStore } from "../connection/useConnectionStore";
@@ -22,12 +25,25 @@ import { AgentCustomizationsTab } from "./AgentCustomizationsTab";
 import { AgentProviderCard } from "./AgentProviderCard";
 import { getActiveBillingSource } from "./screenContext";
 import { useSystemStore } from "../system/useSystemStore";
+import { usePreferencesStore } from "../preferences/usePreferencesStore";
 import { useAgentCustomizationsStore } from "./useAgentCustomizationsStore";
 import { useAgentDrawerStore } from "./useAgentDrawerStore";
 import { useAgentStore } from "./useAgentStore";
 
+const RouterNavigateBridge: React.FC<{
+  navRef: React.MutableRefObject<((path: string) => void) | null>;
+}> = ({ navRef }) => {
+  const navigate = useNavigate();
+  useEffect(() => {
+    navRef.current = navigate;
+  }, [navigate, navRef]);
+  return null;
+};
+
 export const AgentDrawer: React.FC = () => {
   const t = useT();
+  const inRouter = useInRouterContext();
+  const navRef = useRef<((path: string) => void) | null>(null);
   const coreConnected = useConnectionStore((s) => s.status === "connected");
 
   const panelOpen = useAgentDrawerStore((s) => s.panelOpen);
@@ -49,8 +65,13 @@ export const AgentDrawer: React.FC = () => {
   const clearCustomizationsError = useAgentCustomizationsStore((s) => s.clearError);
   // Trusted folders bound what remote clients may touch, so a headless server refuses changes to them
   // (agent:add/remove_allowed_dir). Only the desktop app on a non-server core can edit the list.
-  const coreMode = useSystemStore((s) => s.info?.mode);
+  const sysInfo = useSystemStore((s) => s.info);
+  const coreMode = sysInfo?.mode;
+  const workspaceRoot = sysInfo?.paths?.workspace_root ?? "";
   const canEditFolders = isDesktop() && coreMode !== "server";
+  const prefs = usePreferencesStore((s) => s.prefs);
+  const updatePrefs = usePreferencesStore((s) => s.update);
+  const skipTrustedApproval = Boolean(prefs.agent_skip_trusted_approval);
   const fetchProviders = useAgentStore((s) => s.fetchProviders);
   const fetchConversations = useAgentStore((s) => s.fetchConversations);
   const newChat = useAgentStore((s) => s.newChat);
@@ -107,12 +128,21 @@ export const AgentDrawer: React.FC = () => {
     }
   };
 
+  const handleOpenSettings = () => {
+    if (navRef.current) {
+      navRef.current("/settings?tab=general");
+    } else if (typeof window !== "undefined") {
+      window.location.hash = "#/settings?tab=general";
+    }
+  };
+
   return (
     <aside
       className={`agent-drawer${resizing ? " agent-drawer--resizing" : ""}`}
       style={{ width: panelWidth }}
       aria-label={t("agent.title")}
     >
+      {inRouter && <RouterNavigateBridge navRef={navRef} />}
       <button
         type="button"
         className="agent-drawer__resizer"
@@ -265,6 +295,31 @@ export const AgentDrawer: React.FC = () => {
               )}
             </div>
 
+            {/* Pinned Master Workspace Root */}
+            <div className="agent-folder-pinned">
+              <div className="agent-folder-pinned__top">
+                <div className="agent-folder-pinned__identity">
+                  <Badge className="agent-badge-online agent-folder-pinned__badge">
+                    {t("agent.folders.pinnedBadge")}
+                  </Badge>
+                  <span className="truncate agent-folder-pinned__path" title={workspaceRoot}>
+                    {workspaceRoot || t("settings.workspaceRoot.notSet")}
+                  </span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={handleOpenSettings}
+                  title={t("agent.folders.openSettings")}
+                  aria-label={t("agent.folders.openSettings")}
+                >
+                  <Settings size={12} />
+                  {t("agent.folders.settingsBtn")}
+                </Button>
+              </div>
+              <p className="agent-folder-pinned__desc">{t("agent.folders.pinnedDesc")}</p>
+            </div>
+
             {allowedDirs.length === 0 ? (
               <p className="agent-folders-empty">{t("agent.folders.empty")}</p>
             ) : (
@@ -289,6 +344,32 @@ export const AgentDrawer: React.FC = () => {
                 ))}
               </ul>
             )}
+
+            {/* Auto-approve file overwrite operations in trusted folders switch */}
+            <div className="agent-skip-approval-row">
+              <div className="agent-skip-approval-row__header">
+                <label
+                  htmlFor="agent-skip-trusted-approval-switch"
+                  className={`agent-skip-approval-row__label${
+                    canEditFolders && coreConnected
+                      ? " agent-skip-approval-row__label--interactive"
+                      : ""
+                  }`}
+                >
+                  {t("agent.approval.skipTrustedTitle")}
+                </label>
+                <Switch
+                  id="agent-skip-trusted-approval-switch"
+                  checked={skipTrustedApproval}
+                  disabled={!canEditFolders || !coreConnected}
+                  onCheckedChange={(checked) => {
+                    void updatePrefs({ agent_skip_trusted_approval: checked });
+                  }}
+                  aria-label={t("agent.approval.skipTrustedTitle")}
+                />
+              </div>
+              <p className="agent-skip-approval-row__desc">{t("agent.approval.skipTrustedDesc")}</p>
+            </div>
           </div>
         </div>
       )}

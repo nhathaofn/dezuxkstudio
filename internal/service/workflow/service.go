@@ -25,6 +25,8 @@ type Options struct {
 	MediaGen mediagennodes.MediaService
 	// Registrar auto-registers newly created or cleaned media assets into the library.
 	Registrar watermark.MediaRegistrar
+	// WorkspaceTreeFunc provides dynamic workspace paths.
+	WorkspaceTreeFunc func() paths.WorkspaceTree
 }
 
 // Service manages DezuxkStudio's workflow runtime and registered nodes.
@@ -42,18 +44,37 @@ func New(o Options) (*Service, error) {
 
 	reg := engine.NewRegistry()
 
+	var mediaDirFunc func() string
+	var watermarkDirFunc func() string
+	if o.WorkspaceTreeFunc != nil {
+		mediaDirFunc = func() string {
+			return o.WorkspaceTreeFunc().MediaDir
+		}
+		watermarkDirFunc = func() string {
+			return o.WorkspaceTreeFunc().WatermarkDir
+		}
+	}
+
+	defaultMedia := ""
+	if o.Paths.Data != "" {
+		defaultMedia = o.Paths.Media()
+	}
+
 	// Built-in feature nodes. A new feature = one entry here: the UI, workflows and the agent
 	// (MCP workflow_* tools) all pick it up from its Spec, with no agent-specific code.
 	nodes := []engine.Node{
 		watermark.NewNode(watermark.Options{
-			MediaDir:  o.Paths.Media(),
-			Registrar: o.Registrar,
+			MediaDir:      defaultMedia,
+			MediaDirFunc:  mediaDirFunc,
+			OutputDirFunc: watermarkDirFunc,
+			Registrar:     o.Registrar,
 		}),
 	}
 	if o.MediaGen != nil {
 		nodes = append(nodes, mediagennodes.NewNodes(mediagennodes.Options{
-			MediaDir: o.Paths.Media(),
-			Service:  o.MediaGen,
+			MediaDir:     defaultMedia,
+			MediaDirFunc: mediaDirFunc,
+			Service:      o.MediaGen,
 		})...)
 	}
 	if o.Providers != nil {

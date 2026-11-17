@@ -308,8 +308,8 @@ func (s *Service) buildSubagentSystemPrompt(
 	if s.preferences != nil {
 		if prefs, err := s.preferences.Get(ctx); err == nil && prefs.Language != "" {
 			fmt.Fprintf(&sb, "\n<application>\ninterface_language: %s\n", prefs.Language)
-			if s.workspaceDir != "" {
-				fmt.Fprintf(&sb, "workspace_dir: %s\n", s.workspaceDir)
+			if ws := s.getWorkspaceDir(); ws != "" {
+				fmt.Fprintf(&sb, "workspace_dir: %s\n", ws)
 			}
 			sb.WriteString("</application>")
 		}

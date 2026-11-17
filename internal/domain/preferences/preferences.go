@@ -4,14 +4,16 @@ package preferences
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"slices"
+	"strings"
 
 	"app/internal/apperr"
 )
 
 // SchemaVersion is the current persisted schema version. Bump it together with a
 // migration step in Migrate when the shape of Preferences changes.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // Theme is the UI colour scheme.
 type Theme string
@@ -38,23 +40,32 @@ func Languages() []Language { return []Language{LanguageEnglish, LanguageVietnam
 
 // Preferences is the persisted preference document.
 type Preferences struct {
-	SchemaVersion int      `json:"schema_version"`
-	Theme         Theme    `json:"theme"`
-	Language      Language `json:"language"`
+	SchemaVersion            int      `json:"schema_version"`
+	Theme                    Theme    `json:"theme"`
+	Language                 Language `json:"language"`
+	WorkspaceRoot            string   `json:"workspace_root"`
+	OnboardingCompleted      bool     `json:"onboarding_completed"`
+	AgentSkipTrustedApproval bool     `json:"agent_skip_trusted_approval"`
 }
 
 // Patch updates a subset of fields; nil means "unchanged".
 type Patch struct {
-	Theme    *Theme
-	Language *Language
+	Theme                    *Theme
+	Language                 *Language
+	WorkspaceRoot            *string
+	OnboardingCompleted      *bool
+	AgentSkipTrustedApproval *bool
 }
 
 // Defaults returns the preferences of a fresh installation.
 func Defaults() Preferences {
 	return Preferences{
-		SchemaVersion: SchemaVersion,
-		Theme:         ThemeLight,
-		Language:      LanguageEnglish,
+		SchemaVersion:            SchemaVersion,
+		Theme:                    ThemeLight,
+		Language:                 LanguageEnglish,
+		WorkspaceRoot:            "",
+		OnboardingCompleted:      false,
+		AgentSkipTrustedApproval: false,
 	}
 }
 
@@ -68,6 +79,19 @@ func (p Preferences) Validate() error {
 		return apperr.Validation(fmt.Sprintf("unsupported language %q", p.Language)).
 			WithDetails(map[string]any{"field": "language"})
 	}
+	if strings.ContainsRune(p.WorkspaceRoot, 0) {
+		return apperr.Validation("workspace_root must not contain NUL bytes").
+			WithDetails(map[string]any{"field": "workspace_root"})
+	}
+	if trimmed := strings.TrimSpace(p.WorkspaceRoot); trimmed != "" {
+		if !filepath.IsAbs(trimmed) {
+			return apperr.Validation(fmt.Sprintf("workspace_root must be an absolute path, got %q", p.WorkspaceRoot)).
+				WithDetails(map[string]any{"field": "workspace_root"})
+		}
+	} else if p.WorkspaceRoot != "" {
+		return apperr.Validation(fmt.Sprintf("workspace_root must be an absolute path, got %q", p.WorkspaceRoot)).
+			WithDetails(map[string]any{"field": "workspace_root"})
+	}
 	return nil
 }
 
@@ -79,6 +103,15 @@ func (p Preferences) Apply(patch Patch) (Preferences, error) {
 	if patch.Language != nil {
 		p.Language = *patch.Language
 	}
+	if patch.WorkspaceRoot != nil {
+		p.WorkspaceRoot = *patch.WorkspaceRoot
+	}
+	if patch.OnboardingCompleted != nil {
+		p.OnboardingCompleted = *patch.OnboardingCompleted
+	}
+	if patch.AgentSkipTrustedApproval != nil {
+		p.AgentSkipTrustedApproval = *patch.AgentSkipTrustedApproval
+	}
 	return p, p.Validate()
 }
 
@@ -89,6 +122,20 @@ func Migrate(p Preferences) (Preferences, error) {
 	case p.SchemaVersion > SchemaVersion:
 		return Preferences{}, apperr.New(apperr.CodeConflict,
 			fmt.Sprintf("preferences were written by a newer version (schema %d)", p.SchemaVersion))
+	case p.SchemaVersion == 1:
+		// Migrate v1 to v2: keep theme and language, initialize new fields with defaults.
+		d := Defaults()
+		if slices.Contains(Themes(), p.Theme) {
+			d.Theme = p.Theme
+		}
+		if slices.Contains(Languages(), p.Language) {
+			d.Language = p.Language
+		}
+		d.SchemaVersion = SchemaVersion
+		d.WorkspaceRoot = ""
+		d.OnboardingCompleted = false
+		d.AgentSkipTrustedApproval = false
+		return d, d.Validate()
 	case p.SchemaVersion < 1:
 		// Unknown/legacy document: keep valid fields, reset the rest.
 		d := Defaults()
@@ -98,7 +145,7 @@ func Migrate(p Preferences) (Preferences, error) {
 		if slices.Contains(Languages(), p.Language) {
 			d.Language = p.Language
 		}
-		return d, nil
+		return d, d.Validate()
 	}
 	return p, p.Validate()
 }

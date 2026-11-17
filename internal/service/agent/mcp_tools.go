@@ -233,6 +233,9 @@ func (s *Service) mcpInstructions() string {
 	return mcpServerInstructions
 }
 
+// BuildMCPServer returns a new MCP server with every DezuxkStudio tool registered.
+func (s *Service) BuildMCPServer() *mcp.Server { return s.buildMCPServer() }
+
 // buildMCPServer returns a new MCP server with every DezuxkStudio tool registered.
 func (s *Service) buildMCPServer() *mcp.Server { return s.buildToolset().server }
 
@@ -304,6 +307,13 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 				return s.workflow.RunNode(execCtx, nodeType, raw)
 			}
 			if len(prep.Destructive) > 0 {
+				if s.canAutoApproveNode(nodeType, prep) {
+					res, err := run(ctx)
+					if err != nil {
+						return mcpError(err.Error())
+					}
+					return mcpJSON(map[string]any{"ok": true, "ran": prep.summary(spec), "input_files": len(prep.Files), "defaults_applied": prep.Defaults, "auto_approved": true, "result": res})
+				}
 				return s.needsApproval(ctx, "workflow_run_node", nodeType, prep.Input, "Run "+spec.Label, prep.summary(spec), run)
 			}
 			res, err := run(ctx)
@@ -341,7 +351,23 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 				}()
 				return s.workflow.RunGraph(execCtx, g)
 			}
+			canAutoApprove := s.skipTrustedApproval()
+			if canAutoApprove {
+				for i, p := range prepared {
+					if len(p.Destructive) > 0 && !s.canAutoApproveNode(g.Nodes[i].Type, p) {
+						canAutoApprove = false
+						break
+					}
+				}
+			}
 			if destructive {
+				if canAutoApprove {
+					res, err := run(ctx)
+					if err != nil {
+						return mcpError(err.Error())
+					}
+					return mcpJSON(map[string]any{"ok": true, "ran": summary, "auto_approved": true, "result": res})
+				}
 				return s.needsApproval(ctx, "workflow_run_graph", "graph", g, "Run workflow", summary, run)
 			}
 			res, err := run(ctx)
@@ -669,7 +695,7 @@ func (s *Service) buildCapabilitiesSnapshot(ctx context.Context) map[string]any 
 		"assistant_extras":      assistantExtras,
 		// The access rules themselves are in the system prompt; only the folders are data.
 		"trusted_folders": s.policy.Roots(),
-		"workspace_dir":   s.workspaceDir,
+		"workspace_dir":   s.getWorkspaceDir(),
 	}
 }
 
@@ -681,6 +707,10 @@ func (s *Service) toolNames() []string {
 		names[i] = d.Name
 	}
 	return names
+}
+
+func (s *Service) canAutoApproveNode(nodeType string, prep preparedNodeInput) bool {
+	return nodeType != "tool.provider_delete" && s.skipTrustedApproval() && allFileTargetsTrusted(s.policy, prep)
 }
 
 func (s *Service) queueApprovalRecord(ctx context.Context, tool, nodeType string, rawInput any, title, summary string, execFn func(context.Context) (any, error)) (domainagent.ApprovalRequest, error) {

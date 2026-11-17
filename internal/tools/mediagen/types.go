@@ -25,8 +25,9 @@ type MediaService interface {
 
 // Options configures the unified media generation workflow nodes.
 type Options struct {
-	MediaDir string
-	Service  MediaService
+	MediaDir     string
+	MediaDirFunc func() string
+	Service      MediaService
 }
 
 // ImageRef accepts either a JSON string path or an engine.MediaRef object.

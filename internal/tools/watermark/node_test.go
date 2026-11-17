@@ -638,3 +638,59 @@ func TestWatermarkRemoverNode_OutputDirValidationHidesInput(t *testing.T) {
 		t.Fatalf("validation error must not echo raw output_dir: %q", err.Error())
 	}
 }
+
+func TestWatermarkRemoverNode_OutputDirFuncAndFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	mediaDir := filepath.Join(tmpDir, "media")
+	watermarkDir := filepath.Join(mediaDir, "watermark")
+	_ = os.MkdirAll(mediaDir, 0o755)
+
+	srcDir := filepath.Join(tmpDir, "sources")
+	_ = os.MkdirAll(srcDir, 0o755)
+	img := createWatermarkedPNG(t, srcDir, "pic.png")
+
+	// 1. With OutputDirFunc: empty output_dir saves to watermarkDir
+	nodeWithFunc := watermark.NewNode(watermark.Options{
+		MediaDir: mediaDir,
+		OutputDirFunc: func() string {
+			return watermarkDir
+		},
+	})
+
+	outRaw, err := nodeWithFunc.Run(context.Background(), json.RawMessage(fmt.Sprintf(`{"image": %q}`, filepath.ToSlash(img))))
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	outBytes, _ := json.Marshal(outRaw)
+	var out watermark.RemoverOutput
+	_ = json.Unmarshal(outBytes, &out)
+
+	if len(out.Results) != 1 || out.Results[0].Status != "processed" {
+		t.Fatalf("expected 1 processed result, got %+v", out.Results)
+	}
+	expectedWatermarkDir := filepath.Clean(watermarkDir)
+	actualDir := filepath.Dir(filepath.Clean(out.Results[0].OutPath))
+	if !strings.EqualFold(actualDir, expectedWatermarkDir) {
+		t.Fatalf("expected output in %s, got %s", expectedWatermarkDir, actualDir)
+	}
+
+	// 2. Without OutputDirFunc and OutputDir == "": backwards compatibility saves next to original file
+	img2 := createWatermarkedPNG(t, srcDir, "pic2.png")
+	nodeLegacy := watermark.NewNode(watermark.Options{})
+	outRaw2, err := nodeLegacy.Run(context.Background(), json.RawMessage(fmt.Sprintf(`{"image": %q}`, filepath.ToSlash(img2))))
+	if err != nil {
+		t.Fatalf("legacy run failed: %v", err)
+	}
+	var out2 watermark.RemoverOutput
+	outBytes2, _ := json.Marshal(outRaw2)
+	_ = json.Unmarshal(outBytes2, &out2)
+
+	if len(out2.Results) != 1 || out2.Results[0].Status != "processed" {
+		t.Fatalf("expected 1 processed result, got %+v", out2.Results)
+	}
+	expectedSrcDir := filepath.Clean(srcDir)
+	actualDir2 := filepath.Dir(filepath.Clean(out2.Results[0].OutPath))
+	if !strings.EqualFold(actualDir2, expectedSrcDir) {
+		t.Fatalf("expected output next to source file in %s, got %s", expectedSrcDir, actualDir2)
+	}
+}

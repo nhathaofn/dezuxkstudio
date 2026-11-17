@@ -173,3 +173,66 @@ func TestNodesFileGuardAndTraversal(t *testing.T) {
 		t.Fatalf("expected FileGuard error, got %v", err)
 	}
 }
+
+func TestNodesDefaultOutputDirAndDynamicMediaDirFunc(t *testing.T) {
+	tmpDir := t.TempDir()
+	initialMedia := filepath.Join(tmpDir, "initial_media")
+	dynamicMedia := filepath.Join(tmpDir, "dynamic_media")
+	_ = os.MkdirAll(initialMedia, 0o755)
+	_ = os.MkdirAll(dynamicMedia, 0o755)
+
+	currentMedia := initialMedia
+	mediaGetter := func() string {
+		return currentMedia
+	}
+
+	svc := &fakeMediaSvc{}
+	opts := Options{
+		MediaDir:     initialMedia,
+		MediaDirFunc: mediaGetter,
+		Service:      svc,
+	}
+
+	nodes := NewNodes(opts)
+	imgNode, vidNode, ttsNode := nodes[0], nodes[1], nodes[2]
+
+	// 1. Initial media dir: empty output_dir defaults directly to <MediaDir>/images, videos, tts
+	_, err := imgNode.Run(context.Background(), json.RawMessage(`{"prompt": "test img"}`))
+	if err != nil {
+		t.Fatalf("imgNode error: %v", err)
+	}
+	expectedImgDir := filepath.Join(initialMedia, "images")
+	if svc.lastImage.OutputDir != expectedImgDir {
+		t.Fatalf("expected Image OutputDir=%s, got %s", expectedImgDir, svc.lastImage.OutputDir)
+	}
+
+	_, err = vidNode.Run(context.Background(), json.RawMessage(`{"prompt": "test vid"}`))
+	if err != nil {
+		t.Fatalf("vidNode error: %v", err)
+	}
+	expectedVidDir := filepath.Join(initialMedia, "videos")
+	if svc.lastVideo.OutputDir != expectedVidDir {
+		t.Fatalf("expected Video OutputDir=%s, got %s", expectedVidDir, svc.lastVideo.OutputDir)
+	}
+
+	_, err = ttsNode.Run(context.Background(), json.RawMessage(`{"text": "test tts"}`))
+	if err != nil {
+		t.Fatalf("ttsNode error: %v", err)
+	}
+	expectedTTSDir := filepath.Join(initialMedia, "tts")
+	if svc.lastTTS.OutputDir != expectedTTSDir {
+		t.Fatalf("expected TTS OutputDir=%s, got %s", expectedTTSDir, svc.lastTTS.OutputDir)
+	}
+
+	// 2. Switch dynamic media dir to dynamicMedia
+	currentMedia = dynamicMedia
+
+	_, err = imgNode.Run(context.Background(), json.RawMessage(`{"prompt": "test img dynamic"}`))
+	if err != nil {
+		t.Fatalf("imgNode dynamic error: %v", err)
+	}
+	expectedDynamicImg := filepath.Join(dynamicMedia, "images")
+	if svc.lastImage.OutputDir != expectedDynamicImg {
+		t.Fatalf("expected Image OutputDir=%s, got %s", expectedDynamicImg, svc.lastImage.OutputDir)
+	}
+}

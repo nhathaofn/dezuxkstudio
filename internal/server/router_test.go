@@ -11,6 +11,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -127,5 +130,93 @@ func TestRouterMediaAuthAndCORS(t *testing.T) {
 	h.ServeHTTP(dlAuthRec, dlAuth)
 	if dlAuthRec.Code != http.StatusOK {
 		t.Fatalf("authorized download expected 200, got %d", dlAuthRec.Code)
+	}
+}
+
+func TestRouterDynamicMediaDirAndStagingDir(t *testing.T) {
+	hub, err := realtime.New(realtime.Options{
+		AuthToken:            "secret",
+		MaxConcurrentActions: 2,
+		ClientBufferSize:     16,
+		MaxMessageBytes:      1 << 20,
+		ActionTimeout:        time.Second,
+		LongActionTimeout:    time.Second,
+		QueueTimeout:         time.Second,
+		PingInterval:         time.Second,
+		WriteTimeout:         time.Second,
+		KeepAliveInterval:    100 * time.Millisecond,
+		Logger:               slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = hub.Close(t.Context()) }()
+
+	tmpDir := t.TempDir()
+	stagingDir := filepath.Join(tmpDir, "data", "staging")
+	mediaDir1 := filepath.Join(tmpDir, "workspace1", "media")
+	mediaDir2 := filepath.Join(tmpDir, "workspace2", "media")
+
+	_ = os.MkdirAll(stagingDir, 0o755)
+	_ = os.MkdirAll(mediaDir1, 0o755)
+	_ = os.MkdirAll(mediaDir2, 0o755)
+
+	currentMedia := mediaDir1
+	h := NewRouter(RouterOptions{
+		Hub:            hub,
+		Mode:           "server",
+		Version:        "test",
+		StartedAt:      time.Now(),
+		AuthToken:      "secret",
+		AllowedOrigins: []string{"*"},
+		StagingDir:     stagingDir,
+		MediaDirFunc: func() string {
+			return currentMedia
+		},
+		WSURL:    func() string { return "ws://127.0.0.1:8080/ws" },
+		Timeouts: handlers.Timeouts{Action: time.Second, LongAction: time.Second, PingInterval: time.Second},
+	})
+
+	// 1. Upload must be placed into stagingDir
+	okRec := httptest.NewRecorder()
+	h.ServeHTTP(okRec, uploadReq(t, "http://localhost:5173", "secret"))
+	if okRec.Code != http.StatusOK {
+		t.Fatalf("upload failed: %d (%s)", okRec.Code, okRec.Body.String())
+	}
+	var up struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(okRec.Body.Bytes(), &up); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(filepath.Clean(up.Path), filepath.Clean(stagingDir)) {
+		t.Fatalf("expected uploaded file to reside in stagingDir %s, got %s", stagingDir, up.Path)
+	}
+
+	// 2. Download from current media dir (mediaDir1)
+	file1 := filepath.Join(mediaDir1, "sample1.png")
+	var buf bytes.Buffer
+	_ = png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 2, 2)))
+	_ = os.WriteFile(file1, buf.Bytes(), 0o644)
+
+	dlReq1 := httptest.NewRequest(http.MethodGet, PathMediaDownload+"?path=sample1.png", nil)
+	dlReq1.Header.Set("Authorization", "Bearer secret")
+	rec1 := httptest.NewRecorder()
+	h.ServeHTTP(rec1, dlReq1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("download from mediaDir1 failed: %d", rec1.Code)
+	}
+
+	// 3. Switch dynamic media dir to mediaDir2
+	currentMedia = mediaDir2
+	file2 := filepath.Join(mediaDir2, "sample2.png")
+	_ = os.WriteFile(file2, buf.Bytes(), 0o644)
+
+	dlReq2 := httptest.NewRequest(http.MethodGet, PathMediaDownload+"?path=sample2.png", nil)
+	dlReq2.Header.Set("Authorization", "Bearer secret")
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, dlReq2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("download from dynamic mediaDir2 failed: %d", rec2.Code)
 	}
 }

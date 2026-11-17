@@ -38,6 +38,9 @@ export const appConfig = {
   initialPreferences: {
     theme: "light",
     language: "en",
+    workspace_root: "",
+    onboarding_completed: false,
+    agent_skip_trusted_approval: false,
   } satisfies Preferences,
   /** Extra time the client waits beyond the server action timeout before giving up. */
   clientTimeoutGraceMs: 2_000,

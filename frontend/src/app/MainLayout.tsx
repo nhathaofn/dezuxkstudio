@@ -8,6 +8,9 @@ import { useScreenContextStore } from "../features/agent/screenContext";
 import { useT } from "../lib/i18n";
 import { navRoutes, settingsRoute } from "./navigation";
 import { useConnectionStore } from "../features/connection/useConnectionStore";
+import { usePreferencesStore } from "../features/preferences/usePreferencesStore";
+import { WorkspaceOnboardingDialog } from "../features/preferences/WorkspaceOnboardingDialog";
+import { useSystemStore } from "../features/system/useSystemStore";
 import { AppHeader } from "./AppHeader";
 import { StatusBanner } from "./StatusBanner";
 import { appConfig } from "../config/appConfig";
@@ -15,6 +18,11 @@ import { appConfig } from "../config/appConfig";
 export const MainLayout: React.FC = () => {
   const { pathname } = useLocation();
   const connected = useConnectionStore((s) => s.status === "connected");
+  const sysInfo = useSystemStore((s) => s.info);
+  const prefsLoaded = usePreferencesStore((s) => s.loaded);
+  const onboardingCompleted = usePreferencesStore((s) => s.prefs.onboarding_completed);
+  const showOnboarding =
+    connected && sysInfo?.mode === "desktop" && prefsLoaded && !onboardingCompleted;
   const screenContext = useScreenContextStore((s) => s.context);
   const t = useT();
 
@@ -46,6 +54,7 @@ export const MainLayout: React.FC = () => {
         </main>
         <AgentDrawer />
         <MediaLibraryDrawer />
+        {showOnboarding && <WorkspaceOnboardingDialog />}
       </div>
     </div>
   );

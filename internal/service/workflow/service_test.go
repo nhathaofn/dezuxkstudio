@@ -192,3 +192,84 @@ func TestWorkflowRegistersMediaGenNodes(t *testing.T) {
 		t.Fatalf("RunNode(tts): %v", err)
 	}
 }
+
+func TestWorkflowWiresWorkspaceTreeFunc(t *testing.T) {
+	tempDir := t.TempDir()
+	workspaceRoot := filepath.Join(tempDir, "workspace")
+	mediaDir := filepath.Join(workspaceRoot, "media")
+	watermarkDir := filepath.Join(mediaDir, "watermark")
+	_ = os.MkdirAll(watermarkDir, 0o755)
+
+	tree := paths.WorkspaceTree{
+		Root:         workspaceRoot,
+		MediaDir:     mediaDir,
+		ImagesDir:    filepath.Join(mediaDir, "images"),
+		VideosDir:    filepath.Join(mediaDir, "videos"),
+		TTSDir:       filepath.Join(mediaDir, "tts"),
+		WatermarkDir: watermarkDir,
+		WorkspaceDir: filepath.Join(workspaceRoot, "workspace"),
+	}
+
+	var lastReqOutputDir string
+	stubGen := &stubMediaGenCapture{
+		onImage: func(req mediagen.ImageRequest) {
+			lastReqOutputDir = req.OutputDir
+		},
+	}
+
+	svc, err := workflow.New(workflow.Options{
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		MediaGen: stubGen,
+		WorkspaceTreeFunc: func() paths.WorkspaceTree {
+			return tree
+		},
+	})
+	if err != nil {
+		t.Fatalf("workflow.New failed: %v", err)
+	}
+
+	// 1. Mediagen image node should output to tree.MediaDir/images by default
+	_, err = svc.RunNode(context.Background(), mediagennodes.NodeTypeImage, json.RawMessage(`{"prompt":"hello dynamic"}`))
+	if err != nil {
+		t.Fatalf("RunNode image error: %v", err)
+	}
+	expectedImgDir := filepath.Join(mediaDir, "images")
+	if lastReqOutputDir != expectedImgDir {
+		t.Fatalf("expected mediagen output dir %s, got %s", expectedImgDir, lastReqOutputDir)
+	}
+
+	// 2. Watermark node should default target dir to tree.WatermarkDir
+	srcImg := createTestPNG(t, tempDir, "wm_test.png")
+	outRaw, err := svc.RunNode(context.Background(), watermark.NodeType, json.RawMessage(fmt.Sprintf(`{"image": %q}`, filepath.ToSlash(srcImg))))
+	if err != nil {
+		t.Fatalf("RunNode watermark error: %v", err)
+	}
+	outBytes, _ := json.Marshal(outRaw)
+	var wmOut watermark.RemoverOutput
+	_ = json.Unmarshal(outBytes, &wmOut)
+
+	if len(wmOut.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(wmOut.Results))
+	}
+	actualOutDir := filepath.Dir(filepath.Clean(wmOut.Results[0].OutPath))
+	if !strings.EqualFold(actualOutDir, filepath.Clean(watermarkDir)) {
+		t.Fatalf("expected watermark output in %s, got %s", watermarkDir, actualOutDir)
+	}
+}
+
+type stubMediaGenCapture struct {
+	onImage func(req mediagen.ImageRequest)
+}
+
+func (s *stubMediaGenCapture) GenerateImage(_ context.Context, req mediagen.ImageRequest) (mediagen.Result, error) {
+	if s.onImage != nil {
+		s.onImage(req)
+	}
+	return mediagen.Result{Kind: mediagen.KindImage, Path: filepath.Join(req.OutputDir, "i.png")}, nil
+}
+func (s *stubMediaGenCapture) GenerateVideo(_ context.Context, req mediagen.VideoRequest) (mediagen.Result, error) {
+	return mediagen.Result{Kind: mediagen.KindVideo, Path: filepath.Join(req.OutputDir, "v.mp4")}, nil
+}
+func (s *stubMediaGenCapture) GenerateTTS(_ context.Context, req mediagen.TTSRequest) (mediagen.Result, error) {
+	return mediagen.Result{Kind: mediagen.KindTTS, Path: filepath.Join(req.OutputDir, "a.wav")}, nil
+}

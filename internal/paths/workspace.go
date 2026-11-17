@@ -1,0 +1,101 @@
+package paths
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"app/internal/buildinfo"
+)
+
+// WorkspaceTree holds the single source of truth for creative and agent workspace directories.
+type WorkspaceTree struct {
+	Root         string
+	MediaDir     string
+	ImagesDir    string
+	VideosDir    string
+	TTSDir       string
+	WatermarkDir string
+	WorkspaceDir string
+}
+
+// ResolveWorkspaceTree calculates all creative workspace directories based on customRoot
+// and an optional agent workspace override.
+// If customRoot is empty or whitespace, it falls back to appPaths.DefaultStudioRoot().
+func ResolveWorkspaceTree(appPaths Paths, customRoot, agentWorkspaceOverride string) WorkspaceTree {
+	var root string
+	trimmedRoot := strings.TrimSpace(customRoot)
+	if trimmedRoot == "" {
+		root = appPaths.DefaultStudioRoot()
+	} else {
+		root = filepath.Clean(trimmedRoot)
+	}
+
+	mediaDir := filepath.Join(root, "media")
+	imagesDir := filepath.Join(mediaDir, "images")
+	videosDir := filepath.Join(mediaDir, "videos")
+	ttsDir := filepath.Join(mediaDir, "tts")
+	watermarkDir := filepath.Join(mediaDir, "watermark")
+
+	var workspaceDir string
+	trimmedOverride := strings.TrimSpace(agentWorkspaceOverride)
+	if trimmedOverride != "" {
+		workspaceDir = filepath.Clean(trimmedOverride)
+	} else {
+		workspaceDir = filepath.Join(root, "workspace")
+	}
+
+	return WorkspaceTree{
+		Root:         root,
+		MediaDir:     mediaDir,
+		ImagesDir:    imagesDir,
+		VideosDir:    videosDir,
+		TTSDir:       ttsDir,
+		WatermarkDir: watermarkDir,
+		WorkspaceDir: workspaceDir,
+	}
+}
+
+// Ensure creates all 7 directories in the workspace tree with 0o755 permissions.
+func (t WorkspaceTree) Ensure() error {
+	dirs := []string{
+		t.Root,
+		t.MediaDir,
+		t.ImagesDir,
+		t.VideosDir,
+		t.TTSDir,
+		t.WatermarkDir,
+		t.WorkspaceDir,
+	}
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("paths: create %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+// SuggestedWorkspaceRoot calculates a recommended default workspace root dynamically:
+// <UserHome>/Documents/<productName> if Documents exists and is a directory;
+// otherwise <UserHome>/<productName>.
+// If productName is empty or whitespace, buildinfo.ProductName is used.
+// Zero hardcoded strings or Windows paths.
+func SuggestedWorkspaceRoot(productName string) string {
+	name := strings.TrimSpace(productName)
+	if name == "" {
+		name = strings.TrimSpace(buildinfo.ProductName)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	docs := filepath.Join(home, "Documents")
+	if fi, err := os.Stat(docs); err == nil && fi.IsDir() {
+		return filepath.Join(docs, name)
+	}
+	return filepath.Join(home, name)
+}

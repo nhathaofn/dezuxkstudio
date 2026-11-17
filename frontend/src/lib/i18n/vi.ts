@@ -307,6 +307,7 @@ export const vi: Record<MessageKey, string> = {
   "system.open.config": "Cấu hình",
   "system.open.diagnostics": "Chẩn đoán",
   "system.open.agent_customizations": "Kỹ năng Agent",
+  "system.open.workspace_root": "Thư mục tổng",
   "system.foldersTitle": "Thư mục ứng dụng",
 
   "update.title": "Cập nhật",
@@ -390,7 +391,7 @@ export const vi: Record<MessageKey, string> = {
   "watermark.mode.copy": "Tạo bản sao (_nowm)",
   "watermark.mode.inplace": "Ghi đè file gốc",
   "watermark.outputDir": "Thư mục xuất",
-  "watermark.outputDir.placeholder": "Cùng thư mục với file gốc",
+  "watermark.outputDir.placeholder": "Mặc định lưu vào thư mục watermark trong Folder Tổng",
   "watermark.browseFolder": "Chọn thư mục",
   "watermark.startBtn": "Bắt đầu xử lý",
   "watermark.processing": "Đang xử lý...",
@@ -718,7 +719,7 @@ export const vi: Record<MessageKey, string> = {
   "mediagen.field.resolution": "Độ phân giải",
   "mediagen.field.seed": "Seed (tùy chọn)",
   "mediagen.field.seedPlaceholder": "Ngẫu nhiên nếu để trống",
-  "mediagen.field.outputDirPlaceholder": "Mặc định dùng thư mục media_out trong workspace",
+  "mediagen.field.outputDirPlaceholder": "Mặc định lưu vào thư mục media trong Folder Tổng",
   "mediagen.action.addImage": "Thêm ảnh",
   "mediagen.action.removeImage": "Xóa ảnh",
   "mediagen.action.generating": "Đang tạo...",
@@ -869,4 +870,41 @@ export const vi: Record<MessageKey, string> = {
   "mediaoutput.before": "Trước",
   "mediaoutput.after": "Sau",
   "mediaoutput.previewFailed": "Không thể tải ảnh xem trước",
+
+  "onboarding.title": "Thiết lập Thư mục Tổng",
+  "onboarding.desc":
+    "Dữ liệu ứng dụng nội bộ được giữ an toàn trong %LOCALAPPDATA%. Toàn bộ ảnh, video, giọng nói tạo ra, ảnh xóa watermark và tệp của AI Agent sẽ lưu tập trung trong Thư mục Tổng này và được tự động tin cậy.",
+  "onboarding.browseTitle": "Chọn Thư mục Tổng (Workspace Root)",
+  "onboarding.browseBtn": "Chọn thư mục…",
+  "onboarding.inputPlaceholder": "Chọn một thư mục trên máy tính…",
+  "onboarding.useDefault": "Dùng mặc định hệ thống",
+  "onboarding.saveAndStart": "Lưu & Bắt đầu",
+  "onboarding.tree.defaultRoot": "<Thư mục Tổng>",
+  "onboarding.tree.images": "Ảnh tạo ra",
+  "onboarding.tree.videos": "Video tạo ra",
+  "onboarding.tree.tts": "Âm thanh đọc văn bản",
+  "onboarding.tree.watermark": "Ảnh xóa watermark",
+  "onboarding.tree.workspace": "Không gian làm việc Agent",
+  "onboarding.error.emptyPath":
+    "Vui lòng chọn đường dẫn thư mục hợp lệ hoặc dùng mặc định hệ thống.",
+
+  "settings.workspaceRoot.title": "Thư mục Tổng (Workspace Root)",
+  "settings.workspaceRoot.desc":
+    "Thư mục làm việc tập trung cho toàn bộ dữ liệu sáng tạo và tệp AI Agent",
+  "settings.workspaceRoot.custom": "Tùy chỉnh",
+  "settings.workspaceRoot.default": "Mặc định hệ thống",
+  "settings.workspaceRoot.notSet": "Chưa cấu hình",
+  "settings.workspaceRoot.open": "Mở thư mục",
+  "settings.workspaceRoot.change": "Đổi thư mục…",
+  "settings.workspaceRoot.useDefault": "Dùng mặc định",
+  "settings.workspaceRoot.browseTitle": "Chọn Thư mục Tổng mới",
+
+  "agent.folders.pinnedBadge": "Folder Tổng",
+  "agent.folders.pinnedDesc":
+    "Thư mục tổng chính. Luôn được Agent tin cậy tuyệt đối khi xử lý tệp.",
+  "agent.folders.settingsBtn": "Cài đặt",
+  "agent.folders.openSettings": "Cấu hình Thư mục Tổng trong Cài đặt",
+  "agent.approval.skipTrustedTitle": "Tự động duyệt thao tác ghi đè file trong thư mục tin cậy",
+  "agent.approval.skipTrustedDesc":
+    "Thao tác ghi đè file trong thư mục tin cậy sẽ không hỏi duyệt. Xóa API key Provider và tải binary vẫn luôn hỏi duyệt.",
 };

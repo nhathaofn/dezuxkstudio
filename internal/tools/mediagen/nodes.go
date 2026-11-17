@@ -19,6 +19,13 @@ func NewNodes(opts Options) []engine.Node {
 	}
 }
 
+func resolveMediaDir(opts Options) string {
+	if opts.MediaDirFunc != nil {
+		return opts.MediaDirFunc()
+	}
+	return opts.MediaDir
+}
+
 // NewImageNode builds the tool.generate_image workflow node.
 func NewImageNode(opts Options) engine.Node {
 	spec := engine.Spec{
@@ -38,7 +45,7 @@ func NewImageNode(opts Options) engine.Node {
 			{Name: "aspect_ratio", Label: "Aspect ratio", Kind: engine.ParamSelect, Default: domainmedia.DefaultImageAspectRatio, Options: domainmedia.ImageAspectRatios()},
 			{Name: "resolution", Label: "Resolution", Kind: engine.ParamSelect, Default: domainmedia.DefaultImageResolution, Options: domainmedia.ImageResolutions()},
 			{Name: "seed", Label: "Seed", Kind: engine.ParamInteger, Min: 0, Max: 2147483647},
-			{Name: "output_dir", Label: "Output directory (empty = workspace generated folder)", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
+			{Name: "output_dir", Label: "Output directory (empty = workspace media/images folder)", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
 		},
 	}
 
@@ -46,11 +53,12 @@ func NewImageNode(opts Options) engine.Node {
 		if opts.Service == nil {
 			return ImageGenerateOutput{}, apperr.Unavailable("Media generation service is unavailable")
 		}
-		refs, err := checkInputRefs(ctx, opts.MediaDir, in.ReferenceImages)
+		mediaDir := resolveMediaDir(opts)
+		refs, err := checkInputRefs(ctx, mediaDir, in.ReferenceImages)
 		if err != nil {
 			return ImageGenerateOutput{}, err
 		}
-		outDir, err := checkOutputDir(ctx, opts.MediaDir, in.OutputDir, "images")
+		outDir, err := checkOutputDir(ctx, mediaDir, in.OutputDir, "images")
 		if err != nil {
 			return ImageGenerateOutput{}, err
 		}
@@ -105,7 +113,7 @@ func NewVideoNode(opts Options) engine.Node {
 			{Name: "duration", Label: "Duration (seconds)", Kind: engine.ParamInteger, Min: 0, Max: 60, Default: "0"},
 			{Name: "generate_audio", Label: "Generate native audio (when supported)", Kind: engine.ParamToggle, Default: "false"},
 			{Name: "seed", Label: "Seed", Kind: engine.ParamInteger, Min: 0, Max: 2147483647},
-			{Name: "output_dir", Label: "Output directory (empty = workspace generated folder)", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
+			{Name: "output_dir", Label: "Output directory (empty = workspace media/videos folder)", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
 		},
 	}
 
@@ -113,19 +121,20 @@ func NewVideoNode(opts Options) engine.Node {
 		if opts.Service == nil {
 			return VideoGenerateOutput{}, apperr.Unavailable("Media generation service is unavailable")
 		}
-		startImg, err := checkSingleRef(ctx, opts.MediaDir, in.StartImage.MediaRef)
+		mediaDir := resolveMediaDir(opts)
+		startImg, err := checkSingleRef(ctx, mediaDir, in.StartImage.MediaRef)
 		if err != nil {
 			return VideoGenerateOutput{}, err
 		}
-		endImg, err := checkSingleRef(ctx, opts.MediaDir, in.EndImage.MediaRef)
+		endImg, err := checkSingleRef(ctx, mediaDir, in.EndImage.MediaRef)
 		if err != nil {
 			return VideoGenerateOutput{}, err
 		}
-		refs, err := checkInputRefs(ctx, opts.MediaDir, in.ReferenceImages)
+		refs, err := checkInputRefs(ctx, mediaDir, in.ReferenceImages)
 		if err != nil {
 			return VideoGenerateOutput{}, err
 		}
-		outDir, err := checkOutputDir(ctx, opts.MediaDir, in.OutputDir, "videos")
+		outDir, err := checkOutputDir(ctx, mediaDir, in.OutputDir, "videos")
 		if err != nil {
 			return VideoGenerateOutput{}, err
 		}
@@ -181,7 +190,7 @@ func NewTTSNode(opts Options) engine.Node {
 			{Name: "format", Label: "Audio format", Kind: engine.ParamSelect, Default: domainmedia.DefaultTTSFormat, Options: domainmedia.TTSFormats()},
 			{Name: "speed", Label: "Speed (0.25 - 4.0, default 1.0)", Kind: engine.ParamText, Default: "1.0"},
 			{Name: "language", Label: "Language hint (optional)", Kind: engine.ParamText},
-			{Name: "output_dir", Label: "Output directory (empty = workspace generated folder)", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
+			{Name: "output_dir", Label: "Output directory (empty = workspace media/tts folder)", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
 		},
 	}
 
@@ -189,7 +198,8 @@ func NewTTSNode(opts Options) engine.Node {
 		if opts.Service == nil {
 			return TTSGenerateOutput{}, apperr.Unavailable("Media generation service is unavailable")
 		}
-		outDir, err := checkOutputDir(ctx, opts.MediaDir, in.OutputDir, "tts")
+		mediaDir := resolveMediaDir(opts)
+		outDir, err := checkOutputDir(ctx, mediaDir, in.OutputDir, "tts")
 		if err != nil {
 			return TTSGenerateOutput{}, err
 		}
@@ -259,7 +269,7 @@ func checkOutputDir(ctx context.Context, mediaDir, rawDir, sub string) (string, 
 		if mediaDir == "" {
 			return "", nil
 		}
-		target = filepath.Join(mediaDir, "generated", sub)
+		target = filepath.Join(mediaDir, sub)
 	} else {
 		target = engine.ResolveMediaPath(trimmed, mediaDir)
 		if target == "" {

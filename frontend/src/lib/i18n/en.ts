@@ -304,6 +304,7 @@ export const en = {
   "system.open.config": "Config",
   "system.open.diagnostics": "Diagnostics",
   "system.open.agent_customizations": "Agent Skills",
+  "system.open.workspace_root": "Workspace Root",
   "system.foldersTitle": "Application Directories",
 
   "update.title": "Updates",
@@ -388,7 +389,7 @@ export const en = {
   "watermark.mode.copy": "Save as _nowm copy",
   "watermark.mode.inplace": "Overwrite original",
   "watermark.outputDir": "Output Directory",
-  "watermark.outputDir.placeholder": "Same directory as source files",
+  "watermark.outputDir.placeholder": "Default: workspace watermark folder",
   "watermark.browseFolder": "Browse Folder",
   "watermark.startBtn": "Process Images",
   "watermark.processing": "Processing...",
@@ -715,7 +716,7 @@ export const en = {
   "mediagen.field.resolution": "Resolution",
   "mediagen.field.seed": "Seed (optional)",
   "mediagen.field.seedPlaceholder": "Random if empty",
-  "mediagen.field.outputDirPlaceholder": "Workspace media_out directory by default",
+  "mediagen.field.outputDirPlaceholder": "Default: workspace media folder",
   "mediagen.action.addImage": "Add Image",
   "mediagen.action.removeImage": "Remove image",
   "mediagen.action.generating": "Generating...",
@@ -868,6 +869,42 @@ export const en = {
   "mediaoutput.before": "Before",
   "mediaoutput.after": "After",
   "mediaoutput.previewFailed": "Unable to load media preview",
+
+  "onboarding.title": "Master Workspace Setup",
+  "onboarding.desc":
+    "Internal application data stays safely in %LOCALAPPDATA%. Generated media (images, videos, speech), cleaned watermark images, and AI Agent files will be stored in this master workspace root and trusted automatically.",
+  "onboarding.browseTitle": "Select Master Workspace Root Folder",
+  "onboarding.browseBtn": "Browse…",
+  "onboarding.inputPlaceholder": "Select a folder on your computer…",
+  "onboarding.useDefault": "Use System Default",
+  "onboarding.saveAndStart": "Save & Start",
+  "onboarding.tree.defaultRoot": "<Workspace Root>",
+  "onboarding.tree.images": "Generated images",
+  "onboarding.tree.videos": "Generated videos",
+  "onboarding.tree.tts": "Text-to-speech audio",
+  "onboarding.tree.watermark": "Cleaned watermark images",
+  "onboarding.tree.workspace": "AI Agent workspace",
+  "onboarding.error.emptyPath": "Please select a valid folder path or use system default.",
+
+  "settings.workspaceRoot.title": "Master Workspace Root",
+  "settings.workspaceRoot.desc":
+    "Central workspace directory for all generated media and AI Agent files",
+  "settings.workspaceRoot.custom": "Custom",
+  "settings.workspaceRoot.default": "System Default",
+  "settings.workspaceRoot.notSet": "Not configured",
+  "settings.workspaceRoot.open": "Open Folder",
+  "settings.workspaceRoot.change": "Change Folder…",
+  "settings.workspaceRoot.useDefault": "Use Default",
+  "settings.workspaceRoot.browseTitle": "Select New Workspace Root Folder",
+
+  "agent.folders.pinnedBadge": "Master Root",
+  "agent.folders.pinnedDesc":
+    "Primary workspace root. Always trusted by the agent for file operations.",
+  "agent.folders.settingsBtn": "Settings",
+  "agent.folders.openSettings": "Configure workspace root in Settings",
+  "agent.approval.skipTrustedTitle": "Auto-approve file overwrite operations in trusted folders",
+  "agent.approval.skipTrustedDesc":
+    "File overwrites in trusted folders skip approval. Provider key deletion and binary downloads always ask for approval.",
 } as const;
 
 export type MessageKey = keyof typeof en;

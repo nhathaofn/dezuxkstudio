@@ -12,6 +12,7 @@ export function Dialog({
   onClose,
   dirty = false,
   busy = false,
+  dismissible = true,
   size = "md",
 }: {
   title: string;
@@ -20,6 +21,7 @@ export function Dialog({
   onClose: () => void;
   dirty?: boolean;
   busy?: boolean;
+  dismissible?: boolean;
   /** sm: confirmations; md: forms; lg: forms with a table (custom provider). */
   size?: "sm" | "md" | "lg";
 }) {
@@ -37,7 +39,7 @@ export function Dialog({
     };
   }, []);
   const requestClose = () => {
-    if (busy) return;
+    if (busy || !dismissible) return;
     if (dirty) setConfirmDiscard(true);
     else onClose();
   };
@@ -91,16 +93,18 @@ export function Dialog({
     >
       <header className="ui-dialog-header">
         <h2 id={id}>{title}</h2>
-        <Button
-          type="button"
-          iconOnly
-          title={t("dialog.close")}
-          aria-label={t("dialog.close")}
-          disabled={busy}
-          onClick={requestClose}
-        >
-          <X size={16} />
-        </Button>
+        {dismissible && (
+          <Button
+            type="button"
+            iconOnly
+            title={t("dialog.close")}
+            aria-label={t("dialog.close")}
+            disabled={busy}
+            onClick={requestClose}
+          >
+            <X size={16} />
+          </Button>
+        )}
       </header>
       <div className="ui-dialog-body">{children}</div>
       {footer && (

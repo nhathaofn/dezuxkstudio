@@ -338,7 +338,7 @@ func TestImageGenerationAllProtocols(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GenerateImage error: %v", err)
 			}
-			if !strings.HasPrefix(res.Path, filepath.Join(mediaDir, "generated", "images")) {
+			if !strings.HasPrefix(res.Path, filepath.Join(mediaDir, "images")) {
 				t.Fatalf("unexpected output dir: %s", res.Path)
 			}
 			raw, err := os.ReadFile(res.Path)
@@ -576,7 +576,7 @@ func TestVideoGenerationAllProtocols(t *testing.T) {
 			if res.Duration != tc.wantDur {
 				t.Fatalf("Duration = %.0f, want %.0f", res.Duration, tc.wantDur)
 			}
-			if !strings.HasPrefix(res.Path, filepath.Join(mediaDir, "generated", "videos")) {
+			if !strings.HasPrefix(res.Path, filepath.Join(mediaDir, "videos")) {
 				t.Fatalf("unexpected output dir: %s", res.Path)
 			}
 		})
@@ -674,7 +674,7 @@ func TestTTSGenerationAndPCMToWAV(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GenerateTTS error: %v", err)
 			}
-			if !strings.HasPrefix(res.Path, filepath.Join(mediaDir, "generated", "tts")) {
+			if !strings.HasPrefix(res.Path, filepath.Join(mediaDir, "tts")) {
 				t.Fatalf("unexpected path: %s", res.Path)
 			}
 			if filepath.Ext(res.Path) != tc.wantExt {
@@ -1280,4 +1280,64 @@ func TestStartStagingGCAndPruneStaging(t *testing.T) {
 			t.Fatal("expected lease on input file to be released after job completion")
 		}
 	})
+}
+
+func TestMediaGenDynamicMediaDirAndStagingIsolation(t *testing.T) {
+	tmpDir := t.TempDir()
+	mediaDir1 := filepath.Join(tmpDir, "media1")
+	mediaDir2 := filepath.Join(tmpDir, "media2")
+	stagingDir := filepath.Join(tmpDir, "custom_staging")
+
+	svc := New(Options{
+		MediaDir:   mediaDir1,
+		StagingDir: stagingDir,
+	})
+
+	if svc.MediaDir() != mediaDir1 {
+		t.Fatalf("expected MediaDir=%s, got %s", mediaDir1, svc.MediaDir())
+	}
+	if svc.StagingDir() != stagingDir {
+		t.Fatalf("expected StagingDir=%s, got %s", stagingDir, svc.StagingDir())
+	}
+
+	// Update MediaDir dynamically
+	svc.SetMediaDir(mediaDir2)
+	if svc.MediaDir() != mediaDir2 {
+		t.Fatalf("expected updated MediaDir=%s, got %s", mediaDir2, svc.MediaDir())
+	}
+	// StagingDir should remain isolated and unaffected
+	if svc.StagingDir() != stagingDir {
+		t.Fatalf("expected StagingDir to remain %s, got %s", stagingDir, svc.StagingDir())
+	}
+
+	// Test fallback when StagingDir is empty
+	svcDefault := New(Options{
+		MediaDir: mediaDir1,
+	})
+	expectedFallback := filepath.Join(mediaDir1, "staging")
+	if svcDefault.StagingDir() != expectedFallback {
+		t.Fatalf("expected fallback StagingDir=%s, got %s", expectedFallback, svcDefault.StagingDir())
+	}
+}
+
+func TestMediaGenConcurrency(t *testing.T) {
+	tmpDir := t.TempDir()
+	svc := New(Options{
+		MediaDir:   filepath.Join(tmpDir, "initial"),
+		StagingDir: filepath.Join(tmpDir, "staging"),
+	})
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 200; i++ {
+			svc.SetMediaDir(filepath.Join(tmpDir, "media", "dynamic"))
+		}
+		close(done)
+	}()
+
+	for i := 0; i < 200; i++ {
+		_ = svc.MediaDir()
+		_ = svc.StagingDir()
+	}
+	<-done
 }

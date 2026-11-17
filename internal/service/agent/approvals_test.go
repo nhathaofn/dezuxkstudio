@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -13,7 +15,12 @@ import (
 	"app/internal/apperr"
 	"app/internal/contracts"
 	domainagent "app/internal/domain/agent"
+	domainbinaries "app/internal/domain/binaries"
+	"app/internal/engine"
 	"app/internal/storage/sqlite"
+	"app/internal/tools/watermark"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func newTestAgentService(t *testing.T, maxContinuations int) (*Service, *sqlite.AgentRepository, func()) {
@@ -465,5 +472,316 @@ func TestApprovalHashMismatchInvalidation(t *testing.T) {
 	var ae *apperr.Error
 	if !errors.As(errResolve, &ae) || ae.Code != apperr.CodeValidation {
 		t.Fatalf("expected CodeValidation error for hash mismatch, got: %v", errResolve)
+	}
+}
+
+type fakeBinariesForApproval struct{}
+
+func (f *fakeBinariesForApproval) List(context.Context) ([]domainbinaries.BinaryInfo, error) {
+	return nil, nil
+}
+func (f *fakeBinariesForApproval) Probe(context.Context, domainbinaries.BinaryID) (domainbinaries.BinaryInfo, error) {
+	return domainbinaries.BinaryInfo{ID: "ffmpeg", Status: domainbinaries.StatusAvailable}, nil
+}
+func (f *fakeBinariesForApproval) Download(context.Context, domainbinaries.BinaryID) (domainbinaries.BinaryInfo, error) {
+	return domainbinaries.BinaryInfo{ID: "ffmpeg", Status: domainbinaries.StatusAvailable}, nil
+}
+
+func callMCPTool(t *testing.T, cs *mcp.ClientSession, tool string, args map[string]any) (map[string]any, bool) {
+	t.Helper()
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: args})
+	if err != nil {
+		t.Fatalf("%s: %v", tool, err)
+	}
+	var payload map[string]any
+	for _, c := range res.Content {
+		if tc, ok := c.(*mcp.TextContent); ok {
+			_ = json.Unmarshal([]byte(tc.Text), &payload)
+			break
+		}
+	}
+	return payload, res.IsError
+}
+
+func TestSkipTrustedApproval_WatermarkAutoApproval(t *testing.T) {
+	svc, _, cleanup := newTestAgentService(t, 5)
+	defer cleanup()
+
+	wf := &fakeWorkflow{specs: []engine.Spec{watermark.NewNode(watermark.Options{}).Spec()}}
+	svc.workflow = wf
+
+	ws := svc.getWorkspaceDir()
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	testImg := filepath.Join(ws, "target.png")
+	if err := os.WriteFile(testImg, []byte("fake-png-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	serverT, clientT := mcp.NewInMemoryTransports()
+	if _, err := svc.buildMCPServer().Connect(ctx, serverT, nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test-client"}, nil).Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	// 1. By default, SkipTrustedApproval is false. Inplace destructive run MUST require approval.
+	if svc.skipTrustedApproval() {
+		t.Fatal("expected default skipTrustedApproval to be false")
+	}
+	payload, isErr := callMCPTool(t, cs, "workflow_run_node", map[string]any{
+		"type": watermark.NodeType,
+		"input": map[string]any{
+			"images":  []any{testImg},
+			"inplace": true,
+		},
+	})
+	if isErr {
+		t.Fatalf("unexpected call error: %v", payload)
+	}
+	if payload["status"] != "needs_approval" {
+		t.Fatalf("expected status 'needs_approval', got %v", payload["status"])
+	}
+	if payload["auto_approved"] == true {
+		t.Fatal("auto_approved must not be true when skipTrustedApproval is false")
+	}
+
+	// 2. SetSkipTrustedApproval(true). Inplace destructive run in trusted directory must be auto-approved!
+	svc.SetSkipTrustedApproval(true)
+	if !svc.skipTrustedApproval() {
+		t.Fatal("expected skipTrustedApproval to be true after SetSkipTrustedApproval(true)")
+	}
+
+	payloadAuto, isErrAuto := callMCPTool(t, cs, "workflow_run_node", map[string]any{
+		"type": watermark.NodeType,
+		"input": map[string]any{
+			"images":  []any{testImg},
+			"inplace": true,
+		},
+	})
+	if isErrAuto {
+		t.Fatalf("unexpected auto call error: %v", payloadAuto)
+	}
+	if payloadAuto["ok"] != true {
+		t.Fatalf("expected ok=true, got %v", payloadAuto)
+	}
+	if payloadAuto["auto_approved"] != true {
+		t.Fatalf("expected auto_approved=true, got %v", payloadAuto["auto_approved"])
+	}
+}
+
+func TestSkipTrustedApproval_Invariants(t *testing.T) {
+	svc, _, cleanup := newTestAgentService(t, 5)
+	defer cleanup()
+
+	providerDeleteSpec := engine.Spec{
+		Type:     "tool.provider_delete",
+		Provider: "tool",
+		Label:    "Delete API key",
+		Params: []engine.Param{
+			{Name: "id", Kind: engine.ParamSelect},
+			{Name: "confirm", Kind: engine.ParamToggle, Destructive: true},
+		},
+	}
+	wf := &fakeWorkflow{specs: []engine.Spec{providerDeleteSpec}}
+	svc.workflow = wf
+	svc.binaries = &fakeBinariesForApproval{}
+
+	// Enable skip trusted approval
+	svc.SetSkipTrustedApproval(true)
+
+	ctx := context.Background()
+	serverT, clientT := mcp.NewInMemoryTransports()
+	if _, err := svc.buildMCPServer().Connect(ctx, serverT, nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test-client"}, nil).Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	// Invariant 1: tool.provider_delete MUST always require approval even with skipTrustedApproval=true
+	payloadDelete, isErr := callMCPTool(t, cs, "workflow_run_node", map[string]any{
+		"type": "tool.provider_delete",
+		"input": map[string]any{
+			"id":      "saved-key-1",
+			"confirm": true,
+		},
+	})
+	if isErr {
+		t.Fatalf("unexpected error: %v", payloadDelete)
+	}
+	if payloadDelete["status"] != "needs_approval" {
+		t.Fatalf("expected tool.provider_delete to require approval, got status=%v", payloadDelete["status"])
+	}
+	if payloadDelete["auto_approved"] == true {
+		t.Fatal("tool.provider_delete must NEVER be auto-approved")
+	}
+
+	// Invariant 2: binaries_download MUST always require approval even with skipTrustedApproval=true
+	payloadBinary, isErrBin := callMCPTool(t, cs, "binaries_download", map[string]any{
+		"id": "ffmpeg",
+	})
+	if isErrBin {
+		t.Fatalf("unexpected error: %v", payloadBinary)
+	}
+	if payloadBinary["status"] != "needs_approval" {
+		t.Fatalf("expected binaries_download to require approval, got status=%v", payloadBinary["status"])
+	}
+	if payloadBinary["auto_approved"] == true {
+		t.Fatal("binaries_download must NEVER be auto-approved")
+	}
+}
+
+func TestSkipTrustedApproval_UntrustedTarget(t *testing.T) {
+	svc, _, cleanup := newTestAgentService(t, 5)
+	defer cleanup()
+
+	wf := &fakeWorkflow{specs: []engine.Spec{watermark.NewNode(watermark.Options{}).Spec()}}
+	svc.workflow = wf
+	svc.SetSkipTrustedApproval(true)
+
+	ctx := context.Background()
+	serverT, clientT := mcp.NewInMemoryTransports()
+	if _, err := svc.buildMCPServer().Connect(ctx, serverT, nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test-client"}, nil).Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	// An input file outside trusted roots cannot be auto-approved; policy.Resolve fails
+	untrustedDir := t.TempDir()
+	untrustedImg := filepath.Join(untrustedDir, "outside.png")
+	if err := os.WriteFile(untrustedImg, []byte("fake-png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	payload, isErr := callMCPTool(t, cs, "workflow_run_node", map[string]any{
+		"type": watermark.NodeType,
+		"input": map[string]any{
+			"images":  []any{untrustedImg},
+			"inplace": true,
+		},
+	})
+	if !isErr {
+		t.Fatalf("expected untrusted input to fail policy resolution, got %v", payload)
+	}
+}
+
+func TestSkipTrustedApproval_WorkflowRunGraph(t *testing.T) {
+	svc, _, cleanup := newTestAgentService(t, 5)
+	defer cleanup()
+
+	providerDeleteSpec := engine.Spec{
+		Type:     "tool.provider_delete",
+		Provider: "tool",
+		Label:    "Delete API key",
+		Params: []engine.Param{
+			{Name: "id", Kind: engine.ParamSelect},
+			{Name: "confirm", Kind: engine.ParamToggle, Destructive: true},
+		},
+	}
+	wf := &fakeWorkflow{specs: []engine.Spec{watermark.NewNode(watermark.Options{}).Spec(), providerDeleteSpec}}
+	svc.workflow = wf
+
+	ws := svc.getWorkspaceDir()
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	testImg := filepath.Join(ws, "target2.png")
+	if err := os.WriteFile(testImg, []byte("fake-png-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	serverT, clientT := mcp.NewInMemoryTransports()
+	if _, err := svc.buildMCPServer().Connect(ctx, serverT, nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test-client"}, nil).Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	// 1. skipTrustedApproval=false: graph with inplace watermark requires approval
+	payloadGraph, isErr := callMCPTool(t, cs, "workflow_run_graph", map[string]any{
+		"nodes": []any{
+			map[string]any{
+				"id":   "n1",
+				"type": watermark.NodeType,
+				"params": map[string]any{
+					"images":  []any{testImg},
+					"inplace": true,
+				},
+			},
+		},
+	})
+	if isErr {
+		t.Fatalf("unexpected call error: %v", payloadGraph)
+	}
+	if payloadGraph["status"] != "needs_approval" {
+		t.Fatalf("expected status 'needs_approval', got %v", payloadGraph["status"])
+	}
+
+	// 2. skipTrustedApproval=true: graph with inplace watermark on trusted target is auto-approved
+	svc.SetSkipTrustedApproval(true)
+	payloadGraphAuto, isErrAuto := callMCPTool(t, cs, "workflow_run_graph", map[string]any{
+		"nodes": []any{
+			map[string]any{
+				"id":   "n1",
+				"type": watermark.NodeType,
+				"params": map[string]any{
+					"images":  []any{testImg},
+					"inplace": true,
+				},
+			},
+		},
+	})
+	if isErrAuto {
+		t.Fatalf("unexpected call error: %v", payloadGraphAuto)
+	}
+	if payloadGraphAuto["ok"] != true || payloadGraphAuto["auto_approved"] != true {
+		t.Fatalf("expected auto-approved graph run, got %v", payloadGraphAuto)
+	}
+
+	// 3. skipTrustedApproval=true: graph containing tool.provider_delete MUST require approval
+	payloadGraphDelete, isErrDelete := callMCPTool(t, cs, "workflow_run_graph", map[string]any{
+		"nodes": []any{
+			map[string]any{
+				"id":   "n1",
+				"type": watermark.NodeType,
+				"params": map[string]any{
+					"images":  []any{testImg},
+					"inplace": true,
+				},
+			},
+			map[string]any{
+				"id":   "n2",
+				"type": "tool.provider_delete",
+				"params": map[string]any{
+					"id":      "key-1",
+					"confirm": true,
+				},
+			},
+		},
+	})
+	if isErrDelete {
+		t.Fatalf("unexpected call error: %v", payloadGraphDelete)
+	}
+	if payloadGraphDelete["status"] != "needs_approval" {
+		t.Fatalf("expected graph with provider_delete to require approval, got %v", payloadGraphDelete)
+	}
+	if payloadGraphDelete["auto_approved"] == true {
+		t.Fatal("graph with provider_delete must not be auto-approved")
 	}
 }

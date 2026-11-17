@@ -9,6 +9,8 @@ import (
 
 	"app/internal/apperr"
 	domainagent "app/internal/domain/agent"
+
+	"github.com/google/uuid"
 )
 
 // CurrentConversationID returns the current chat ("" for a new chat without messages).
@@ -16,6 +18,38 @@ func (s *Service) CurrentConversationID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.conversationID
+}
+
+// EnsureActiveConversation returns the active conversation ID, or creates and activates a persisted
+// conversation for providerID if none is active yet.
+func (s *Service) EnsureActiveConversation(ctx context.Context, providerID domainagent.ProviderID, title string) (string, error) {
+	s.mu.Lock()
+	if s.conversationID != "" {
+		id := s.conversationID
+		s.mu.Unlock()
+		return id, nil
+	}
+	id := uuid.NewString()
+	now := time.Now().UnixMilli()
+	if title == "" {
+		title = "Session"
+	}
+	s.conversationID = id
+	if providerID != "" {
+		s.conversationProvider = providerID
+	}
+	s.mu.Unlock()
+
+	if err := s.repo.SaveConversation(ctx, domainagent.Conversation{
+		ID:         id,
+		ProviderID: providerID,
+		Title:      title,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 // NewConversation starts a new chat. Earlier chats stay in history (ListConversations).
