@@ -23,6 +23,7 @@ import (
 	"app/internal/progress"
 	"app/internal/service/workflow"
 	mediagennodes "app/internal/tools/mediagen"
+	studionodes "app/internal/tools/studio"
 	"app/internal/tools/watermark"
 )
 
@@ -272,4 +273,44 @@ func (s *stubMediaGenCapture) GenerateVideo(_ context.Context, req mediagen.Vide
 }
 func (s *stubMediaGenCapture) GenerateTTS(_ context.Context, req mediagen.TTSRequest) (mediagen.Result, error) {
 	return mediagen.Result{Kind: mediagen.KindTTS, Path: filepath.Join(req.OutputDir, "a.wav")}, nil
+}
+
+type stubTextGen struct{}
+
+func (s *stubTextGen) GenerateText(_ context.Context, req mediagen.TextRequest) (mediagen.TextResult, error) {
+	payload := json.RawMessage(`{"title":"Ep1","genre":"drama","aspect_ratio":"16:9","logline":"L","scenes":[{"code":"S01","title":"Open","beats":[{"code":"B01","description":"Walk in","duration_sec":5}]}]}`)
+	return mediagen.TextResult{Text: string(payload), ParsedJSON: payload, Provider: "stub", Model: "text-1"}, nil
+}
+
+func TestWorkflowRegistersStudioNodes(t *testing.T) {
+	tempDir := t.TempDir()
+	svc, err := workflow.New(workflow.Options{
+		Paths:   paths.Paths{Data: tempDir},
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		TextGen: &stubTextGen{},
+	})
+	if err != nil {
+		t.Fatalf("workflow.New: %v", err)
+	}
+
+	have := map[string]bool{}
+	for _, sp := range svc.Specs(context.Background()) {
+		have[sp.Type] = true
+	}
+	wantNodes := []string{
+		studionodes.NodeTypeScriptNormalize,
+		studionodes.NodeTypeExtractAssets,
+		studionodes.NodeTypeAuthorShotPrompts,
+		studionodes.NodeTypeProbeMedia,
+		studionodes.NodeTypeVideoConcatBasic,
+	}
+	for _, want := range wantNodes {
+		if !have[want] {
+			t.Fatalf("missing studio node spec %q", want)
+		}
+	}
+
+	if _, err := svc.RunNode(context.Background(), studionodes.NodeTypeScriptNormalize, json.RawMessage(`{"raw_script":"INT. ROOM - DAY"}`)); err != nil {
+		t.Fatalf("RunNode(script_normalize): %v", err)
+	}
 }

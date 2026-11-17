@@ -19,5 +19,10 @@ func Nodes() []NodeSpec {
 		{"IMAGE_GENERATE", NodeTypeImageGenerate, t[ImageGenerateInput](), t[ImageGenerateOutput]()},
 		{"VIDEO_GENERATE", NodeTypeVideoGenerate, t[VideoGenerateInput](), t[VideoGenerateOutput]()},
 		{"TTS_GENERATE", NodeTypeTTSGenerate, t[TTSGenerateInput](), t[TTSGenerateOutput]()},
+		{"SCRIPT_NORMALIZE", NodeTypeScriptNormalize, t[ScriptNormalizeInput](), t[ScriptNormalizeOutput]()},
+		{"EXTRACT_ASSETS", NodeTypeExtractAssets, t[ExtractAssetsInput](), t[ExtractAssetsOutput]()},
+		{"AUTHOR_SHOT_PROMPTS", NodeTypeAuthorShotPrompts, t[AuthorShotPromptsInput](), t[AuthorShotPromptsOutput]()},
+		{"PROBE_MEDIA", NodeTypeProbeMedia, t[ProbeMediaInput](), t[ProbeMediaOutput]()},
+		{"VIDEO_CONCAT_BASIC", NodeTypeVideoConcatBasic, t[VideoConcatBasicInput](), t[VideoConcatBasicOutput]()},
 	}
 }

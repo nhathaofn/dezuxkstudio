@@ -302,6 +302,24 @@ export interface AgentUIContextPayload {
   last_result?: string;
 }
 
+export interface AuthorShotPromptsInput {
+  normalized_script_json: string;
+  asset_bible_json?: string;
+  production_mode?: string;
+  shot_mode_default?: string;
+  style_prompt?: string;
+  model?: string;
+  project_dir?: string;
+}
+
+export interface AuthorShotPromptsOutput {
+  shots_json: string;
+  shots_path?: string;
+  shot_count: number;
+  provider: string;
+  model: string;
+}
+
 export interface BinaryIDPayload {
   id: BinaryID;
 }
@@ -475,6 +493,21 @@ export interface EventMessage {
   ref_id?: string;
   data: unknown;
   timestamp: number;
+}
+
+export interface ExtractAssetsInput {
+  normalized_script_json: string;
+  style_prompt?: string;
+  model?: string;
+  project_dir?: string;
+}
+
+export interface ExtractAssetsOutput {
+  asset_bible_json: string;
+  assets_path?: string;
+  asset_count: number;
+  provider: string;
+  model: string;
 }
 
 export interface Graph {
@@ -669,6 +702,24 @@ export interface PreferencesPatch {
   agent_skip_trusted_approval?: boolean;
 }
 
+export interface ProbeMediaInput {
+  media?: ImageInputRef;
+  audio?: ImageInputRef;
+}
+
+export interface ProbeMediaOutput {
+  probe_json: string;
+  duration_sec: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+  has_audio: boolean;
+  silent_ratio: number;
+  video_codec?: string;
+  audio_codec?: string;
+  format_name?: string;
+}
+
 export interface ProviderCredential {
   id: string;
   provider_id: string;
@@ -803,6 +854,24 @@ export interface RuntimeInfo {
   uptime_seconds: number;
 }
 
+export interface ScriptNormalizeInput {
+  raw_script: string;
+  genre?: string;
+  episode_title?: string;
+  aspect_ratio?: string;
+  model?: string;
+  project_dir?: string;
+}
+
+export interface ScriptNormalizeOutput {
+  normalized_script_json: string;
+  script_path?: string;
+  scene_count: number;
+  beat_count: number;
+  provider: string;
+  model: string;
+}
+
 export interface SetDefaultPayload {
   purpose: ProviderPurpose;
   model: string;
@@ -917,6 +986,22 @@ export interface UpdateInfo {
 export interface UpdateSettingsPayload {
   owner_id: string;
   settings: Record<string, string>;
+}
+
+export interface VideoConcatBasicInput {
+  clips_manifest_json: string;
+  output_dir?: string;
+  narration_audio_path?: string;
+  resolution?: string;
+  fps?: number;
+}
+
+export interface VideoConcatBasicOutput {
+  video: MediaRef;
+  output_path: string;
+  asset_id?: string;
+  duration_sec: number;
+  clip_count: number;
 }
 
 export interface VideoGenerateInput {
@@ -1200,6 +1285,11 @@ export const NodeTypes = {
   IMAGE_GENERATE: "tool.generate_image",
   VIDEO_GENERATE: "tool.generate_video",
   TTS_GENERATE: "tool.generate_tts",
+  SCRIPT_NORMALIZE: "tool.script_normalize",
+  EXTRACT_ASSETS: "tool.extract_assets",
+  AUTHOR_SHOT_PROMPTS: "tool.author_shot_prompts",
+  PROBE_MEDIA: "tool.probe_media",
+  VIDEO_CONCAT_BASIC: "tool.video_concat_basic",
 } as const;
 export type NodeType = (typeof NodeTypes)[keyof typeof NodeTypes];
 
@@ -1208,6 +1298,11 @@ export interface NodeMap {
   "tool.generate_image": { input: ImageGenerateInput; output: ImageGenerateOutput };
   "tool.generate_video": { input: VideoGenerateInput; output: VideoGenerateOutput };
   "tool.generate_tts": { input: TTSGenerateInput; output: TTSGenerateOutput };
+  "tool.script_normalize": { input: ScriptNormalizeInput; output: ScriptNormalizeOutput };
+  "tool.extract_assets": { input: ExtractAssetsInput; output: ExtractAssetsOutput };
+  "tool.author_shot_prompts": { input: AuthorShotPromptsInput; output: AuthorShotPromptsOutput };
+  "tool.probe_media": { input: ProbeMediaInput; output: ProbeMediaOutput };
+  "tool.video_concat_basic": { input: VideoConcatBasicInput; output: VideoConcatBasicOutput };
 }
 
 export const Events = {

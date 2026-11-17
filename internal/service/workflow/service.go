@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"log/slog"
 
+	"app/internal/config"
 	"app/internal/engine"
 	"app/internal/paths"
 	mediagennodes "app/internal/tools/mediagen"
 	providernodes "app/internal/tools/provider"
+	studionodes "app/internal/tools/studio"
 	"app/internal/tools/watermark"
 )
 
@@ -23,6 +25,12 @@ type Options struct {
 	Providers providernodes.Service
 	// MediaGen backs the unified image/video/TTS generation nodes (nil leaves them out in minimal tests).
 	MediaGen mediagennodes.MediaService
+	// TextGen backs the LLM text/screenplay studio nodes (optional; falls back to MediaGen when it implements TextGenerator).
+	TextGen studionodes.TextGenerator
+	// Binaries resolves managed external tools such as ffmpeg/ffprobe for media inspection & concat nodes.
+	Binaries studionodes.BinaryResolver
+	// StudioConfig supplies default FPS, resolution, presets, and timeouts for studio nodes.
+	StudioConfig config.StudioConfig
 	// Registrar auto-registers newly created or cleaned media assets into the library.
 	Registrar watermark.MediaRegistrar
 	// WorkspaceTreeFunc provides dynamic workspace paths.
@@ -56,8 +64,17 @@ func New(o Options) (*Service, error) {
 	}
 
 	defaultMedia := ""
+	defaultWorkspace := ""
 	if o.Paths.Data != "" {
 		defaultMedia = o.Paths.Media()
+		defaultWorkspace = paths.ResolveWorkspaceTree(o.Paths, "", "").WorkspaceDir
+	}
+
+	textGen := o.TextGen
+	if textGen == nil && o.MediaGen != nil {
+		if tg, ok := o.MediaGen.(studionodes.TextGenerator); ok {
+			textGen = tg
+		}
 	}
 
 	// Built-in feature nodes. A new feature = one entry here: the UI, workflows and the agent
@@ -70,6 +87,15 @@ func New(o Options) (*Service, error) {
 			Registrar:     o.Registrar,
 		}),
 	}
+	nodes = append(nodes, studionodes.NewNodes(studionodes.Options{
+		TextGen:           textGen,
+		Binaries:          o.Binaries,
+		Registrar:         o.Registrar,
+		StudioConfig:      o.StudioConfig,
+		MediaDir:          defaultMedia,
+		WorkspaceDir:      defaultWorkspace,
+		WorkspaceTreeFunc: o.WorkspaceTreeFunc,
+	})...)
 	if o.MediaGen != nil {
 		nodes = append(nodes, mediagennodes.NewNodes(mediagennodes.Options{
 			MediaDir:     defaultMedia,
