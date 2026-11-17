@@ -65,7 +65,7 @@ func TestMigrations(t *testing.T) {
 		}
 
 		// Ensure core tables exist
-		for _, tbl := range []string{"_schema_migrations", "app_metadata", "user_settings", "binary_configs", "agent_providers", "agent_chat_messages", "agent_allowed_dirs"} {
+		for _, tbl := range []string{"_schema_migrations", "app_metadata", "user_settings", "binary_configs", "agent_providers", "agent_chat_messages", "agent_allowed_dirs", "studio_projects", "studio_episodes", "studio_assets", "studio_shots"} {
 			var exists int
 			err := db.sql.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", tbl).Scan(&exists)
 			if err != nil || exists != 1 {
