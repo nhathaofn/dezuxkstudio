@@ -321,6 +321,11 @@ const (
 	CostFailed    CostStatus = "failed"
 )
 
+// CostStatuses returns all valid studio cost ledger statuses.
+func CostStatuses() []CostStatus {
+	return []CostStatus{CostEstimated, CostRecorded, CostFailed}
+}
+
 // CostLedgerEntry records actual or estimated provider spend in studio_cost_ledger.
 type CostLedgerEntry struct {
 	ID           string

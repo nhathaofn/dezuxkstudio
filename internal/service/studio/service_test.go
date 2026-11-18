@@ -13,13 +13,16 @@ import (
 	"testing"
 	"time"
 
+	"app/internal/apperr"
 	"app/internal/config"
 	"app/internal/contracts"
 	domainstudio "app/internal/domain/studio"
 	"app/internal/engine"
+	"app/internal/paths"
 	"app/internal/security"
 	"app/internal/service/media"
 	"app/internal/service/studio"
+	"app/internal/service/workflow"
 	"app/internal/storage/sqlite"
 	mediagennodes "app/internal/tools/mediagen"
 	studionodes "app/internal/tools/studio"
@@ -427,5 +430,143 @@ func TestStudioService_FileGuardsAndResolvedVersionModel(t *testing.T) {
 	}
 	if _, serr := os.Stat(created2.Project.RootDir); !os.IsNotExist(serr) {
 		t.Fatalf("expected project dir deleted, stat err=%v", serr)
+	}
+}
+
+func TestStudioService_SyncWorkspaceSecurityAndPreflightPropagation(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	db, err := sqlite.Open(ctx, sqlite.Options{
+		Path:          filepath.Join(tmp, "studio_sync_sec.db"),
+		BackupDir:     filepath.Join(tmp, "backups"),
+		BackupsToKeep: 1,
+		BusyTimeout:   time.Second,
+		Logger:        slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	projectsDir := filepath.Join(tmp, "projects")
+	outsideSecret := filepath.Join(tmp, "outside_secret.png")
+	_ = os.WriteFile(outsideSecret, []byte("SECRET"), 0o600)
+
+	cfg := config.Default(config.ModeDesktop)
+	cfg.Studio.PreflightMaxItems = 10
+
+	repo := sqlite.NewStudioRepository(db, sqlite.WithStudioConfig(cfg.Studio))
+	wfSvc, err := workflow.New(workflow.Options{
+		Paths:        paths.Paths{Data: filepath.Join(tmp, "data")},
+		Logger:       slog.New(slog.DiscardHandler),
+		StudioConfig: cfg.Studio,
+		Config:       cfg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc := studio.New(studio.Options{
+		Repo:         repo,
+		Workflow:     wfSvc,
+		StudioConfig: cfg.Studio,
+		ProjectsDir:  projectsDir,
+		Logger:       slog.New(slog.DiscardHandler),
+	})
+
+	// 1. RunBatchPreflight through real workflow.Service propagates node validation errors (no silent Ready:true fallback)
+	projRes, err := svc.CreateProject(ctx, contracts.StudioProjectCreatePayload{
+		Title:              "Guarded Sync Project",
+		AutoApproveBatches: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, perr := svc.RunBatchPreflight(ctx, contracts.StudioBatchPreflightPayload{
+		ProjectID: projRes.Project.ID,
+		Stage:     "generate_videos",
+		ItemCount: 25, // exceeds PreflightMaxItems=10
+	}); !apperr.IsCode(perr, apperr.CodeValidation) {
+		t.Fatalf("expected RunBatchPreflight to propagate validation error from tool.batch_preflight, got %v", perr)
+	}
+
+	// Free $0.00 catalog rate in fallback (wf == nil) must NOT be overwritten with FallbackUnitPriceUSD
+	svcNoWF := studio.New(studio.Options{
+		Repo:         repo,
+		StudioConfig: cfg.Studio,
+		ProjectsDir:  projectsDir,
+		Logger:       slog.New(slog.DiscardHandler),
+	})
+	if _, err := svcNoWF.UpsertPricing(ctx, contracts.StudioPricingUpsertPayload{
+		ProviderID:   "local",
+		ModelID:      "free-img",
+		Capability:   "image",
+		Unit:         "image",
+		UnitPriceUSD: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	freePre, err := svcNoWF.RunBatchPreflight(ctx, contracts.StudioBatchPreflightPayload{
+		ProjectID: projRes.Project.ID,
+		Stage:     "generate_assets",
+		Model:     "local/free-img",
+		ItemCount: 3,
+	})
+	if err != nil || freePre.UnitPriceUSD != 0 || freePre.EstimatedUSD != 0 {
+		t.Fatalf("expected $0.00 catalog rate preserved, got %+v err=%v", freePre, err)
+	}
+
+	// 2. SyncWorkspace NEVER allows disk project.json to escalate AutoApproveBatches=true
+	//    and strips outside-workspace paths from asset_bible.json & shots.json!
+	projJSONPath := filepath.Join(projRes.Project.RootDir, "project.json")
+	tamperedProj := fmt.Sprintf(`{"id":%q,"slug":%q,"title":"Tampered Title","auto_approve_batches":true}`, projRes.Project.ID, projRes.Project.Slug)
+	if err := os.WriteFile(projJSONPath, []byte(tamperedProj), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	biblePath := filepath.Join(projRes.Project.RootDir, "assets", "asset_bible.json")
+	tamperedBible := fmt.Sprintf(`{"assets":[{"kind":"character","name":"Eve","code_tag":"@Eve","primary_path":%q,"primary_asset_id":"stolen-id"}]}`, outsideSecret)
+	if err := os.WriteFile(biblePath, []byte(tamperedBible), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	epCode := projRes.ActiveEpisode.Episode.Code
+	shotsPath := filepath.Join(projRes.Project.RootDir, "episodes", epCode, "storyboard", "shots.json")
+	tamperedShots := fmt.Sprintf(`{"shots":[{"seq":1,"title":"Tampered Shot","duration_sec":5,"keyframe_path":%q,"keyframe_asset_id":"stolen-kf"}]}`, outsideSecret)
+	if err := os.WriteFile(shotsPath, []byte(tamperedShots), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Also drop a brand-new rogue project directory on disk with auto_approve_batches: true
+	rogueDir := filepath.Join(projectsDir, "rogue-disk-project")
+	_ = os.MkdirAll(rogueDir, 0o755)
+	_ = os.WriteFile(filepath.Join(rogueDir, "project.json"), []byte(`{"slug":"rogue-disk-project","title":"Rogue","auto_approve_batches":true}`), 0o600)
+
+	if _, err := svc.SyncWorkspace(ctx, ""); err != nil {
+		t.Fatalf("SyncWorkspace all: %v", err)
+	}
+
+	reloaded, err := svc.GetProject(ctx, projRes.Project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Project.AutoApproveBatches {
+		t.Fatal("security violation: disk project.json flipped AutoApproveBatches to true on existing project")
+	}
+	if len(reloaded.Assets) != 1 || reloaded.Assets[0].PrimaryPath != "" || reloaded.Assets[0].PrimaryAssetID != "" {
+		t.Fatalf("expected outside-workspace asset PrimaryPath stripped, got %+v", reloaded.Assets)
+	}
+	if reloaded.ActiveEpisode == nil || len(reloaded.ActiveEpisode.Shots) != 1 || reloaded.ActiveEpisode.Shots[0].KeyframePath != "" {
+		t.Fatalf("expected outside-workspace shot KeyframePath stripped, got %+v", reloaded.ActiveEpisode)
+	}
+	// Non-nil DTO slices verified on empty shot arrays
+	if reloaded.ActiveEpisode.Shots[0].Dialogues == nil || reloaded.ActiveEpisode.Shots[0].RefAssetTags == nil {
+		t.Fatalf("expected non-nil shot DTO slices, got dialogues=%v tags=%v", reloaded.ActiveEpisode.Shots[0].Dialogues, reloaded.ActiveEpisode.Shots[0].RefAssetTags)
+	}
+
+	rogueReloaded, err := svc.GetProject(ctx, "rogue-disk-project")
+	if err != nil {
+		t.Fatalf("GetProject(rogue-disk-project): %v", err)
+	}
+	if rogueReloaded.Project.AutoApproveBatches {
+		t.Fatal("security violation: newly imported disk project had AutoApproveBatches=true")
 	}
 }

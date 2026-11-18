@@ -973,7 +973,7 @@ const StoryboardShotCard: React.FC<{
             openVersionDrawer({
               projectId,
               episodeId: shot.episode_id,
-              targetKind: "shot_keyframe",
+              targetKind: "keyframe",
               targetId: shot.id,
               label: shot.title,
               mediaPath: shot.keyframe_path,
@@ -995,7 +995,7 @@ const StoryboardShotCard: React.FC<{
                 openGridModal({
                   projectId,
                   episodeId: shot.episode_id,
-                  targetKind: "shot_keyframe",
+                  targetKind: "keyframe",
                   targetId: shot.id,
                   imagePath: shot.keyframe_path,
                   assetId: shot.keyframe_asset_id,
@@ -1013,7 +1013,7 @@ const StoryboardShotCard: React.FC<{
                 openMaskModal({
                   projectId,
                   episodeId: shot.episode_id,
-                  targetKind: "shot_keyframe",
+                  targetKind: "keyframe",
                   targetId: shot.id,
                   imagePath: shot.keyframe_path,
                   assetId: shot.keyframe_asset_id,
@@ -1286,7 +1286,7 @@ export const VideoShotsStagePanel: React.FC<{
           {detail.shots.map((shot, idx) => {
             const probe = probeMap[shot.id];
             const nextShot = detail.shots[idx + 1];
-            const latestQC = qcByTarget[targetVersionKey("shot_video", shot.id)];
+            const latestQC = qcByTarget[targetVersionKey("video", shot.id)];
             return (
               <div key={shot.id} className="studio-item-card">
                 <div className="studio-item-head">
@@ -1363,7 +1363,7 @@ export const VideoShotsStagePanel: React.FC<{
                       openVersionDrawer({
                         projectId: detail.project.id,
                         episodeId: detail.episode.id,
-                        targetKind: "shot_video",
+                        targetKind: "video",
                         targetId: shot.id,
                         label: shot.title,
                         mediaPath: shot.video_path,

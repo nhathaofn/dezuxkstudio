@@ -84,6 +84,7 @@ const sampleEpisodeDetail: StudioEpisodeDetailResult = {
       image_prompt: "Wide shot of @Minh in rain",
       video_prompt: "Slow push in",
       narration_text: "Midnight rain fell over District 4.",
+      dialogues: [],
       ref_asset_tags: ["@Minh"],
       keyframe_asset_id: "",
       keyframe_path: "",

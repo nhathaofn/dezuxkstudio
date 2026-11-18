@@ -689,7 +689,7 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 			res, err := p2.ListJobs(ctx, contracts.StudioQueueListPayload{
 				ProjectID: strings.TrimSpace(in.ProjectID),
 				EpisodeID: strings.TrimSpace(in.EpisodeID),
-				Status:    strings.TrimSpace(in.Status),
+				Status:    domainstudio.JobStatus(strings.TrimSpace(in.Status)),
 			})
 			if err != nil {
 				return mcpError(err.Error())
@@ -705,7 +705,7 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 				return mcpError("studio phase 2 queue is unavailable")
 			}
 			res, err := p2.ControlQueue(ctx, contracts.StudioQueueControlPayload{
-				Action:    strings.TrimSpace(in.Action),
+				Action:    contracts.StudioQueueAction(strings.TrimSpace(in.Action)),
 				ProjectID: strings.TrimSpace(in.ProjectID),
 				EpisodeID: strings.TrimSpace(in.EpisodeID),
 				JobID:     strings.TrimSpace(in.JobID),
@@ -741,7 +741,7 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 				return mcpError("studio media versions unavailable")
 			}
 			res, err := p2.ListVersions(ctx, contracts.StudioVersionsListPayload{
-				TargetKind: strings.TrimSpace(in.TargetKind),
+				TargetKind: domainstudio.MediaTargetKind(strings.TrimSpace(in.TargetKind)),
 				TargetID:   strings.TrimSpace(in.TargetID),
 			})
 			if err != nil {
@@ -776,7 +776,7 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 			res, err := p2.RunQCReview(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioQCReviewPayload{
 				ProjectID:      strings.TrimSpace(in.ProjectID),
 				EpisodeID:      strings.TrimSpace(in.EpisodeID),
-				TargetKind:     strings.TrimSpace(in.TargetKind),
+				TargetKind:     domainstudio.MediaTargetKind(strings.TrimSpace(in.TargetKind)),
 				TargetID:       strings.TrimSpace(in.TargetID),
 				MediaVersionID: strings.TrimSpace(in.MediaVersionID),
 				MediaPath:      strings.TrimSpace(in.MediaPath),
@@ -818,7 +818,7 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 			res, err := p3.ApplyTimelineOps(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioTimelineApplyOpsPayload{
 				EpisodeID:        strings.TrimSpace(in.EpisodeID),
 				ExpectedRevision: in.ExpectedRevision,
-				Actor:            string(domainstudio.ActorAgent),
+				Actor:            domainstudio.ActorAgent,
 				Summary:          strings.TrimSpace(in.Summary),
 				Ops:              ops,
 			})
@@ -953,7 +953,7 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 			res, err := ext.SplitGrid(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioGridSplitPayload{
 				ProjectID:  strings.TrimSpace(in.ProjectID),
 				EpisodeID:  strings.TrimSpace(in.EpisodeID),
-				TargetKind: strings.TrimSpace(in.TargetKind),
+				TargetKind: domainstudio.MediaTargetKind(strings.TrimSpace(in.TargetKind)),
 				TargetID:   strings.TrimSpace(in.TargetID),
 				ImagePath:  imgPath,
 				Rows:       in.Rows,
@@ -998,7 +998,7 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 			p := contracts.StudioMaskEditPayload{
 				ProjectID:      strings.TrimSpace(in.ProjectID),
 				EpisodeID:      strings.TrimSpace(in.EpisodeID),
-				TargetKind:     strings.TrimSpace(in.TargetKind),
+				TargetKind:     domainstudio.MediaTargetKind(strings.TrimSpace(in.TargetKind)),
 				TargetID:       strings.TrimSpace(in.TargetID),
 				ImagePath:      imgPath,
 				MaskPath:       maskPath,
@@ -1252,7 +1252,7 @@ func (s *Service) validateAndConvertTimelineOpInputs(in []studioTimelineOpToolIn
 			}
 		}
 		out[i] = contracts.StudioTimelineOp{
-			Op:              op.Op,
+			Op:              domainstudio.TimelineOpKind(op.Op),
 			Timeline:        tlDTO,
 			FPS:             op.FPS,
 			Width:           op.Width,

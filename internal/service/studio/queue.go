@@ -20,10 +20,20 @@ import (
 	studionodes "app/internal/tools/studio"
 )
 
+// maxRetryShiftExp prevents 64-bit integer overflow when computing 1<<attempt exponential backoff;
+// actual delay remains bounded by StudioConfig.QueuePollBackoffMax.
+const maxRetryShiftExp = 10
+
 // VideoQueueMedia defines two-phase video submission and single-probe polling for durable job recovery.
 type VideoQueueMedia interface {
 	SubmitVideoJob(ctx context.Context, req domainmedia.VideoRequest) (domainmedia.VideoSubmitToken, error)
 	PollVideoJobOnce(ctx context.Context, token domainmedia.VideoSubmitToken) (domainmedia.VideoPollStatus, error)
+}
+
+type activeJobEntry struct {
+	projectID string
+	episodeID string
+	cancel    context.CancelFunc
 }
 
 type queuedImageJobRequest struct {
@@ -50,10 +60,73 @@ func (s *Service) wakeWorker() {
 }
 
 func (s *Service) withWorkerGuard(ctx context.Context) context.Context {
-	if s.fileGuard != nil {
-		return engine.WithFileGuard(ctx, s.fileGuard)
+	s.mu.RLock()
+	fg := s.fileGuard
+	s.mu.RUnlock()
+	if fg != nil {
+		return engine.WithFileGuard(ctx, fg)
 	}
 	return ctx
+}
+
+func (s *Service) trackActiveJob(ctx context.Context, j domainstudio.Job) (context.Context, func()) {
+	jobCtx, cancel := context.WithCancel(ctx)
+	entry := &activeJobEntry{
+		projectID: j.ProjectID,
+		episodeID: j.EpisodeID,
+		cancel:    cancel,
+	}
+	s.jobMu.Lock()
+	if s.activeJobs == nil {
+		s.activeJobs = make(map[string]*activeJobEntry)
+	}
+	s.activeJobs[j.ID] = entry
+	s.jobMu.Unlock()
+
+	return jobCtx, func() {
+		cancel()
+		s.jobMu.Lock()
+		if cur, ok := s.activeJobs[j.ID]; ok && cur == entry {
+			delete(s.activeJobs, j.ID)
+		}
+		s.jobMu.Unlock()
+	}
+}
+
+func (s *Service) cancelActiveJob(jobID string) {
+	id := strings.TrimSpace(jobID)
+	if id == "" {
+		return
+	}
+	s.jobMu.Lock()
+	entry := s.activeJobs[id]
+	s.jobMu.Unlock()
+	if entry != nil && entry.cancel != nil {
+		entry.cancel()
+	}
+}
+
+func (s *Service) cancelEpisodeActiveJobs(projectID, episodeID string) {
+	pID := strings.TrimSpace(projectID)
+	epID := strings.TrimSpace(episodeID)
+	var cancels []context.CancelFunc
+	s.jobMu.Lock()
+	for _, entry := range s.activeJobs {
+		if entry == nil || entry.cancel == nil {
+			continue
+		}
+		if pID != "" && entry.projectID != pID {
+			continue
+		}
+		if epID != "" && entry.episodeID != epID {
+			continue
+		}
+		cancels = append(cancels, entry.cancel)
+	}
+	s.jobMu.Unlock()
+	for _, fn := range cancels {
+		fn()
+	}
 }
 
 // RecoverOnStartup inspects studio_jobs on startup so submitted/polling jobs with a persisted
@@ -136,11 +209,22 @@ func (s *Service) StepQueueOnce(ctx context.Context) bool {
 	now := time.Now().UnixMilli()
 	leaseMs := max(s.cfg.QueuePollLeaseMin.Milliseconds(), s.cfg.QueuePollInterval.Milliseconds()*4)
 
-	if pollJob, ok, err := s.repo.ClaimNextPollJob(ctx, now, leaseMs); err == nil && ok {
+	pollJob, ok, err := s.repo.ClaimNextPollJob(ctx, now, leaseMs)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.WarnContext(ctx, "studio: failed to claim next polling job", "error", err)
+		}
+	} else if ok {
 		s.executePollJob(ctx, pollJob)
 		return true
 	}
-	if queuedJob, ok, err := s.repo.ClaimNextQueuedJob(ctx, now); err == nil && ok {
+
+	queuedJob, ok, err := s.repo.ClaimNextQueuedJob(ctx, now)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.WarnContext(ctx, "studio: failed to claim next queued job", "error", err)
+		}
+	} else if ok {
 		s.executeQueuedJob(ctx, queuedJob)
 		return true
 	}
@@ -151,7 +235,8 @@ func (s *Service) StepQueueOnce(ctx context.Context) bool {
 // inserts durable jobs into studio_jobs, and wakes background workers.
 func (s *Service) EnqueueBatch(ctx context.Context, p contracts.StudioQueueEnqueuePayload) (contracts.StudioQueueEnqueueResult, error) {
 	if s.repo == nil {
-		return contracts.StudioQueueEnqueueResult{}, apperr.Unavailable("studio repository unavailable")
+		return contracts.StudioQueueEnqueueResult{}, apperr.Unavailable("studio repository unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioQueueEnqueueResult{}, err
@@ -166,13 +251,20 @@ func (s *Service) EnqueueBatch(ctx context.Context, p contracts.StudioQueueEnque
 	}
 	if !proj.AutoApproveBatches && !p.Approved {
 		return contracts.StudioQueueEnqueueResult{}, apperr.Validation("Batch queue enqueue requires approval when auto_approve_batches is disabled").
+			WithMsg("errors.studio.approval_required", nil).
 			WithDetails(map[string]any{"approval_required": true, "project_id": proj.ID, "stage": p.Stage})
 	}
 
 	epRoot := s.resolveEpisodeRoot(proj, ep.Code)
 	projRoot := s.resolveProjectRoot(proj)
 	if epRoot != "" {
-		_ = ensureEpisodeDirs(epRoot)
+		if err := s.ensureGuardedEpisodeDirs(ctx, epRoot); err != nil {
+			return contracts.StudioQueueEnqueueResult{}, err
+		}
+	} else if projRoot != "" {
+		if err := s.ensureGuardedProjectDirs(ctx, projRoot); err != nil {
+			return contracts.StudioQueueEnqueueResult{}, err
+		}
 	}
 
 	stage := strings.ToLower(strings.TrimSpace(p.Stage))
@@ -186,13 +278,13 @@ func (s *Service) EnqueueBatch(ctx context.Context, p contracts.StudioQueueEnque
 	case "generate_keyframes":
 		created, skipped, totalEst, err = s.enqueueShotKeyframes(ctx, proj, ep, epRoot, p)
 	case "generate_assets":
-		created, skipped, totalEst, err = s.enqueueAssets(ctx, proj, ep, projRoot, p)
+		created, skipped, totalEst, err = s.enqueueAssets(ctx, proj, ep, epRoot, projRoot, p)
 	case "generate_tts":
 		created, skipped, totalEst, err = s.enqueueShotTTS(ctx, proj, ep, epRoot, p)
 	case "lipsync":
 		created, skipped, totalEst, err = s.enqueueShotLipSync(ctx, proj, ep, epRoot, p)
 	default:
-		return contracts.StudioQueueEnqueueResult{}, apperr.Validation("unsupported queue enqueue stage " + p.Stage)
+		return contracts.StudioQueueEnqueueResult{}, apperr.Validation("unsupported queue enqueue stage")
 	}
 	if err != nil {
 		return contracts.StudioQueueEnqueueResult{}, err
@@ -220,12 +312,16 @@ func (s *Service) EnqueueBatch(ctx context.Context, p contracts.StudioQueueEnque
 // ListJobs queries durable studio jobs filtered by project/episode/status.
 func (s *Service) ListJobs(ctx context.Context, p contracts.StudioQueueListPayload) (contracts.StudioQueueListResult, error) {
 	if s.repo == nil {
-		return contracts.StudioQueueListResult{}, apperr.Unavailable("studio repository unavailable")
+		return contracts.StudioQueueListResult{}, apperr.Unavailable("studio repository unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
+	}
+	if err := p.Validate(); err != nil {
+		return contracts.StudioQueueListResult{}, err
 	}
 	jobs, err := s.repo.ListJobs(ctx, domainstudio.JobFilter{
 		ProjectID: strings.TrimSpace(p.ProjectID),
 		EpisodeID: strings.TrimSpace(p.EpisodeID),
-		Status:    domainstudio.JobStatus(strings.TrimSpace(p.Status)),
+		Status:    domainstudio.JobStatus(strings.TrimSpace(string(p.Status))),
 		Limit:     p.Limit,
 	})
 	if err != nil {
@@ -237,14 +333,15 @@ func (s *Service) ListJobs(ctx context.Context, p contracts.StudioQueueListPaylo
 // ControlQueue pauses, resumes, cancels, or retries durable jobs cleanly without duplicating remote submits.
 func (s *Service) ControlQueue(ctx context.Context, p contracts.StudioQueueControlPayload) (contracts.StudioQueueControlResult, error) {
 	if s.repo == nil {
-		return contracts.StudioQueueControlResult{}, apperr.Unavailable("studio repository unavailable")
+		return contracts.StudioQueueControlResult{}, apperr.Unavailable("studio repository unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioQueueControlResult{}, err
 	}
-	act := strings.ToLower(strings.TrimSpace(p.Action))
+	act := contracts.StudioQueueAction(strings.ToLower(strings.TrimSpace(string(p.Action))))
 	switch act {
-	case "pause":
+	case contracts.QueueActionPause:
 		if p.JobID != "" {
 			j, err := s.repo.GetJob(ctx, p.JobID)
 			if err != nil {
@@ -256,6 +353,7 @@ func (s *Service) ControlQueue(ctx context.Context, p contracts.StudioQueueContr
 				if err != nil {
 					return contracts.StudioQueueControlResult{}, err
 				}
+				s.cancelActiveJob(p.JobID)
 				dto := jobToDTO(j)
 				s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{ProjectID: j.ProjectID, EpisodeID: j.EpisodeID, Job: &dto, Summary: "Job paused"})
 				return contracts.StudioQueueControlResult{Affected: 1, Job: &dto}, nil
@@ -267,10 +365,11 @@ func (s *Service) ControlQueue(ctx context.Context, p contracts.StudioQueueContr
 		if err != nil {
 			return contracts.StudioQueueControlResult{}, err
 		}
+		s.cancelEpisodeActiveJobs(p.ProjectID, p.EpisodeID)
 		s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{ProjectID: p.ProjectID, EpisodeID: p.EpisodeID, Summary: fmt.Sprintf("Paused %d job(s)", n)})
 		return contracts.StudioQueueControlResult{Affected: n}, nil
 
-	case "resume":
+	case contracts.QueueActionResume:
 		if p.JobID != "" {
 			j, err := s.repo.GetJob(ctx, p.JobID)
 			if err != nil {
@@ -305,16 +404,17 @@ func (s *Service) ControlQueue(ctx context.Context, p contracts.StudioQueueContr
 		s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{ProjectID: p.ProjectID, EpisodeID: p.EpisodeID, Summary: fmt.Sprintf("Resumed %d job(s)", n)})
 		return contracts.StudioQueueControlResult{Affected: n}, nil
 
-	case "cancel":
+	case contracts.QueueActionCancel:
 		j, err := s.repo.CancelJob(ctx, p.JobID)
 		if err != nil {
 			return contracts.StudioQueueControlResult{}, err
 		}
+		s.cancelActiveJob(p.JobID)
 		dto := jobToDTO(j)
 		s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{ProjectID: j.ProjectID, EpisodeID: j.EpisodeID, Job: &dto, Summary: "Job canceled"})
 		return contracts.StudioQueueControlResult{Affected: 1, Job: &dto}, nil
 
-	case "retry":
+	case contracts.QueueActionRetry:
 		j, err := s.repo.GetJob(ctx, p.JobID)
 		if err != nil {
 			return contracts.StudioQueueControlResult{}, err
@@ -346,7 +446,7 @@ func (s *Service) createIdempotentJob(ctx context.Context, job domainstudio.Job,
 		if !existing.Status.IsTerminal() {
 			return existing, false, nil
 		}
-		if !force {
+		if !force && existing.Status == domainstudio.JobSucceeded {
 			return existing, false, nil
 		}
 		job.IdempotencyKey = fmt.Sprintf("%s:%d", job.IdempotencyKey, time.Now().UnixNano())
@@ -364,10 +464,16 @@ func (s *Service) enqueueShotVideos(ctx context.Context, proj domainstudio.Proje
 		return nil, 0, 0, err
 	}
 	wantIDs := toSet(p.ShotIDs)
-	outDir := filepath.Join(epRoot, "videos")
+	outDir := ""
+	if epRoot != "" {
+		outDir = filepath.Join(epRoot, "media", "videos")
+	}
 	modelRef := firstNonEmpty(p.Model, proj.DefaultVideoModel)
 	provID, modID := domainstudio.SplitModelRefForPricing(modelRef)
-	unitPrice, _, _ := s.EstimateUnitPriceUSD(ctx, provID, modID, "video", "second")
+	unitPrice, _, perr := s.EstimateUnitPriceUSD(ctx, provID, modID, "video", "second")
+	if perr != nil {
+		s.log.WarnContext(ctx, "studio: failed to estimate video unit price", "error", perr)
+	}
 
 	var out []domainstudio.Job
 	skipped := 0
@@ -389,7 +495,10 @@ func (s *Service) enqueueShotVideos(ctx context.Context, proj domainstudio.Proje
 			DurationSec: dur,
 			OutputDir:   outDir,
 		}
-		reqBytes, _ := json.Marshal(req)
+		reqBytes, merr := json.Marshal(req)
+		if merr != nil {
+			return nil, skipped, estTotal, apperr.Internal(merr)
+		}
 		est := math.Round(float64(dur)*unitPrice*10000) / 10000
 		j, createdNew, err := s.createIdempotentJob(ctx, domainstudio.Job{
 			ProjectID:      proj.ID,
@@ -421,13 +530,22 @@ func (s *Service) enqueueShotKeyframes(ctx context.Context, proj domainstudio.Pr
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	assets, _ := s.repo.ListAssets(ctx, proj.ID)
+	assets, aerr := s.repo.ListAssets(ctx, proj.ID)
+	if aerr != nil {
+		s.log.WarnContext(ctx, "studio: failed to list assets for keyframe enqueue", "project_id", proj.ID, "error", aerr)
+	}
 	tagPaths := buildAssetPathMap(assets)
 	wantIDs := toSet(p.ShotIDs)
-	outDir := filepath.Join(epRoot, "images")
+	outDir := ""
+	if epRoot != "" {
+		outDir = filepath.Join(epRoot, "media", "keyframes")
+	}
 	modelRef := firstNonEmpty(p.Model, proj.DefaultImageModel)
 	provID, modID := domainstudio.SplitModelRefForPricing(modelRef)
-	unitPrice, _, _ := s.EstimateUnitPriceUSD(ctx, provID, modID, "image", "image")
+	unitPrice, _, perr := s.EstimateUnitPriceUSD(ctx, provID, modID, "image", "image")
+	if perr != nil {
+		s.log.WarnContext(ctx, "studio: failed to estimate image unit price", "error", perr)
+	}
 
 	var out []domainstudio.Job
 	skipped := 0
@@ -450,7 +568,10 @@ func (s *Service) enqueueShotKeyframes(ctx context.Context, proj domainstudio.Pr
 				OutputDir:       outDir,
 			},
 		}
-		reqBytes, _ := json.Marshal(payload)
+		reqBytes, merr := json.Marshal(payload)
+		if merr != nil {
+			return nil, skipped, estTotal, apperr.Internal(merr)
+		}
 		j, createdNew, err := s.createIdempotentJob(ctx, domainstudio.Job{
 			ProjectID:      proj.ID,
 			EpisodeID:      ep.ID,
@@ -476,16 +597,24 @@ func (s *Service) enqueueShotKeyframes(ctx context.Context, proj domainstudio.Pr
 	return out, skipped, estTotal, nil
 }
 
-func (s *Service) enqueueAssets(ctx context.Context, proj domainstudio.Project, ep domainstudio.Episode, projRoot string, p contracts.StudioQueueEnqueuePayload) ([]domainstudio.Job, int, float64, error) {
+func (s *Service) enqueueAssets(ctx context.Context, proj domainstudio.Project, ep domainstudio.Episode, epRoot, projRoot string, p contracts.StudioQueueEnqueuePayload) ([]domainstudio.Job, int, float64, error) {
 	assets, err := s.repo.ListAssets(ctx, proj.ID)
 	if err != nil {
 		return nil, 0, 0, err
 	}
 	wantIDs := toSet(p.AssetIDs)
-	outDir := filepath.Join(projRoot, "assets")
+	outDir := ""
+	if epRoot != "" {
+		outDir = filepath.Join(epRoot, "media", "assets")
+	} else if projRoot != "" {
+		outDir = filepath.Join(projRoot, "assets")
+	}
 	modelRef := firstNonEmpty(p.Model, proj.DefaultImageModel)
 	provID, modID := domainstudio.SplitModelRefForPricing(modelRef)
-	unitPrice, _, _ := s.EstimateUnitPriceUSD(ctx, provID, modID, "image", "image")
+	unitPrice, _, perr := s.EstimateUnitPriceUSD(ctx, provID, modID, "image", "image")
+	if perr != nil {
+		s.log.WarnContext(ctx, "studio: failed to estimate asset image unit price", "error", perr)
+	}
 
 	var out []domainstudio.Job
 	skipped := 0
@@ -507,7 +636,10 @@ func (s *Service) enqueueAssets(ctx context.Context, proj domainstudio.Project, 
 				OutputDir:   outDir,
 			},
 		}
-		reqBytes, _ := json.Marshal(payload)
+		reqBytes, merr := json.Marshal(payload)
+		if merr != nil {
+			return nil, skipped, estTotal, apperr.Internal(merr)
+		}
 		j, createdNew, err := s.createIdempotentJob(ctx, domainstudio.Job{
 			ProjectID:      proj.ID,
 			EpisodeID:      ep.ID,
@@ -538,7 +670,10 @@ func (s *Service) enqueueShotTTS(ctx context.Context, proj domainstudio.Project,
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	assets, _ := s.repo.ListAssets(ctx, proj.ID)
+	assets, aerr := s.repo.ListAssets(ctx, proj.ID)
+	if aerr != nil {
+		s.log.WarnContext(ctx, "studio: failed to list assets for tts enqueue", "project_id", proj.ID, "error", aerr)
+	}
 	voiceBySpeaker := map[string]domainstudio.AssetEntry{}
 	for _, a := range assets {
 		if a.Kind == domainstudio.AssetCharacter && (a.VoiceID != "" || a.VoiceProvider != "") {
@@ -547,7 +682,10 @@ func (s *Service) enqueueShotTTS(ctx context.Context, proj domainstudio.Project,
 		}
 	}
 	wantIDs := toSet(p.ShotIDs)
-	outDir := filepath.Join(epRoot, "audio")
+	outDir := ""
+	if epRoot != "" {
+		outDir = filepath.Join(epRoot, "media", "tts")
+	}
 	var out []domainstudio.Job
 	skipped := 0
 	estTotal := 0.0
@@ -562,7 +700,10 @@ func (s *Service) enqueueShotTTS(ctx context.Context, proj domainstudio.Project,
 		}
 		modelRef, voiceID := resolveShotVoiceConfig(sh, p.Model, proj.DefaultTTSModel, "", voiceBySpeaker)
 		provID, modID := domainstudio.SplitModelRefForPricing(modelRef)
-		unitPrice, _, _ := s.EstimateUnitPriceUSD(ctx, provID, modID, "tts", "1k_chars")
+		unitPrice, _, perr := s.EstimateUnitPriceUSD(ctx, provID, modID, "tts", "1k_chars")
+		if perr != nil {
+			s.log.WarnContext(ctx, "studio: failed to estimate tts unit price", "error", perr)
+		}
 		est := math.Round((float64(len([]rune(txt)))/1000.0)*unitPrice*10000) / 10000
 		payload := queuedTTSJobRequest{
 			Input: contracts.TTSGenerateInput{
@@ -572,7 +713,10 @@ func (s *Service) enqueueShotTTS(ctx context.Context, proj domainstudio.Project,
 				OutputDir: outDir,
 			},
 		}
-		reqBytes, _ := json.Marshal(payload)
+		reqBytes, merr := json.Marshal(payload)
+		if merr != nil {
+			return nil, skipped, estTotal, apperr.Internal(merr)
+		}
 		j, createdNew, err := s.createIdempotentJob(ctx, domainstudio.Job{
 			ProjectID:      proj.ID,
 			EpisodeID:      ep.ID,
@@ -604,9 +748,15 @@ func (s *Service) enqueueShotLipSync(ctx context.Context, proj domainstudio.Proj
 		return nil, 0, 0, err
 	}
 	wantIDs := toSet(p.ShotIDs)
-	outDir := filepath.Join(epRoot, "videos")
+	outDir := ""
+	if epRoot != "" {
+		outDir = filepath.Join(epRoot, "media", "videos")
+	}
 	provID, modID := domainstudio.SplitModelRefForPricing(p.Model)
-	unitPrice, _, _ := s.EstimateUnitPriceUSD(ctx, provID, modID, "lipsync", "second")
+	unitPrice, _, perr := s.EstimateUnitPriceUSD(ctx, provID, modID, "lipsync", "second")
+	if perr != nil {
+		s.log.WarnContext(ctx, "studio: failed to estimate lipsync unit price", "error", perr)
+	}
 
 	var out []domainstudio.Job
 	skipped := 0
@@ -629,7 +779,10 @@ func (s *Service) enqueueShotLipSync(ctx context.Context, proj domainstudio.Proj
 				OutputDir: outDir,
 			},
 		}
-		reqBytes, _ := json.Marshal(payload)
+		reqBytes, merr := json.Marshal(payload)
+		if merr != nil {
+			return nil, skipped, estTotal, apperr.Internal(merr)
+		}
 		j, createdNew, err := s.createIdempotentJob(ctx, domainstudio.Job{
 			ProjectID:      proj.ID,
 			EpisodeID:      ep.ID,
@@ -656,8 +809,13 @@ func (s *Service) enqueueShotLipSync(ctx context.Context, proj domainstudio.Proj
 }
 
 func (s *Service) executeQueuedJob(ctx context.Context, j domainstudio.Job) {
+	if s.isJobCanceledOrPaused(ctx, j.ID) {
+		return
+	}
 	now := time.Now().UnixMilli()
-	runCtx := s.withWorkerGuard(ctx)
+	runCtx, untrack := s.trackActiveJob(s.withWorkerGuard(ctx), j)
+	defer untrack()
+
 	runCtx = domainmedia.ContextWithUsageMeta(runCtx, domainmedia.UsageMeta{
 		ProjectID:    j.ProjectID,
 		EpisodeID:    j.EpisodeID,
@@ -680,6 +838,9 @@ func (s *Service) executeQueuedJob(ctx context.Context, j domainstudio.Job) {
 		}
 		tok, err := s.videoMedia.SubmitVideoJob(runCtx, req)
 		if err != nil {
+			if s.isJobCanceledOrPaused(ctx, j.ID) || ctx.Err() != nil {
+				return
+			}
 			s.handleSubmitError(ctx, j, err)
 			return
 		}
@@ -687,7 +848,10 @@ func (s *Service) executeQueuedJob(ctx context.Context, j domainstudio.Job) {
 		// Durable submit checkpoint: once provider_job_id is stored, restarts only resume polling!
 		updated, err := s.repo.SetJobProviderSubmission(ctx, j.ID, tok.ProviderJobID, string(tokJSON), domainstudio.JobPolling, now)
 		if err != nil {
-			s.log.ErrorContext(ctx, "studio: failed to persist provider_job_id", "id", j.ID, "provider_job_id", tok.ProviderJobID, "error", err)
+			s.log.ErrorContext(ctx, "studio: failed to persist provider_job_id", "job_id", j.ID, "provider_job_id", tok.ProviderJobID, "error", err)
+			j.ProviderJobID = tok.ProviderJobID
+			j.SubmitTokenJSON = string(tokJSON)
+			s.failJob(ctx, j, apperr.Wrap(apperr.CodeUnavailable, "Failed to persist submitted provider job state", err))
 			return
 		}
 		dto := jobToDTO(updated)
@@ -705,9 +869,16 @@ func (s *Service) executeQueuedJob(ctx context.Context, j domainstudio.Job) {
 			s.failJob(ctx, j, err)
 			return
 		}
-		inBytes, _ := json.Marshal(qReq.Input)
+		inBytes, merr := json.Marshal(qReq.Input)
+		if merr != nil {
+			s.failJob(ctx, j, apperr.Internal(merr))
+			return
+		}
 		rawOut, err := s.wf.RunNode(runCtx, mediagennodes.NodeTypeImage, inBytes)
 		if err != nil {
+			if s.isJobCanceledOrPaused(ctx, j.ID) || ctx.Err() != nil {
+				return
+			}
 			s.handleSubmitError(ctx, j, err)
 			return
 		}
@@ -737,9 +908,16 @@ func (s *Service) executeQueuedJob(ctx context.Context, j domainstudio.Job) {
 			s.failJob(ctx, j, err)
 			return
 		}
-		inBytes, _ := json.Marshal(qReq.Input)
+		inBytes, merr := json.Marshal(qReq.Input)
+		if merr != nil {
+			s.failJob(ctx, j, apperr.Internal(merr))
+			return
+		}
 		rawOut, err := s.wf.RunNode(runCtx, mediagennodes.NodeTypeTTS, inBytes)
 		if err != nil {
+			if s.isJobCanceledOrPaused(ctx, j.ID) || ctx.Err() != nil {
+				return
+			}
 			s.handleSubmitError(ctx, j, err)
 			return
 		}
@@ -768,9 +946,16 @@ func (s *Service) executeQueuedJob(ctx context.Context, j domainstudio.Job) {
 			s.failJob(ctx, j, err)
 			return
 		}
-		inBytes, _ := json.Marshal(qReq.Input)
+		inBytes, merr := json.Marshal(qReq.Input)
+		if merr != nil {
+			s.failJob(ctx, j, apperr.Internal(merr))
+			return
+		}
 		rawOut, err := s.wf.RunNode(runCtx, studionodes.NodeTypeLipSyncGenerate, inBytes)
 		if err != nil {
+			if s.isJobCanceledOrPaused(ctx, j.ID) || ctx.Err() != nil {
+				return
+			}
 			s.handleSubmitError(ctx, j, err)
 			return
 		}
@@ -794,6 +979,9 @@ func (s *Service) executeQueuedJob(ctx context.Context, j domainstudio.Job) {
 }
 
 func (s *Service) executePollJob(ctx context.Context, j domainstudio.Job) {
+	if s.isJobCanceledOrPaused(ctx, j.ID) {
+		return
+	}
 	if s.videoMedia == nil {
 		s.failJob(ctx, j, apperr.Unavailable("video polling driver is unavailable"))
 		return
@@ -803,7 +991,9 @@ func (s *Service) executePollJob(ctx context.Context, j domainstudio.Job) {
 		s.failJob(ctx, j, err)
 		return
 	}
-	runCtx := s.withWorkerGuard(ctx)
+	runCtx, untrack := s.trackActiveJob(s.withWorkerGuard(ctx), j)
+	defer untrack()
+
 	runCtx = domainmedia.ContextWithUsageMeta(runCtx, domainmedia.UsageMeta{
 		ProjectID:    j.ProjectID,
 		EpisodeID:    j.EpisodeID,
@@ -818,6 +1008,9 @@ func (s *Service) executePollJob(ctx context.Context, j domainstudio.Job) {
 	pollDelay := max(1, s.cfg.QueuePollInterval.Milliseconds())
 
 	if err != nil {
+		if s.isJobCanceledOrPaused(ctx, j.ID) || ctx.Err() != nil {
+			return
+		}
 		if st.Failed {
 			s.failJob(ctx, j, err)
 			if j.ShotID != "" {
@@ -841,6 +1034,9 @@ func (s *Service) executePollJob(ctx context.Context, j domainstudio.Job) {
 	}
 
 	if !st.Done {
+		if s.isJobCanceledOrPaused(ctx, j.ID) {
+			return
+		}
 		j.Status = domainstudio.JobPolling
 		if st.Progress > j.Progress {
 			j.Progress = st.Progress
@@ -848,7 +1044,9 @@ func (s *Service) executePollJob(ctx context.Context, j domainstudio.Job) {
 		j.ErrorText = ""
 		j.NextPollAt = now + pollDelay
 		updated, uerr := s.repo.UpdateJob(ctx, j)
-		if uerr == nil {
+		if uerr != nil {
+			s.log.WarnContext(ctx, "studio: failed to persist poll progress update", "job_id", j.ID, "error", uerr)
+		} else {
 			dto := jobToDTO(updated)
 			s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{
 				ProjectID: updated.ProjectID, EpisodeID: updated.EpisodeID, Job: &dto, Summary: "Polling video job",
@@ -904,7 +1102,7 @@ func isPermanentJobError(err error) bool {
 func (s *Service) retryBackoffForAttempt(attempts int) time.Duration {
 	base := max(time.Millisecond, s.cfg.QueuePollInterval)
 	maxB := max(base, s.cfg.QueuePollBackoffMax)
-	shift := max(0, min(attempts-1, 10))
+	shift := max(0, min(attempts-1, maxRetryShiftExp))
 	backoff := base << shift
 	if backoff > maxB || backoff <= 0 {
 		return maxB
@@ -960,12 +1158,14 @@ func (s *Service) succeedJob(ctx context.Context, j domainstudio.Job, outPath st
 		j.ActualUSD = cur.ActualUSD
 	}
 	updated, err := s.repo.UpdateJob(ctx, j)
-	if err == nil {
-		dto := jobToDTO(updated)
-		s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{
-			ProjectID: updated.ProjectID, EpisodeID: updated.EpisodeID, Job: &dto, Summary: "Job completed",
-		})
+	if err != nil {
+		s.log.ErrorContext(ctx, "studio: failed to mark job succeeded", "job_id", j.ID, "error", err)
+		return
 	}
+	dto := jobToDTO(updated)
+	s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{
+		ProjectID: updated.ProjectID, EpisodeID: updated.EpisodeID, Job: &dto, Summary: "Job completed",
+	})
 }
 
 func (s *Service) failJob(ctx context.Context, j domainstudio.Job, err error) {
@@ -973,10 +1173,12 @@ func (s *Service) failJob(ctx context.Context, j domainstudio.Job, err error) {
 	j.ErrorText = err.Error()
 	j.FinishedAt = time.Now().UnixMilli()
 	updated, uerr := s.repo.UpdateJob(ctx, j)
-	if uerr == nil {
-		dto := jobToDTO(updated)
-		s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{
-			ProjectID: updated.ProjectID, EpisodeID: updated.EpisodeID, Job: &dto, Summary: "Job failed",
-		})
+	if uerr != nil {
+		s.log.ErrorContext(ctx, "studio: failed to mark job failed", "job_id", j.ID, "error", uerr)
+		return
 	}
+	dto := jobToDTO(updated)
+	s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{
+		ProjectID: updated.ProjectID, EpisodeID: updated.EpisodeID, Job: &dto, Summary: "Job failed",
+	})
 }

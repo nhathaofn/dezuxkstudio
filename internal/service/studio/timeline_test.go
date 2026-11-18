@@ -16,8 +16,10 @@ import (
 	"app/internal/contracts"
 	domainstudio "app/internal/domain/studio"
 	"app/internal/engine"
+	"app/internal/paths"
 	"app/internal/service/media"
 	studiosvc "app/internal/service/studio"
+	"app/internal/service/workflow"
 	"app/internal/storage/sqlite"
 )
 
@@ -302,7 +304,14 @@ func TestPhase3TimelineServiceLifecycleAndConcurrency(t *testing.T) {
 		t.Fatalf("redo failed: err=%v res=%+v", err, redone)
 	}
 
-	// 5. ComputeMediaPeaksThumbs updates clip peaks & sprite asset
+	// 5. ComputeMediaPeaksThumbs updates clip peaks & sprite asset IN-PLACE without bumping Revision or wiping Redo!
+	undoneBeforePeaks, err := svc.UndoTimeline(ctx, contracts.StudioTimelineRevisionNavPayload{
+		EpisodeID:        epID,
+		ExpectedRevision: 2,
+	})
+	if err != nil || undoneBeforePeaks.Revision != 1 || !undoneBeforePeaks.CanRedo {
+		t.Fatalf("undo before peaks failed: err=%v res=%+v", err, undoneBeforePeaks)
+	}
 	peaksOut, err := svc.ComputeMediaPeaksThumbs(ctx, contracts.StudioMediaPeaksThumbsPayload{
 		EpisodeID: epID,
 		MediaPath: vidPath,
@@ -310,6 +319,28 @@ func TestPhase3TimelineServiceLifecycleAndConcurrency(t *testing.T) {
 	})
 	if err != nil || peaksOut.SpriteAssetID == "" || len(peaksOut.Peaks) != 2 {
 		t.Fatalf("peaks failed: err=%v out=%+v", err, peaksOut)
+	}
+	tlAfterPeaks, err := svc.GetTimeline(ctx, epID)
+	if err != nil || tlAfterPeaks.Revision != 1 || !tlAfterPeaks.CanRedo {
+		t.Fatalf("expected ComputeMediaPeaksThumbs to preserve Revision=1 and CanRedo=true, got %+v err=%v", tlAfterPeaks, err)
+	}
+	if len(tlAfterPeaks.Timeline.Tracks[0].Clips[0].Peaks) != 2 {
+		t.Fatalf("expected cached peaks persisted on clip, got %+v", tlAfterPeaks.Timeline.Tracks[0].Clips[0])
+	}
+	// Redo back to revision 2 still works!
+	redoneAfterPeaks, err := svc.RedoTimeline(ctx, contracts.StudioTimelineRevisionNavPayload{
+		EpisodeID:        epID,
+		ExpectedRevision: 1,
+	})
+	if err != nil || redoneAfterPeaks.Revision != 2 {
+		t.Fatalf("expected RedoTimeline after background peaks cache update to succeed, got %+v err=%v", redoneAfterPeaks, err)
+	}
+
+	// AutoAssembleTimeline on existing revision > 0 without ExpectedRevision MUST return ERR_CONFLICT
+	if _, aerr := svc.AutoAssembleTimeline(ctx, contracts.StudioTimelineAutoAssemblePayload{
+		EpisodeID: epID,
+	}); !apperr.IsCode(aerr, apperr.CodeConflict) {
+		t.Fatalf("expected conflict when AutoAssembleTimeline omits ExpectedRevision on rev > 0, got %v", aerr)
 	}
 
 	// 6. RenderTimeline updates episode final video
@@ -362,4 +393,95 @@ func TestPhase3TimelineServiceLifecycleAndConcurrency(t *testing.T) {
 		t.Fatalf("expected synced disk timeline with 2 subtitles, got err=%v subs=%+v", err, syncedTL.Timeline.Subtitles)
 	}
 	_ = config.Default(config.ModeDesktop)
+}
+
+func TestPhase3Timeline4KScalingRealAutoAssembleTransitionAndSafeNotFound(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	db, err := sqlite.Open(ctx, sqlite.Options{
+		Path:          filepath.Join(tmp, "studio_p3_4k.db"),
+		BackupDir:     filepath.Join(tmp, "backups"),
+		BackupsToKeep: 1,
+		BusyTimeout:   time.Second,
+		Logger:       slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	cfg := config.Default(config.ModeDesktop)
+	cfg.Studio.DefaultResolution = "3840x2160"
+	cfg.Studio.TimelineDefaultTransitionMs = 650
+
+	wfSvc, err := workflow.New(workflow.Options{
+		Paths:        paths.Paths{Data: filepath.Join(tmp, "data")},
+		Logger:       slog.New(slog.DiscardHandler),
+		StudioConfig: cfg.Studio,
+		Config:       cfg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	projDir := filepath.Join(tmp, "projects")
+	repo := sqlite.NewStudioRepository(db, sqlite.WithStudioConfig(cfg.Studio))
+	svc := studiosvc.New(studiosvc.Options{
+		Repo:          repo,
+		Workflow:      wfSvc,
+		StudioConfig:  cfg.Studio,
+		ProjectsDir:   projDir,
+		OpenDirectory: func(string) error { return nil },
+		Logger:        slog.New(slog.DiscardHandler),
+	})
+
+	vertProj, err := svc.CreateProject(ctx, contracts.StudioProjectCreatePayload{
+		Title:       "4K Vertical",
+		AspectRatio: "9:16",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vertEpID := vertProj.ActiveEpisode.Episode.ID
+	vertTL, err := svc.GetTimeline(ctx, vertEpID)
+	if err != nil || vertTL.Timeline.Width != 2160 || vertTL.Timeline.Height != 3840 {
+		t.Fatalf("expected 9:16 project with 3840x2160 default to scale to 2160x3840, got %dx%d err=%v", vertTL.Timeline.Width, vertTL.Timeline.Height, err)
+	}
+
+	epRoot := filepath.Join(vertProj.Project.RootDir, "episodes", vertProj.ActiveEpisode.Episode.Code)
+	v1 := filepath.Join(epRoot, "media", "videos", "s1.mp4")
+	v2 := filepath.Join(epRoot, "media", "videos", "s2.mp4")
+	_ = os.MkdirAll(filepath.Dir(v1), 0o755)
+	_ = os.WriteFile(v1, []byte("MP4-1"), 0o600)
+	_ = os.WriteFile(v2, []byte("MP4-2"), 0o600)
+	if _, err := repo.ReplaceShots(ctx, vertEpID, []domainstudio.Shot{
+		{ID: "s1", EpisodeID: vertEpID, Seq: 1, Title: "S1", DurationSec: 4, VideoPath: v1},
+		{ID: "s2", EpisodeID: vertEpID, Seq: 2, Title: "S2", DurationSec: 4, VideoPath: v2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// AutoAssembleTimeline with TransitionMs=0 through real workflow.Service uses configured TimelineDefaultTransitionMs (650ms)
+	assem, err := svc.AutoAssembleTimeline(ctx, contracts.StudioTimelineAutoAssemblePayload{
+		EpisodeID: vertEpID,
+	})
+	if err != nil {
+		t.Fatalf("AutoAssembleTimeline: %v", err)
+	}
+	if len(assem.Timeline.Tracks[0].Clips) != 2 || assem.Timeline.Tracks[0].Clips[1].TransitionMs != 650 {
+		t.Fatalf("expected 2nd clip transition_ms=650 from StudioConfig, got %+v", assem.Timeline.Tracks[0].Clips)
+	}
+
+	// OpenExportFolder on missing parent path must NOT leak host filesystem path in apperr.Message
+	missingChild := filepath.Join(projDir, "missing-subdir", "nonexistent", "out.mp4")
+	openErr := svc.OpenExportFolder(ctx, contracts.StudioOpenExportFolderPayload{
+		FilePath: missingChild,
+	})
+	var ae *apperr.Error
+	if !errors.As(openErr, &ae) || ae.Code != apperr.CodeNotFound {
+		t.Fatalf("expected CodeNotFound, got %v", openErr)
+	}
+	if strings.Contains(ae.Message, projDir) || strings.Contains(ae.Message, "missing-subdir") {
+		t.Fatalf("apperr.Message leaked host path: %q", ae.Message)
+	}
 }

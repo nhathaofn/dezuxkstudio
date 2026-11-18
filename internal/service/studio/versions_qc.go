@@ -18,8 +18,6 @@ import (
 	studionodes "app/internal/tools/studio"
 )
 
-const maxMaskBase64Bytes = 8 << 20
-
 func (s *Service) recordSelectedVersion(ctx context.Context, projectID, episodeID string, kind domainstudio.MediaTargetKind, targetID, mediaPath, sourceNode, prompt, modelRef string) *domainstudio.MediaVersion {
 	if s.repo == nil || targetID == "" || strings.TrimSpace(mediaPath) == "" {
 		return nil
@@ -45,11 +43,13 @@ func (s *Service) recordSelectedVersion(ctx context.Context, projectID, episodeI
 // ListVersions returns all saved versions and latest QC report for a shot slot or asset.
 func (s *Service) ListVersions(ctx context.Context, p contracts.StudioVersionsListPayload) (contracts.StudioVersionsListResult, error) {
 	if s.repo == nil {
-		return contracts.StudioVersionsListResult{}, apperr.Unavailable("studio repository unavailable")
+		return contracts.StudioVersionsListResult{}, apperr.Unavailable("studio repository unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
-	kind := domainstudio.MediaTargetKind(strings.TrimSpace(p.TargetKind))
+	kind := domainstudio.MediaTargetKind(strings.TrimSpace(string(p.TargetKind)))
 	if !kind.Valid() || strings.TrimSpace(p.TargetID) == "" {
-		return contracts.StudioVersionsListResult{}, apperr.Validation("valid target_kind and target_id are required")
+		return contracts.StudioVersionsListResult{}, apperr.Validation("valid target_kind and target_id are required").
+			WithMsg("errors.studio.invalid_target_kind", nil)
 	}
 	vers, err := s.repo.ListMediaVersions(ctx, kind, p.TargetID)
 	if err != nil {
@@ -70,7 +70,8 @@ func (s *Service) ListVersions(ctx context.Context, p contracts.StudioVersionsLi
 // SelectVersion activates a specific saved media version and updates the owning shot/asset record.
 func (s *Service) SelectVersion(ctx context.Context, p contracts.StudioVersionSelectPayload) (contracts.StudioVersionSelectResult, error) {
 	if s.repo == nil {
-		return contracts.StudioVersionSelectResult{}, apperr.Unavailable("studio repository unavailable")
+		return contracts.StudioVersionSelectResult{}, apperr.Unavailable("studio repository unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioVersionSelectResult{}, err
@@ -92,24 +93,36 @@ func (s *Service) SelectVersion(ctx context.Context, p contracts.StudioVersionSe
 // SplitGrid invokes tool.grid_split and records panel variants in studio_media_versions.
 func (s *Service) SplitGrid(ctx context.Context, p contracts.StudioGridSplitPayload) (contracts.StudioGridSplitResult, error) {
 	if s.repo == nil || s.wf == nil {
-		return contracts.StudioGridSplitResult{}, apperr.Unavailable("studio dependencies unavailable")
+		return contracts.StudioGridSplitResult{}, apperr.Unavailable("studio dependencies unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioGridSplitResult{}, err
 	}
+	targetKind := domainstudio.MediaTargetKind(strings.TrimSpace(string(p.TargetKind)))
+	if targetKind == "" {
+		targetKind = domainstudio.TargetGridPanel
+	} else if !targetKind.Valid() {
+		return contracts.StudioGridSplitResult{}, apperr.Validation("invalid target_kind").
+			WithMsg("errors.studio.invalid_target_kind", nil)
+	}
+
 	proj, err := s.repo.GetProject(ctx, strings.TrimSpace(p.ProjectID))
 	if err != nil {
 		return contracts.StudioGridSplitResult{}, err
 	}
-	outDir := filepath.Join(s.resolveProjectRoot(proj), "assets", "grid_panels")
+	outDir := ""
+	if projRoot := s.resolveProjectRoot(proj); projRoot != "" {
+		outDir = filepath.Join(projRoot, "assets", "grid_panels")
+	}
 	if p.EpisodeID != "" {
 		if ep, eerr := s.repo.GetEpisode(ctx, p.EpisodeID); eerr == nil {
 			if epRoot := s.resolveEpisodeRoot(proj, ep.Code); epRoot != "" {
-				outDir = filepath.Join(epRoot, "images", "grid_panels")
+				outDir = filepath.Join(epRoot, "media", "keyframes", "grid_panels")
 			}
 		}
 	}
-	inBytes, _ := json.Marshal(contracts.GridSplitInput{
+	inBytes, merr := json.Marshal(contracts.GridSplitInput{
 		ImagePath:  engine.InputRef(p.ImagePath, engine.MediaImage),
 		Rows:       p.Rows,
 		Cols:       p.Cols,
@@ -119,6 +132,9 @@ func (s *Service) SplitGrid(ctx context.Context, p contracts.StudioGridSplitPayl
 		ColWeights: p.ColWeights,
 		OutputDir:  outDir,
 	})
+	if merr != nil {
+		return contracts.StudioGridSplitResult{}, apperr.Internal(merr)
+	}
 	rawOut, err := s.wf.RunNode(ctx, studionodes.NodeTypeGridSplit, inBytes)
 	if err != nil {
 		return contracts.StudioGridSplitResult{}, err
@@ -127,11 +143,10 @@ func (s *Service) SplitGrid(ctx context.Context, p contracts.StudioGridSplitPayl
 	if err := decodeNodeOutput(rawOut, &out); err != nil {
 		return contracts.StudioGridSplitResult{}, err
 	}
-
-	targetKind := domainstudio.MediaTargetKind(strings.TrimSpace(p.TargetKind))
-	if !targetKind.Valid() {
-		targetKind = domainstudio.TargetGridPanel
+	if out.Panels == nil {
+		out.Panels = []contracts.GridPanel{}
 	}
+
 	targetID := strings.TrimSpace(p.TargetID)
 	if targetID == "" {
 		targetID = proj.ID
@@ -148,7 +163,7 @@ func (s *Service) SplitGrid(ctx context.Context, p contracts.StudioGridSplitPayl
 			IsSelected: false,
 		})
 		if verr != nil {
-			s.log.WarnContext(ctx, "studio: failed to persist grid split version", "path", panel.Path, "error", verr)
+			s.log.WarnContext(ctx, "studio: failed to persist grid split version", "target_id", targetID, "panel_index", panel.Index, "error", verr)
 			continue
 		}
 		versions = append(versions, mediaVersionToDTO(v))
@@ -160,33 +175,56 @@ func (s *Service) SplitGrid(ctx context.Context, p contracts.StudioGridSplitPayl
 // records a new selected version, and updates the shot or asset image.
 func (s *Service) ApplyMaskEdit(ctx context.Context, p contracts.StudioMaskEditPayload) (contracts.StudioMaskEditResult, error) {
 	if s.repo == nil || s.wf == nil {
-		return contracts.StudioMaskEditResult{}, apperr.Unavailable("studio dependencies unavailable")
+		return contracts.StudioMaskEditResult{}, apperr.Unavailable("studio dependencies unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioMaskEditResult{}, err
 	}
+	kind := domainstudio.MediaTargetKind(strings.TrimSpace(string(p.TargetKind)))
+	if kind != "" && !kind.Valid() {
+		return contracts.StudioMaskEditResult{}, apperr.Validation("invalid target_kind").
+			WithMsg("errors.studio.invalid_target_kind", nil)
+	}
+
 	proj, err := s.repo.GetProject(ctx, strings.TrimSpace(p.ProjectID))
 	if err != nil {
 		return contracts.StudioMaskEditResult{}, err
 	}
 
 	projRoot := s.resolveProjectRoot(proj)
-	outDir := filepath.Join(projRoot, "edits")
+	outDir := ""
+	if projRoot != "" {
+		outDir = filepath.Join(projRoot, "edits")
+	}
+	if p.EpisodeID != "" {
+		if ep, eerr := s.repo.GetEpisode(ctx, p.EpisodeID); eerr == nil {
+			if epRoot := s.resolveEpisodeRoot(proj, ep.Code); epRoot != "" {
+				outDir = filepath.Join(epRoot, "media", "keyframes")
+			}
+		}
+	}
 	maskPath := strings.TrimSpace(p.MaskPath)
 	if p.MaskDataBase64 != "" {
-		maskBytes, derr := decodeBase64PNG(p.MaskDataBase64)
+		maskBytes, derr := decodeBase64PNG(p.MaskDataBase64, s.cfg.MaxMaskBytes)
 		if derr != nil {
 			return contracts.StudioMaskEditResult{}, derr
+		}
+		if outDir == "" {
+			return contracts.StudioMaskEditResult{}, apperr.Validation("project workspace directory is required for base64 mask staging").
+				WithMsg("errors.studio.workspace_required", nil)
 		}
 		maskPath = filepath.Join(outDir, fmt.Sprintf("mask_%d.png", time.Now().UnixNano()))
 		if err := engine.CheckFile(ctx, maskPath, true); err != nil {
 			return contracts.StudioMaskEditResult{}, err
 		}
 		if err := os.MkdirAll(outDir, 0o750); err != nil {
-			return contracts.StudioMaskEditResult{}, apperr.Internal(err)
+			return contracts.StudioMaskEditResult{}, apperr.Wrap(apperr.CodeUnavailable, "Failed to prepare mask edit workspace directory", err).
+				WithMsg("errors.studio.io_failed", nil)
 		}
 		if err := fsutil.WriteFileAtomic(maskPath, maskBytes, 0o600); err != nil {
-			return contracts.StudioMaskEditResult{}, apperr.Internal(err)
+			return contracts.StudioMaskEditResult{}, apperr.Wrap(apperr.CodeUnavailable, "Failed to write mask image file", err).
+				WithMsg("errors.studio.io_failed", nil)
 		}
 	}
 	if maskPath == "" {
@@ -194,14 +232,19 @@ func (s *Service) ApplyMaskEdit(ctx context.Context, p contracts.StudioMaskEditP
 	}
 
 	modelRef := firstNonEmpty(p.ModelRef, proj.DefaultImageModel)
-	inBytes, _ := json.Marshal(contracts.MaskEditInput{
+	aspectRatio := firstNonEmpty(p.AspectRatio, proj.AspectRatio)
+	inBytes, merr := json.Marshal(contracts.MaskEditInput{
 		ImagePath:   engine.InputRef(p.ImagePath, engine.MediaImage),
 		MaskPath:    engine.InputRef(maskPath, engine.MediaImage),
 		Prompt:      p.Prompt,
 		ModelRef:    modelRef,
-		AspectRatio: proj.AspectRatio,
+		AspectRatio: aspectRatio,
+		Resolution:  strings.TrimSpace(p.Resolution),
 		OutputDir:   outDir,
 	})
+	if merr != nil {
+		return contracts.StudioMaskEditResult{}, apperr.Internal(merr)
+	}
 	rawOut, err := s.wf.RunNode(ctx, studionodes.NodeTypeMaskEdit, inBytes)
 	if err != nil {
 		return contracts.StudioMaskEditResult{}, err
@@ -213,7 +256,6 @@ func (s *Service) ApplyMaskEdit(ctx context.Context, p contracts.StudioMaskEditP
 
 	var verDTO *contracts.StudioMediaVersion
 	var epDetail *contracts.StudioEpisodeDetailResult
-	kind := domainstudio.MediaTargetKind(strings.TrimSpace(p.TargetKind))
 	if kind.Valid() && strings.TrimSpace(p.TargetID) != "" {
 		if v := s.recordSelectedVersion(ctx, proj.ID, p.EpisodeID, kind, p.TargetID, out.Path, studionodes.NodeTypeMaskEdit, p.Prompt, modelRef); v != nil {
 			dto := mediaVersionToDTO(*v)
@@ -236,7 +278,8 @@ func (s *Service) ApplyMaskEdit(ctx context.Context, p contracts.StudioMaskEditP
 // ExtractLastFrame runs tool.extract_frames in "last" mode and binds the extracted keyframe to TargetShotID when specified.
 func (s *Service) ExtractLastFrame(ctx context.Context, p contracts.StudioExtractLastFramePayload) (contracts.StudioExtractLastFrameResult, error) {
 	if s.repo == nil || s.wf == nil {
-		return contracts.StudioExtractLastFrameResult{}, apperr.Unavailable("studio dependencies unavailable")
+		return contracts.StudioExtractLastFrameResult{}, apperr.Unavailable("studio dependencies unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioExtractLastFrameResult{}, err
@@ -254,15 +297,22 @@ func (s *Service) ExtractLastFrame(ctx context.Context, p contracts.StudioExtrac
 		return contracts.StudioExtractLastFrameResult{}, err
 	}
 	if strings.TrimSpace(srcShot.VideoPath) == "" {
-		return contracts.StudioExtractLastFrameResult{}, apperr.Validation("source shot has no generated video")
+		return contracts.StudioExtractLastFrameResult{}, apperr.Validation("source shot has no generated video").
+			WithMsg("errors.studio.shot_video_required", nil)
 	}
 
-	outDir := filepath.Join(s.resolveEpisodeRoot(proj, ep.Code), "images")
-	inBytes, _ := json.Marshal(contracts.ExtractFramesInput{
+	outDir := ""
+	if epRoot := s.resolveEpisodeRoot(proj, ep.Code); epRoot != "" {
+		outDir = filepath.Join(epRoot, "media", "keyframes")
+	}
+	inBytes, merr := json.Marshal(contracts.ExtractFramesInput{
 		VideoPath: engine.InputRef(srcShot.VideoPath, engine.MediaVideo),
 		Mode:      "last",
 		OutputDir: outDir,
 	})
+	if merr != nil {
+		return contracts.StudioExtractLastFrameResult{}, apperr.Internal(merr)
+	}
 	rawOut, err := s.wf.RunNode(ctx, studionodes.NodeTypeExtractFrames, inBytes)
 	if err != nil {
 		return contracts.StudioExtractLastFrameResult{}, err
@@ -272,7 +322,8 @@ func (s *Service) ExtractLastFrame(ctx context.Context, p contracts.StudioExtrac
 		return contracts.StudioExtractLastFrameResult{}, err
 	}
 	if out.LastFramePath == "" {
-		return contracts.StudioExtractLastFrameResult{}, apperr.Unavailable("no frame was extracted from video")
+		return contracts.StudioExtractLastFrameResult{}, apperr.Unavailable("no frame was extracted from video").
+			WithMsg("errors.studio.extract_frame_failed", nil)
 	}
 	var assetID string
 	if len(out.Frames) > 0 {
@@ -303,19 +354,28 @@ func (s *Service) ExtractLastFrame(ctx context.Context, p contracts.StudioExtrac
 // RunQCReview invokes tool.qc_review and stores the technical + multimodal Vision critique report.
 func (s *Service) RunQCReview(ctx context.Context, p contracts.StudioQCReviewPayload) (contracts.StudioQCReport, error) {
 	if s.repo == nil || s.wf == nil {
-		return contracts.StudioQCReport{}, apperr.Unavailable("studio dependencies unavailable")
+		return contracts.StudioQCReport{}, apperr.Unavailable("studio dependencies unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioQCReport{}, err
 	}
+	kind := domainstudio.MediaTargetKind(strings.TrimSpace(string(p.TargetKind)))
+	if kind == "" {
+		kind = domainstudio.TargetVideo
+	} else if !kind.Valid() {
+		return contracts.StudioQCReport{}, apperr.Validation("invalid target_kind").
+			WithMsg("errors.studio.invalid_target_kind", nil)
+	}
+
 	proj, err := s.repo.GetProject(ctx, strings.TrimSpace(p.ProjectID))
 	if err != nil {
 		return contracts.StudioQCReport{}, err
 	}
 	visionModel := firstNonEmpty(p.VisionModelRef, proj.DefaultTextModel)
-	inBytes, _ := json.Marshal(contracts.QCReviewInput{
+	inBytes, merr := json.Marshal(contracts.QCReviewInput{
 		MediaPath:      engine.InputRef(p.MediaPath, engine.MediaImage),
-		TargetKind:     p.TargetKind,
+		TargetKind:     string(kind),
 		TargetID:       p.TargetID,
 		ReferencePaths: engine.InputRefs(p.ReferencePaths, engine.MediaImage),
 		PromptExpected: p.PromptExpected,
@@ -323,6 +383,9 @@ func (s *Service) RunQCReview(ctx context.Context, p contracts.StudioQCReviewPay
 		SampleCount:    p.SampleCount,
 		SkipVision:     p.SkipVision,
 	})
+	if merr != nil {
+		return contracts.StudioQCReport{}, apperr.Internal(merr)
+	}
 	rawOut, err := s.wf.RunNode(ctx, studionodes.NodeTypeQCReview, inBytes)
 	if err != nil {
 		return contracts.StudioQCReport{}, err
@@ -332,10 +395,6 @@ func (s *Service) RunQCReview(ctx context.Context, p contracts.StudioQCReviewPay
 		return contracts.StudioQCReport{}, err
 	}
 
-	kind := domainstudio.MediaTargetKind(strings.TrimSpace(p.TargetKind))
-	if !kind.Valid() {
-		kind = domainstudio.TargetVideo
-	}
 	targetID := strings.TrimSpace(p.TargetID)
 	if targetID == "" {
 		targetID = proj.ID
@@ -451,17 +510,24 @@ func (s *Service) applyMediaPathToTarget(ctx context.Context, projectID, episode
 	return nil, nil
 }
 
-func decodeBase64PNG(raw string) ([]byte, error) {
+func decodeBase64PNG(raw string, maxMaskBytes int64) ([]byte, error) {
 	s := strings.TrimSpace(raw)
 	if idx := strings.Index(s, ","); idx >= 0 && strings.HasPrefix(s[:idx], "data:") {
 		s = s[idx+1:]
 	}
-	if len(s) > maxMaskBase64Bytes {
-		return nil, apperr.Validation("mask image payload too large")
+	// Pre-check encoded base64 length against 4/3 of maxMaskBytes before allocating decoded bytes.
+	if maxMaskBytes > 0 && int64(len(s)) > (maxMaskBytes*4)/3+8 {
+		return nil, apperr.Validation("mask image payload too large").
+			WithMsg("errors.studio.mask_too_large", nil)
 	}
 	dec, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {
-		return nil, apperr.Validation("invalid mask base64 payload")
+		return nil, apperr.Validation("invalid mask base64 payload").
+			WithMsg("errors.studio.invalid_mask", nil)
+	}
+	if maxMaskBytes > 0 && int64(len(dec)) > maxMaskBytes {
+		return nil, apperr.Validation("mask image payload too large").
+			WithMsg("errors.studio.mask_too_large", nil)
 	}
 	return dec, nil
 }

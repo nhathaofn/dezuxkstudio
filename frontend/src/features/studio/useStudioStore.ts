@@ -21,6 +21,7 @@ import {
   type StudioGridSplitPayload,
   type StudioJob,
   type StudioMaskEditPayload,
+  type StudioMediaTargetKind,
   type StudioMediaVersion,
   type StudioPricingUpsertPayload,
   type StudioProject,
@@ -134,7 +135,7 @@ export interface StudioState {
   controlQueue: (payload: StudioQueueControlPayload) => Promise<void>;
   fetchCostSummary: (projectId: string, episodeId?: string) => Promise<void>;
   upsertPricing: (payload: StudioPricingUpsertPayload) => Promise<boolean>;
-  fetchVersions: (targetKind: string, targetId: string) => Promise<void>;
+  fetchVersions: (targetKind: StudioMediaTargetKind, targetId: string) => Promise<void>;
   selectVersion: (versionId: string) => Promise<boolean>;
   splitGrid: (payload: StudioGridSplitPayload) => Promise<boolean>;
   applyMaskEdit: (payload: StudioMaskEditPayload) => Promise<boolean>;
@@ -176,7 +177,7 @@ export interface StudioState {
 export interface StudioVersionModalTarget {
   projectId: string;
   episodeId?: string;
-  targetKind: string;
+  targetKind: StudioMediaTargetKind;
   targetId: string;
   label: string;
   mediaPath: string;
@@ -188,7 +189,7 @@ export interface StudioVersionModalTarget {
 export interface StudioGridModalTarget {
   projectId: string;
   episodeId?: string;
-  targetKind?: string;
+  targetKind?: StudioMediaTargetKind;
   targetId?: string;
   imagePath: string;
   assetId?: string;
@@ -197,7 +198,7 @@ export interface StudioGridModalTarget {
 export interface StudioMaskModalTarget {
   projectId: string;
   episodeId?: string;
-  targetKind: string;
+  targetKind: StudioMediaTargetKind;
   targetId: string;
   imagePath: string;
   assetId?: string;
@@ -1198,7 +1199,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           duration_ms: evt.duration_ms,
           timeline_path: prev?.episode_id === evt.episode_id ? prev.timeline_path : undefined,
           timeline: normalizeTimeline(evt.timeline),
-          revisions: prev?.episode_id === evt.episode_id ? prev.revisions : undefined,
+          revisions: prev?.episode_id === evt.episode_id ? prev.revisions : [],
           updated_at: Date.now(),
         },
       };

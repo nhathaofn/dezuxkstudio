@@ -64,6 +64,7 @@ function makeSampleTimeline(): StudioEditTimeline {
             volume: 1,
             transition_in: "none",
             transition_ms: 0,
+            peaks: [],
           },
         ],
       },
@@ -113,6 +114,7 @@ function makeSampleTimeline(): StudioEditTimeline {
             volume: 1,
             transition_in: "none",
             transition_ms: 0,
+            peaks: [],
           },
         ],
       },
@@ -126,6 +128,7 @@ function makeSampleTimeline(): StudioEditTimeline {
         text: "Đêm nay trời mưa tầm tã.",
       },
     ],
+    markers: [],
   };
 }
 
@@ -175,6 +178,8 @@ function makeSampleEpisodeDetail(): StudioEpisodeDetailResult {
         image_prompt: "",
         video_prompt: "",
         narration_text: "Đêm nay",
+        dialogues: [],
+        ref_asset_tags: [],
         keyframe_asset_id: "",
         keyframe_path: "",
         video_asset_id: "asset-v1",
@@ -279,6 +284,7 @@ describe("useStudioStore Phase 3 timeline & export flows", () => {
       can_redo: false,
       duration_ms: 7000,
       timeline: makeSampleTimeline(),
+      revisions: [],
       updated_at: 100,
     };
     const rev2: StudioTimelineResult = {
@@ -375,6 +381,7 @@ describe("useStudioStore Phase 3 timeline & export flows", () => {
         can_redo: false,
         duration_ms: 7000,
         timeline: makeSampleTimeline(),
+        revisions: [],
         updated_at: 100,
       },
       lastNLEExport: {
@@ -496,6 +503,7 @@ describe("useStudioStore Phase 3 timeline & export flows", () => {
         height: 1080,
         tracks: undefined as unknown as StudioEditTimeline["tracks"],
         subtitles: undefined as unknown as StudioEditTimeline["subtitles"],
+        markers: undefined as unknown as StudioEditTimeline["markers"],
       },
       0
     );

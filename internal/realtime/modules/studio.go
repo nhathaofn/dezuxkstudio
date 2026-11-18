@@ -191,4 +191,22 @@ func (s Studio) Register(r *realtime.Registry) {
 			}
 			return contracts.Empty{}, s.Service.OpenExportFolder(engine.WithFileGuard(ctx, s.FileGuard), p)
 		})
+
+	realtime.Handle(r, contracts.ActionStudioSyncWorkspace,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioSyncWorkspacePayload) (contracts.StudioSyncWorkspaceResult, error) {
+			guardedCtx := engine.WithFileGuard(ctx, s.FileGuard)
+			proj, err := s.Service.SyncWorkspace(guardedCtx, p.ProjectID)
+			if err != nil {
+				return contracts.StudioSyncWorkspaceResult{}, err
+			}
+			list, err := s.Service.ListProjects(guardedCtx)
+			if err != nil {
+				return contracts.StudioSyncWorkspaceResult{}, err
+			}
+			return contracts.StudioSyncWorkspaceResult{
+				Project:     proj,
+				Projects:    list.Projects,
+				ProjectsDir: list.ProjectsDir,
+			}, nil
+		})
 }

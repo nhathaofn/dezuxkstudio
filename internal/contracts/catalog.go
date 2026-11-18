@@ -272,6 +272,7 @@ func Actions() []ActionSpec {
 		{ActionStudioTimelineRender, "Renders the episode EditTimeline via FFmpeg filter_complex with transitions, loudnorm, and optional Vietnamese subtitle burn-in.", t[StudioTimelineRenderPayload](), t[StudioTimelineRenderResult]()},
 		{ActionStudioTimelineExportNLE, "Exports the episode EditTimeline as a CapCut/Jianying draft zip, FCPXML, or OTIO file.", t[StudioTimelineExportNLEPayload](), t[ExportNLEDraftOutput]()},
 		{ActionStudioOpenExportFolder, "Reveals the episode exports folder in the OS file manager (desktop/host admin only).", t[StudioOpenExportFolderPayload](), t[Empty]()},
+		{ActionStudioSyncWorkspace, "Synchronizes workspace project.json, asset_bible.json, shots.json, and timeline.json files with SQLite.", t[StudioSyncWorkspacePayload](), t[StudioSyncWorkspaceResult]()},
 	}
 }
 
@@ -358,6 +359,7 @@ func Enums() []EnumSpec {
 		{"StudioJobStatus", t[domainstudio.JobStatus](), stringsOf(domainstudio.JobStatuses())},
 		{"StudioJobKind", t[domainstudio.JobKind](), stringsOf(domainstudio.JobKinds())},
 		{"StudioQueueAction", t[StudioQueueAction](), stringsOf(StudioQueueActions())},
+		{"StudioCostStatus", t[domainstudio.CostStatus](), stringsOf(domainstudio.CostStatuses())},
 		{"StudioMediaTargetKind", t[domainstudio.MediaTargetKind](), stringsOf(domainstudio.MediaTargetKinds())},
 		{"StudioQCStatus", t[domainstudio.QCStatus](), stringsOf(domainstudio.QCStatuses())},
 		{"StudioTimelineActor", t[domainstudio.TimelineActor](), stringsOf(domainstudio.TimelineActors())},

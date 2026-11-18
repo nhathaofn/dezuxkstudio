@@ -1,5 +1,5 @@
 // Package studio orchestrates DezuxkStudio's AI film production projects,
-// Hybrid SQLite <-> workspace JSON synchronization, and Phase 1 stage execution.
+// Hybrid SQLite <-> workspace JSON synchronization, and Phase 1-3 stage execution.
 package studio
 
 import (
@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -72,6 +73,9 @@ type Service struct {
 	runMu      sync.Mutex
 	runningEps map[string]bool
 
+	jobMu      sync.Mutex
+	activeJobs map[string]*activeJobEntry
+
 	wakeCh chan struct{}
 }
 
@@ -92,7 +96,9 @@ func New(opts Options) *Service {
 	projectsDir := strings.TrimSpace(opts.ProjectsDir)
 	if projectsDir != "" {
 		projectsDir = filepath.Clean(projectsDir)
-		_ = os.MkdirAll(projectsDir, 0o755)
+		if err := os.MkdirAll(projectsDir, 0o755); err != nil {
+			log.WarnContext(context.Background(), "studio: failed to create initial projects directory", "error", err)
+		}
 	}
 
 	return &Service{
@@ -107,6 +113,7 @@ func New(opts Options) *Service {
 		log:           log,
 		projectsDir:   projectsDir,
 		runningEps:    make(map[string]bool),
+		activeJobs:    make(map[string]*activeJobEntry),
 		wakeCh:        make(chan struct{}, 1),
 	}
 }
@@ -132,7 +139,9 @@ func (s *Service) SetProjectsDir(dir string) {
 		return
 	}
 	clean := filepath.Clean(trimmed)
-	_ = os.MkdirAll(clean, 0o755)
+	if err := os.MkdirAll(clean, 0o755); err != nil {
+		s.log.WarnContext(context.Background(), "studio: failed to ensure updated projects directory", "error", err)
+	}
 
 	s.mu.Lock()
 	s.projectsDir = clean
@@ -152,7 +161,8 @@ func (s *Service) emit(eventName string, data any) {
 // ListProjects lists all projects ordered by recent updates.
 func (s *Service) ListProjects(ctx context.Context) (contracts.StudioProjectListResult, error) {
 	if s.repo == nil {
-		return contracts.StudioProjectListResult{}, apperr.Unavailable("studio repository is unavailable")
+		return contracts.StudioProjectListResult{}, apperr.Unavailable("studio repository is unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	list, err := s.repo.ListProjects(ctx)
 	if err != nil {
@@ -172,7 +182,8 @@ func (s *Service) ListProjects(ctx context.Context) (contracts.StudioProjectList
 // and creates an initial episode.
 func (s *Service) CreateProject(ctx context.Context, p contracts.StudioProjectCreatePayload) (contracts.StudioProjectDetailResult, error) {
 	if s.repo == nil {
-		return contracts.StudioProjectDetailResult{}, apperr.Unavailable("studio repository is unavailable")
+		return contracts.StudioProjectDetailResult{}, apperr.Unavailable("studio repository is unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioProjectDetailResult{}, err
@@ -190,8 +201,8 @@ func (s *Service) CreateProject(ctx context.Context, p contracts.StudioProjectCr
 	projRoot := ""
 	if pDir := s.ProjectsDir(); pDir != "" {
 		projRoot = filepath.Join(pDir, slug)
-		if err := ensureProjectDirs(projRoot); err != nil {
-			return contracts.StudioProjectDetailResult{}, apperr.Internal(err)
+		if err := s.ensureGuardedProjectDirs(ctx, projRoot); err != nil {
+			return contracts.StudioProjectDetailResult{}, err
 		}
 		if s.media != nil {
 			s.media.AddAllowedRoot(projRoot)
@@ -234,7 +245,7 @@ func (s *Service) CreateProject(ctx context.Context, p contracts.StudioProjectCr
 	dtoProj := projectToDTO(proj)
 	s.emit(contracts.EventStudioProjectChanged, contracts.StudioProjectChangedEvent{
 		ProjectID: proj.ID,
-		Action:    "created",
+		Action:    contracts.ProjectActionCreated,
 		Project:   &dtoProj,
 	})
 
@@ -249,7 +260,8 @@ func (s *Service) CreateProject(ctx context.Context, p contracts.StudioProjectCr
 // GetProject fetches project metadata, episodes, assets, and first episode detail.
 func (s *Service) GetProject(ctx context.Context, idOrSlug string) (contracts.StudioProjectDetailResult, error) {
 	if s.repo == nil {
-		return contracts.StudioProjectDetailResult{}, apperr.Unavailable("studio repository is unavailable")
+		return contracts.StudioProjectDetailResult{}, apperr.Unavailable("studio repository is unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	proj, err := s.repo.GetProject(ctx, strings.TrimSpace(idOrSlug))
 	if err != nil {
@@ -275,6 +287,8 @@ func (s *Service) GetProject(ctx context.Context, idOrSlug string) (contracts.St
 		detail, derr := s.GetEpisode(ctx, episodes[0].ID)
 		if derr == nil {
 			activeEp = &detail
+		} else {
+			s.log.WarnContext(ctx, "studio: failed to load active episode detail", "episode_id", episodes[0].ID, "error", derr)
 		}
 	}
 
@@ -289,7 +303,8 @@ func (s *Service) GetProject(ctx context.Context, idOrSlug string) (contracts.St
 // UpdateProject updates mutable project settings and syncs project.json.
 func (s *Service) UpdateProject(ctx context.Context, p contracts.StudioProjectUpdatePayload) (contracts.StudioProjectDetailResult, error) {
 	if s.repo == nil {
-		return contracts.StudioProjectDetailResult{}, apperr.Unavailable("studio repository is unavailable")
+		return contracts.StudioProjectDetailResult{}, apperr.Unavailable("studio repository is unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioProjectDetailResult{}, err
@@ -333,13 +348,16 @@ func (s *Service) UpdateProject(ctx context.Context, p contracts.StudioProjectUp
 	if err != nil {
 		return contracts.StudioProjectDetailResult{}, err
 	}
-	assets, _ := s.repo.ListAssets(ctx, updated.ID)
+	assets, aerr := s.repo.ListAssets(ctx, updated.ID)
+	if aerr != nil {
+		s.log.WarnContext(ctx, "studio: failed to list assets after project update", "project_id", updated.ID, "error", aerr)
+	}
 	s.warnDiskMirror(ctx, "project.json", s.persistProjectToDisk(ctx, updated, assets))
 
 	dtoProj := projectToDTO(updated)
 	s.emit(contracts.EventStudioProjectChanged, contracts.StudioProjectChangedEvent{
 		ProjectID: updated.ID,
-		Action:    "updated",
+		Action:    contracts.ProjectActionUpdated,
 		Project:   &dtoProj,
 	})
 	return s.GetProject(ctx, updated.ID)
@@ -348,7 +366,8 @@ func (s *Service) UpdateProject(ctx context.Context, p contracts.StudioProjectUp
 // DeleteProject removes the project from SQLite and optionally removes its folder when safely inside ProjectsDir.
 func (s *Service) DeleteProject(ctx context.Context, p contracts.StudioProjectDeletePayload) error {
 	if s.repo == nil {
-		return apperr.Unavailable("studio repository is unavailable")
+		return apperr.Unavailable("studio repository is unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return err
@@ -357,22 +376,27 @@ func (s *Service) DeleteProject(ctx context.Context, p contracts.StudioProjectDe
 	if err != nil {
 		return err
 	}
-	if err := s.repo.DeleteProject(ctx, proj.ID); err != nil {
-		return err
-	}
 	if p.DeleteFiles && proj.RootDir != "" {
 		if pDir := s.ProjectsDir(); pDir != "" && isDirectOrSubpath(pDir, proj.RootDir) {
 			if cerr := engine.CheckFile(ctx, proj.RootDir, true); cerr != nil {
 				return cerr
 			}
+		}
+	}
+	if err := s.repo.DeleteProject(ctx, proj.ID); err != nil {
+		return err
+	}
+	s.cancelEpisodeActiveJobs(proj.ID, "")
+	if p.DeleteFiles && proj.RootDir != "" {
+		if pDir := s.ProjectsDir(); pDir != "" && isDirectOrSubpath(pDir, proj.RootDir) {
 			if rerr := os.RemoveAll(proj.RootDir); rerr != nil {
-				s.log.WarnContext(ctx, "studio: failed to remove deleted project directory", "dir", proj.RootDir, "error", rerr)
+				s.log.WarnContext(ctx, "studio: failed to remove deleted project directory", "project_id", proj.ID, "error", rerr)
 			}
 		}
 	}
 	s.emit(contracts.EventStudioProjectChanged, contracts.StudioProjectChangedEvent{
 		ProjectID: proj.ID,
-		Action:    "deleted",
+		Action:    contracts.ProjectActionDeleted,
 	})
 	return nil
 }
@@ -380,7 +404,8 @@ func (s *Service) DeleteProject(ctx context.Context, p contracts.StudioProjectDe
 // CreateEpisode creates a new episode in a project and initializes its workspace files.
 func (s *Service) CreateEpisode(ctx context.Context, p contracts.StudioEpisodeCreatePayload) (contracts.StudioEpisodeDetailResult, error) {
 	if s.repo == nil {
-		return contracts.StudioEpisodeDetailResult{}, apperr.Unavailable("studio repository is unavailable")
+		return contracts.StudioEpisodeDetailResult{}, apperr.Unavailable("studio repository is unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioEpisodeDetailResult{}, err
@@ -427,8 +452,8 @@ func (s *Service) createEpisodeInternal(ctx context.Context, proj domainstudio.P
 	epRoot := s.resolveEpisodeRoot(proj, code)
 	var rawPath, scriptJSONPath, assetsJSONPath, shotsJSONPath, timelineJSONPath string
 	if epRoot != "" {
-		if err := ensureEpisodeDirs(epRoot); err != nil {
-			return contracts.StudioEpisodeDetailResult{}, apperr.Internal(err)
+		if err := s.ensureGuardedEpisodeDirs(ctx, epRoot); err != nil {
+			return contracts.StudioEpisodeDetailResult{}, err
 		}
 		rawPath = filepath.Join(epRoot, "script", "raw_screenplay.txt")
 		scriptJSONPath = filepath.Join(epRoot, "script", "normalized_script.json")
@@ -461,7 +486,8 @@ func (s *Service) createEpisodeInternal(ctx context.Context, proj domainstudio.P
 // GetEpisode returns full episode details including script, asset bible, shots, and latest export.
 func (s *Service) GetEpisode(ctx context.Context, episodeID string) (contracts.StudioEpisodeDetailResult, error) {
 	if s.repo == nil {
-		return contracts.StudioEpisodeDetailResult{}, apperr.Unavailable("studio repository is unavailable")
+		return contracts.StudioEpisodeDetailResult{}, apperr.Unavailable("studio repository is unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	ep, err := s.repo.GetEpisode(ctx, strings.TrimSpace(episodeID))
 	if err != nil {
@@ -480,10 +506,11 @@ func (s *Service) GetEpisode(ctx context.Context, episodeID string) (contracts.S
 		return contracts.StudioEpisodeDetailResult{}, err
 	}
 
-	rawScript := readStringFile(ep.RawScriptPath)
-	normScript := readNormalizedScriptDTO(ep.ScriptJSONPath)
+	epRoot := s.resolveEpisodeRoot(proj, ep.Code)
+	rawScript := s.readGuardedStringFile(ctx, epRoot, ep.RawScriptPath)
+	normScript := s.readGuardedNormalizedScriptDTO(ctx, epRoot, ep.ScriptJSONPath)
 	var finalPath, finalAssetID string
-	if meta := s.readEpisodeDiskMeta(s.resolveEpisodeRoot(proj, ep.Code)); meta != nil {
+	if meta := s.readEpisodeDiskMeta(ctx, epRoot); meta != nil {
 		finalPath = meta.FinalVideoPath
 		finalAssetID = meta.FinalVideoAssetID
 	}
@@ -503,7 +530,8 @@ func (s *Service) GetEpisode(ctx context.Context, episodeID string) (contracts.S
 // SaveScript saves raw screenplay text and/or edited normalized script JSON for an episode.
 func (s *Service) SaveScript(ctx context.Context, p contracts.StudioEpisodeSaveScriptPayload) (contracts.StudioEpisodeDetailResult, error) {
 	if s.repo == nil {
-		return contracts.StudioEpisodeDetailResult{}, apperr.Unavailable("studio repository is unavailable")
+		return contracts.StudioEpisodeDetailResult{}, apperr.Unavailable("studio repository is unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioEpisodeDetailResult{}, err
@@ -519,8 +547,8 @@ func (s *Service) SaveScript(ctx context.Context, p contracts.StudioEpisodeSaveS
 
 	epRoot := s.resolveEpisodeRoot(proj, ep.Code)
 	if epRoot != "" {
-		if err := ensureEpisodeDirs(epRoot); err != nil {
-			return contracts.StudioEpisodeDetailResult{}, apperr.Internal(err)
+		if err := s.ensureGuardedEpisodeDirs(ctx, epRoot); err != nil {
+			return contracts.StudioEpisodeDetailResult{}, err
 		}
 		if ep.RawScriptPath == "" {
 			ep.RawScriptPath = filepath.Join(epRoot, "script", "raw_screenplay.txt")
@@ -530,7 +558,7 @@ func (s *Service) SaveScript(ctx context.Context, p contracts.StudioEpisodeSaveS
 		}
 	}
 
-	rawText := readStringFile(ep.RawScriptPath)
+	rawText := s.readGuardedStringFile(ctx, epRoot, ep.RawScriptPath)
 	if p.RawScript != nil {
 		rawText = *p.RawScript
 		if ep.RawScriptPath != "" {
@@ -562,8 +590,11 @@ func (s *Service) SaveScript(ctx context.Context, p contracts.StudioEpisodeSaveS
 		return contracts.StudioEpisodeDetailResult{}, err
 	}
 
-	shots, _ := s.repo.ListShots(ctx, updatedEp.ID)
-	meta := s.readEpisodeDiskMeta(epRoot)
+	shots, serr := s.repo.ListShots(ctx, updatedEp.ID)
+	if serr != nil {
+		s.log.WarnContext(ctx, "studio: failed to list shots after script save", "episode_id", updatedEp.ID, "error", serr)
+	}
+	meta := s.readEpisodeDiskMeta(ctx, epRoot)
 	var finalPath, finalAssetID string
 	if meta != nil {
 		finalPath = meta.FinalVideoPath
@@ -583,7 +614,8 @@ func (s *Service) SaveScript(ctx context.Context, p contracts.StudioEpisodeSaveS
 // UpsertAsset creates, updates, or deletes a project asset bible entry and syncs asset_bible.json.
 func (s *Service) UpsertAsset(ctx context.Context, p contracts.StudioAssetUpsertPayload) (contracts.StudioAssetUpsertResult, error) {
 	if s.repo == nil {
-		return contracts.StudioAssetUpsertResult{}, apperr.Unavailable("studio repository is unavailable")
+		return contracts.StudioAssetUpsertResult{}, apperr.Unavailable("studio repository is unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioAssetUpsertResult{}, err
@@ -597,13 +629,16 @@ func (s *Service) UpsertAsset(ctx context.Context, p contracts.StudioAssetUpsert
 		if err := s.repo.DeleteAsset(ctx, existing.ID); err != nil {
 			return contracts.StudioAssetUpsertResult{}, err
 		}
-		assets, _ := s.repo.ListAssets(ctx, existing.ProjectID)
+		assets, aerr := s.repo.ListAssets(ctx, existing.ProjectID)
+		if aerr != nil {
+			s.log.WarnContext(ctx, "studio: failed to list assets after delete", "project_id", existing.ProjectID, "error", aerr)
+		}
 		if proj, perr := s.repo.GetProject(ctx, existing.ProjectID); perr == nil {
 			s.warnDiskMirror(ctx, "asset_bible.json", s.persistProjectToDisk(ctx, proj, assets))
 			dtoProj := projectToDTO(proj)
 			s.emit(contracts.EventStudioProjectChanged, contracts.StudioProjectChangedEvent{
 				ProjectID: proj.ID,
-				Action:    "updated",
+				Action:    contracts.ProjectActionUpdated,
 				Project:   &dtoProj,
 			})
 		}
@@ -640,13 +675,16 @@ func (s *Service) UpsertAsset(ctx context.Context, p contracts.StudioAssetUpsert
 	if err != nil {
 		return contracts.StudioAssetUpsertResult{}, err
 	}
-	assets, _ := s.repo.ListAssets(ctx, proj.ID)
+	assets, aerr := s.repo.ListAssets(ctx, proj.ID)
+	if aerr != nil {
+		s.log.WarnContext(ctx, "studio: failed to list assets after upsert", "project_id", proj.ID, "error", aerr)
+	}
 	s.warnDiskMirror(ctx, "asset_bible.json", s.persistProjectToDisk(ctx, proj, assets))
 
 	dtoProj := projectToDTO(proj)
 	s.emit(contracts.EventStudioProjectChanged, contracts.StudioProjectChangedEvent{
 		ProjectID: proj.ID,
-		Action:    "updated",
+		Action:    contracts.ProjectActionUpdated,
 		Project:   &dtoProj,
 	})
 	dtoAsset := assetToDTO(saved)
@@ -656,7 +694,8 @@ func (s *Service) UpsertAsset(ctx context.Context, p contracts.StudioAssetUpsert
 // UpsertShot creates or updates an episode shot and syncs storyboard/shots.json.
 func (s *Service) UpsertShot(ctx context.Context, p contracts.StudioShotUpsertPayload) (contracts.StudioShotUpsertResult, error) {
 	if s.repo == nil {
-		return contracts.StudioShotUpsertResult{}, apperr.Unavailable("studio repository is unavailable")
+		return contracts.StudioShotUpsertResult{}, apperr.Unavailable("studio repository is unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioShotUpsertResult{}, err
@@ -690,7 +729,10 @@ func (s *Service) UpsertShot(ctx context.Context, p contracts.StudioShotUpsertPa
 	if p.Seq != nil {
 		cur.Seq = *p.Seq
 	} else if cur.ID == "" {
-		shots, _ := s.repo.ListShots(ctx, ep.ID)
+		shots, serr := s.repo.ListShots(ctx, ep.ID)
+		if serr != nil {
+			s.log.WarnContext(ctx, "studio: failed to list shots for default seq", "episode_id", ep.ID, "error", serr)
+		}
 		cur.Seq = len(shots) + 1
 	}
 	if p.SceneCode != "" {
@@ -745,14 +787,17 @@ func (s *Service) UpsertShot(ctx context.Context, p contracts.StudioShotUpsertPa
 		cur.ErrorText = *p.ErrorText
 	}
 
-	if err := cur.ValidateWithMaxDuration(s.cfg.MaxShotDurationSec); err != nil {
+	if err := cur.ValidateWithLimits(s.cfg.MaxShotDurationSec, s.cfg.DefaultShotDurationSec); err != nil {
 		return contracts.StudioShotUpsertResult{}, err
 	}
 	saved, err := s.repo.UpsertShot(ctx, cur)
 	if err != nil {
 		return contracts.StudioShotUpsertResult{}, err
 	}
-	shots, _ := s.repo.ListShots(ctx, ep.ID)
+	shots, serr := s.repo.ListShots(ctx, ep.ID)
+	if serr != nil {
+		s.log.WarnContext(ctx, "studio: failed to list shots after upsert", "episode_id", ep.ID, "error", serr)
+	}
 	s.warnDiskMirror(ctx, "shots.json", s.syncEpisodeShotsToDisk(ctx, proj, ep, shots))
 
 	s.emit(contracts.EventStudioEpisodeUpdated, contracts.StudioEpisodeUpdatedEvent{
@@ -767,7 +812,8 @@ func (s *Service) UpsertShot(ctx context.Context, p contracts.StudioShotUpsertPa
 // ReorderShots reorders storyboard shots in SQLite and syncs storyboard/shots.json.
 func (s *Service) ReorderShots(ctx context.Context, p contracts.StudioShotReorderPayload) (contracts.StudioShotListResult, error) {
 	if s.repo == nil {
-		return contracts.StudioShotListResult{}, apperr.Unavailable("studio repository is unavailable")
+		return contracts.StudioShotListResult{}, apperr.Unavailable("studio repository is unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioShotListResult{}, err
@@ -798,7 +844,8 @@ func (s *Service) ReorderShots(ctx context.Context, p contracts.StudioShotReorde
 // SyncWorkspace reconciles JSON files in the projects directory (or one specific project) with SQLite.
 func (s *Service) SyncWorkspace(ctx context.Context, projectID string) (*contracts.StudioProjectDetailResult, error) {
 	if s.repo == nil {
-		return nil, apperr.Unavailable("studio repository is unavailable")
+		return nil, apperr.Unavailable("studio repository is unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	trimmedID := strings.TrimSpace(projectID)
 	if trimmedID != "" {
@@ -817,12 +864,16 @@ func (s *Service) SyncWorkspace(ctx context.Context, projectID string) (*contrac
 	if pDir == "" {
 		return nil, nil
 	}
+	if cerr := engine.CheckFile(ctx, pDir, false); cerr != nil {
+		return nil, cerr
+	}
 	entries, err := os.ReadDir(pDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, apperr.Internal(err)
+		return nil, apperr.Wrap(apperr.CodeUnavailable, "Failed to read studio projects directory", err).
+			WithMsg("errors.studio.io_failed", nil)
 	}
 
 	var firstSynced *contracts.StudioProjectDetailResult
@@ -844,12 +895,15 @@ func (s *Service) SyncWorkspace(ctx context.Context, projectID string) (*contrac
 			continue
 		}
 		if diskProj.Slug == "" {
-			diskProj.Slug = entry.Name()
+			diskProj.Slug = domainstudio.Slugify(entry.Name())
 		}
 		if diskProj.Title == "" {
 			diskProj.Title = entry.Name()
 		}
 		diskProj.RootDir = projRoot
+		// Never trust auto_approve_batches from disk JSON; users must explicitly enable it in SQLite/UI.
+		diskProj.AutoApproveBatches = false
+		sanitizeDiskProjectEnums(&diskProj)
 
 		existing, gerr := s.repo.GetProject(ctx, diskProj.ID)
 		if gerr != nil {
@@ -858,24 +912,35 @@ func (s *Service) SyncWorkspace(ctx context.Context, projectID string) (*contrac
 		if gerr != nil {
 			created, cerr := s.repo.CreateProject(ctx, diskProj)
 			if cerr != nil {
+				s.log.WarnContext(ctx, "studio: failed to import project from disk", "slug", diskProj.Slug, "error", cerr)
 				continue
 			}
 			existing = created
 		} else {
 			existing.Title = diskProj.Title
 			existing.StylePrompt = diskProj.StylePrompt
-			existing.AspectRatio = diskProj.AspectRatio
-			existing.Genre = diskProj.Genre
-			existing.ProductionMode = diskProj.ProductionMode
+			if diskProj.AspectRatio != "" {
+				existing.AspectRatio = diskProj.AspectRatio
+			}
+			if diskProj.Genre != "" {
+				existing.Genre = diskProj.Genre
+			}
+			if diskProj.ProductionMode != "" {
+				existing.ProductionMode = diskProj.ProductionMode
+			}
 			if diskProj.RootDir != "" {
 				existing.RootDir = diskProj.RootDir
 			}
 			if upd, uerr := s.repo.UpdateProject(ctx, existing); uerr == nil {
 				existing = upd
+			} else {
+				s.log.WarnContext(ctx, "studio: failed to update synced project metadata", "project_id", existing.ID, "error", uerr)
 			}
 		}
 
-		_ = s.syncSingleProjectFromDisk(ctx, existing)
+		if serr := s.syncSingleProjectFromDisk(ctx, existing); serr != nil {
+			s.log.WarnContext(ctx, "studio: failed to sync project workspace artifacts", "project_id", existing.ID, "error", serr)
+		}
 		if firstSynced == nil {
 			if detail, derr := s.GetProject(ctx, existing.ID); derr == nil {
 				firstSynced = &detail
@@ -884,9 +949,45 @@ func (s *Service) SyncWorkspace(ctx context.Context, projectID string) (*contrac
 	}
 
 	s.emit(contracts.EventStudioProjectChanged, contracts.StudioProjectChangedEvent{
-		Action: "synced",
+		Action: contracts.ProjectActionSynced,
 	})
 	return firstSynced, nil
+}
+
+func sanitizeDiskProjectEnums(dp *domainstudio.Project) {
+	if dp == nil {
+		return
+	}
+	if dp.Genre != "" && domainstudio.ValidateGenre(dp.Genre) != nil {
+		dp.Genre = ""
+	}
+	if dp.ProductionMode != "" && domainstudio.ValidateProductionMode(dp.ProductionMode) != nil {
+		dp.ProductionMode = ""
+	}
+	if ar := strings.TrimSpace(dp.AspectRatio); ar != "" && !slices.Contains(domainmedia.VideoAspectRatios(), ar) {
+		dp.AspectRatio = ""
+	}
+}
+
+func (s *Service) sanitizeSyncedPath(ctx context.Context, baseDir, projectID, rawPath string) string {
+	trimmed := strings.TrimSpace(rawPath)
+	if trimmed == "" || strings.TrimSpace(baseDir) == "" {
+		return ""
+	}
+	candidate := trimmed
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(baseDir, candidate)
+	}
+	clean := filepath.Clean(candidate)
+	if !isWithinBaseDir(baseDir, clean) {
+		s.log.WarnContext(ctx, "studio: stripped outside-workspace path during sync", "project_id", projectID)
+		return ""
+	}
+	if err := engine.CheckFile(ctx, clean, false); err != nil {
+		s.log.WarnContext(ctx, "studio: stripped untrusted file path during sync", "project_id", projectID, "error", err)
+		return ""
+	}
+	return clean
 }
 
 func (s *Service) syncSingleProjectFromDisk(ctx context.Context, proj domainstudio.Project) error {
@@ -894,17 +995,21 @@ func (s *Service) syncSingleProjectFromDisk(ctx context.Context, proj domainstud
 	if projRoot == "" {
 		return nil
 	}
+	if err := engine.CheckFile(ctx, projRoot, false); err != nil {
+		return err
+	}
 	if s.media != nil {
 		s.media.AddAllowedRoot(projRoot)
 	}
 
-	// Sync project.json metadata if modified on disk.
+	// Sync project.json metadata if modified on disk (never overwriting AutoApproveBatches!).
 	projJSONPath := filepath.Join(projRoot, "project.json")
 	if engine.CheckFile(ctx, projJSONPath, false) == nil {
 		if b, err := os.ReadFile(projJSONPath); err == nil {
 			var dp domainstudio.Project
-			if json.Unmarshal(b, &dp) == nil && dp.Title != "" {
-				proj.Title = dp.Title
+			if json.Unmarshal(b, &dp) == nil && strings.TrimSpace(dp.Title) != "" {
+				sanitizeDiskProjectEnums(&dp)
+				proj.Title = strings.TrimSpace(dp.Title)
 				if dp.Genre != "" {
 					proj.Genre = dp.Genre
 				}
@@ -915,9 +1020,10 @@ func (s *Service) syncSingleProjectFromDisk(ctx context.Context, proj domainstud
 					proj.AspectRatio = dp.AspectRatio
 				}
 				proj.StylePrompt = dp.StylePrompt
-				proj.AutoApproveBatches = dp.AutoApproveBatches
 				if updated, uerr := s.repo.UpdateProject(ctx, proj); uerr == nil {
 					proj = updated
+				} else {
+					s.log.WarnContext(ctx, "studio: failed to update project from disk project.json", "project_id", proj.ID, "error", uerr)
 				}
 			}
 		}
@@ -929,7 +1035,10 @@ func (s *Service) syncSingleProjectFromDisk(ctx context.Context, proj domainstud
 		if b, err := os.ReadFile(biblePath); err == nil {
 			var pkg domainstudio.AssetBiblePackage
 			if json.Unmarshal(b, &pkg) == nil {
-				existingAssets, _ := s.repo.ListAssets(ctx, proj.ID)
+				existingAssets, lerr := s.repo.ListAssets(ctx, proj.ID)
+				if lerr != nil {
+					s.log.WarnContext(ctx, "studio: failed to list existing assets during sync", "project_id", proj.ID, "error", lerr)
+				}
 				byTag := make(map[string]domainstudio.AssetEntry, len(existingAssets))
 				for _, ea := range existingAssets {
 					byTag[strings.ToLower(ea.CodeTag)] = ea
@@ -938,29 +1047,39 @@ func (s *Service) syncSingleProjectFromDisk(ctx context.Context, proj domainstud
 				for _, da := range pkg.Assets {
 					da.ProjectID = proj.ID
 					da.Normalize()
+					hadDiskPath := strings.TrimSpace(da.PrimaryPath) != ""
+					da.PrimaryPath = s.sanitizeSyncedPath(ctx, projRoot, proj.ID, da.PrimaryPath)
+					if hadDiskPath && da.PrimaryPath == "" {
+						da.PrimaryAssetID = ""
+					}
 					if prev, ok := byTag[strings.ToLower(da.CodeTag)]; ok {
 						if da.ID == "" {
 							da.ID = prev.ID
 						}
-						if da.PrimaryPath == "" {
+						if !hadDiskPath && da.PrimaryPath == "" {
 							da.PrimaryPath = prev.PrimaryPath
-						}
-						if da.PrimaryAssetID == "" {
-							da.PrimaryAssetID = prev.PrimaryAssetID
+							if da.PrimaryAssetID == "" {
+								da.PrimaryAssetID = prev.PrimaryAssetID
+							}
 						}
 					}
 					merged = append(merged, da)
 				}
-				_, _ = s.repo.ReplaceAssets(ctx, proj.ID, merged)
+				if _, rerr := s.repo.ReplaceAssets(ctx, proj.ID, merged); rerr != nil {
+					s.log.WarnContext(ctx, "studio: failed to replace synced assets", "project_id", proj.ID, "error", rerr)
+				}
 			}
 		}
 	}
 
-	// Sync episodes/*/storyboard/shots.json -> studio_shots.
+	// Sync episodes/*/storyboard/shots.json & timeline/timeline.json.
 	epsDir := filepath.Join(projRoot, "episodes")
 	epEntries, err := os.ReadDir(epsDir)
 	if err == nil {
-		existingEps, _ := s.repo.ListEpisodes(ctx, proj.ID)
+		existingEps, lerr := s.repo.ListEpisodes(ctx, proj.ID)
+		if lerr != nil {
+			s.log.WarnContext(ctx, "studio: failed to list episodes during sync", "project_id", proj.ID, "error", lerr)
+		}
 		epByCode := make(map[string]domainstudio.Episode, len(existingEps))
 		for _, ee := range existingEps {
 			epByCode[ee.Code] = ee
@@ -971,6 +1090,9 @@ func (s *Service) syncSingleProjectFromDisk(ctx context.Context, proj domainstud
 			}
 			epCode := domainstudio.Slugify(entry.Name())
 			epRoot := filepath.Join(epsDir, entry.Name())
+			if !isWithinBaseDir(projRoot, epRoot) {
+				continue
+			}
 			ep, exists := epByCode[epCode]
 			if !exists {
 				created, cerr := s.repo.CreateEpisode(ctx, domainstudio.Episode{
@@ -985,6 +1107,7 @@ func (s *Service) syncSingleProjectFromDisk(ctx context.Context, proj domainstud
 					TimelineJSONPath: filepath.Join(epRoot, "timeline", "timeline.json"),
 				})
 				if cerr != nil {
+					s.log.WarnContext(ctx, "studio: failed to create episode during disk sync", "project_id", proj.ID, "code", epCode, "error", cerr)
 					continue
 				}
 				ep = created
@@ -994,6 +1117,8 @@ func (s *Service) syncSingleProjectFromDisk(ctx context.Context, proj domainstud
 				ep.TimelineJSONPath = timelinePath
 				if updatedEp, uerr := s.repo.UpdateEpisode(ctx, ep); uerr == nil {
 					ep = updatedEp
+				} else {
+					s.log.WarnContext(ctx, "studio: failed to update episode timeline path during sync", "episode_id", ep.ID, "error", uerr)
 				}
 			}
 			shotsDiskPath := filepath.Join(epRoot, "storyboard", "shots.json")
@@ -1001,7 +1126,10 @@ func (s *Service) syncSingleProjectFromDisk(ctx context.Context, proj domainstud
 				if b, serr := os.ReadFile(shotsDiskPath); serr == nil {
 					var sp domainstudio.ShotPromptPackage
 					if json.Unmarshal(b, &sp) == nil {
-						existingShots, _ := s.repo.ListShots(ctx, ep.ID)
+						existingShots, lserr := s.repo.ListShots(ctx, ep.ID)
+						if lserr != nil {
+							s.log.WarnContext(ctx, "studio: failed to list existing shots during sync", "episode_id", ep.ID, "error", lserr)
+						}
 						byID := make(map[string]domainstudio.Shot, len(existingShots))
 						bySeq := make(map[int]domainstudio.Shot, len(existingShots))
 						for _, es := range existingShots {
@@ -1014,6 +1142,24 @@ func (s *Service) syncSingleProjectFromDisk(ctx context.Context, proj domainstud
 							if ds.Seq <= 0 {
 								ds.Seq = i + 1
 							}
+							ds.NormalizeWithDefaultDuration(s.cfg.DefaultShotDurationSec)
+
+							hadKF := strings.TrimSpace(ds.KeyframePath) != ""
+							hadVid := strings.TrimSpace(ds.VideoPath) != ""
+							hadAud := strings.TrimSpace(ds.AudioPath) != ""
+							ds.KeyframePath = s.sanitizeSyncedPath(ctx, projRoot, proj.ID, ds.KeyframePath)
+							ds.VideoPath = s.sanitizeSyncedPath(ctx, projRoot, proj.ID, ds.VideoPath)
+							ds.AudioPath = s.sanitizeSyncedPath(ctx, projRoot, proj.ID, ds.AudioPath)
+							if hadKF && ds.KeyframePath == "" {
+								ds.KeyframeAssetID = ""
+							}
+							if hadVid && ds.VideoPath == "" {
+								ds.VideoAssetID = ""
+							}
+							if hadAud && ds.AudioPath == "" {
+								ds.AudioAssetID = ""
+							}
+
 							prev, ok := byID[ds.ID]
 							if !ok {
 								prev, ok = bySeq[ds.Seq]
@@ -1022,22 +1168,24 @@ func (s *Service) syncSingleProjectFromDisk(ctx context.Context, proj domainstud
 								if ds.ID == "" {
 									ds.ID = prev.ID
 								}
-								if ds.KeyframePath == "" {
+								if !hadKF && ds.KeyframePath == "" {
 									ds.KeyframePath = prev.KeyframePath
 									ds.KeyframeAssetID = prev.KeyframeAssetID
 								}
-								if ds.VideoPath == "" {
+								if !hadVid && ds.VideoPath == "" {
 									ds.VideoPath = prev.VideoPath
 									ds.VideoAssetID = prev.VideoAssetID
 								}
-								if ds.AudioPath == "" {
+								if !hadAud && ds.AudioPath == "" {
 									ds.AudioPath = prev.AudioPath
 									ds.AudioAssetID = prev.AudioAssetID
 								}
 							}
 							merged = append(merged, ds)
 						}
-						_, _ = s.repo.ReplaceShots(ctx, ep.ID, merged)
+						if _, rerr := s.repo.ReplaceShots(ctx, ep.ID, merged); rerr != nil {
+							s.log.WarnContext(ctx, "studio: failed to replace synced shots", "episode_id", ep.ID, "error", rerr)
+						}
 					}
 				}
 			}
@@ -1045,15 +1193,41 @@ func (s *Service) syncSingleProjectFromDisk(ctx context.Context, proj domainstud
 				if tb, terr := os.ReadFile(timelinePath); terr == nil {
 					var diskTL domainstudio.EditTimeline
 					if json.Unmarshal(tb, &diskTL) == nil && len(diskTL.Tracks) > 0 {
+						for ti := range diskTL.Tracks {
+							filtered := make([]domainstudio.TimelineClip, 0, len(diskTL.Tracks[ti].Clips))
+							for _, cl := range diskTL.Tracks[ti].Clips {
+								hadFP := strings.TrimSpace(cl.FilePath) != ""
+								hadSP := strings.TrimSpace(cl.SpritePath) != ""
+								cl.FilePath = s.sanitizeSyncedPath(ctx, projRoot, proj.ID, cl.FilePath)
+								cl.SpritePath = s.sanitizeSyncedPath(ctx, projRoot, proj.ID, cl.SpritePath)
+								if hadFP && cl.FilePath == "" {
+									cl.AssetID = ""
+								}
+								if hadSP && cl.SpritePath == "" {
+									cl.SpriteAssetID = ""
+								}
+								if cl.FilePath == "" && cl.AssetID == "" {
+									continue
+								}
+								filtered = append(filtered, cl)
+							}
+							diskTL.Tracks[ti].Clips = filtered
+						}
 						diskTL.Normalize()
-						diskCanon, _ := json.Marshal(diskTL)
-						if curRec, rerr := s.repo.GetTimeline(ctx, ep.ID); rerr == nil {
-							curCanon, _ := json.Marshal(curRec.Timeline)
-							if string(diskCanon) != string(curCanon) {
-								if _, serr := s.repo.SaveTimelineRevision(ctx, ep.ID, curRec.Revision, domainstudio.ActorUser, "disk sync", diskTL); serr == nil {
-									s.log.Debug("reconciled timeline.json from disk", "episode_id", ep.ID)
+						if verr := diskTL.ValidateWithMaxDim(s.cfg.MaxVideoDimension); verr == nil {
+							diskCanon, _ := json.Marshal(diskTL)
+							if curRec, rerr := s.repo.GetTimeline(ctx, ep.ID); rerr == nil {
+								curCanon, _ := json.Marshal(curRec.Timeline)
+								if string(diskCanon) != string(curCanon) {
+									if _, serr := s.repo.SaveTimelineRevision(ctx, ep.ID, curRec.Revision, domainstudio.ActorUser, "disk sync", diskTL); serr == nil {
+										s.log.DebugContext(ctx, "reconciled timeline.json from disk", "episode_id", ep.ID)
+									} else {
+										s.log.WarnContext(ctx, "studio: failed to save synced timeline revision", "episode_id", ep.ID, "error", serr)
+									}
 								}
 							}
+						} else {
+							s.log.WarnContext(ctx, "studio: skipped invalid timeline.json during disk sync", "episode_id", ep.ID, "error", verr)
 						}
 					}
 				}
@@ -1064,7 +1238,7 @@ func (s *Service) syncSingleProjectFromDisk(ctx context.Context, proj domainstud
 	dtoProj := projectToDTO(proj)
 	s.emit(contracts.EventStudioProjectChanged, contracts.StudioProjectChangedEvent{
 		ProjectID: proj.ID,
-		Action:    "synced",
+		Action:    contracts.ProjectActionSynced,
 		Project:   &dtoProj,
 	})
 	return nil
@@ -1073,7 +1247,8 @@ func (s *Service) syncSingleProjectFromDisk(ctx context.Context, proj domainstud
 // RunStage executes any Phase 1 stage or shot/asset batch using shared workflow nodes.
 func (s *Service) RunStage(ctx context.Context, p contracts.StudioEpisodeRunStagePayload) (contracts.StudioRunStageResult, error) {
 	if s.repo == nil || s.wf == nil {
-		return contracts.StudioRunStageResult{}, apperr.Unavailable("studio dependencies are unavailable")
+		return contracts.StudioRunStageResult{}, apperr.Unavailable("studio dependencies are unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioRunStageResult{}, err
@@ -1087,7 +1262,8 @@ func (s *Service) RunStage(ctx context.Context, p contracts.StudioEpisodeRunStag
 	s.runMu.Lock()
 	if s.runningEps[ep.ID] {
 		s.runMu.Unlock()
-		return contracts.StudioRunStageResult{}, apperr.New(apperr.CodeConflict, "episode stage execution is already in progress")
+		return contracts.StudioRunStageResult{}, apperr.New(apperr.CodeConflict, "episode stage execution is already in progress").
+			WithMsg("errors.studio.stage_in_progress", nil)
 	}
 	s.runningEps[ep.ID] = true
 	s.runMu.Unlock()
@@ -1103,6 +1279,7 @@ func (s *Service) RunStage(ctx context.Context, p contracts.StudioEpisodeRunStag
 	}
 	if !proj.AutoApproveBatches && !p.Approved && isHeavyGenerationStage(p.Stage) {
 		return contracts.StudioRunStageResult{}, apperr.Validation("Batch execution requires approval when auto_approve_batches is disabled").
+			WithMsg("errors.studio.approval_required", nil).
 			WithDetails(map[string]any{"approval_required": true, "project_id": proj.ID, "stage": string(p.Stage)})
 	}
 	ctx = domainmedia.ContextWithUsageMeta(ctx, domainmedia.UsageMeta{
@@ -1112,8 +1289,8 @@ func (s *Service) RunStage(ctx context.Context, p contracts.StudioEpisodeRunStag
 	})
 	epRoot := s.resolveEpisodeRoot(proj, ep.Code)
 	if epRoot != "" {
-		if err := ensureEpisodeDirs(epRoot); err != nil {
-			return contracts.StudioRunStageResult{}, apperr.Internal(err)
+		if err := s.ensureGuardedEpisodeDirs(ctx, epRoot); err != nil {
+			return contracts.StudioRunStageResult{}, err
 		}
 	}
 
@@ -1142,9 +1319,10 @@ func (s *Service) RunStage(ctx context.Context, p contracts.StudioEpisodeRunStag
 }
 
 func (s *Service) runScriptNormalize(ctx context.Context, proj domainstudio.Project, ep domainstudio.Episode, epRoot string, p contracts.StudioEpisodeRunStagePayload) (contracts.StudioRunStageResult, error) {
-	rawScript := strings.TrimSpace(readStringFile(ep.RawScriptPath))
+	rawScript := strings.TrimSpace(s.readGuardedStringFile(ctx, epRoot, ep.RawScriptPath))
 	if rawScript == "" {
-		return contracts.StudioRunStageResult{}, apperr.Validation("raw screenplay is empty; save script text before normalizing")
+		return contracts.StudioRunStageResult{}, apperr.Validation("raw screenplay is empty; save script text before normalizing").
+			WithMsg("errors.studio.raw_script_required", nil)
 	}
 	model := firstNonEmpty(p.Model, proj.DefaultTextModel)
 	inBytes, err := json.Marshal(contracts.ScriptNormalizeInput{
@@ -1170,7 +1348,9 @@ func (s *Service) runScriptNormalize(ctx context.Context, proj domainstudio.Proj
 		ep.ScriptJSONPath = out.ScriptPath
 	} else if epRoot != "" {
 		ep.ScriptJSONPath = filepath.Join(epRoot, "script", "normalized_script.json")
-		_ = fsutil.WriteFileAtomic(ep.ScriptJSONPath, []byte(out.NormalizedScriptJSON), 0o644)
+		if err := s.writeGuardedFile(ctx, epRoot, ep.ScriptJSONPath, []byte(out.NormalizedScriptJSON), 0o644); err != nil {
+			return contracts.StudioRunStageResult{}, err
+		}
 	}
 	if ep.Stage == domainstudio.StageScript {
 		ep.Stage = domainstudio.StageAssets
@@ -1197,9 +1377,10 @@ func (s *Service) runScriptNormalize(ctx context.Context, proj domainstudio.Proj
 }
 
 func (s *Service) runExtractAssets(ctx context.Context, proj domainstudio.Project, ep domainstudio.Episode, epRoot string, p contracts.StudioEpisodeRunStagePayload) (contracts.StudioRunStageResult, error) {
-	normRaw := readStringFile(ep.ScriptJSONPath)
+	normRaw := s.readGuardedStringFile(ctx, epRoot, ep.ScriptJSONPath)
 	if strings.TrimSpace(normRaw) == "" {
-		return contracts.StudioRunStageResult{}, apperr.Validation("normalized_script.json is required before extracting assets")
+		return contracts.StudioRunStageResult{}, apperr.Validation("normalized_script.json is required before extracting assets").
+			WithMsg("errors.studio.normalized_script_required", nil)
 	}
 	model := firstNonEmpty(p.Model, proj.DefaultTextModel)
 	inBytes, err := json.Marshal(contracts.ExtractAssetsInput{
@@ -1222,10 +1403,14 @@ func (s *Service) runExtractAssets(ctx context.Context, proj domainstudio.Projec
 
 	var pkg domainstudio.AssetBiblePackage
 	if err := json.Unmarshal([]byte(out.AssetBibleJSON), &pkg); err != nil {
-		return contracts.StudioRunStageResult{}, apperr.Unavailable("invalid asset bible JSON output: " + err.Error())
+		return contracts.StudioRunStageResult{}, apperr.Wrap(apperr.CodeIntegrity, "Invalid asset bible JSON output", err).
+			WithMsg("errors.studio.llm_invalid_json", nil)
 	}
 
-	existingAssets, _ := s.repo.ListAssets(ctx, proj.ID)
+	existingAssets, lerr := s.repo.ListAssets(ctx, proj.ID)
+	if lerr != nil {
+		s.log.WarnContext(ctx, "studio: failed to list existing assets before merge", "project_id", proj.ID, "error", lerr)
+	}
 	byTag := make(map[string]domainstudio.AssetEntry, len(existingAssets))
 	for _, ea := range existingAssets {
 		byTag[strings.ToLower(ea.CodeTag)] = ea
@@ -1255,7 +1440,9 @@ func (s *Service) runExtractAssets(ctx context.Context, proj domainstudio.Projec
 	}
 	if out.AssetsPath != "" {
 		ep.AssetsJSONPath = out.AssetsPath
-		_, _ = s.repo.UpdateEpisode(ctx, ep)
+		if _, uerr := s.repo.UpdateEpisode(ctx, ep); uerr != nil {
+			s.log.WarnContext(ctx, "studio: failed to update episode assets_json_path", "episode_id", ep.ID, "error", uerr)
+		}
 	}
 	s.warnDiskMirror(ctx, "asset_bible.json", s.persistProjectToDisk(ctx, proj, savedAssets))
 
@@ -1278,26 +1465,29 @@ func (s *Service) runExtractAssets(ctx context.Context, proj domainstudio.Projec
 }
 
 func (s *Service) runAuthorShots(ctx context.Context, proj domainstudio.Project, ep domainstudio.Episode, epRoot string, p contracts.StudioEpisodeRunStagePayload) (contracts.StudioRunStageResult, error) {
-	normRaw := readStringFile(ep.ScriptJSONPath)
+	normRaw := s.readGuardedStringFile(ctx, epRoot, ep.ScriptJSONPath)
 	if strings.TrimSpace(normRaw) == "" {
-		return contracts.StudioRunStageResult{}, apperr.Validation("normalized_script.json is required before authoring shots")
+		return contracts.StudioRunStageResult{}, apperr.Validation("normalized_script.json is required before authoring shots").
+			WithMsg("errors.studio.normalized_script_required", nil)
 	}
-	assets, _ := s.repo.ListAssets(ctx, proj.ID)
-	bibleBytes, _ := json.Marshal(domainstudio.AssetBiblePackage{
+	assets, aerr := s.repo.ListAssets(ctx, proj.ID)
+	if aerr != nil {
+		s.log.WarnContext(ctx, "studio: failed to list assets for shot authoring", "project_id", proj.ID, "error", aerr)
+	}
+	bibleBytes, merr := json.Marshal(domainstudio.AssetBiblePackage{
 		StylePrompt: proj.StylePrompt,
 		Assets:      assets,
 	})
-
-	shotModeDef := domainstudio.ShotModeSingle
-	if proj.ProductionMode == domainstudio.ModeR2V {
-		shotModeDef = domainstudio.ShotModeR2V
+	if merr != nil {
+		return contracts.StudioRunStageResult{}, apperr.Internal(merr)
 	}
+
 	model := firstNonEmpty(p.Model, proj.DefaultTextModel)
 	inBytes, err := json.Marshal(contracts.AuthorShotPromptsInput{
 		NormalizedScriptJSON: normRaw,
 		AssetBibleJSON:       string(bibleBytes),
 		ProductionMode:       string(proj.ProductionMode),
-		ShotModeDefault:      string(shotModeDef),
+		DefaultDurationSec:   s.cfg.DefaultShotDurationSec,
 		StylePrompt:          proj.StylePrompt,
 		Model:                model,
 		ProjectDir:           epRoot,
@@ -1316,7 +1506,8 @@ func (s *Service) runAuthorShots(ctx context.Context, proj domainstudio.Project,
 
 	var pkg domainstudio.ShotPromptPackage
 	if err := json.Unmarshal([]byte(out.ShotsJSON), &pkg); err != nil {
-		return contracts.StudioRunStageResult{}, apperr.Unavailable("invalid shots JSON output: " + err.Error())
+		return contracts.StudioRunStageResult{}, apperr.Wrap(apperr.CodeIntegrity, "Invalid shots JSON output", err).
+			WithMsg("errors.studio.llm_invalid_json", nil)
 	}
 
 	for i := range pkg.Shots {
@@ -1324,6 +1515,7 @@ func (s *Service) runAuthorShots(ctx context.Context, proj domainstudio.Project,
 		pkg.Shots[i].EpisodeID = ep.ID
 		pkg.Shots[i].Seq = i + 1
 		pkg.Shots[i].Status = domainstudio.ShotPending
+		pkg.Shots[i].NormalizeWithDefaultDuration(s.cfg.DefaultShotDurationSec)
 	}
 	savedShots, err := s.repo.ReplaceShots(ctx, ep.ID, pkg.Shots)
 	if err != nil {
@@ -1378,7 +1570,9 @@ func (s *Service) runGenerateAssets(ctx context.Context, proj domainstudio.Proje
 	outDir := ""
 	if epRoot != "" {
 		outDir = filepath.Join(epRoot, "media", "assets")
-		_ = os.MkdirAll(outDir, 0o755)
+		if err := s.ensureGuardedDir(ctx, outDir); err != nil {
+			return contracts.StudioRunStageResult{}, err
+		}
 	}
 	model := firstNonEmpty(p.Model, proj.DefaultImageModel)
 
@@ -1388,16 +1582,21 @@ func (s *Service) runGenerateAssets(ctx context.Context, proj domainstudio.Proje
 		if ctx.Err() != nil {
 			return contracts.StudioRunStageResult{}, ctx.Err()
 		}
-		s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), idx+1, len(targets), asset.ID, fmt.Sprintf("Generating asset reference: %s", asset.Name), "running")
+		s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), idx+1, len(targets), completed, failed, asset.ID, asset.Name, fmt.Sprintf("Generating asset reference: %s", asset.Name), contracts.BatchStatusRunning)
 
 		prompt := composePrompt(proj.StylePrompt, firstNonEmpty(asset.Prompt, asset.Description, asset.Name))
-		reqBytes, _ := json.Marshal(mediagennodes.ImageGenerateInput{
+		reqBytes, merr := json.Marshal(mediagennodes.ImageGenerateInput{
 			Prompt:      prompt,
 			Model:       model,
 			AspectRatio: proj.AspectRatio,
 			Resolution:  p.Resolution,
 			OutputDir:   outDir,
 		})
+		if merr != nil {
+			failed++
+			lastErr = apperr.Internal(merr)
+			continue
+		}
 		rawOut, rerr := s.wf.RunNode(ctx, mediagennodes.NodeTypeImage, reqBytes)
 		if rerr != nil {
 			failed++
@@ -1425,12 +1624,14 @@ func (s *Service) runGenerateAssets(ctx context.Context, proj domainstudio.Proje
 
 	if allAssets, lerr := s.repo.ListAssets(ctx, proj.ID); lerr == nil {
 		s.warnDiskMirror(ctx, "asset_bible.json", s.persistProjectToDisk(ctx, proj, allAssets))
+	} else {
+		s.log.WarnContext(ctx, "studio: failed to list assets after batch generation", "project_id", proj.ID, "error", lerr)
 	}
-	status := "completed"
+	status := contracts.BatchStatusCompleted
 	if failed > 0 && completed == 0 {
-		status = "failed"
+		status = contracts.BatchStatusFailed
 	}
-	s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), len(targets), len(targets), "", fmt.Sprintf("Assets generated: %d ok, %d failed", completed, failed), status)
+	s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), len(targets), len(targets), completed, failed, "", "", fmt.Sprintf("Assets generated: %d ok, %d failed", completed, failed), status)
 
 	detail, err := s.GetEpisode(ctx, ep.ID)
 	if err != nil {
@@ -1458,7 +1659,10 @@ func (s *Service) runGenerateKeyframes(ctx context.Context, proj domainstudio.Pr
 	if err != nil {
 		return contracts.StudioRunStageResult{}, err
 	}
-	assets, _ := s.repo.ListAssets(ctx, proj.ID)
+	assets, aerr := s.repo.ListAssets(ctx, proj.ID)
+	if aerr != nil {
+		s.log.WarnContext(ctx, "studio: failed to list assets for keyframe generation", "project_id", proj.ID, "error", aerr)
+	}
 	tagPathMap := buildAssetPathMap(assets)
 
 	filter := toSet(p.ShotIDs)
@@ -1476,7 +1680,9 @@ func (s *Service) runGenerateKeyframes(ctx context.Context, proj domainstudio.Pr
 	outDir := ""
 	if epRoot != "" {
 		outDir = filepath.Join(epRoot, "media", "keyframes")
-		_ = os.MkdirAll(outDir, 0o755)
+		if err := s.ensureGuardedDir(ctx, outDir); err != nil {
+			return contracts.StudioRunStageResult{}, err
+		}
 	}
 	model := firstNonEmpty(p.Model, proj.DefaultImageModel)
 
@@ -1486,11 +1692,11 @@ func (s *Service) runGenerateKeyframes(ctx context.Context, proj domainstudio.Pr
 		if ctx.Err() != nil {
 			return contracts.StudioRunStageResult{}, ctx.Err()
 		}
-		s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), idx+1, len(targets), shot.ID, fmt.Sprintf("Generating keyframe #%d: %s", shot.Seq, shot.Title), "running")
+		s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), idx+1, len(targets), completed, failed, shot.ID, shot.Title, fmt.Sprintf("Generating keyframe #%d: %s", shot.Seq, shot.Title), contracts.BatchStatusRunning)
 
 		refs := collectRefImages(shot.RefAssetTags, tagPathMap)
 		prompt := composePrompt(proj.StylePrompt, firstNonEmpty(shot.ImagePrompt, shot.Title))
-		reqBytes, _ := json.Marshal(mediagennodes.ImageGenerateInput{
+		reqBytes, merr := json.Marshal(mediagennodes.ImageGenerateInput{
 			Prompt:          prompt,
 			ReferenceImages: refs,
 			Model:           model,
@@ -1498,13 +1704,20 @@ func (s *Service) runGenerateKeyframes(ctx context.Context, proj domainstudio.Pr
 			Resolution:      p.Resolution,
 			OutputDir:       outDir,
 		})
+		if merr != nil {
+			failed++
+			lastErr = apperr.Internal(merr)
+			continue
+		}
 		rawOut, rerr := s.wf.RunNode(ctx, mediagennodes.NodeTypeImage, reqBytes)
 		if rerr != nil {
 			failed++
 			lastErr = rerr
 			shot.Status = domainstudio.ShotFailed
 			shot.ErrorText = rerr.Error()
-			_, _ = s.repo.UpsertShot(ctx, shot)
+			if _, uerr := s.repo.UpsertShot(ctx, shot); uerr != nil {
+				s.log.WarnContext(ctx, "studio: failed to persist failed shot status", "shot_id", shot.ID, "error", uerr)
+			}
 			continue
 		}
 		var out mediagennodes.ImageGenerateOutput
@@ -1521,23 +1734,32 @@ func (s *Service) runGenerateKeyframes(ctx context.Context, proj domainstudio.Pr
 			shot.Status = domainstudio.ShotKeyframeReady
 		}
 		shot.ErrorText = ""
-		_, _ = s.repo.UpsertShot(ctx, shot)
+		if _, uerr := s.repo.UpsertShot(ctx, shot); uerr != nil {
+			s.log.WarnContext(ctx, "studio: failed to persist shot keyframe metadata", "shot_id", shot.ID, "error", uerr)
+			failed++
+			lastErr = uerr
+			continue
+		}
 		s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetKeyframe, shot.ID, out.Path, mediagennodes.NodeTypeImage, prompt, model)
 		completed++
 	}
 
 	if completed > 0 && ep.Stage == domainstudio.StageStoryboard {
 		ep.Stage = domainstudio.StageVideo
-		_, _ = s.repo.UpdateEpisode(ctx, ep)
+		if _, uerr := s.repo.UpdateEpisode(ctx, ep); uerr != nil {
+			s.log.WarnContext(ctx, "studio: failed to advance episode stage after keyframes", "episode_id", ep.ID, "error", uerr)
+		}
 	}
 	if refreshed, lerr := s.repo.ListShots(ctx, ep.ID); lerr == nil {
 		s.warnDiskMirror(ctx, "shots.json", s.syncEpisodeShotsToDisk(ctx, proj, ep, refreshed))
+	} else {
+		s.log.WarnContext(ctx, "studio: failed to list shots after keyframe batch", "episode_id", ep.ID, "error", lerr)
 	}
-	status := "completed"
+	status := contracts.BatchStatusCompleted
 	if failed > 0 && completed == 0 {
-		status = "failed"
+		status = contracts.BatchStatusFailed
 	}
-	s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), len(targets), len(targets), "", fmt.Sprintf("Keyframes: %d ok, %d failed", completed, failed), status)
+	s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), len(targets), len(targets), completed, failed, "", "", fmt.Sprintf("Keyframes: %d ok, %d failed", completed, failed), status)
 
 	detail, err := s.GetEpisode(ctx, ep.ID)
 	if err != nil {
@@ -1565,7 +1787,10 @@ func (s *Service) runGenerateVideos(ctx context.Context, proj domainstudio.Proje
 	if err != nil {
 		return contracts.StudioRunStageResult{}, err
 	}
-	assets, _ := s.repo.ListAssets(ctx, proj.ID)
+	assets, aerr := s.repo.ListAssets(ctx, proj.ID)
+	if aerr != nil {
+		s.log.WarnContext(ctx, "studio: failed to list assets for video generation", "project_id", proj.ID, "error", aerr)
+	}
 	tagPathMap := buildAssetPathMap(assets)
 
 	filter := toSet(p.ShotIDs)
@@ -1583,14 +1808,16 @@ func (s *Service) runGenerateVideos(ctx context.Context, proj domainstudio.Proje
 	outDir := ""
 	if epRoot != "" {
 		outDir = filepath.Join(epRoot, "media", "videos")
-		_ = os.MkdirAll(outDir, 0o755)
+		if err := s.ensureGuardedDir(ctx, outDir); err != nil {
+			return contracts.StudioRunStageResult{}, err
+		}
 	}
 	model := firstNonEmpty(p.Model, proj.DefaultVideoModel)
 
 	// Run bounded workers up to config studio.max_concurrent_batch.
 	workers := 0
 	if len(targets) > 0 {
-		workers = s.cfg.MaxConcurrentBatch
+		workers = max(1, s.cfg.MaxConcurrentBatch)
 		if workers > len(targets) {
 			workers = len(targets)
 		}
@@ -1642,19 +1869,29 @@ func (s *Service) runGenerateVideos(ctx context.Context, proj domainstudio.Proje
 					vidIn.StartImage = engine.ImageInputRef{MediaRef: engine.RefFor(shot.KeyframePath, engine.MediaImage)}
 				}
 
-				reqBytes, _ := json.Marshal(vidIn)
+				reqBytes, merr := json.Marshal(vidIn)
+				if merr != nil {
+					stateMu.Lock()
+					failed++
+					doneCount++
+					lastErr = apperr.Internal(merr)
+					stateMu.Unlock()
+					continue
+				}
 				rawOut, rerr := s.wf.RunNode(ctx, mediagennodes.NodeTypeVideo, reqBytes)
 				if rerr != nil {
 					shot.Status = domainstudio.ShotFailed
 					shot.ErrorText = rerr.Error()
-					_, _ = s.repo.UpsertShot(ctx, shot)
+					if _, uerr := s.repo.UpsertShot(ctx, shot); uerr != nil {
+						s.log.WarnContext(ctx, "studio: failed to persist failed shot video status", "shot_id", shot.ID, "error", uerr)
+					}
 					stateMu.Lock()
 					failed++
 					doneCount++
 					lastErr = rerr
-					curDone := doneCount
+					curDone, curOK, curFail := doneCount, completed, failed
 					stateMu.Unlock()
-					s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), curDone, len(targets), shot.ID, fmt.Sprintf("Shot #%d video failed", shot.Seq), "running")
+					s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), curDone, len(targets), curOK, curFail, shot.ID, shot.Title, fmt.Sprintf("Shot #%d video failed", shot.Seq), contracts.BatchStatusRunning)
 					continue
 				}
 
@@ -1674,15 +1911,25 @@ func (s *Service) runGenerateVideos(ctx context.Context, proj domainstudio.Proje
 				}
 				shot.Status = domainstudio.ShotVideoReady
 				shot.ErrorText = ""
-				_, _ = s.repo.UpsertShot(ctx, shot)
+				if _, uerr := s.repo.UpsertShot(ctx, shot); uerr != nil {
+					s.log.WarnContext(ctx, "studio: failed to persist shot video metadata", "shot_id", shot.ID, "error", uerr)
+					stateMu.Lock()
+					failed++
+					doneCount++
+					lastErr = uerr
+					curDone, curOK, curFail := doneCount, completed, failed
+					stateMu.Unlock()
+					s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), curDone, len(targets), curOK, curFail, shot.ID, shot.Title, fmt.Sprintf("Shot #%d video save failed", shot.Seq), contracts.BatchStatusRunning)
+					continue
+				}
 				s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetVideo, shot.ID, out.Path, mediagennodes.NodeTypeVideo, shot.VideoPrompt, model)
 
 				stateMu.Lock()
 				completed++
 				doneCount++
-				curDone := doneCount
+				curDone, curOK, curFail := doneCount, completed, failed
 				stateMu.Unlock()
-				s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), curDone, len(targets), shot.ID, fmt.Sprintf("Generated shot #%d video", shot.Seq), "running")
+				s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), curDone, len(targets), curOK, curFail, shot.ID, shot.Title, fmt.Sprintf("Generated shot #%d video", shot.Seq), contracts.BatchStatusRunning)
 			}
 		})
 	}
@@ -1693,17 +1940,21 @@ func (s *Service) runGenerateVideos(ctx context.Context, proj domainstudio.Proje
 
 	if refreshed, lerr := s.repo.ListShots(ctx, ep.ID); lerr == nil {
 		s.warnDiskMirror(ctx, "shots.json", s.syncEpisodeShotsToDisk(ctx, proj, ep, refreshed))
+	} else {
+		s.log.WarnContext(ctx, "studio: failed to list shots after video batch", "episode_id", ep.ID, "error", lerr)
 	}
 	if completed > 0 && ep.Stage != domainstudio.StageExport {
 		ep.Stage = domainstudio.StageVideo
-		_, _ = s.repo.UpdateEpisode(ctx, ep)
+		if _, uerr := s.repo.UpdateEpisode(ctx, ep); uerr != nil {
+			s.log.WarnContext(ctx, "studio: failed to update episode stage after videos", "episode_id", ep.ID, "error", uerr)
+		}
 	}
 
-	status := "completed"
+	status := contracts.BatchStatusCompleted
 	if failed > 0 && completed == 0 {
-		status = "failed"
+		status = contracts.BatchStatusFailed
 	}
-	s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), len(targets), len(targets), "", fmt.Sprintf("Videos: %d ok, %d failed", completed, failed), status)
+	s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), len(targets), len(targets), completed, failed, "", "", fmt.Sprintf("Videos: %d ok, %d failed", completed, failed), status)
 
 	detail, err := s.GetEpisode(ctx, ep.ID)
 	if err != nil {
@@ -1750,10 +2001,15 @@ func (s *Service) runGenerateTTS(ctx context.Context, proj domainstudio.Project,
 	outDir := ""
 	if epRoot != "" {
 		outDir = filepath.Join(epRoot, "media", "tts")
-		_ = os.MkdirAll(outDir, 0o755)
+		if err := s.ensureGuardedDir(ctx, outDir); err != nil {
+			return contracts.StudioRunStageResult{}, err
+		}
 	}
 
-	assets, _ := s.repo.ListAssets(ctx, proj.ID)
+	assets, aerr := s.repo.ListAssets(ctx, proj.ID)
+	if aerr != nil {
+		s.log.WarnContext(ctx, "studio: failed to list assets for tts voice mapping", "project_id", proj.ID, "error", aerr)
+	}
 	voiceBySpeaker := map[string]domainstudio.AssetEntry{}
 	for _, a := range assets {
 		if a.Kind == domainstudio.AssetCharacter && (a.VoiceID != "" || a.VoiceProvider != "") {
@@ -1769,13 +2025,18 @@ func (s *Service) runGenerateTTS(ctx context.Context, proj domainstudio.Project,
 			return contracts.StudioRunStageResult{}, ctx.Err()
 		}
 		shotModel, shotVoice := resolveShotVoiceConfig(shot, p.Model, proj.DefaultTTSModel, p.Voice, voiceBySpeaker)
-		s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), idx+1, len(targets), shot.ID, fmt.Sprintf("Synthesizing TTS for shot #%d", shot.Seq), "running")
-		reqBytes, _ := json.Marshal(mediagennodes.TTSGenerateInput{
+		s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), idx+1, len(targets), completed, failed, shot.ID, shot.Title, fmt.Sprintf("Synthesizing TTS for shot #%d", shot.Seq), contracts.BatchStatusRunning)
+		reqBytes, merr := json.Marshal(mediagennodes.TTSGenerateInput{
 			Text:      shotSpeechText(shot),
 			Model:     shotModel,
 			Voice:     shotVoice,
 			OutputDir: outDir,
 		})
+		if merr != nil {
+			failed++
+			lastErr = apperr.Internal(merr)
+			continue
+		}
 		rawOut, rerr := s.wf.RunNode(ctx, mediagennodes.NodeTypeTTS, reqBytes)
 		if rerr != nil {
 			failed++
@@ -1797,6 +2058,9 @@ func (s *Service) runGenerateTTS(ctx context.Context, proj domainstudio.Project,
 		}
 		if _, uerr := s.repo.UpsertShot(ctx, shot); uerr != nil {
 			s.log.WarnContext(ctx, "studio: failed to update shot audio metadata", "shot_id", shot.ID, "error", uerr)
+			failed++
+			lastErr = uerr
+			continue
 		}
 		s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetDubAudio, shot.ID, out.Path, mediagennodes.NodeTypeTTS, shotSpeechText(shot), shotModel)
 		completed++
@@ -1804,12 +2068,14 @@ func (s *Service) runGenerateTTS(ctx context.Context, proj domainstudio.Project,
 
 	if refreshed, lerr := s.repo.ListShots(ctx, ep.ID); lerr == nil {
 		s.warnDiskMirror(ctx, "shots.json", s.syncEpisodeShotsToDisk(ctx, proj, ep, refreshed))
+	} else {
+		s.log.WarnContext(ctx, "studio: failed to list shots after tts batch", "episode_id", ep.ID, "error", lerr)
 	}
-	status := "completed"
+	status := contracts.BatchStatusCompleted
 	if failed > 0 && completed == 0 {
-		status = "failed"
+		status = contracts.BatchStatusFailed
 	}
-	s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), len(targets), len(targets), "", fmt.Sprintf("TTS: %d ok, %d failed", completed, failed), status)
+	s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), len(targets), len(targets), completed, failed, "", "", fmt.Sprintf("TTS: %d ok, %d failed", completed, failed), status)
 
 	detail, err := s.GetEpisode(ctx, ep.ID)
 	if err != nil {
@@ -1838,8 +2104,7 @@ func (s *Service) runProbeShots(ctx context.Context, proj domainstudio.Project, 
 		return contracts.StudioRunStageResult{}, err
 	}
 	filter := toSet(p.ShotIDs)
-	probed, failed := 0, 0
-	var lastErr error
+	targets := make([]domainstudio.Shot, 0, len(shots))
 	for _, sh := range shots {
 		if len(filter) > 0 && !filter[sh.ID] {
 			continue
@@ -1847,9 +2112,25 @@ func (s *Service) runProbeShots(ctx context.Context, proj domainstudio.Project, 
 		if strings.TrimSpace(sh.VideoPath) == "" {
 			continue
 		}
-		inBytes, _ := json.Marshal(contracts.ProbeMediaInput{
+		targets = append(targets, sh)
+	}
+
+	probed, failed := 0, 0
+	var lastErr error
+	for idx, sh := range targets {
+		if ctx.Err() != nil {
+			return contracts.StudioRunStageResult{}, ctx.Err()
+		}
+		s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), idx+1, len(targets), probed, failed, sh.ID, sh.Title, fmt.Sprintf("Probing shot #%d media", sh.Seq), contracts.BatchStatusRunning)
+
+		inBytes, merr := json.Marshal(contracts.ProbeMediaInput{
 			Media: engine.ImageInputRef{MediaRef: engine.RefFor(sh.VideoPath, engine.MediaVideo)},
 		})
+		if merr != nil {
+			failed++
+			lastErr = apperr.Internal(merr)
+			continue
+		}
 		rawOut, rerr := s.wf.RunNode(ctx, studionodes.NodeTypeProbeMedia, inBytes)
 		if rerr != nil {
 			failed++
@@ -1862,12 +2143,20 @@ func (s *Service) runProbeShots(ctx context.Context, proj domainstudio.Project, 
 			lastErr = merr
 			continue
 		}
-		probed++
 		if out.DurationSec > 0 && int(out.DurationSec+0.5) >= domainstudio.MinShotDurationSec && int(out.DurationSec+0.5) <= s.cfg.MaxShotDurationSec {
 			sh.DurationSec = int(out.DurationSec + 0.5)
-			_, _ = s.repo.UpsertShot(ctx, sh)
+			if _, uerr := s.repo.UpsertShot(ctx, sh); uerr != nil {
+				s.log.WarnContext(ctx, "studio: failed to update probed shot duration", "shot_id", sh.ID, "error", uerr)
+			}
 		}
+		probed++
 	}
+
+	status := contracts.BatchStatusCompleted
+	if failed > 0 && probed == 0 {
+		status = contracts.BatchStatusFailed
+	}
+	s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), len(targets), len(targets), probed, failed, "", "", fmt.Sprintf("Probed: %d ok, %d failed", probed, failed), status)
 
 	detail, err := s.GetEpisode(ctx, ep.ID)
 	if err != nil {
@@ -1912,7 +2201,8 @@ func (s *Service) runConcatVideo(ctx context.Context, proj domainstudio.Project,
 		}
 	}
 	if len(clips) == 0 {
-		return contracts.StudioRunStageResult{}, apperr.Validation("no generated shot videos found to assemble")
+		return contracts.StudioRunStageResult{}, apperr.Validation("no generated shot videos found to assemble").
+			WithMsg("errors.studio.no_shots_to_assemble", nil)
 	}
 
 	manifestBytes, err := json.Marshal(clips)
@@ -1922,16 +2212,14 @@ func (s *Service) runConcatVideo(ctx context.Context, proj domainstudio.Project,
 	outDir := ""
 	if epRoot != "" {
 		outDir = filepath.Join(epRoot, "exports")
-		_ = os.MkdirAll(outDir, 0o755)
+		if err := s.ensureGuardedDir(ctx, outDir); err != nil {
+			return contracts.StudioRunStageResult{}, err
+		}
 	}
 
 	resolution := strings.TrimSpace(p.Resolution)
-	if resolution == "" {
+	if resolution == "" && strings.TrimSpace(proj.AspectRatio) != "" {
 		resolution = resolutionForAspectRatio(proj.AspectRatio, s.cfg.DefaultResolution)
-	}
-	fps := p.FPS
-	if fps <= 0 {
-		fps = s.cfg.DefaultFPS
 	}
 
 	inBytes, err := json.Marshal(contracts.VideoConcatBasicInput{
@@ -1939,7 +2227,7 @@ func (s *Service) runConcatVideo(ctx context.Context, proj domainstudio.Project,
 		OutputDir:          outDir,
 		NarrationAudioPath: narFallback,
 		Resolution:         resolution,
-		FPS:                fps,
+		FPS:                p.FPS,
 	})
 	if err != nil {
 		return contracts.StudioRunStageResult{}, apperr.Internal(err)
@@ -1957,14 +2245,8 @@ func (s *Service) runConcatVideo(ctx context.Context, proj domainstudio.Project,
 	if _, err := s.repo.UpdateEpisode(ctx, ep); err != nil {
 		return contracts.StudioRunStageResult{}, err
 	}
-	rawText := readStringFile(ep.RawScriptPath)
-	var normPtr *domainstudio.NormalizedScript
-	if b, rerr := os.ReadFile(ep.ScriptJSONPath); rerr == nil {
-		var ns domainstudio.NormalizedScript
-		if json.Unmarshal(b, &ns) == nil {
-			normPtr = &ns
-		}
-	}
+	rawText := s.readGuardedStringFile(ctx, epRoot, ep.RawScriptPath)
+	normPtr := s.readGuardedNormalizedScriptDomain(ctx, epRoot, ep.ScriptJSONPath)
 	s.warnDiskMirror(ctx, "episode.json", s.persistEpisodeToDisk(ctx, proj, ep, rawText, normPtr, shots, out.OutputPath, out.AssetID))
 
 	detail, err := s.GetEpisode(ctx, ep.ID)
@@ -2008,16 +2290,25 @@ func (s *Service) registerMedia(ctx context.Context, kind, sourceNode, filePath,
 	return item.ID
 }
 
-func (s *Service) reportBatchProgress(ctx context.Context, projectID, episodeID, stage string, cur, total int, targetID, msg, status string) {
+func (s *Service) reportBatchProgress(ctx context.Context, projectID, episodeID, stage string, cur, total, completed, failed int, targetID, itemLabel, msg string, status contracts.StudioBatchStatus) {
 	var pct float64
 	if total > 0 {
 		pct = float64(cur) / float64(total) * 100.0
 	}
-	msgKey := "studio.batch." + stage + "." + status
+	msgKey := "studio.progress.batch_running"
+	switch status {
+	case contracts.BatchStatusCompleted:
+		msgKey = "studio.progress.batch_done"
+	case contracts.BatchStatusFailed:
+		msgKey = "studio.progress.batch_failed"
+	}
 	msgParams := map[string]string{
-		"current": strconv.Itoa(cur),
-		"total":   strconv.Itoa(total),
-		"stage":   stage,
+		"stage":     stage,
+		"current":   strconv.Itoa(cur),
+		"total":     strconv.Itoa(total),
+		"completed": strconv.Itoa(completed),
+		"failed":    strconv.Itoa(failed),
+		"item":      itemLabel,
 	}
 	progress.Report(ctx, progress.Update{
 		Percent: pct,
@@ -2064,22 +2355,119 @@ func (s *Service) warnDiskMirror(ctx context.Context, artifact string, err error
 	}
 }
 
+func (s *Service) ensureGuardedProjectDirs(ctx context.Context, projRoot string) error {
+	if strings.TrimSpace(projRoot) == "" {
+		return nil
+	}
+	clean := filepath.Clean(projRoot)
+	if err := engine.CheckFile(ctx, clean, true); err != nil {
+		return err
+	}
+	if err := ensureProjectDirs(clean); err != nil {
+		return apperr.Wrap(apperr.CodeUnavailable, "Failed to initialize project workspace directories", err).
+			WithMsg("errors.studio.io_failed", nil)
+	}
+	return nil
+}
+
+func (s *Service) ensureGuardedEpisodeDirs(ctx context.Context, epRoot string) error {
+	if strings.TrimSpace(epRoot) == "" {
+		return nil
+	}
+	clean := filepath.Clean(epRoot)
+	if err := engine.CheckFile(ctx, clean, true); err != nil {
+		return err
+	}
+	if err := ensureEpisodeDirs(clean); err != nil {
+		return apperr.Wrap(apperr.CodeUnavailable, "Failed to initialize episode workspace directories", err).
+			WithMsg("errors.studio.io_failed", nil)
+	}
+	return nil
+}
+
+func (s *Service) ensureGuardedDir(ctx context.Context, dir string) error {
+	if strings.TrimSpace(dir) == "" {
+		return nil
+	}
+	clean := filepath.Clean(dir)
+	if err := engine.CheckFile(ctx, clean, true); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(clean, 0o755); err != nil {
+		return apperr.Wrap(apperr.CodeUnavailable, "Failed to prepare workspace directory", err).
+			WithMsg("errors.studio.io_failed", nil)
+	}
+	return nil
+}
+
 func (s *Service) writeGuardedFile(ctx context.Context, rootDir, targetPath string, data []byte, perm os.FileMode) error {
 	cleanRoot := filepath.Clean(strings.TrimSpace(rootDir))
 	cleanTarget := filepath.Clean(strings.TrimSpace(targetPath))
-	if cleanRoot == "" || cleanTarget == "" || !isWithinBaseDir(cleanRoot, cleanTarget) {
-		return apperr.Validation("workspace artifact path escapes project directory")
+	if strings.TrimSpace(rootDir) == "" || strings.TrimSpace(targetPath) == "" || !isWithinBaseDir(cleanRoot, cleanTarget) {
+		return apperr.Validation("workspace artifact path escapes project directory").
+			WithMsg("errors.studio.path_outside_workspace", nil)
 	}
 	if err := engine.CheckFile(ctx, cleanTarget, true); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(cleanTarget), 0o755); err != nil {
-		return apperr.Internal(err)
+		return apperr.Wrap(apperr.CodeUnavailable, "Failed to create workspace artifact directory", err).
+			WithMsg("errors.studio.io_failed", nil)
 	}
 	if err := fsutil.WriteFileAtomic(cleanTarget, data, perm); err != nil {
-		return apperr.Internal(err)
+		return apperr.Wrap(apperr.CodeUnavailable, "Failed to write workspace artifact file", err).
+			WithMsg("errors.studio.io_failed", nil)
 	}
 	return nil
+}
+
+func (s *Service) readGuardedBytes(ctx context.Context, rootDir, targetPath string) []byte {
+	trimmed := strings.TrimSpace(targetPath)
+	if trimmed == "" {
+		return nil
+	}
+	clean := filepath.Clean(trimmed)
+	if strings.TrimSpace(rootDir) != "" && !isWithinBaseDir(rootDir, clean) {
+		s.log.WarnContext(ctx, "studio: blocked workspace file read outside episode root", "error", "outside_root")
+		return nil
+	}
+	if err := engine.CheckFile(ctx, clean, false); err != nil {
+		return nil
+	}
+	b, err := os.ReadFile(clean)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+func (s *Service) readGuardedStringFile(ctx context.Context, rootDir, targetPath string) string {
+	b := s.readGuardedBytes(ctx, rootDir, targetPath)
+	if b == nil {
+		return ""
+	}
+	return string(b)
+}
+
+func (s *Service) readGuardedNormalizedScriptDomain(ctx context.Context, rootDir, targetPath string) *domainstudio.NormalizedScript {
+	b := s.readGuardedBytes(ctx, rootDir, targetPath)
+	if len(b) == 0 {
+		return nil
+	}
+	var ns domainstudio.NormalizedScript
+	if json.Unmarshal(b, &ns) != nil {
+		return nil
+	}
+	return &ns
+}
+
+func (s *Service) readGuardedNormalizedScriptDTO(ctx context.Context, rootDir, targetPath string) *contracts.StudioNormalizedScript {
+	ns := s.readGuardedNormalizedScriptDomain(ctx, rootDir, targetPath)
+	if ns == nil {
+		return nil
+	}
+	dto := normalizedScriptToDTO(*ns)
+	return &dto
 }
 
 func (s *Service) persistProjectToDisk(ctx context.Context, proj domainstudio.Project, assets []domainstudio.AssetEntry) error {
@@ -2087,7 +2475,7 @@ func (s *Service) persistProjectToDisk(ctx context.Context, proj domainstudio.Pr
 	if projRoot == "" {
 		return nil
 	}
-	if err := ensureProjectDirs(projRoot); err != nil {
+	if err := s.ensureGuardedProjectDirs(ctx, projRoot); err != nil {
 		return err
 	}
 	if pb, err := json.MarshalIndent(proj, "", "  "); err != nil {
@@ -2111,7 +2499,7 @@ func (s *Service) syncEpisodeShotsToDisk(ctx context.Context, proj domainstudio.
 	if epRoot == "" {
 		return nil
 	}
-	if err := ensureEpisodeDirs(epRoot); err != nil {
+	if err := s.ensureGuardedEpisodeDirs(ctx, epRoot); err != nil {
 		return err
 	}
 	pkg := domainstudio.ShotPromptPackage{
@@ -2121,7 +2509,7 @@ func (s *Service) syncEpisodeShotsToDisk(ctx context.Context, proj domainstudio.
 	}
 	data, err := json.MarshalIndent(pkg, "", "  ")
 	if err != nil {
-		return err
+		return apperr.Internal(err)
 	}
 	target := ep.ShotsJSONPath
 	if target == "" {
@@ -2135,7 +2523,7 @@ func (s *Service) persistEpisodeToDisk(ctx context.Context, proj domainstudio.Pr
 	if epRoot == "" {
 		return nil
 	}
-	if err := ensureEpisodeDirs(epRoot); err != nil {
+	if err := s.ensureGuardedEpisodeDirs(ctx, epRoot); err != nil {
 		return err
 	}
 	meta := episodeDiskMeta{
@@ -2168,17 +2556,21 @@ func (s *Service) persistEpisodeToDisk(ctx context.Context, proj domainstudio.Pr
 	return nil
 }
 
-func (s *Service) readEpisodeDiskMeta(epRoot string) *episodeDiskMeta {
+func (s *Service) readEpisodeDiskMeta(ctx context.Context, epRoot string) *episodeDiskMeta {
 	if epRoot == "" {
 		return nil
 	}
-	b, err := os.ReadFile(filepath.Join(epRoot, "episode.json"))
-	if err != nil {
+	b := s.readGuardedBytes(ctx, epRoot, filepath.Join(epRoot, "episode.json"))
+	if len(b) == 0 {
 		return nil
 	}
 	var m episodeDiskMeta
 	if json.Unmarshal(b, &m) != nil {
 		return nil
+	}
+	m.FinalVideoPath = s.sanitizeSyncedPath(ctx, epRoot, m.Episode.ProjectID, m.FinalVideoPath)
+	if m.FinalVideoPath == "" {
+		m.FinalVideoAssetID = ""
 	}
 	return &m
 }
@@ -2299,41 +2691,14 @@ func resolutionForAspectRatio(aspect, fallback string) string {
 func decodeNodeOutput(raw any, dst any) error {
 	b, err := json.Marshal(raw)
 	if err != nil {
-		return apperr.Internal(err)
+		return apperr.Wrap(apperr.CodeIntegrity, "Invalid workflow node output", err).
+			WithMsg("errors.studio.invalid_node_output", nil)
 	}
 	if err := json.Unmarshal(b, dst); err != nil {
-		return apperr.Internal(err)
+		return apperr.Wrap(apperr.CodeIntegrity, "Invalid workflow node output", err).
+			WithMsg("errors.studio.invalid_node_output", nil)
 	}
 	return nil
-}
-
-func readStringFile(path string) string {
-	p := strings.TrimSpace(path)
-	if p == "" {
-		return ""
-	}
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
-
-func readNormalizedScriptDTO(path string) *contracts.StudioNormalizedScript {
-	p := strings.TrimSpace(path)
-	if p == "" {
-		return nil
-	}
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return nil
-	}
-	var ns domainstudio.NormalizedScript
-	if json.Unmarshal(b, &ns) != nil {
-		return nil
-	}
-	dto := normalizedScriptToDTO(ns)
-	return &dto
 }
 
 func isDirectOrSubpath(parent, child string) bool {
@@ -2371,7 +2736,7 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// ListProjectsRaw returns sorted slugs for diagnostics or inspection if needed.
+// ListProjectSlugs returns sorted slugs for diagnostics or inspection if needed.
 func (s *Service) ListProjectSlugs(ctx context.Context) ([]string, error) {
 	list, err := s.repo.ListProjects(ctx)
 	if err != nil {

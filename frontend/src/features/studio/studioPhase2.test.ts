@@ -100,6 +100,7 @@ function makeEpisodeDetail(autoApprove = false): StudioEpisodeDetailResult {
         title: "Shot 1",
         shot_mode: "single",
         duration_sec: 4,
+        dialogues: [],
         ref_asset_tags: ["CHAR_KAI"],
         image_prompt: "Kai enters hangar",
         video_prompt: "slow dolly forward",
@@ -122,6 +123,7 @@ function makeEpisodeDetail(autoApprove = false): StudioEpisodeDetailResult {
         title: "Shot 2",
         shot_mode: "single",
         duration_sec: 5,
+        dialogues: [],
         ref_asset_tags: ["CHAR_KAI"],
         image_prompt: "Cockpit ignition",
         video_prompt: "hud lights up",
@@ -162,7 +164,7 @@ const sampleJob: StudioJob = {
   project_id: "proj-p2",
   episode_id: "ep-1",
   shot_id: "shot-2",
-  job_kind: "shot_video",
+  job_kind: "video",
   provider_id: "openai",
   model_ref: "openai/sora-2",
   status: "polling",
@@ -375,7 +377,7 @@ describe("Studio Phase 2 ArcReel helpers, store & modals", () => {
       id: "ver-1",
       project_id: "proj-p2",
       episode_id: "ep-1",
-      target_kind: "shot_keyframe",
+      target_kind: "keyframe",
       target_id: "shot-1",
       version_num: 1,
       media_path: "D:/studio/kf/shot1_v1.png",
@@ -389,13 +391,14 @@ describe("Studio Phase 2 ArcReel helpers, store & modals", () => {
       id: "qc-1",
       project_id: "proj-p2",
       episode_id: "ep-1",
-      target_kind: "shot_video",
+      target_kind: "video",
       target_id: "shot-1",
       media_path: "D:/studio/vid/shot1.mp4",
       verdict: "pass",
       overall_score: 9.2,
       issues: [],
       vision_summary: "Sharp lighting and consistent silhouette.",
+      sample_frames: [],
       created_at: 1008,
     };
 
@@ -481,9 +484,9 @@ describe("Studio Phase 2 ArcReel helpers, store & modals", () => {
     expect(useStudioStore.getState().jobs[0].status).toBe("paused");
 
     // Versions + Select + QC
-    await store.fetchVersions("shot_keyframe", "shot-1");
+    await store.fetchVersions("keyframe", "shot-1");
     expect(
-      useStudioStore.getState().versionsByTarget[targetVersionKey("shot_keyframe", "shot-1")]
+      useStudioStore.getState().versionsByTarget[targetVersionKey("keyframe", "shot-1")]
     ).toHaveLength(1);
     await store.selectVersion("ver-1");
     expect(spy).toHaveBeenCalledWith(Actions.STUDIO_VERSION_SELECT, { version_id: "ver-1" });
@@ -492,7 +495,7 @@ describe("Studio Phase 2 ArcReel helpers, store & modals", () => {
     const splitOk = await store.splitGrid({
       project_id: "proj-p2",
       episode_id: "ep-1",
-      target_kind: "shot_keyframe",
+      target_kind: "keyframe",
       target_id: "shot-1",
       image_path: "D:/studio/kf/shot1.png",
       rows: 2,
@@ -500,13 +503,13 @@ describe("Studio Phase 2 ArcReel helpers, store & modals", () => {
     });
     expect(splitOk).toBe(true);
     expect(
-      useStudioStore.getState().versionsByTarget[targetVersionKey("shot_keyframe", "shot-1")]
+      useStudioStore.getState().versionsByTarget[targetVersionKey("keyframe", "shot-1")]
     ).toHaveLength(2);
 
     const maskOk = await store.applyMaskEdit({
       project_id: "proj-p2",
       episode_id: "ep-1",
-      target_kind: "shot_keyframe",
+      target_kind: "keyframe",
       target_id: "shot-1",
       image_path: "D:/studio/kf/shot1.png",
       mask_data_base64: "data:image/png;base64,ABC",
@@ -531,13 +534,13 @@ describe("Studio Phase 2 ArcReel helpers, store & modals", () => {
     const report = await store.runQCReview({
       project_id: "proj-p2",
       episode_id: "ep-1",
-      target_kind: "shot_video",
+      target_kind: "video",
       target_id: "shot-1",
       media_path: "D:/studio/vid/shot1.mp4",
     });
     expect(report?.verdict).toBe("pass");
     expect(
-      useStudioStore.getState().qcByTarget[targetVersionKey("shot_video", "shot-1")]?.overall_score
+      useStudioStore.getState().qcByTarget[targetVersionKey("video", "shot-1")]?.overall_score
     ).toBe(9.2);
 
     // Character Voice Binding persistence
@@ -568,7 +571,7 @@ describe("Studio Phase 2 ArcReel helpers, store & modals", () => {
       versionDrawerTarget: {
         projectId: "proj-p2",
         episodeId: "ep-1",
-        targetKind: "shot_keyframe",
+        targetKind: "keyframe",
         targetId: "shot-1",
         label: "Shot 1",
         mediaPath: "D:/studio/kf/shot1.png",
@@ -583,7 +586,7 @@ describe("Studio Phase 2 ArcReel helpers, store & modals", () => {
       maskModalTarget: {
         projectId: "proj-p2",
         episodeId: "ep-1",
-        targetKind: "shot_keyframe",
+        targetKind: "keyframe",
         targetId: "shot-1",
         imagePath: "D:/studio/kf/shot1.png",
         defaultPrompt: "cybernetic helmet",
@@ -696,11 +699,11 @@ describe("Studio Phase 2 ArcReel helpers, store & modals", () => {
         },
       },
       qcByTarget: {
-        [targetVersionKey("shot_keyframe", "shot-1")]: {
+        [targetVersionKey("keyframe", "shot-1")]: {
           id: "qc-vi-1",
           project_id: "proj-p2",
           episode_id: "ep-1",
-          target_kind: "shot_keyframe",
+          target_kind: "keyframe",
           target_id: "shot-1",
           media_path: "D:/studio/kf/shot1.png",
           verdict: "warn",
@@ -715,6 +718,7 @@ describe("Studio Phase 2 ArcReel helpers, store & modals", () => {
             },
           ],
           vision_summary: "",
+          sample_frames: [],
           created_at: 2000,
         },
       },

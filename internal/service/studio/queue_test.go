@@ -543,3 +543,200 @@ func TestStudioQueuePermanentFastFailTransientBackoffPauseRaceAndVoiceLookup(t *
 
 func ptrStr(v string) *string { return &v }
 func ptrInt(v int) *int       { return &v }
+
+type failSubmissionRepo struct {
+	domainstudio.Repository
+	failSetSubmission atomic.Bool
+}
+
+func (r *failSubmissionRepo) SetJobProviderSubmission(ctx context.Context, id, providerJobID, tokenJSON string, status domainstudio.JobStatus, nowMs int64) (domainstudio.Job, error) {
+	if r.failSetSubmission.Load() {
+		return domainstudio.Job{}, apperr.Unavailable("simulated sqlite lock during SetJobProviderSubmission")
+	}
+	return r.Repository.SetJobProviderSubmission(ctx, id, providerJobID, tokenJSON, status, nowMs)
+}
+
+func TestStudioQueueInFlightCancelFailedReEnqueueAndSubmissionCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	db, err := sqlite.Open(ctx, sqlite.Options{
+		Path:          filepath.Join(tmp, "queue_cancel_race.db"),
+		BackupDir:     filepath.Join(tmp, "backups"),
+		BackupsToKeep: 1,
+		BusyTimeout:   time.Second,
+		Logger:        slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	cfg := config.Default(config.ModeDesktop).Studio
+	cfg.QueueWorkers = 2
+	cfg.QueuePollInterval = 15 * time.Millisecond
+
+	baseRepo := sqlite.NewStudioRepository(db, sqlite.WithStudioConfig(cfg))
+	wrapRepo := &failSubmissionRepo{Repository: baseRepo}
+	vidDrv := &crashTestVideoDriver{outDir: tmp}
+
+	startedCh := make(chan string, 2)
+	canceledCh := make(chan error, 2)
+	wf := &hookableQueueWorkflow{
+		outDir: tmp,
+		onImage: func(runCtx context.Context, in mediagennodes.ImageGenerateInput) (mediagennodes.ImageGenerateOutput, error) {
+			select {
+			case startedCh <- in.OutputDir:
+			default:
+			}
+			<-runCtx.Done()
+			canceledCh <- runCtx.Err()
+			return mediagennodes.ImageGenerateOutput{}, runCtx.Err()
+		},
+	}
+
+	svc := studiosvc.New(studiosvc.Options{
+		Repo:         wrapRepo,
+		Workflow:     wf,
+		VideoMedia:   vidDrv,
+		StudioConfig: cfg,
+		ProjectsDir:  filepath.Join(tmp, "projects"),
+		Logger:       slog.New(slog.DiscardHandler),
+	})
+
+	projRes, err := svc.CreateProject(ctx, contracts.StudioProjectCreatePayload{
+		Title:              "Concurrent Queue Cancel",
+		DefaultImageModel:  "openai/gpt-image-1",
+		DefaultVideoModel:  "openai/sora-2",
+		AutoApproveBatches: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	epID := projRes.ActiveEpisode.Episode.ID
+	shotRes, err := svc.UpsertShot(ctx, contracts.StudioShotUpsertPayload{
+		EpisodeID:   epID,
+		SceneCode:   "S01",
+		Title:       "Shot Cancel",
+		ImagePrompt: ptrStr("misty alley"),
+		VideoPrompt: ptrStr("dolly zoom"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Start background RunQueueWorker + concurrent SetFileGuard updates under -race
+	workerCtx, stopWorker := context.WithCancel(ctx)
+	workerDone := make(chan struct{})
+	go func() {
+		defer close(workerDone)
+		svc.RunQueueWorker(workerCtx)
+	}()
+	defer func() {
+		stopWorker()
+		<-workerDone
+	}()
+
+	go func() {
+		for i := 0; i < 10; i++ {
+			svc.SetFileGuard(func(string, bool) error { return nil })
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+
+	enq, err := svc.EnqueueBatch(ctx, contracts.StudioQueueEnqueuePayload{
+		EpisodeID: epID, Stage: "generate_keyframes",
+	})
+	if err != nil || len(enq.Jobs) != 1 {
+		t.Fatalf("EnqueueBatch: %+v err=%v", enq, err)
+	}
+	jobID := enq.Jobs[0].ID
+
+	// Verify output dir aligns with epRoot/media/keyframes
+	var outDir string
+	select {
+	case outDir = <-startedCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for worker to start queued image job")
+	}
+	if !strings.HasSuffix(filepath.ToSlash(outDir), "/media/keyframes") {
+		t.Fatalf("expected queue keyframe output dir to end with /media/keyframes, got %q", outDir)
+	}
+
+	// Cancel in-flight job -> runCtx cancels immediately and job remains canceled
+	if _, err := svc.ControlQueue(ctx, contracts.StudioQueueControlPayload{
+		Action: contracts.QueueActionCancel,
+		JobID:  jobID,
+	}); err != nil {
+		t.Fatalf("ControlQueue(cancel): %v", err)
+	}
+	select {
+	case cerr := <-canceledCh:
+		if cerr == nil {
+			t.Fatal("expected non-nil context cancellation error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected ControlQueue(cancel) to cancel in-flight job context immediately")
+	}
+	time.Sleep(30 * time.Millisecond)
+	listed, err := svc.ListJobs(ctx, contracts.StudioQueueListPayload{ProjectID: projRes.Project.ID})
+	if err != nil || len(listed.Jobs) != 1 || listed.Jobs[0].Status != domainstudio.JobCanceled {
+		t.Fatalf("expected canceled status preserved, got %+v err=%v", listed.Jobs, err)
+	}
+
+	// Stop background worker so we can deterministically step failed re-enqueue & SetJobProviderSubmission failure
+	stopWorker()
+	<-workerDone
+
+	// Canceled/Failed jobs MUST allow re-enqueue with Force: false!
+	wf.onImage = func(_ context.Context, _ mediagennodes.ImageGenerateInput) (mediagennodes.ImageGenerateOutput, error) {
+		return mediagennodes.ImageGenerateOutput{}, apperr.Validation("bad prompt")
+	}
+	enqAfterCancel, err := svc.EnqueueBatch(ctx, contracts.StudioQueueEnqueuePayload{
+		EpisodeID: epID, Stage: "generate_keyframes", Force: false,
+	})
+	if err != nil || len(enqAfterCancel.Jobs) != 1 {
+		t.Fatalf("expected re-enqueue after cancel with Force=false to create 1 job, got %+v err=%v", enqAfterCancel, err)
+	}
+	svc.StepQueueOnce(ctx) // fails permanently
+	enqAfterFail, err := svc.EnqueueBatch(ctx, contracts.StudioQueueEnqueuePayload{
+		EpisodeID: epID, Stage: "generate_keyframes", Force: false,
+	})
+	if err != nil || len(enqAfterFail.Jobs) != 1 {
+		t.Fatalf("expected re-enqueue after failure with Force=false to create 1 job, got %+v err=%v", enqAfterFail, err)
+	}
+	svc.StepQueueOnce(ctx) // drain enqAfterFail job before enqueueing video job
+
+	// SetJobProviderSubmission failure MUST record ProviderJobID on the failed job so Retry polls instead of double-submitting!
+	kfFile := filepath.Join(tmp, "kf_sub.png")
+	_ = os.WriteFile(kfFile, []byte("PNG"), 0o600)
+	if _, err := svc.UpsertShot(ctx, contracts.StudioShotUpsertPayload{
+		ID: shotRes.Shot.ID, EpisodeID: epID, KeyframePath: ptrStr(kfFile),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wrapRepo.failSetSubmission.Store(true)
+	enqVid, err := svc.EnqueueBatch(ctx, contracts.StudioQueueEnqueuePayload{
+		EpisodeID: epID, Stage: "generate_videos",
+	})
+	if err != nil || len(enqVid.Jobs) != 1 {
+		t.Fatalf("EnqueueBatch(video): %+v err=%v", enqVid, err)
+	}
+	vidJobID := enqVid.Jobs[0].ID
+	svc.StepQueueOnce(ctx)
+	if vidDrv.submitCalls.Load() != 1 {
+		t.Fatalf("expected 1 SubmitVideoJob call, got %d", vidDrv.submitCalls.Load())
+	}
+
+	wrapRepo.failSetSubmission.Store(false)
+	retryRes, err := svc.ControlQueue(ctx, contracts.StudioQueueControlPayload{
+		Action: contracts.QueueActionRetry,
+		JobID:  vidJobID,
+	})
+	if err != nil || retryRes.Job == nil || retryRes.Job.Status != domainstudio.JobPolling || retryRes.Job.ProviderJobID != "remote-vid-999" {
+		t.Fatalf("expected Retry after SetJobProviderSubmission failure to resume polling remote-vid-999 without re-submitting, got %+v err=%v", retryRes, err)
+	}
+	svc.StepQueueOnce(ctx)
+	if vidDrv.submitCalls.Load() != 1 {
+		t.Fatalf("SubmitVideoJob called %d times; expected strictly 1 (no double billing)", vidDrv.submitCalls.Load())
+	}
+}

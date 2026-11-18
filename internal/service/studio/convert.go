@@ -5,6 +5,18 @@ import (
 	domainstudio "app/internal/domain/studio"
 )
 
+func cloneStringsNonNil(src []string) []string {
+	out := make([]string, len(src))
+	copy(out, src)
+	return out
+}
+
+func cloneFloatsNonNil(src []float64) []float64 {
+	out := make([]float64, len(src))
+	copy(out, src)
+	return out
+}
+
 func projectToDTO(p domainstudio.Project) contracts.StudioProject {
 	return contracts.StudioProject{
 		ID:                 p.ID,
@@ -69,9 +81,6 @@ func assetsToDTO(list []domainstudio.AssetEntry) []contracts.StudioAsset {
 }
 
 func dialoguesToDTO(list []domainstudio.DialogueLine) []contracts.StudioDialogueLine {
-	if len(list) == 0 {
-		return nil
-	}
 	out := make([]contracts.StudioDialogueLine, len(list))
 	for i, d := range list {
 		out[i] = contracts.StudioDialogueLine{
@@ -113,7 +122,7 @@ func shotToDTO(s domainstudio.Shot) contracts.StudioShot {
 		VideoPrompt:     s.VideoPrompt,
 		NarrationText:   s.NarrationText,
 		Dialogues:       dialoguesToDTO(s.Dialogues),
-		RefAssetTags:    append([]string(nil), s.RefAssetTags...),
+		RefAssetTags:    cloneStringsNonNil(s.RefAssetTags),
 		KeyframeAssetID: s.KeyframeAssetID,
 		KeyframePath:    s.KeyframePath,
 		VideoAssetID:    s.VideoAssetID,
@@ -153,7 +162,7 @@ func normalizedScriptToDTO(ns domainstudio.NormalizedScript) contracts.StudioNor
 				VisualHint:  bt.VisualHint,
 				CameraHint:  bt.CameraHint,
 				DurationSec: bt.DurationSec,
-				AssetTags:   append([]string(nil), bt.AssetTags...),
+				AssetTags:   cloneStringsNonNil(bt.AssetTags),
 				Dialogues:   dialoguesToDTO(bt.Dialogues),
 				Narrations:  nars,
 			}
@@ -173,7 +182,7 @@ func normalizedScriptToDTO(ns domainstudio.NormalizedScript) contracts.StudioNor
 		AspectRatio: ns.AspectRatio,
 		Logline:     ns.Logline,
 		Language:    ns.Language,
-		Characters:  append([]string(nil), ns.Characters...),
+		Characters:  cloneStringsNonNil(ns.Characters),
 		Scenes:      scenes,
 	}
 }
@@ -229,10 +238,10 @@ func jobToDTO(j domainstudio.Job) contracts.StudioJob {
 		EpisodeID:     j.EpisodeID,
 		ShotID:        j.ShotID,
 		AssetID:       j.AssetID,
-		JobKind:       string(j.JobKind),
+		JobKind:       j.JobKind,
 		ProviderID:    j.ProviderID,
 		ModelRef:      j.ModelRef,
-		Status:        string(j.Status),
+		Status:        j.Status,
 		ProviderJobID: j.ProviderJobID,
 		Progress:      j.Progress,
 		Attempts:      j.Attempts,
@@ -286,7 +295,7 @@ func costLedgerToDTO(c domainstudio.CostLedgerEntry) contracts.StudioCostLedgerE
 		Unit:         c.Unit,
 		EstimatedUSD: c.EstimatedUSD,
 		ActualUSD:    c.ActualUSD,
-		Status:       string(c.Status),
+		Status:       c.Status,
 		CreatedAt:    c.CreatedAt,
 	}
 }
@@ -296,7 +305,7 @@ func mediaVersionToDTO(v domainstudio.MediaVersion) contracts.StudioMediaVersion
 		ID:         v.ID,
 		ProjectID:  v.ProjectID,
 		EpisodeID:  v.EpisodeID,
-		TargetKind: string(v.TargetKind),
+		TargetKind: v.TargetKind,
 		TargetID:   v.TargetID,
 		VersionNum: v.VersionNum,
 		MediaPath:  v.MediaPath,
@@ -305,7 +314,7 @@ func mediaVersionToDTO(v domainstudio.MediaVersion) contracts.StudioMediaVersion
 		ModelRef:   v.ModelRef,
 		Seed:       v.Seed,
 		CostUSD:    v.CostUSD,
-		QCStatus:   string(v.QCStatus),
+		QCStatus:   v.QCStatus,
 		IsSelected: v.IsSelected,
 		CreatedAt:  v.CreatedAt,
 	}
@@ -327,16 +336,16 @@ func qcReportToDTO(r domainstudio.QCReport) contracts.StudioQCReport {
 		ID:             r.ID,
 		ProjectID:      r.ProjectID,
 		EpisodeID:      r.EpisodeID,
-		TargetKind:     string(r.TargetKind),
+		TargetKind:     r.TargetKind,
 		TargetID:       r.TargetID,
 		MediaVersionID: r.MediaVersionID,
 		MediaPath:      r.MediaPath,
-		Verdict:        string(r.Verdict),
+		Verdict:        r.Verdict,
 		OverallScore:   r.OverallScore,
 		Issues:         issues,
 		VisionSummary:  r.VisionSummary,
 		VisionModelRef: r.VisionModelRef,
-		SampleFrames:   append([]string(nil), r.SampleFrames...),
+		SampleFrames:   cloneStringsNonNil(r.SampleFrames),
 		CreatedAt:      r.CreatedAt,
 	}
 }
@@ -357,12 +366,13 @@ func editTimelineToDTO(tl domainstudio.EditTimeline) contracts.StudioEditTimelin
 				SourceOutMs:     cl.SourceOutMs,
 				Speed:           cl.Speed,
 				Volume:          cl.Volume,
+				Mute:            cl.Mute,
 				TransitionIn:    cl.TransitionIn,
 				TransitionMs:    cl.TransitionMs,
 				KenBurnsPreset:  cl.KenBurnsPreset,
 				SpritePath:      cl.SpritePath,
 				SpriteAssetID:   cl.SpriteAssetID,
-				Peaks:           append([]float64(nil), cl.Peaks...),
+				Peaks:           cloneFloatsNonNil(cl.Peaks),
 			}
 		}
 		tracks[i] = contracts.StudioTimelineTrack{
@@ -426,6 +436,7 @@ func editTimelineFromDTO(tl *contracts.StudioEditTimeline) *domainstudio.EditTim
 				SourceOutMs:     cl.SourceOutMs,
 				Speed:           cl.Speed,
 				Volume:          cl.Volume,
+				Mute:            cl.Mute,
 				TransitionIn:    cl.TransitionIn,
 				TransitionMs:    cl.TransitionMs,
 				KenBurnsPreset:  cl.KenBurnsPreset,
@@ -491,6 +502,7 @@ func timelineClipFromDTO(cl *contracts.StudioTimelineClip) *domainstudio.Timelin
 		SourceOutMs:     cl.SourceOutMs,
 		Speed:           cl.Speed,
 		Volume:          cl.Volume,
+		Mute:            cl.Mute,
 		TransitionIn:    cl.TransitionIn,
 		TransitionMs:    cl.TransitionMs,
 		KenBurnsPreset:  cl.KenBurnsPreset,
@@ -522,7 +534,7 @@ func timelineOpFromDTO(op contracts.StudioTimelineOp) domainstudio.TimelineOp {
 		}
 	}
 	return domainstudio.TimelineOp{
-		Op:              op.Op,
+		Op:              string(op.Op),
 		Timeline:        editTimelineFromDTO(op.Timeline),
 		FPS:             op.FPS,
 		Width:           op.Width,
@@ -568,7 +580,7 @@ func timelineResultToDTO(projectID, timelinePath string, rec domainstudio.Timeli
 		revSummaries[i] = contracts.StudioTimelineRevisionSummary{
 			ID:        r.ID,
 			Revision:  r.Revision,
-			Actor:     string(r.Actor),
+			Actor:     r.Actor,
 			Summary:   r.Summary,
 			CreatedAt: r.CreatedAt,
 		}

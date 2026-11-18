@@ -19,7 +19,8 @@ import (
 // GetTimeline returns the episode's active EditTimeline, revision metadata, and recent history.
 func (s *Service) GetTimeline(ctx context.Context, episodeID string) (contracts.StudioTimelineResult, error) {
 	if s.repo == nil {
-		return contracts.StudioTimelineResult{}, apperr.Unavailable("studio repository is unavailable")
+		return contracts.StudioTimelineResult{}, apperr.Unavailable("studio repository is unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	ep, err := s.repo.GetEpisode(ctx, strings.TrimSpace(episodeID))
 	if err != nil {
@@ -43,7 +44,8 @@ func (s *Service) GetTimeline(ctx context.Context, episodeID string) (contracts.
 // ApplyTimelineOps applies atomic timeline edits under optimistic expected_revision concurrency control.
 func (s *Service) ApplyTimelineOps(ctx context.Context, p contracts.StudioTimelineApplyOpsPayload) (contracts.StudioTimelineResult, error) {
 	if s.repo == nil {
-		return contracts.StudioTimelineResult{}, apperr.Unavailable("studio repository is unavailable")
+		return contracts.StudioTimelineResult{}, apperr.Unavailable("studio repository is unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioTimelineResult{}, err
@@ -69,16 +71,17 @@ func (s *Service) ApplyTimelineOps(ctx context.Context, p contracts.StudioTimeli
 		return contracts.StudioTimelineResult{}, err
 	}
 	if p.ExpectedRevision != curRec.Revision {
-		return contracts.StudioTimelineResult{}, apperr.New(apperr.CodeConflict, fmt.Sprintf("timeline revision conflict: expected %d, actual %d", p.ExpectedRevision, curRec.Revision))
+		return contracts.StudioTimelineResult{}, apperr.New(apperr.CodeConflict, fmt.Sprintf("timeline revision conflict: expected %d, actual %d", p.ExpectedRevision, curRec.Revision)).
+			WithMsg("errors.studio.revision_conflict", map[string]any{"expected": p.ExpectedRevision, "actual": curRec.Revision})
 	}
 
-	nextTL, err := domainstudio.ApplyTimelineOps(curRec.Timeline, domainOps)
+	nextTL, err := domainstudio.ApplyTimelineOpsWithMaxDim(curRec.Timeline, domainOps, s.cfg.MaxVideoDimension)
 	if err != nil {
 		return contracts.StudioTimelineResult{}, err
 	}
 	s.hydrateTimelineClipAssets(ctx, epRoot, &nextTL)
 
-	actor := domainstudio.TimelineActor(strings.TrimSpace(p.Actor))
+	actor := domainstudio.TimelineActor(strings.TrimSpace(string(p.Actor)))
 	if !actor.Valid() {
 		actor = domainstudio.ActorUser
 	}
@@ -93,15 +96,19 @@ func (s *Service) ApplyTimelineOps(ctx context.Context, p contracts.StudioTimeli
 	}
 
 	_, timelinePath := s.persistTimelineJSON(ctx, proj, ep, saved.Timeline)
-	revs, _ := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
-	s.emitTimelineChanged(proj.ID, saved, string(actor), summary)
+	revs, rerr := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
+	if rerr != nil {
+		s.log.WarnContext(ctx, "studio: failed to list timeline revisions after apply_ops", "episode_id", ep.ID, "error", rerr)
+	}
+	s.emitTimelineChanged(proj.ID, saved, actor, summary)
 	return timelineResultToDTO(proj.ID, timelinePath, saved, revs), nil
 }
 
 // UndoTimeline steps backward one revision while enforcing expected_revision.
 func (s *Service) UndoTimeline(ctx context.Context, p contracts.StudioTimelineRevisionNavPayload) (contracts.StudioTimelineResult, error) {
 	if s.repo == nil {
-		return contracts.StudioTimelineResult{}, apperr.Unavailable("studio repository is unavailable")
+		return contracts.StudioTimelineResult{}, apperr.Unavailable("studio repository is unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioTimelineResult{}, err
@@ -122,15 +129,19 @@ func (s *Service) UndoTimeline(ctx context.Context, p contracts.StudioTimelineRe
 	}
 	s.hydrateTimelineClipAssets(ctx, s.resolveEpisodeRoot(proj, ep.Code), &rec.Timeline)
 	_, timelinePath := s.persistTimelineJSON(ctx, proj, ep, rec.Timeline)
-	revs, _ := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
-	s.emitTimelineChanged(proj.ID, rec, string(domainstudio.ActorUser), "undo")
+	revs, rerr := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
+	if rerr != nil {
+		s.log.WarnContext(ctx, "studio: failed to list timeline revisions after undo", "episode_id", ep.ID, "error", rerr)
+	}
+	s.emitTimelineChanged(proj.ID, rec, domainstudio.ActorUser, "undo")
 	return timelineResultToDTO(proj.ID, timelinePath, rec, revs), nil
 }
 
 // RedoTimeline steps forward one undone revision while enforcing expected_revision.
 func (s *Service) RedoTimeline(ctx context.Context, p contracts.StudioTimelineRevisionNavPayload) (contracts.StudioTimelineResult, error) {
 	if s.repo == nil {
-		return contracts.StudioTimelineResult{}, apperr.Unavailable("studio repository is unavailable")
+		return contracts.StudioTimelineResult{}, apperr.Unavailable("studio repository is unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioTimelineResult{}, err
@@ -151,15 +162,19 @@ func (s *Service) RedoTimeline(ctx context.Context, p contracts.StudioTimelineRe
 	}
 	s.hydrateTimelineClipAssets(ctx, s.resolveEpisodeRoot(proj, ep.Code), &rec.Timeline)
 	_, timelinePath := s.persistTimelineJSON(ctx, proj, ep, rec.Timeline)
-	revs, _ := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
-	s.emitTimelineChanged(proj.ID, rec, string(domainstudio.ActorUser), "redo")
+	revs, rerr := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
+	if rerr != nil {
+		s.log.WarnContext(ctx, "studio: failed to list timeline revisions after redo", "episode_id", ep.ID, "error", rerr)
+	}
+	s.emitTimelineChanged(proj.ID, rec, domainstudio.ActorUser, "redo")
 	return timelineResultToDTO(proj.ID, timelinePath, rec, revs), nil
 }
 
 // AutoAssembleTimeline builds an initial multi-track EditTimeline from the episode's shots & audio.
 func (s *Service) AutoAssembleTimeline(ctx context.Context, p contracts.StudioTimelineAutoAssemblePayload) (contracts.StudioTimelineResult, error) {
 	if s.repo == nil || s.wf == nil {
-		return contracts.StudioTimelineResult{}, apperr.Unavailable("studio dependencies are unavailable")
+		return contracts.StudioTimelineResult{}, apperr.Unavailable("studio dependencies are unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioTimelineResult{}, err
@@ -178,7 +193,8 @@ func (s *Service) AutoAssembleTimeline(ctx context.Context, p contracts.StudioTi
 		return contracts.StudioTimelineResult{}, err
 	}
 	if len(shots) == 0 {
-		return contracts.StudioTimelineResult{}, apperr.Validation("episode has no storyboard shots to assemble")
+		return contracts.StudioTimelineResult{}, apperr.Validation("episode has no storyboard shots to assemble").
+			WithMsg("errors.studio.no_shots_to_assemble", nil)
 	}
 
 	bgmPath := strings.TrimSpace(p.BGMPath)
@@ -193,24 +209,26 @@ func (s *Service) AutoAssembleTimeline(ctx context.Context, p contracts.StudioTi
 		return contracts.StudioTimelineResult{}, err
 	}
 	expectedRev := curRec.Revision
-	if p.ExpectedRevision != nil {
+	if p.ExpectedRevision == nil {
+		if curRec.Revision > 0 {
+			return contracts.StudioTimelineResult{}, apperr.New(apperr.CodeConflict, fmt.Sprintf("expected_revision is required when overwriting existing timeline revision %d", curRec.Revision)).
+				WithMsg("errors.studio.revision_conflict", map[string]any{"expected": -1, "actual": curRec.Revision})
+		}
+	} else {
 		if *p.ExpectedRevision < 0 {
 			return contracts.StudioTimelineResult{}, apperr.Validation("expected_revision must be >= 0")
 		}
 		if *p.ExpectedRevision != curRec.Revision {
-			return contracts.StudioTimelineResult{}, apperr.New(apperr.CodeConflict, fmt.Sprintf("timeline revision conflict: expected %d, actual %d", *p.ExpectedRevision, curRec.Revision))
+			return contracts.StudioTimelineResult{}, apperr.New(apperr.CodeConflict, fmt.Sprintf("timeline revision conflict: expected %d, actual %d", *p.ExpectedRevision, curRec.Revision)).
+				WithMsg("errors.studio.revision_conflict", map[string]any{"expected": *p.ExpectedRevision, "actual": curRec.Revision})
 		}
 		expectedRev = *p.ExpectedRevision
 	}
 
 	epRoot := s.resolveEpisodeRoot(proj, ep.Code)
 	resolution := strings.TrimSpace(p.Resolution)
-	if resolution == "" {
+	if resolution == "" && strings.TrimSpace(proj.AspectRatio) != "" {
 		resolution = resolutionForAspectRatio(proj.AspectRatio, s.cfg.DefaultResolution)
-	}
-	fps := p.FPS
-	if fps <= 0 {
-		fps = s.cfg.DefaultFPS
 	}
 
 	shotsBytes, err := json.Marshal(domainstudio.ShotPromptPackage{
@@ -234,7 +252,7 @@ func (s *Service) AutoAssembleTimeline(ctx context.Context, p contracts.StudioTi
 		ShotsJSON:         string(shotsBytes),
 		EpisodeID:         ep.ID,
 		Resolution:        resolution,
-		FPS:               fps,
+		FPS:               p.FPS,
 		TransitionDefault: string(p.TransitionDefault),
 		TransitionMs:      transMsPtr,
 		BGMPath:           bgmPath,
@@ -261,7 +279,8 @@ func (s *Service) AutoAssembleTimeline(ctx context.Context, p contracts.StudioTi
 
 	var assembled domainstudio.EditTimeline
 	if err := json.Unmarshal([]byte(nodeOut.TimelineJSON), &assembled); err != nil {
-		return contracts.StudioTimelineResult{}, apperr.Internal(fmt.Errorf("decode assembled timeline: %w", err))
+		return contracts.StudioTimelineResult{}, apperr.Wrap(apperr.CodeIntegrity, "Invalid assembled timeline JSON", err).
+			WithMsg("errors.studio.invalid_timeline_json", nil)
 	}
 	assembled.Normalize()
 	s.hydrateTimelineClipAssets(ctx, epRoot, &assembled)
@@ -273,15 +292,19 @@ func (s *Service) AutoAssembleTimeline(ctx context.Context, p contracts.StudioTi
 	}
 
 	_, timelinePath := s.persistTimelineJSON(ctx, proj, ep, saved.Timeline)
-	revs, _ := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
-	s.emitTimelineChanged(proj.ID, saved, string(domainstudio.ActorNode), summary)
+	revs, rerr := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
+	if rerr != nil {
+		s.log.WarnContext(ctx, "studio: failed to list timeline revisions after auto_assemble", "episode_id", ep.ID, "error", rerr)
+	}
+	s.emitTimelineChanged(proj.ID, saved, domainstudio.ActorNode, summary)
 	return timelineResultToDTO(proj.ID, timelinePath, saved, revs), nil
 }
 
 // ComputeMediaPeaksThumbs extracts audio RMS peaks and a thumbnail sprite strip for a timeline clip or media file.
 func (s *Service) ComputeMediaPeaksThumbs(ctx context.Context, p contracts.StudioMediaPeaksThumbsPayload) (contracts.MediaPeaksThumbsOutput, error) {
 	if s.repo == nil || s.wf == nil {
-		return contracts.MediaPeaksThumbsOutput{}, apperr.Unavailable("studio dependencies are unavailable")
+		return contracts.MediaPeaksThumbsOutput{}, apperr.Unavailable("studio dependencies are unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.MediaPeaksThumbsOutput{}, err
@@ -304,6 +327,9 @@ func (s *Service) ComputeMediaPeaksThumbs(ctx context.Context, p contracts.Studi
 	outDir := ""
 	if epRoot != "" {
 		outDir = filepath.Join(epRoot, "media", "thumbs")
+		if err := engine.CheckFile(ctx, outDir, true); err != nil {
+			return contracts.MediaPeaksThumbsOutput{}, err
+		}
 	}
 	inBytes, err := json.Marshal(contracts.MediaPeaksThumbsInput{
 		Media:            engine.ImageInputRef{MediaRef: engine.RefFor(mediaPath, engine.MediaVideo)},
@@ -323,17 +349,20 @@ func (s *Service) ComputeMediaPeaksThumbs(ctx context.Context, p contracts.Studi
 	if err := decodeNodeOutput(rawOut, &out); err != nil {
 		return contracts.MediaPeaksThumbsOutput{}, err
 	}
+	if out.Peaks == nil {
+		out.Peaks = []float64{}
+	}
 	if out.SpriteAssetID == "" && strings.TrimSpace(out.SpriteSheetPath) != "" {
 		out.SpriteAssetID = s.registerMedia(ctx, "image", contracts.NodeTypeMediaPeaksThumbs, out.SpriteSheetPath, outDir, 0)
 	}
 
 	if clipID := strings.TrimSpace(p.ClipID); clipID != "" {
-		rec, rerr := s.loadEpisodeTimelineRecord(ctx, proj, ep)
-		if rerr == nil && updateClipPeaksThumbs(&rec.Timeline, clipID, out) {
-			if saved, serr := s.repo.SaveTimelineRevision(ctx, ep.ID, rec.Revision, domainstudio.ActorNode, "clip peaks & thumbs", rec.Timeline); serr == nil {
-				_, _ = s.persistTimelineJSON(ctx, proj, ep, saved.Timeline)
-				s.emitTimelineChanged(proj.ID, saved, string(domainstudio.ActorNode), "clip peaks & thumbs")
-			}
+		updatedRec, uerr := s.repo.UpdateTimelineClipCache(ctx, ep.ID, clipID, out.Peaks, out.SpriteSheetPath, out.SpriteAssetID)
+		if uerr != nil {
+			s.log.WarnContext(ctx, "studio: failed to update timeline clip peaks/sprite cache", "episode_id", ep.ID, "clip_id", clipID, "error", uerr)
+		} else if updatedRec != nil {
+			_, _ = s.persistTimelineJSON(ctx, proj, ep, updatedRec.Timeline)
+			s.emitTimelineChanged(proj.ID, *updatedRec, domainstudio.ActorNode, "clip peaks & thumbs")
 		}
 	}
 	return out, nil
@@ -342,7 +371,8 @@ func (s *Service) ComputeMediaPeaksThumbs(ctx context.Context, p contracts.Studi
 // RenderTimeline executes tool.render_timeline on the episode's active EditTimeline and updates episode export state.
 func (s *Service) RenderTimeline(ctx context.Context, p contracts.StudioTimelineRenderPayload) (contracts.StudioTimelineRenderResult, error) {
 	if s.repo == nil || s.wf == nil {
-		return contracts.StudioTimelineRenderResult{}, apperr.Unavailable("studio dependencies are unavailable")
+		return contracts.StudioTimelineRenderResult{}, apperr.Unavailable("studio dependencies are unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioTimelineRenderResult{}, err
@@ -362,7 +392,8 @@ func (s *Service) RenderTimeline(ctx context.Context, p contracts.StudioTimeline
 		return contracts.StudioTimelineRenderResult{}, err
 	}
 	if countTimelineClips(rec.Timeline) == 0 {
-		return contracts.StudioTimelineRenderResult{}, apperr.Validation("timeline has no clips to render")
+		return contracts.StudioTimelineRenderResult{}, apperr.Validation("timeline has no clips to render").
+			WithMsg("errors.studio.timeline_empty", nil)
 	}
 
 	tlBytes, err := json.Marshal(rec.Timeline)
@@ -384,6 +415,7 @@ func (s *Service) RenderTimeline(ctx context.Context, p contracts.StudioTimeline
 		LoudnormLUFS:     p.LoudnormLUFS,
 		CRF:              p.CRF,
 		Preset:           strings.TrimSpace(p.Preset),
+		Overwrite:        p.Overwrite,
 	})
 	if err != nil {
 		return contracts.StudioTimelineRenderResult{}, apperr.Internal(err)
@@ -407,18 +439,17 @@ func (s *Service) RenderTimeline(ctx context.Context, p contracts.StudioTimeline
 	}
 
 	ep.Stage = domainstudio.StageExport
-	if updatedEp, uerr := s.repo.UpdateEpisode(ctx, ep); uerr == nil {
+	if updatedEp, uerr := s.repo.UpdateEpisode(ctx, ep); uerr != nil {
+		s.log.WarnContext(ctx, "studio: failed to update episode stage after render", "episode_id", ep.ID, "error", uerr)
+	} else {
 		ep = updatedEp
 	}
-	shots, _ := s.repo.ListShots(ctx, ep.ID)
-	rawText := readStringFile(ep.RawScriptPath)
-	var normPtr *domainstudio.NormalizedScript
-	if b, rerr := os.ReadFile(ep.ScriptJSONPath); rerr == nil {
-		var ns domainstudio.NormalizedScript
-		if json.Unmarshal(b, &ns) == nil {
-			normPtr = &ns
-		}
+	shots, serr := s.repo.ListShots(ctx, ep.ID)
+	if serr != nil {
+		s.log.WarnContext(ctx, "studio: failed to list shots after render", "episode_id", ep.ID, "error", serr)
 	}
+	rawText := s.readGuardedStringFile(ctx, epRoot, ep.RawScriptPath)
+	normPtr := s.readGuardedNormalizedScriptDomain(ctx, epRoot, ep.ScriptJSONPath)
 	s.warnDiskMirror(ctx, "episode.json", s.persistEpisodeToDisk(ctx, proj, ep, rawText, normPtr, shots, nodeOut.OutputPath, nodeOut.AssetID))
 
 	detail, err := s.GetEpisode(ctx, ep.ID)
@@ -445,7 +476,8 @@ func (s *Service) RenderTimeline(ctx context.Context, p contracts.StudioTimeline
 // ExportNLEDraft packages the episode's active EditTimeline into CapCut/Jianying .zip, FCPXML, or OTIO.
 func (s *Service) ExportNLEDraft(ctx context.Context, p contracts.StudioTimelineExportNLEPayload) (contracts.ExportNLEDraftOutput, error) {
 	if s.repo == nil || s.wf == nil {
-		return contracts.ExportNLEDraftOutput{}, apperr.Unavailable("studio dependencies are unavailable")
+		return contracts.ExportNLEDraftOutput{}, apperr.Unavailable("studio dependencies are unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.ExportNLEDraftOutput{}, err
@@ -464,7 +496,8 @@ func (s *Service) ExportNLEDraft(ctx context.Context, p contracts.StudioTimeline
 		return contracts.ExportNLEDraftOutput{}, err
 	}
 	if countTimelineClips(rec.Timeline) == 0 {
-		return contracts.ExportNLEDraftOutput{}, apperr.Validation("timeline has no clips to export")
+		return contracts.ExportNLEDraftOutput{}, apperr.Validation("timeline has no clips to export").
+			WithMsg("errors.studio.timeline_empty", nil)
 	}
 
 	tlBytes, err := json.Marshal(rec.Timeline)
@@ -519,7 +552,8 @@ func (s *Service) OpenExportFolder(ctx context.Context, p contracts.StudioOpenEx
 		return err
 	}
 	if s.openDirectory == nil {
-		return apperr.Unavailable("export folder opener is unavailable in this environment")
+		return apperr.Unavailable("export folder opener is unavailable in this environment").
+			WithMsg("errors.studio.open_folder_unavailable", nil)
 	}
 
 	var targetDir string
@@ -528,7 +562,8 @@ func (s *Service) OpenExportFolder(ctx context.Context, p contracts.StudioOpenEx
 
 	if epID != "" {
 		if s.repo == nil {
-			return apperr.Unavailable("studio repository is unavailable")
+			return apperr.Unavailable("studio repository is unavailable").
+				WithMsg("errors.studio.service_unavailable", nil)
 		}
 		ep, err := s.repo.GetEpisode(ctx, epID)
 		if err != nil {
@@ -540,29 +575,37 @@ func (s *Service) OpenExportFolder(ctx context.Context, p contracts.StudioOpenEx
 		}
 		epRoot := s.resolveEpisodeRoot(proj, ep.Code)
 		if epRoot == "" {
-			return apperr.Validation("episode workspace root is not configured")
+			return apperr.Validation("episode workspace root is not configured").
+				WithMsg("errors.studio.workspace_required", nil)
 		}
 		exportsDir := filepath.Join(epRoot, "exports")
 		if filePath == "" {
+			if err := engine.CheckFile(ctx, exportsDir, true); err != nil {
+				return err
+			}
 			if err := os.MkdirAll(exportsDir, 0o755); err != nil {
-				return apperr.Internal(err)
+				return apperr.Wrap(apperr.CodeUnavailable, "Failed to prepare export folder", err).
+					WithMsg("errors.studio.io_failed", nil)
 			}
 			targetDir = exportsDir
 		} else {
 			cleanFile := filepath.Clean(filePath)
 			if !isWithinBaseDir(epRoot, cleanFile) {
-				return apperr.New(apperr.CodeUnauthorized, "file_path must reside inside episode workspace")
+				return apperr.New(apperr.CodeUnauthorized, "file_path must reside inside episode workspace").
+					WithMsg("errors.studio.path_outside_workspace", nil)
 			}
 			targetDir = resolveExistingDirOrParent(cleanFile)
 		}
 	} else {
 		base := s.ProjectsDir()
 		if base == "" {
-			return apperr.New(apperr.CodeUnauthorized, "projects_dir is required to validate file_path")
+			return apperr.New(apperr.CodeUnauthorized, "projects_dir is required to validate file_path").
+				WithMsg("errors.studio.workspace_required", nil)
 		}
 		cleanFile := filepath.Clean(filePath)
 		if !isWithinBaseDir(base, cleanFile) {
-			return apperr.New(apperr.CodeUnauthorized, "file_path must reside inside studio projects workspace")
+			return apperr.New(apperr.CodeUnauthorized, "file_path must reside inside studio projects workspace").
+				WithMsg("errors.studio.path_outside_workspace", nil)
 		}
 		targetDir = resolveExistingDirOrParent(cleanFile)
 	}
@@ -571,10 +614,12 @@ func (s *Service) OpenExportFolder(ctx context.Context, p contracts.StudioOpenEx
 		return err
 	}
 	if info, err := os.Stat(targetDir); err != nil || !info.IsDir() {
-		return apperr.NotFound(fmt.Sprintf("export folder %q does not exist", targetDir))
+		return apperr.NotFound("Export folder does not exist").
+			WithMsg("errors.studio.export_folder_not_found", nil)
 	}
 	if err := s.openDirectory(targetDir); err != nil {
-		return apperr.Internal(fmt.Errorf("open export folder: %w", err))
+		return apperr.Wrap(apperr.CodeUnavailable, "Failed to open export folder", err).
+			WithMsg("errors.studio.open_folder_failed", nil)
 	}
 	return nil
 }
@@ -697,29 +742,35 @@ func (s *Service) persistTimelineJSON(ctx context.Context, proj domainstudio.Pro
 	if epRoot == "" || timelinePath == "" || !isWithinBaseDir(epRoot, timelinePath) {
 		return ep, timelinePath
 	}
+	if err := engine.CheckFile(ctx, epRoot, true); err != nil {
+		s.log.WarnContext(ctx, "studio: timeline workspace directory rejected by file guard", "episode_id", ep.ID, "error", err)
+		return ep, timelinePath
+	}
 	if err := engine.CheckFile(ctx, timelinePath, true); err != nil {
-		s.log.WarnContext(ctx, "studio: timeline.json write rejected by file guard", "path", timelinePath, "error", err)
+		s.log.WarnContext(ctx, "studio: timeline.json write rejected by file guard", "episode_id", ep.ID, "error", err)
 		return ep, timelinePath
 	}
 	if err := ensureEpisodeDirs(epRoot); err != nil {
-		s.log.WarnContext(ctx, "studio: failed to ensure episode dirs for timeline", "error", err)
+		s.log.WarnContext(ctx, "studio: failed to ensure episode dirs for timeline", "episode_id", ep.ID, "error", err)
 		return ep, timelinePath
 	}
 	if b, err := json.MarshalIndent(tl, "", "  "); err != nil {
-		s.log.WarnContext(ctx, "studio: failed to encode timeline.json", "error", err)
+		s.log.WarnContext(ctx, "studio: failed to encode timeline.json", "episode_id", ep.ID, "error", err)
 	} else if werr := fsutil.WriteFileAtomic(timelinePath, append(b, '\n'), 0o644); werr != nil {
-		s.log.WarnContext(ctx, "studio: failed to write timeline.json", "path", timelinePath, "error", werr)
+		s.log.WarnContext(ctx, "studio: failed to write timeline.json", "episode_id", ep.ID, "error", werr)
 	}
 	if ep.TimelineJSONPath != timelinePath {
 		ep.TimelineJSONPath = timelinePath
 		if updated, err := s.repo.UpdateEpisode(ctx, ep); err == nil {
 			ep = updated
+		} else {
+			s.log.WarnContext(ctx, "studio: failed to persist timeline_json_path on episode", "episode_id", ep.ID, "error", err)
 		}
 	}
 	return ep, timelinePath
 }
 
-func (s *Service) emitTimelineChanged(projID string, rec domainstudio.TimelineRecord, actor, summary string) {
+func (s *Service) emitTimelineChanged(projID string, rec domainstudio.TimelineRecord, actor domainstudio.TimelineActor, summary string) {
 	s.emit(contracts.EventStudioTimelineChanged, contracts.StudioTimelineChangedEvent{
 		ProjectID:  projID,
 		EpisodeID:  rec.EpisodeID,
@@ -731,27 +782,6 @@ func (s *Service) emitTimelineChanged(projID string, rec domainstudio.TimelineRe
 		Summary:    summary,
 		Timeline:   editTimelineToDTO(rec.Timeline),
 	})
-}
-
-func updateClipPeaksThumbs(tl *domainstudio.EditTimeline, clipID string, out contracts.MediaPeaksThumbsOutput) bool {
-	if tl == nil {
-		return false
-	}
-	for ti := range tl.Tracks {
-		for ci := range tl.Tracks[ti].Clips {
-			if tl.Tracks[ti].Clips[ci].ID == clipID {
-				tl.Tracks[ti].Clips[ci].Peaks = append([]float64(nil), out.Peaks...)
-				if strings.TrimSpace(out.SpriteSheetPath) != "" {
-					tl.Tracks[ti].Clips[ci].SpritePath = out.SpriteSheetPath
-				}
-				if strings.TrimSpace(out.SpriteAssetID) != "" {
-					tl.Tracks[ti].Clips[ci].SpriteAssetID = out.SpriteAssetID
-				}
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func countTimelineClips(tl domainstudio.EditTimeline) int {

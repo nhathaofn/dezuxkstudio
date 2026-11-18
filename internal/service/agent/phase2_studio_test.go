@@ -407,7 +407,7 @@ func TestPhase2NodesAndUntrustedGuardThroughRealWorkflowAndAgentMCP(t *testing.T
 				"media_path":      gridImg,
 				"reference_paths": []string{maskImg},
 				"prompt_expected": "clean portrait",
-				"target_kind":     "shot_keyframe",
+				"target_kind":     "keyframe",
 			},
 		},
 	})

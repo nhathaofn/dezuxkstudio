@@ -115,6 +115,9 @@ export type StudioJobKind = (typeof StudioJobKindValues)[number];
 export const StudioQueueActionValues = ["pause", "resume", "cancel", "retry"] as const;
 export type StudioQueueAction = (typeof StudioQueueActionValues)[number];
 
+export const StudioCostStatusValues = ["estimated", "recorded", "failed"] as const;
+export type StudioCostStatus = (typeof StudioCostStatusValues)[number];
+
 export const StudioMediaTargetKindValues = ["asset", "keyframe", "video", "dub_audio", "lipsync_video", "grid_panel", "clean_video"] as const;
 export type StudioMediaTargetKind = (typeof StudioMediaTargetKindValues)[number];
 
@@ -1224,6 +1227,7 @@ export interface StudioBatchPreflightPayload {
   stage: string;
   model?: string;
   item_count?: number;
+  units_per_item?: number;
 }
 
 export interface StudioBatchProgressEvent {
@@ -1237,7 +1241,7 @@ export interface StudioBatchProgressEvent {
   message: string;
   msg_key?: string;
   msg_params?: Record<string, string>;
-  status: string;
+  status: StudioBatchStatus;
 }
 
 export interface StudioCostLedgerEntry {
@@ -1255,7 +1259,7 @@ export interface StudioCostLedgerEntry {
   unit: string;
   estimated_usd: number;
   actual_usd: number;
-  status: string;
+  status: StudioCostStatus;
   created_at: number;
 }
 
@@ -1300,7 +1304,7 @@ export interface StudioEditTimeline {
   height: number;
   tracks: StudioTimelineTrack[];
   subtitles: StudioSubtitleCue[];
-  markers?: StudioTimelineMarker[];
+  markers: StudioTimelineMarker[];
 }
 
 export interface StudioEpisode {
@@ -1379,7 +1383,7 @@ export interface StudioExtractLastFrameResult {
 export interface StudioGridSplitPayload {
   project_id: string;
   episode_id?: string;
-  target_kind?: string;
+  target_kind?: StudioMediaTargetKind;
   target_id?: string;
   image_path: string;
   rows: number;
@@ -1392,7 +1396,7 @@ export interface StudioGridSplitPayload {
 
 export interface StudioGridSplitResult {
   panels: GridPanel[];
-  versions?: StudioMediaVersion[];
+  versions: StudioMediaVersion[];
 }
 
 export interface StudioIDPayload {
@@ -1405,10 +1409,10 @@ export interface StudioJob {
   episode_id?: string;
   shot_id?: string;
   asset_id?: string;
-  job_kind: string;
+  job_kind: StudioJobKind;
   provider_id?: string;
   model_ref?: string;
-  status: string;
+  status: StudioJobStatus;
   provider_job_id?: string;
   progress: number;
   attempts: number;
@@ -1427,13 +1431,15 @@ export interface StudioJob {
 export interface StudioMaskEditPayload {
   project_id: string;
   episode_id?: string;
-  target_kind?: string;
+  target_kind?: StudioMediaTargetKind;
   target_id?: string;
   image_path: string;
   mask_path?: string;
   mask_data_base64?: string;
   prompt: string;
   model_ref?: string;
+  aspect_ratio?: string;
+  resolution?: string;
 }
 
 export interface StudioMaskEditResult {
@@ -1455,7 +1461,7 @@ export interface StudioMediaVersion {
   id: string;
   project_id: string;
   episode_id?: string;
-  target_kind: string;
+  target_kind: StudioMediaTargetKind;
   target_id: string;
   version_num: number;
   media_path: string;
@@ -1464,7 +1470,7 @@ export interface StudioMediaVersion {
   model_ref?: string;
   seed?: number;
   cost_usd: number;
-  qc_status: string;
+  qc_status: StudioQCStatus;
   is_selected: boolean;
   created_at: number;
 }
@@ -1481,7 +1487,7 @@ export interface StudioNormalizedScript {
   aspect_ratio: string;
   logline: string;
   language?: string;
-  characters?: string[];
+  characters: string[];
   scenes: StudioScriptScene[];
 }
 
@@ -1529,7 +1535,7 @@ export interface StudioProject {
 
 export interface StudioProjectChangedEvent {
   project_id: string;
-  action: string;
+  action: StudioProjectChangedAction;
   project?: StudioProject;
 }
 
@@ -1583,23 +1589,23 @@ export interface StudioQCReport {
   id: string;
   project_id: string;
   episode_id?: string;
-  target_kind: string;
+  target_kind: StudioMediaTargetKind;
   target_id: string;
   media_version_id?: string;
   media_path: string;
-  verdict: string;
+  verdict: StudioQCStatus;
   overall_score: number;
   issues: QCReviewIssue[];
   vision_summary?: string;
   vision_model_ref?: string;
-  sample_frames?: string[];
+  sample_frames: string[];
   created_at: number;
 }
 
 export interface StudioQCReviewPayload {
   project_id: string;
   episode_id?: string;
-  target_kind?: string;
+  target_kind?: StudioMediaTargetKind;
   target_id?: string;
   media_version_id?: string;
   media_path: string;
@@ -1611,7 +1617,7 @@ export interface StudioQCReviewPayload {
 }
 
 export interface StudioQueueControlPayload {
-  action: string;
+  action: StudioQueueAction;
   project_id?: string;
   episode_id?: string;
   job_id?: string;
@@ -1642,7 +1648,7 @@ export interface StudioQueueEnqueueResult {
 export interface StudioQueueListPayload {
   project_id?: string;
   episode_id?: string;
-  status?: string;
+  status?: StudioJobStatus;
   limit?: number;
 }
 
@@ -1672,9 +1678,9 @@ export interface StudioScriptBeat {
   visual_hint?: string;
   camera_hint?: string;
   duration_sec: number;
-  asset_tags?: string[];
-  dialogues?: StudioDialogueLine[];
-  narrations?: StudioNarrationSegment[];
+  asset_tags: string[];
+  dialogues: StudioDialogueLine[];
+  narrations: StudioNarrationSegment[];
 }
 
 export interface StudioScriptScene {
@@ -1697,8 +1703,8 @@ export interface StudioShot {
   image_prompt: string;
   video_prompt: string;
   narration_text: string;
-  dialogues?: StudioDialogueLine[];
-  ref_asset_tags?: string[];
+  dialogues: StudioDialogueLine[];
+  ref_asset_tags: string[];
   keyframe_asset_id: string;
   keyframe_path: string;
   video_asset_id: string;
@@ -1756,10 +1762,20 @@ export interface StudioSubtitleCue {
   style_preset?: string;
 }
 
+export interface StudioSyncWorkspacePayload {
+  project_id?: string;
+}
+
+export interface StudioSyncWorkspaceResult {
+  project?: StudioProjectDetailResult;
+  projects: StudioProject[];
+  projects_dir: string;
+}
+
 export interface StudioTimelineApplyOpsPayload {
   episode_id: string;
   expected_revision: number;
-  actor?: string;
+  actor?: StudioTimelineActor;
   summary?: string;
   ops: StudioTimelineOp[];
 }
@@ -1782,7 +1798,7 @@ export interface StudioTimelineChangedEvent {
   can_undo: boolean;
   can_redo: boolean;
   duration_ms: number;
-  actor: string;
+  actor: StudioTimelineActor;
   summary: string;
   timeline: StudioEditTimeline;
 }
@@ -1804,7 +1820,7 @@ export interface StudioTimelineClip {
   ken_burns_preset?: StudioKenBurnsPreset;
   sprite_path?: string;
   sprite_asset_id?: string;
-  peaks?: number[];
+  peaks: number[];
 }
 
 export interface StudioTimelineExportNLEPayload {
@@ -1822,7 +1838,7 @@ export interface StudioTimelineMarker {
 }
 
 export interface StudioTimelineOp {
-  op: string;
+  op: StudioTimelineOpKind;
   timeline?: StudioEditTimeline;
   fps?: number;
   width?: number;
@@ -1861,6 +1877,7 @@ export interface StudioTimelineRenderPayload {
   loudnorm_lufs?: number;
   crf?: number;
   preset?: string;
+  overwrite?: boolean;
 }
 
 export interface StudioTimelineRenderResult {
@@ -1881,7 +1898,7 @@ export interface StudioTimelineResult {
   duration_ms: number;
   timeline_path?: string;
   timeline: StudioEditTimeline;
-  revisions?: StudioTimelineRevisionSummary[];
+  revisions: StudioTimelineRevisionSummary[];
   updated_at: number;
 }
 
@@ -1893,7 +1910,7 @@ export interface StudioTimelineRevisionNavPayload {
 export interface StudioTimelineRevisionSummary {
   id: string;
   revision: number;
-  actor: string;
+  actor: StudioTimelineActor;
   summary: string;
   created_at: number;
 }
@@ -1919,7 +1936,7 @@ export interface StudioVersionSelectResult {
 }
 
 export interface StudioVersionsListPayload {
-  target_kind: string;
+  target_kind: StudioMediaTargetKind;
   target_id: string;
 }
 
@@ -2340,6 +2357,8 @@ export const Actions = {
   STUDIO_TIMELINE_EXPORT_NLE: "studio:timeline_export_nle",
   /** Reveals the episode exports folder in the OS file manager (desktop/host admin only). */
   STUDIO_OPEN_EXPORT_FOLDER: "studio:open_export_folder",
+  /** Synchronizes workspace project.json, asset_bible.json, shots.json, and timeline.json files with SQLite. */
+  STUDIO_SYNC_WORKSPACE: "studio:sync_workspace",
 } as const;
 export type ActionName = (typeof Actions)[keyof typeof Actions];
 
@@ -2466,6 +2485,7 @@ export interface ActionMap {
   "studio:timeline_render": { payload: StudioTimelineRenderPayload; result: StudioTimelineRenderResult };
   "studio:timeline_export_nle": { payload: StudioTimelineExportNLEPayload; result: ExportNLEDraftOutput };
   "studio:open_export_folder": { payload: StudioOpenExportFolderPayload; result: Empty };
+  "studio:sync_workspace": { payload: StudioSyncWorkspacePayload; result: StudioSyncWorkspaceResult };
 }
 
 /** Built-in workflow node types (contracts.Nodes). Settings come from workflow:specs. */

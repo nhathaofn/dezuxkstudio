@@ -120,7 +120,8 @@ func (s *Service) EstimateUnitPriceUSD(ctx context.Context, providerID, modelID,
 // GetCostSummary returns cost breakdown totals, ledger entries, and catalog rates for a project/episode.
 func (s *Service) GetCostSummary(ctx context.Context, p contracts.StudioCostSummaryPayload) (contracts.StudioCostSummaryResult, error) {
 	if s.repo == nil {
-		return contracts.StudioCostSummaryResult{}, apperr.Unavailable("studio repository unavailable")
+		return contracts.StudioCostSummaryResult{}, apperr.Unavailable("studio repository unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioCostSummaryResult{}, err
@@ -149,6 +150,14 @@ func (s *Service) GetCostSummary(ctx context.Context, p contracts.StudioCostSumm
 	for i := range pricing {
 		outPricing[i] = pricingToDTO(pricing[i])
 	}
+	byCap := sum.ByCapability
+	if byCap == nil {
+		byCap = map[string]float64{}
+	}
+	byProv := sum.ByProvider
+	if byProv == nil {
+		byProv = map[string]float64{}
+	}
 	return contracts.StudioCostSummaryResult{
 		ProjectID:         sum.ProjectID,
 		EpisodeID:         sum.EpisodeID,
@@ -156,8 +165,8 @@ func (s *Service) GetCostSummary(ctx context.Context, p contracts.StudioCostSumm
 		EstimatedTotalUSD: math.Round(sum.EstimatedTotalUSD*10000) / 10000,
 		ActualTotalUSD:    math.Round(sum.ActualTotalUSD*10000) / 10000,
 		EntryCount:        sum.EntryCount,
-		ByCapability:      sum.ByCapability,
-		ByProvider:        sum.ByProvider,
+		ByCapability:      byCap,
+		ByProvider:        byProv,
 		Entries:           outEntries,
 		Pricing:           outPricing,
 	}, nil
@@ -166,7 +175,8 @@ func (s *Service) GetCostSummary(ctx context.Context, p contracts.StudioCostSumm
 // UpsertPricing adds or updates a provider/model rate in studio_pricing_catalog.
 func (s *Service) UpsertPricing(ctx context.Context, p contracts.StudioPricingUpsertPayload) (contracts.StudioPricingEntry, error) {
 	if s.repo == nil {
-		return contracts.StudioPricingEntry{}, apperr.Unavailable("studio repository unavailable")
+		return contracts.StudioPricingEntry{}, apperr.Unavailable("studio repository unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.StudioPricingEntry{}, err
@@ -187,7 +197,8 @@ func (s *Service) UpsertPricing(ctx context.Context, p contracts.StudioPricingUp
 // RunBatchPreflight validates providers & estimates USD spend before executing a stage or enqueueing jobs.
 func (s *Service) RunBatchPreflight(ctx context.Context, p contracts.StudioBatchPreflightPayload) (contracts.BatchPreflightOutput, error) {
 	if s.repo == nil {
-		return contracts.BatchPreflightOutput{}, apperr.Unavailable("studio repository unavailable")
+		return contracts.BatchPreflightOutput{}, apperr.Unavailable("studio repository unavailable").
+			WithMsg("errors.studio.service_unavailable", nil)
 	}
 	if err := p.Validate(); err != nil {
 		return contracts.BatchPreflightOutput{}, err
@@ -206,24 +217,46 @@ func (s *Service) RunBatchPreflight(ctx context.Context, p contracts.StudioBatch
 		UnitsPerItem: unitsPerItem,
 	}
 	if s.wf != nil {
-		inBytes, _ := json.Marshal(in)
-		if rawOut, rerr := s.wf.RunNode(ctx, studionodes.NodeTypeBatchPreflight, inBytes); rerr == nil {
-			var out contracts.BatchPreflightOutput
-			if decodeNodeOutput(rawOut, &out) == nil {
-				return out, nil
-			}
+		inBytes, merr := json.Marshal(in)
+		if merr != nil {
+			return contracts.BatchPreflightOutput{}, apperr.Internal(merr)
 		}
+		rawOut, rerr := s.wf.RunNode(ctx, studionodes.NodeTypeBatchPreflight, inBytes)
+		if rerr != nil {
+			return contracts.BatchPreflightOutput{}, rerr
+		}
+		var out contracts.BatchPreflightOutput
+		if derr := decodeNodeOutput(rawOut, &out); derr != nil {
+			return contracts.BatchPreflightOutput{}, derr
+		}
+		if out.Warnings == nil {
+			out.Warnings = []string{}
+		}
+		if out.WarningItems == nil {
+			out.WarningItems = []contracts.BatchPreflightMessage{}
+		}
+		if out.Blockers == nil {
+			out.Blockers = []string{}
+		}
+		if out.BlockerItems == nil {
+			out.BlockerItems = []contracts.BatchPreflightMessage{}
+		}
+		return out, nil
 	}
-	spec := domainstudio.PreflightSpecForCapability(capName)
+
+	spec := domainstudio.PreflightSpecForCapabilityWithDuration(capName, s.cfg.DefaultShotDurationSec)
 	provID, modelID := domainstudio.SplitModelRefForPricing(modelRef)
-	price, _, _ := s.EstimateUnitPriceUSD(ctx, provID, modelID, capName, spec.Unit)
-	if price <= 0 {
-		price = spec.FallbackUnitPriceUSD
+	price := spec.FallbackUnitPriceUSD
+	if entry, ok, rerr := s.repo.ResolveUnitPrice(ctx, provID, modelID, capName, spec.Unit); rerr != nil {
+		s.log.WarnContext(ctx, "studio: failed to resolve unit price in preflight fallback", "error", rerr)
+	} else if ok {
+		price = entry.UnitPriceUSD
 	}
-	workers := s.cfg.MaxConcurrentBatch
+	workers := max(1, s.cfg.MaxConcurrentBatch)
 	batches := (itemCount + workers - 1) / workers
+	estUSD := math.Round(float64(itemCount)*unitsPerItem*price*10000) / 10000
 	return contracts.BatchPreflightOutput{
-		Report:       fmt.Sprintf("Preflight READY: capability=%s items=%d estimated_usd=$%.4f", capName, itemCount, math.Round(float64(itemCount)*unitsPerItem*price*10000)/10000),
+		Report:       fmt.Sprintf("Preflight READY: capability=%s items=%d estimated_usd=$%.4f", capName, itemCount, estUSD),
 		Ready:        true,
 		ProviderID:   provID,
 		ModelID:      modelID,
@@ -231,7 +264,7 @@ func (s *Service) RunBatchPreflight(ctx context.Context, p contracts.StudioBatch
 		ItemCount:    itemCount,
 		Unit:         spec.Unit,
 		UnitPriceUSD: math.Round(price*10000) / 10000,
-		EstimatedUSD: math.Round(float64(itemCount)*unitsPerItem*price*10000) / 10000,
+		EstimatedUSD: estUSD,
 		EstimatedSec: batches * spec.EstimatedSecPerItem,
 		Warnings:     []string{},
 		WarningItems: []contracts.BatchPreflightMessage{},
@@ -246,25 +279,34 @@ func (s *Service) resolvePreflightParams(ctx context.Context, proj domainstudio.
 	case "generate_assets":
 		capName = string(domainprovider.CapabilityImage)
 		modelRef = firstNonEmpty(p.Model, proj.DefaultImageModel)
-		unitsPerItem = domainstudio.PreflightSpecForCapability(capName).DefaultUnitsPerItem
+		unitsPerItem = domainstudio.PreflightSpecForCapabilityWithDuration(capName, s.cfg.DefaultShotDurationSec).DefaultUnitsPerItem
 		if itemCount <= 0 {
-			assets, _ := s.repo.ListAssets(ctx, proj.ID)
+			assets, err := s.repo.ListAssets(ctx, proj.ID)
+			if err != nil {
+				s.log.WarnContext(ctx, "studio: failed to list assets for preflight", "project_id", proj.ID, "error", err)
+			}
 			itemCount = len(assets)
 		}
 	case "generate_keyframes":
 		capName = string(domainprovider.CapabilityImage)
 		modelRef = firstNonEmpty(p.Model, proj.DefaultImageModel)
-		unitsPerItem = domainstudio.PreflightSpecForCapability(capName).DefaultUnitsPerItem
+		unitsPerItem = domainstudio.PreflightSpecForCapabilityWithDuration(capName, s.cfg.DefaultShotDurationSec).DefaultUnitsPerItem
 		if itemCount <= 0 && p.EpisodeID != "" {
-			shots, _ := s.repo.ListShots(ctx, p.EpisodeID)
+			shots, err := s.repo.ListShots(ctx, p.EpisodeID)
+			if err != nil {
+				s.log.WarnContext(ctx, "studio: failed to list shots for preflight", "episode_id", p.EpisodeID, "error", err)
+			}
 			itemCount = len(shots)
 		}
 	case "generate_videos":
 		capName = string(domainprovider.CapabilityVideo)
 		modelRef = firstNonEmpty(p.Model, proj.DefaultVideoModel)
-		unitsPerItem = float64(s.cfg.DefaultShotDurationSec)
+		unitsPerItem = float64(max(1, s.cfg.DefaultShotDurationSec))
 		if p.EpisodeID != "" {
-			shots, _ := s.repo.ListShots(ctx, p.EpisodeID)
+			shots, err := s.repo.ListShots(ctx, p.EpisodeID)
+			if err != nil {
+				s.log.WarnContext(ctx, "studio: failed to list shots for video preflight", "episode_id", p.EpisodeID, "error", err)
+			}
 			if itemCount <= 0 {
 				itemCount = len(shots)
 			}
@@ -279,23 +321,32 @@ func (s *Service) resolvePreflightParams(ctx context.Context, proj domainstudio.
 	case "generate_tts":
 		capName = string(domainprovider.CapabilityTTS)
 		modelRef = firstNonEmpty(p.Model, proj.DefaultTTSModel)
-		unitsPerItem = domainstudio.PreflightSpecForCapability(capName).DefaultUnitsPerItem
+		unitsPerItem = domainstudio.PreflightSpecForCapabilityWithDuration(capName, s.cfg.DefaultShotDurationSec).DefaultUnitsPerItem
 		if itemCount <= 0 && p.EpisodeID != "" {
-			shots, _ := s.repo.ListShots(ctx, p.EpisodeID)
+			shots, err := s.repo.ListShots(ctx, p.EpisodeID)
+			if err != nil {
+				s.log.WarnContext(ctx, "studio: failed to list shots for tts preflight", "episode_id", p.EpisodeID, "error", err)
+			}
 			itemCount = len(shots)
 		}
 	case "lipsync":
 		capName = string(domainprovider.CapabilityLipSync)
 		modelRef = p.Model
-		unitsPerItem = float64(s.cfg.DefaultShotDurationSec)
+		unitsPerItem = float64(max(1, s.cfg.DefaultShotDurationSec))
 		if itemCount <= 0 && p.EpisodeID != "" {
-			shots, _ := s.repo.ListShots(ctx, p.EpisodeID)
+			shots, err := s.repo.ListShots(ctx, p.EpisodeID)
+			if err != nil {
+				s.log.WarnContext(ctx, "studio: failed to list shots for lipsync preflight", "episode_id", p.EpisodeID, "error", err)
+			}
 			itemCount = len(shots)
 		}
 	default:
 		capName = string(domainprovider.CapabilityLLM)
 		modelRef = firstNonEmpty(p.Model, proj.DefaultTextModel)
-		unitsPerItem = domainstudio.PreflightSpecForCapability(capName).DefaultUnitsPerItem
+		unitsPerItem = domainstudio.PreflightSpecForCapabilityWithDuration(capName, s.cfg.DefaultShotDurationSec).DefaultUnitsPerItem
+	}
+	if p.UnitsPerItem > 0 {
+		unitsPerItem = p.UnitsPerItem
 	}
 	if itemCount <= 0 {
 		itemCount = 1
