@@ -310,13 +310,28 @@ func TestDestructiveAndOutsideActionsRequireTrustOrApproval(t *testing.T) {
 		t.Fatalf("untrusted file must remain untouched, got %q err=%v", string(raw), err)
 	}
 
-	// Inside workspace/media/trusted folders, file operations execute directly; move requires overwrite=true
-	// when the destination already exists, without prompting for file approval.
+	// Inside workspace/media/trusted folders, move without overwrite fails if dst exists;
+	// delete and overwrite-move queue user approval unless SkipTrustedApproval is enabled.
 	wsFile := filepath.Join(f.ws, "tmp.txt")
 	mustWrite(t, wsFile, "x")
-	if payload, isErr := f.call(t, "workspace_delete_file", map[string]any{"path": wsFile}); isErr || payload["ok"] != true {
-		t.Fatalf("expected direct delete inside workspace, got %v", payload)
+	payload, isErr = f.call(t, "workspace_delete_file", map[string]any{"path": wsFile})
+	if isErr || payload["status"] != "needs_approval" {
+		t.Fatalf("expected delete inside workspace to require approval, got isErr=%v payload=%v", isErr, payload)
 	}
+	delReqID, _ := payload["approval_id"].(string)
+	if delReqID == "" {
+		t.Fatalf("missing approval_id for workspace_delete_file: %v", payload)
+	}
+	if _, err := os.Stat(wsFile); err != nil {
+		t.Fatalf("file must remain intact before approval: %v", err)
+	}
+	if err := f.svc.ResolveApproval(context.Background(), delReqID, true); err != nil {
+		t.Fatalf("ResolveApproval delete: %v", err)
+	}
+	if _, err := os.Stat(wsFile); !os.IsNotExist(err) {
+		t.Fatalf("expected file deleted after approval, stat err=%v", err)
+	}
+
 	moveSrc := filepath.Join(f.ws, "src.txt")
 	moveDst := filepath.Join(f.ws, "dst.txt")
 	mustWrite(t, moveSrc, "new")
@@ -329,8 +344,12 @@ func TestDestructiveAndOutsideActionsRequireTrustOrApproval(t *testing.T) {
 	payload, isErr = f.call(t, "workspace_move_file", map[string]any{
 		"source": moveSrc, "destination": moveDst, "overwrite": true,
 	})
-	if isErr || payload["ok"] != true {
-		t.Fatalf("expected overwriting move inside workspace to succeed directly, got isErr=%v payload=%v", isErr, payload)
+	if isErr || payload["status"] != "needs_approval" {
+		t.Fatalf("expected overwriting move inside workspace to require approval, got isErr=%v payload=%v", isErr, payload)
+	}
+	moveReqID, _ := payload["approval_id"].(string)
+	if err := f.svc.ResolveApproval(context.Background(), moveReqID, true); err != nil {
+		t.Fatalf("ResolveApproval move: %v", err)
 	}
 	if raw, err := os.ReadFile(moveDst); err != nil || string(raw) != "new" {
 		t.Fatalf("expected destination to be replaced with %q, got %q err=%v", "new", string(raw), err)

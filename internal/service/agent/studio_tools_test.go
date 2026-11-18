@@ -273,11 +273,19 @@ func TestStudioMCPTools_CRUDAndApprovalGate(t *testing.T) {
 		t.Fatal("expected IsError when studio_shot_upsert video_path has forbidden extension")
 	}
 
-	// 5. AutoApproveBatches=true inside trusted workspace projectsDir executes directly without needs_approval
-	trustedProj := callMCPJSON(t, cs, "studio_project_create", map[string]any{
+	// 5. Creating a project with AutoApproveBatches=true requires initial approval, after which
+	// trusted workspace batches execute directly without per-batch needs_approval.
+	trustedQueued := callMCPJSON(t, cs, "studio_project_create", map[string]any{
 		"title":                "Auto Trusted Film",
 		"auto_approve_batches": true,
 	})
+	if trustedQueued["status"] != "needs_approval" {
+		t.Fatalf("expected studio_project_create with auto_approve_batches=true to require approval, got %+v", trustedQueued)
+	}
+	if err := svc.ResolveApproval(ctx, trustedQueued["approval_id"].(string), true); err != nil {
+		t.Fatalf("ResolveApproval(studio_project_create): %v", err)
+	}
+	trustedProj := callMCPJSON(t, cs, "studio_project_get", map[string]any{"id": "auto-trusted-film"})
 	trustedEpID := trustedProj["active_episode"].(map[string]any)["episode"].(map[string]any)["id"].(string)
 	callMCPJSON(t, cs, "studio_save_script", map[string]any{
 		"episode_id": trustedEpID,

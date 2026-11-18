@@ -401,7 +401,7 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 			if s.studio == nil {
 				return mcpError("studio service is unavailable")
 			}
-			res, err := s.studio.CreateProject(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioProjectCreatePayload{
+			p := contracts.StudioProjectCreatePayload{
 				Title:               in.Title,
 				Slug:                in.Slug,
 				Genre:               domainstudio.Genre(strings.TrimSpace(in.Genre)),
@@ -414,7 +414,16 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 				DefaultVideoModel:   strings.TrimSpace(in.DefaultVideoModel),
 				DefaultTTSModel:     strings.TrimSpace(in.DefaultTTSModel),
 				InitialEpisodeTitle: in.InitialEpisodeTitle,
-			})
+			}
+			if in.AutoApproveBatches {
+				return s.needsApproval(ctx, "studio_project_create", "", p,
+					"Create auto-approved studio project",
+					fmt.Sprintf("Create studio project %q with AutoApproveBatches=true", strings.TrimSpace(in.Title)),
+					func(execCtx context.Context) (any, error) {
+						return s.studio.CreateProject(engine.WithFileGuard(execCtx, s.CheckTrustedFile), p)
+					})
+			}
+			res, err := s.studio.CreateProject(engine.WithFileGuard(ctx, s.CheckTrustedFile), p)
 			if err != nil {
 				return mcpError(err.Error())
 			}
@@ -1009,13 +1018,39 @@ func (s *Service) registerStudioTools(server *mcpToolset) {
 			if err != nil {
 				return mcpError(err.Error())
 			}
-			res, err := p3.ApplyTimelineOps(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.StudioTimelineApplyOpsPayload{
+			payload := contracts.StudioTimelineApplyOpsPayload{
 				EpisodeID:        strings.TrimSpace(in.EpisodeID),
 				ExpectedRevision: in.ExpectedRevision,
 				Actor:            domainstudio.ActorAgent,
 				Summary:          strings.TrimSpace(in.Summary),
 				Ops:              ops,
-			})
+			}
+			destructive := false
+			for _, op := range ops {
+				switch op.Op {
+				case domainstudio.OpReplaceTimeline, domainstudio.OpRemoveTrack, domainstudio.OpRemoveClip:
+					destructive = true
+				}
+				if destructive {
+					break
+				}
+			}
+			guardedCtx := engine.WithFileGuard(ctx, s.CheckTrustedFile)
+			if destructive && !s.skipTrustedApproval() {
+				epDetail, epErr := s.studio.GetEpisode(guardedCtx, payload.EpisodeID)
+				if epErr != nil {
+					return mcpError(epErr.Error())
+				}
+				if !epDetail.Project.AutoApproveBatches {
+					return s.needsApproval(ctx, "studio_timeline_apply_ops", "", payload,
+						"Apply destructive timeline changes",
+						fmt.Sprintf("Apply destructive timeline ops on %s / %s", epDetail.Project.Title, epDetail.Episode.Code),
+						func(execCtx context.Context) (any, error) {
+							return p3.ApplyTimelineOps(engine.WithFileGuard(execCtx, s.CheckTrustedFile), payload)
+						})
+				}
+			}
+			res, err := p3.ApplyTimelineOps(guardedCtx, payload)
 			if err != nil {
 				return mcpError(err.Error())
 			}

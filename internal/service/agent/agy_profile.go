@@ -97,13 +97,6 @@ func (ps profileSecrets) clearAgyAuth(profileRoot string) {
 	_ = os.Remove(agyOAuthPath(profileRoot))
 }
 
-// prepareAgyProfile configures an isolated Antigravity home directory under DezuxkStudio's DataDir.
-// It injects ONLY DezuxkStudio's authenticated MCP server and denies built-in coding/shell tools,
-// never touching the user's real ~/.gemini or %APPDATA%\antigravity-cli directories.
-func (ps profileSecrets) prepareAgyProfile(profileRoot, mcpURL, mcpToken string) (string, map[string]string, error) {
-	return ps.prepareAgyProfileMode(profileRoot, mcpURL, mcpToken, false)
-}
-
 func (ps profileSecrets) prepareAgyProfileMode(profileRoot, mcpURL, mcpToken string, devMode bool) (string, map[string]string, error) {
 	useOAuth := ps.loadAgyAPIKey(profileRoot) == "" && loadAgyOAuthLabel(profileRoot) != ""
 	return ps.prepareAgyProfileWithOptions(profileRoot, mcpURL, mcpToken, useOAuth, devMode)

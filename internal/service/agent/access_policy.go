@@ -240,7 +240,10 @@ var forbiddenExtensions = map[string]bool{
 	// Secrets and databases.
 	".env": true, ".pem": true, ".key": true, ".crt": true, ".cer": true, ".p12": true, ".pfx": true, ".jks": true,
 	".keystore": true, ".kdbx": true, ".kdb": true, ".gpg": true, ".asc": true, ".enc": true, ".ovpn": true, ".rdp": true,
-	".db": true, ".sqlite": true, ".sqlite3": true, ".mdb": true, ".accdb": true,
+	".db": true, ".db-wal": true, ".db-shm": true,
+	".sqlite": true, ".sqlite-wal": true, ".sqlite-shm": true,
+	".sqlite3": true, ".sqlite3-wal": true, ".sqlite3-shm": true,
+	".mdb": true, ".accdb": true,
 }
 
 // forbiddenFileNames are exact (lower-case) file names that hold secrets or developer configuration.
@@ -707,7 +710,11 @@ func (p *AccessPolicy) isInternalDir(dir string) bool {
 
 // ClassifyFile returns the class of a file by name.
 func ClassifyFile(path string) FileClass {
-	base := strings.ToLower(filepath.Base(path))
+	rawBase := strings.ToLower(filepath.Base(path))
+	if rawBase != "." && rawBase != ".." && strings.TrimRight(rawBase, ". ") != rawBase {
+		return FileClassForbidden
+	}
+	base := strings.TrimRight(rawBase, ". ")
 	if forbiddenFileNames[base] || base == ".env" || strings.HasPrefix(base, ".env.") ||
 		strings.HasPrefix(base, "id_rsa") || strings.HasPrefix(base, "id_ed25519") || strings.HasPrefix(base, "id_ecdsa") ||
 		strings.HasPrefix(base, "tsconfig") || strings.HasPrefix(base, ".eslintrc") || strings.HasPrefix(base, ".prettierrc") {

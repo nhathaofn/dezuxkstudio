@@ -19,6 +19,7 @@ import (
 	"app/internal/paths"
 	"app/internal/safego"
 	"app/internal/secrets"
+	providersvc "app/internal/service/provider"
 )
 
 // Transport abstracts an active ACP connection so unit tests can inject fake pipes.
@@ -69,6 +70,8 @@ type Options struct {
 	AutoUpdate               bool        // move managed copies to newer official releases
 	Preferences              PreferencesManager
 	System                   SystemInspector
+	Update                   UpdateChecker
+	Media                    MediaManager
 	Diagnostics              DiagnosticsExporter
 	Studio                   StudioManager
 	OnStatusChanged          func(domainagent.ProviderInfo)
@@ -88,32 +91,39 @@ type Service struct {
 	// statusRevision numbers the status snapshots (ProviderInfo.Revision); it only ever grows.
 	statusRevision atomic.Int64
 
-	repo                    domainagent.Repository
-	dataDir                 string
-	workspaceDir            string
-	mediaDir                string
-	stagingDir              string
-	dirsMu                  sync.RWMutex
-	skipApproval            atomic.Bool
-	profilesDir             string
-	customizationsDir       string
-	developerMode           bool
-	appVersion              string
-	limits                  Limits
-	log                     *slog.Logger
-	workflow                WorkflowRunner
-	binaries                BinariesManager
-	managed                 ManagedCLIs
-	autoInstall             bool
-	autoUpdate              bool
-	provisioning            map[domainagent.ProviderID]provisionState
-	onLoginPrompt           func(domainagent.LoginPrompt)
-	loginMu                 sync.Mutex
-	logins                  map[domainagent.ProviderID]*loginSession
-	preferences             PreferencesManager
-	system                  SystemInspector
-	diagnostics             DiagnosticsExporter
-	studio                  StudioManager
+	repo              domainagent.Repository
+	dataDir           string
+	workspaceDir      string
+	mediaDir          string
+	stagingDir        string
+	dirsMu            sync.RWMutex
+	skipApproval      atomic.Bool
+	profilesDir       string
+	customizationsDir string
+	developerMode     bool
+	appVersion        string
+	limits            Limits
+	log               *slog.Logger
+	workflow          WorkflowRunner
+	binaries          BinariesManager
+	managed           ManagedCLIs
+	autoInstall       bool
+	autoUpdate        bool
+	provisioning      map[domainagent.ProviderID]provisionState
+	onLoginPrompt     func(domainagent.LoginPrompt)
+	loginMu           sync.Mutex
+	logins            map[domainagent.ProviderID]*loginSession
+	preferences       PreferencesManager
+	system            SystemInspector
+	update            UpdateChecker
+	media             MediaManager
+	diagnostics       DiagnosticsExporter
+	studio            StudioManager
+
+	linksMu                 sync.RWMutex
+	providerLinks           ProviderLinkStore
+	mediaInspector          MediaAssetInspector
+	activeLinked            *providersvc.ResolvedLink
 	onStatusChanged         func(domainagent.ProviderInfo)
 	onChatEvent             func(domainagent.ChatEvent)
 	onApprovalsChanged      func([]domainagent.ApprovalRequest)
@@ -235,6 +245,8 @@ func New(o Options) (*Service, error) {
 		logins:                   make(map[domainagent.ProviderID]*loginSession),
 		preferences:              o.Preferences,
 		system:                   o.System,
+		update:                   o.Update,
+		media:                    o.Media,
 		diagnostics:              o.Diagnostics,
 		studio:                   o.Studio,
 		onStatusChanged:          o.OnStatusChanged,
@@ -392,6 +404,12 @@ func (s *Service) Close() error {
 		s.driver(id).release()
 	}
 	cleanupStaleAgentArtifacts(s.profilesDir)
+	s.approvals.clear()
+	s.linksMu.Lock()
+	s.providerLinks = nil
+	s.mediaInspector = nil
+	s.activeLinked = nil
+	s.linksMu.Unlock()
 	s.mu.Lock()
 	s.tempWorkspace = ""
 	s.mu.Unlock()

@@ -474,10 +474,17 @@ func TestPhase2NodesAndUntrustedGuardThroughRealWorkflowAndAgentMCP(t *testing.T
 	}
 
 	// 4. studio_queue_enqueue forces interactive approval even if auto_approve_batches=true when a shot points outside workspace
-	projCreated := callMCPJSON(t, cs, "studio_project_create", map[string]any{
+	projQueued := callMCPJSON(t, cs, "studio_project_create", map[string]any{
 		"title":                "Trust Guard Check",
 		"auto_approve_batches": true,
 	})
+	if projQueued["status"] != "needs_approval" {
+		t.Fatalf("expected studio_project_create with auto_approve_batches=true to require approval, got: %+v", projQueued)
+	}
+	if err := svc.ResolveApproval(ctx, projQueued["approval_id"].(string), true); err != nil {
+		t.Fatalf("ResolveApproval(studio_project_create): %v", err)
+	}
+	projCreated := callMCPJSON(t, cs, "studio_project_get", map[string]any{"id": "trust-guard-check"})
 	epObj := projCreated["active_episode"].(map[string]any)["episode"].(map[string]any)
 	epID := epObj["id"].(string)
 	_, err = sqlite.NewStudioRepository(db).UpsertShot(ctx, domainstudio.Shot{

@@ -45,6 +45,18 @@ type SystemInspector interface {
 	Info() contracts.SystemInfo
 }
 
+// UpdateChecker checks for newer official DezuxkStudio releases.
+type UpdateChecker interface {
+	Check(ctx context.Context) (contracts.UpdateInfo, error)
+}
+
+// MediaManager exposes registered media library listing, deletion, and input registration to MCP tools.
+type MediaManager interface {
+	List(ctx context.Context, p contracts.MediaListPayload) (contracts.MediaListResult, error)
+	Delete(ctx context.Context, id string, deleteFile bool) error
+	RegisterInput(ctx context.Context, p contracts.MediaRegisterInputPayload) (contracts.MediaAssetItem, error)
+}
+
 // DiagnosticsExporter exposes diagnostic bundle export to DezuxkStudio's MCP server.
 type DiagnosticsExporter interface {
 	Export(ctx context.Context) (contracts.DiagnosticsBundle, error)

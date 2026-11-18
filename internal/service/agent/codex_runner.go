@@ -255,7 +255,6 @@ type codexStreamAccumulator struct {
 }
 
 func (a *codexStreamAccumulator) assistantOutput() string { return a.assistantText.String() }
-func (a *codexStreamAccumulator) thoughtOutput() string   { return a.thoughtText.String() }
 func (a *codexStreamAccumulator) failureMessage() string  { return a.lastFailure }
 
 func (a *codexStreamAccumulator) handleLine(raw string) {

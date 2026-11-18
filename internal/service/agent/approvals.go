@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -411,16 +413,28 @@ func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) 
 		if spec, ok := specByType(s.workflow.Specs(ctx), rec.NodeType); ok {
 			var inMap map[string]any
 			if json.Unmarshal([]byte(rec.InputJSON), &inMap) == nil {
-				defer s.scrubSecretParams(context.WithoutCancel(ctx), spec, inMap)
+				if hasRedactedSecretParam(spec, inMap) {
+					execErr = fmt.Errorf("approval secret parameter was redacted on save; please re-submit the request with the credential")
+				} else {
+					defer s.scrubSecretParams(context.WithoutCancel(ctx), spec, inMap)
+				}
 			}
 		}
-		res, execErr = s.workflow.RunNode(guardedCtx, rec.NodeType, json.RawMessage(rec.InputJSON))
+		if execErr == nil {
+			res, execErr = s.workflow.RunNode(guardedCtx, rec.NodeType, json.RawMessage(rec.InputJSON))
+		}
 	} else if s.workflow != nil && rec.ToolName == "workflow_run_graph" {
 		var g engine.Graph
 		if err := json.Unmarshal([]byte(rec.InputJSON), &g); err != nil {
 			execErr = fmt.Errorf("invalid graph JSON: %w", err)
 		} else {
-			res, execErr = s.workflow.RunGraph(guardedCtx, g)
+			specs := s.workflow.Specs(ctx)
+			if graphHasRedactedSecret(specs, g) {
+				execErr = fmt.Errorf("approval workflow graph contains a redacted secret parameter; please re-submit the request with the credential")
+			} else {
+				defer s.scrubGraphSecretParams(context.WithoutCancel(ctx), specs, g)
+				res, execErr = s.workflow.RunGraph(guardedCtx, g)
+			}
 		}
 	} else if s.binaries != nil && rec.ToolName == "binaries_download" {
 		var in binaryIDToolInput
@@ -428,6 +442,29 @@ func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) 
 			execErr = fmt.Errorf("invalid binary input: %w", err)
 		} else {
 			res, execErr = s.binaries.Download(ctx, domainbinaries.BinaryID(in.ID))
+		}
+	} else if rec.ToolName == "workspace_delete_file" {
+		var in deleteFileToolInput
+		if err := json.Unmarshal([]byte(rec.InputJSON), &in); err != nil {
+			execErr = fmt.Errorf("invalid delete input: %w", err)
+		} else {
+			res, execErr = s.executeWorkspaceDelete(in.Path)
+		}
+	} else if rec.ToolName == "workspace_move_file" {
+		var in moveFileToolInput
+		if err := json.Unmarshal([]byte(rec.InputJSON), &in); err != nil {
+			execErr = fmt.Errorf("invalid move input: %w", err)
+		} else {
+			res, execErr = s.executeWorkspaceMove(in)
+		}
+	} else if s.media != nil && rec.ToolName == "media_delete" {
+		var in mediaDeleteToolInput
+		if err := json.Unmarshal([]byte(rec.InputJSON), &in); err != nil {
+			execErr = fmt.Errorf("invalid media delete input: %w", err)
+		} else if err := s.media.Delete(guardedCtx, strings.TrimSpace(in.ID), in.DeleteFile); err != nil {
+			execErr = err
+		} else {
+			res = map[string]any{"ok": true, "deleted_id": strings.TrimSpace(in.ID), "delete_file": in.DeleteFile}
 		}
 	} else if studioRes, handled, studioErr := s.executeApprovedStudioTool(guardedCtx, rec.ToolName, rec.InputJSON); handled {
 		res, execErr = studioRes, studioErr
@@ -596,6 +633,24 @@ func (s *Service) executeApprovedStudioTool(guardedCtx context.Context, toolName
 		}
 		res, err := ext.RenderTimeline(guardedCtx, p)
 		return res, true, err
+	case "studio_project_create":
+		var p contracts.StudioProjectCreatePayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio project create input: %w", err)
+		}
+		res, err := s.studio.CreateProject(guardedCtx, p)
+		return res, true, err
+	case "studio_timeline_apply_ops":
+		p3, ok := s.studio.(StudioPhase3Manager)
+		if !ok {
+			return nil, true, fmt.Errorf("studio timeline management unavailable")
+		}
+		var p contracts.StudioTimelineApplyOpsPayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio timeline ops input: %w", err)
+		}
+		res, err := p3.ApplyTimelineOps(guardedCtx, p)
+		return res, true, err
 	case "studio_timeline_export_nle":
 		ext, ok := s.studio.(StudioExtendedManager)
 		if !ok {
@@ -609,6 +664,87 @@ func (s *Service) executeApprovedStudioTool(guardedCtx context.Context, toolName
 		return res, true, err
 	default:
 		return nil, false, nil
+	}
+}
+
+func (s *Service) executeWorkspaceDelete(rawPath string) (map[string]any, error) {
+	target, err := s.policy.ValidateDelete(rawPath)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("deleting folders is not allowed")
+	}
+	if err := os.Remove(target); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "deleted": target}, nil
+}
+
+func (s *Service) executeWorkspaceMove(in moveFileToolInput) (map[string]any, error) {
+	src, dst, err := s.policy.ValidateMove(in.Source, in.Destination)
+	if err != nil {
+		return nil, err
+	}
+	st, err := os.Stat(src)
+	if err != nil {
+		return nil, err
+	}
+	if st.IsDir() {
+		return nil, fmt.Errorf("moving whole folders is not supported; move the files inside it")
+	}
+	if _, err := os.Stat(dst); err == nil && !in.Overwrite {
+		return nil, fmt.Errorf("destination %q already exists (set overwrite=true to replace it)", dst)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(src, dst); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "source": src, "destination": dst}, nil
+}
+
+func hasRedactedSecretParam(spec engine.Spec, input map[string]any) bool {
+	for _, p := range spec.Params {
+		if !p.Secret {
+			continue
+		}
+		if v, _ := input[p.Name].(string); strings.TrimSpace(v) == "[REDACTED]" {
+			return true
+		}
+	}
+	return false
+}
+
+func graphHasRedactedSecret(specs []engine.Spec, g engine.Graph) bool {
+	for _, n := range g.Nodes {
+		spec, ok := specByType(specs, n.Type)
+		if !ok || len(n.Params) == 0 {
+			continue
+		}
+		var inMap map[string]any
+		if json.Unmarshal(n.Params, &inMap) == nil && hasRedactedSecretParam(spec, inMap) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) scrubGraphSecretParams(ctx context.Context, specs []engine.Spec, g engine.Graph) {
+	for _, n := range g.Nodes {
+		spec, ok := specByType(specs, n.Type)
+		if !ok || len(n.Params) == 0 {
+			continue
+		}
+		var inMap map[string]any
+		if json.Unmarshal(n.Params, &inMap) == nil {
+			s.scrubSecretParams(ctx, spec, inMap)
+		}
 	}
 }
 

@@ -551,6 +551,8 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		AutoUpdate:          cfg.Agent.AutoUpdateCLI,
 		Preferences:         prefSvc,
 		System:              sysSvc,
+		Update:              updSvc,
+		Media:               mediaSvc,
 		Diagnostics:         diagSvc,
 		Studio:              studioSvc,
 		OnStatusChanged: func(info domainagent.ProviderInfo) {

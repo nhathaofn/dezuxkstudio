@@ -349,6 +349,9 @@ func (s *Service) handleWorkspaceEditFile(in editFileToolInput) (*mcp.CallToolRe
 	if errMsg := validateJSONWrite(target, updated); errMsg != "" {
 		return mcpError(errMsg)
 	}
+	if errMsg := s.validateTextCodeWrite(target, updated); errMsg != "" {
+		return mcpError(errMsg)
+	}
 
 	totalLines := strings.Count(strings.ReplaceAll(updated, "\r\n", "\n"), "\n") + 1
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -398,7 +401,20 @@ func (s *Service) handleWorkspaceSearchText(in searchTextToolInput) (*mcp.CallTo
 		if path == target {
 			return nil
 		}
-		if !s.policy.VisibleInListing(path, d.IsDir()) {
+		if d.Type()&fs.ModeSymlink != 0 {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		resolvedEntry, resErr := s.policy.Resolve(path)
+		if resErr != nil {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !s.policy.VisibleInListing(resolvedEntry, d.IsDir()) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -407,14 +423,14 @@ func (s *Service) handleWorkspaceSearchText(in searchTextToolInput) (*mcp.CallTo
 		if d.IsDir() {
 			return nil
 		}
-		if s.policy.Classify(path) != FileClassText {
+		if s.policy.Classify(resolvedEntry) != FileClassText {
 			return nil
 		}
 		info, infoErr := d.Info()
 		if infoErr != nil || info.Size() > maxPagedFileBytes {
 			return nil
 		}
-		b, readErr := os.ReadFile(path)
+		b, readErr := os.ReadFile(resolvedEntry)
 		if readErr != nil || !utf8.Valid(b) || strings.ContainsRune(string(b), 0) {
 			return nil
 		}
