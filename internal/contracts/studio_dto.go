@@ -601,12 +601,12 @@ type StudioEpisodeUpdatedEvent struct {
 
 // StudioBatchProgressEvent is published on studio:batch_progress during multi-item execution.
 type StudioBatchProgressEvent struct {
-	ProjectID string         `json:"project_id"`
-	EpisodeID string         `json:"episode_id"`
-	Stage     string         `json:"stage"`
-	Current   int            `json:"current"`
-	Total     int            `json:"total"`
-	TargetID  string         `json:"target_id,omitempty"`
+	ProjectID string            `json:"project_id"`
+	EpisodeID string            `json:"episode_id"`
+	Stage     string            `json:"stage"`
+	Current   int               `json:"current"`
+	Total     int               `json:"total"`
+	TargetID  string            `json:"target_id,omitempty"`
 	Percent   float64           `json:"percent"`
 	Message   string            `json:"message"`
 	MsgKey    string            `json:"msg_key,omitempty"`

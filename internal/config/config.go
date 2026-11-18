@@ -152,69 +152,69 @@ type BinariesConfig struct {
 
 // MediaGenConfig tunes text, image, video, and TTS media generation requests.
 type MediaGenConfig struct {
-	RequestTimeout            time.Duration // HTTP timeout for synchronous generation and submit/poll RPCs
-	VideoTimeout              time.Duration // total deadline for async generation polling + artifact download
-	VideoPollInterval         time.Duration // delay between async task status polls
-	MaxOutputBytes            int64         // safety cap on downloaded image, video, or audio payloads
-	MaxReferenceBytes         int64         // max bytes allowed per local reference image
-	MaxJSONResponseBytes      int64         // safety cap on parsed JSON HTTP responses from media providers
-	TextTimeout               time.Duration // HTTP timeout for structured LLM text generation calls
-	TextMaxTokens             int           // default max output tokens for LLM text generation
-	TextTemperature           float64       // default sampling temperature for LLM text generation
-	RetryMax                  int           // max HTTP retry attempts on transient 429/5xx failures
-	RetryInitialDelay         time.Duration // initial exponential backoff delay between HTTP retries
-	RetryMaxDelay             time.Duration // ceiling backoff delay between HTTP retries
-	RetryBackoffFactor        float64       // exponential multiplier for HTTP retry backoff
-	LimiterPollInterval       time.Duration // polling interval while waiting on local provider rate limiter slots
-	TTSDefaultVoiceOpenAI     string        // default OpenAI TTS voice when caller leaves voice empty
-	TTSDefaultVoiceGemini     string        // default Gemini TTS prebuilt voice name when caller leaves voice empty
-	TTSDefaultVoiceDashScope  string        // default DashScope TTS voice when caller leaves voice empty
-	TTSDefaultVoiceMiniMax    string        // default MiniMax TTS voice_id when caller leaves voice empty
+	RequestTimeout           time.Duration // HTTP timeout for synchronous generation and submit/poll RPCs
+	VideoTimeout             time.Duration // total deadline for async generation polling + artifact download
+	VideoPollInterval        time.Duration // delay between async task status polls
+	MaxOutputBytes           int64         // safety cap on downloaded image, video, or audio payloads
+	MaxReferenceBytes        int64         // max bytes allowed per local reference image
+	MaxJSONResponseBytes     int64         // safety cap on parsed JSON HTTP responses from media providers
+	TextTimeout              time.Duration // HTTP timeout for structured LLM text generation calls
+	TextMaxTokens            int           // default max output tokens for LLM text generation
+	TextTemperature          float64       // default sampling temperature for LLM text generation
+	RetryMax                 int           // max HTTP retry attempts on transient 429/5xx failures
+	RetryInitialDelay        time.Duration // initial exponential backoff delay between HTTP retries
+	RetryMaxDelay            time.Duration // ceiling backoff delay between HTTP retries
+	RetryBackoffFactor       float64       // exponential multiplier for HTTP retry backoff
+	LimiterPollInterval      time.Duration // polling interval while waiting on local provider rate limiter slots
+	TTSDefaultVoiceOpenAI    string        // default OpenAI TTS voice when caller leaves voice empty
+	TTSDefaultVoiceGemini    string        // default Gemini TTS prebuilt voice name when caller leaves voice empty
+	TTSDefaultVoiceDashScope string        // default DashScope TTS voice when caller leaves voice empty
+	TTSDefaultVoiceMiniMax   string        // default MiniMax TTS voice_id when caller leaves voice empty
 }
 
 // StudioConfig tunes film studio FFmpeg/FFprobe processing, batch concurrency, queue workers, and timeline exports.
 type StudioConfig struct {
-	DefaultFPS                 int           // default output frame rate (e.g. 24)
-	DefaultResolution          string        // default output WxH resolution (e.g. "1920x1080")
-	FFmpegPreset               string        // libx264 preset (e.g. "medium")
-	FFmpegCRF                  int           // constant rate factor 0..51 (e.g. 20)
-	FFmpegVideoCodec           string        // output video codec (e.g. "libx264")
-	FFmpegPixelFormat          string        // output video pixel format (e.g. "yuv420p")
-	FFmpegAudioCodec           string        // output audio codec (e.g. "aac")
-	FFmpegAudioSampleRate      int           // output audio sample rate in Hz (e.g. 48000)
-	FFmpegAudioBitrate         string        // output audio bitrate (e.g. "192k")
-	FFmpegTimeout              time.Duration // max duration for FFmpeg studio commands
-	FFprobeTimeout             time.Duration // max duration for FFprobe media inspection commands
-	MaxVideoDimension          int           // maximum allowed width or height in pixels for studio video/grid ops
-	DefaultShotDurationSec     int           // default duration in seconds for newly authored shots
-	MaxShotDurationSec         int           // upper bound in seconds allowed per single shot
-	GridSplitMaxCount          int           // maximum rows or columns allowed in interactive grid split
-	ExtractFrameEOFOffsetSec   float64       // FFmpeg -sseof offset in seconds when seeking near end of clip
-	ExtractFrameEndPadSec      float64       // safety margin in seconds from video end when sampling multiple frames
-	ExtractFrameLastPadSec     float64       // safety margin in seconds from video end when extracting final keyframe
-	SilenceDetectNoiseDB       string        // FFmpeg silencedetect noise floor threshold (e.g. "-45dB")
-	SilenceDetectMinSec        float64       // minimum continuous silence duration in seconds for silencedetect
-	QCSilenceWarnRatio         float64       // threshold (0..1) above which QC warns that audio is mostly silent
-	MaxConcurrentBatch         int           // max parallel items during studio batch generation
-	QueueWorkers               int           // concurrent studio queue worker goroutines
-	QueuePollInterval          time.Duration // polling/backoff interval for active queue jobs
-	QueuePollLeaseMin          time.Duration // minimum lease extension while polling remote video jobs
-	QueuePollBackoffMax        time.Duration // maximum adaptive delay between remote job status polls
-	QueueMaxAttempts           int           // max submission retry attempts before marking job failed
-	ExportMaxZipBytes          int64         // safety cap on packed NLE draft zip archives in bytes
-	ExportLoudnormLUFS         float64       // integrated loudness target in LUFS for timeline renders (e.g. -14.0)
-	ExportSubtitleFontSize     int           // default subtitle font size for timeline .ass burn-in
-	TimelineDefaultTransitionMs int          // default transition overlap duration in ms for auto-assemble
-	TimelineDefaultBGMVolume   float64       // default background music track gain (0..2.0)
-	TimelineAudioDuckThreshold float64       // sidechaincompress threshold for voice-over BGM ducking
-	TimelineAudioDuckOrigVol   float64       // fallback attenuation factor for original audio behind TTS dub
-	TimelineThumbIntervalSec   float64       // default thumbnail sampling interval in seconds for timeline strips
-	TimelineThumbHeight        int           // pixel height of extracted timeline thumbnail sprite strips
-	TimelineMaxStripThumbs     int           // maximum thumbnail frames extracted per clip sprite strip
-	TimelinePeakBins           int           // default waveform peak bins count per media clip
-	TimelineWaveSampleRate     int           // PCM sample rate in Hz when computing timeline waveform peaks
-	TimelineWaveBlockSamples   int           // samples per RMS window block during peak extraction
-	TimelineRevisionLimit      int           // default number of timeline revisions returned by timeline queries
+	DefaultFPS                  int           // default output frame rate (e.g. 24)
+	DefaultResolution           string        // default output WxH resolution (e.g. "1920x1080")
+	FFmpegPreset                string        // libx264 preset (e.g. "medium")
+	FFmpegCRF                   int           // constant rate factor 0..51 (e.g. 20)
+	FFmpegVideoCodec            string        // output video codec (e.g. "libx264")
+	FFmpegPixelFormat           string        // output video pixel format (e.g. "yuv420p")
+	FFmpegAudioCodec            string        // output audio codec (e.g. "aac")
+	FFmpegAudioSampleRate       int           // output audio sample rate in Hz (e.g. 48000)
+	FFmpegAudioBitrate          string        // output audio bitrate (e.g. "192k")
+	FFmpegTimeout               time.Duration // max duration for FFmpeg studio commands
+	FFprobeTimeout              time.Duration // max duration for FFprobe media inspection commands
+	MaxVideoDimension           int           // maximum allowed width or height in pixels for studio video/grid ops
+	DefaultShotDurationSec      int           // default duration in seconds for newly authored shots
+	MaxShotDurationSec          int           // upper bound in seconds allowed per single shot
+	GridSplitMaxCount           int           // maximum rows or columns allowed in interactive grid split
+	ExtractFrameEOFOffsetSec    float64       // FFmpeg -sseof offset in seconds when seeking near end of clip
+	ExtractFrameEndPadSec       float64       // safety margin in seconds from video end when sampling multiple frames
+	ExtractFrameLastPadSec      float64       // safety margin in seconds from video end when extracting final keyframe
+	SilenceDetectNoiseDB        string        // FFmpeg silencedetect noise floor threshold (e.g. "-45dB")
+	SilenceDetectMinSec         float64       // minimum continuous silence duration in seconds for silencedetect
+	QCSilenceWarnRatio          float64       // threshold (0..1) above which QC warns that audio is mostly silent
+	MaxConcurrentBatch          int           // max parallel items during studio batch generation
+	QueueWorkers                int           // concurrent studio queue worker goroutines
+	QueuePollInterval           time.Duration // polling/backoff interval for active queue jobs
+	QueuePollLeaseMin           time.Duration // minimum lease extension while polling remote video jobs
+	QueuePollBackoffMax         time.Duration // maximum adaptive delay between remote job status polls
+	QueueMaxAttempts            int           // max submission retry attempts before marking job failed
+	ExportMaxZipBytes           int64         // safety cap on packed NLE draft zip archives in bytes
+	ExportLoudnormLUFS          float64       // integrated loudness target in LUFS for timeline renders (e.g. -14.0)
+	ExportSubtitleFontSize      int           // default subtitle font size for timeline .ass burn-in
+	TimelineDefaultTransitionMs int           // default transition overlap duration in ms for auto-assemble
+	TimelineDefaultBGMVolume    float64       // default background music track gain (0..2.0)
+	TimelineAudioDuckThreshold  float64       // sidechaincompress threshold for voice-over BGM ducking
+	TimelineAudioDuckOrigVol    float64       // fallback attenuation factor for original audio behind TTS dub
+	TimelineThumbIntervalSec    float64       // default thumbnail sampling interval in seconds for timeline strips
+	TimelineThumbHeight         int           // pixel height of extracted timeline thumbnail sprite strips
+	TimelineMaxStripThumbs      int           // maximum thumbnail frames extracted per clip sprite strip
+	TimelinePeakBins            int           // default waveform peak bins count per media clip
+	TimelineWaveSampleRate      int           // PCM sample rate in Hz when computing timeline waveform peaks
+	TimelineWaveBlockSamples    int           // samples per RMS window block during peak extraction
+	TimelineRevisionLimit       int           // default number of timeline revisions returned by timeline queries
 }
 
 // MediaConfig tunes the media assets library, signed ticket streaming, and staging GC.

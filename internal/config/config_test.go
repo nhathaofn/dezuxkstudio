@@ -778,14 +778,20 @@ func TestStudioAndMediaGenZeroHardcodeTunables(t *testing.T) {
 	}
 
 	for name, mutate := range map[string]func(*Config){
-		"empty ffmpeg_video_codec":         func(c *Config) { c.Studio.FFmpegVideoCodec = " " },
-		"negative ffmpeg_crf":              func(c *Config) { c.Studio.FFmpegCRF = -1 },
-		"zero max_video_dimension":         func(c *Config) { c.Studio.MaxVideoDimension = 0 },
-		"max_shot < default_shot":          func(c *Config) { c.Studio.DefaultShotDurationSec = 30; c.Studio.MaxShotDurationSec = 10 },
+		"empty ffmpeg_video_codec":          func(c *Config) { c.Studio.FFmpegVideoCodec = " " },
+		"negative ffmpeg_crf":               func(c *Config) { c.Studio.FFmpegCRF = -1 },
+		"zero max_video_dimension":          func(c *Config) { c.Studio.MaxVideoDimension = 0 },
+		"max_shot < default_shot":           func(c *Config) { c.Studio.DefaultShotDurationSec = 30; c.Studio.MaxShotDurationSec = 10 },
 		"grid_split_max_count out of range": func(c *Config) { c.Studio.GridSplitMaxCount = 33 },
-		"backoff_max < poll_interval":      func(c *Config) { c.Studio.QueuePollInterval = 10 * time.Second; c.Studio.QueuePollBackoffMax = 5 * time.Second },
-		"retry_backoff_factor <= 1":        func(c *Config) { c.MediaGen.RetryBackoffFactor = 1.0 },
-		"retry_max_delay < initial_delay":  func(c *Config) { c.MediaGen.RetryInitialDelay = 3 * time.Second; c.MediaGen.RetryMaxDelay = 1 * time.Second },
+		"backoff_max < poll_interval": func(c *Config) {
+			c.Studio.QueuePollInterval = 10 * time.Second
+			c.Studio.QueuePollBackoffMax = 5 * time.Second
+		},
+		"retry_backoff_factor <= 1": func(c *Config) { c.MediaGen.RetryBackoffFactor = 1.0 },
+		"retry_max_delay < initial_delay": func(c *Config) {
+			c.MediaGen.RetryInitialDelay = 3 * time.Second
+			c.MediaGen.RetryMaxDelay = 1 * time.Second
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := Default(ModeDesktop)

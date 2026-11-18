@@ -168,12 +168,12 @@ type CapabilityPricingSpec struct {
 }
 
 const (
-	defaultFallbackUnit        = "request"
-	defaultFallbackUnitsPer    = 1.0
-	defaultFallbackSecPerItem  = 10
-	defaultFallbackPriceUSD    = 0.01
-	defaultCatalogCurrency     = "USD"
-	defaultPricingSeedUpdated  = int64(1763337600000)
+	defaultFallbackUnit       = "request"
+	defaultFallbackUnitsPer   = 1.0
+	defaultFallbackSecPerItem = 10
+	defaultFallbackPriceUSD   = 0.01
+	defaultCatalogCurrency    = "USD"
+	defaultPricingSeedUpdated = int64(1763337600000)
 )
 
 var capabilityPricingCatalog = []CapabilityPricingSpec{

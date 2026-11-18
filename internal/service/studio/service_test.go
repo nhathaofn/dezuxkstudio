@@ -329,11 +329,11 @@ func TestStudioService_FileGuardsAndResolvedVersionModel(t *testing.T) {
 
 	projectsDir := filepath.Join(tmp, "projects")
 	svc := studio.New(studio.Options{
-		Repo:        sqlite.NewStudioRepository(db),
-		Workflow:    &fakeWorkflow{},
+		Repo:         sqlite.NewStudioRepository(db),
+		Workflow:     &fakeWorkflow{},
 		StudioConfig: config.Default(config.ModeDesktop).Studio,
-		ProjectsDir: projectsDir,
-		Logger:      slog.New(slog.DiscardHandler),
+		ProjectsDir:  projectsDir,
+		Logger:       slog.New(slog.DiscardHandler),
 	})
 
 	created, err := svc.CreateProject(ctx, contracts.StudioProjectCreatePayload{
