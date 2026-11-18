@@ -658,3 +658,141 @@ func TestStudioAndTextMediaGenConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestStudioAndMediaGenZeroHardcodeTunables(t *testing.T) {
+	def := Default(ModeDesktop)
+	if def.MediaGen.RetryMax != 3 ||
+		def.MediaGen.RetryInitialDelay != 100*time.Millisecond ||
+		def.MediaGen.RetryMaxDelay != 2*time.Second ||
+		def.MediaGen.RetryBackoffFactor != 2.0 ||
+		def.MediaGen.LimiterPollInterval != 250*time.Millisecond ||
+		def.MediaGen.TTSDefaultVoiceOpenAI != "alloy" ||
+		def.MediaGen.TTSDefaultVoiceGemini != "Kore" ||
+		def.MediaGen.TTSDefaultVoiceDashScope != "Cherry" ||
+		def.MediaGen.TTSDefaultVoiceMiniMax != "male-qn-qingse" {
+		t.Fatalf("unexpected default MediaGen retry/voice config: %+v", def.MediaGen)
+	}
+	if def.Studio.FFmpegVideoCodec != "libx264" ||
+		def.Studio.FFmpegPixelFormat != "yuv420p" ||
+		def.Studio.FFmpegAudioCodec != "aac" ||
+		def.Studio.FFmpegAudioSampleRate != 48000 ||
+		def.Studio.FFmpegAudioBitrate != "192k" ||
+		def.Studio.MaxVideoDimension != 16384 ||
+		def.Studio.DefaultShotDurationSec != 5 ||
+		def.Studio.MaxShotDurationSec != 60 ||
+		def.Studio.GridSplitMaxCount != 8 ||
+		def.Studio.ExtractFrameEOFOffsetSec != 0.1 ||
+		def.Studio.ExtractFrameEndPadSec != 0.05 ||
+		def.Studio.ExtractFrameLastPadSec != 0.08 ||
+		def.Studio.SilenceDetectNoiseDB != "-45dB" ||
+		def.Studio.SilenceDetectMinSec != 0.4 ||
+		def.Studio.QCSilenceWarnRatio != 0.90 ||
+		def.Studio.QueuePollLeaseMin != 15*time.Second ||
+		def.Studio.QueuePollBackoffMax != 60*time.Second ||
+		def.Studio.TimelineDefaultTransitionMs != 400 ||
+		def.Studio.TimelineDefaultBGMVolume != 0.22 ||
+		def.Studio.TimelineAudioDuckThreshold != 0.05 ||
+		def.Studio.TimelineAudioDuckOrigVol != 0.35 ||
+		def.Studio.TimelineThumbHeight != 90 ||
+		def.Studio.TimelineMaxStripThumbs != 60 ||
+		def.Studio.TimelineWaveSampleRate != 8000 ||
+		def.Studio.TimelineWaveBlockSamples != 80 ||
+		def.Studio.TimelineRevisionLimit != 30 {
+		t.Fatalf("unexpected default Studio tunables: %+v", def.Studio)
+	}
+
+	dir := t.TempDir()
+	writeFile(t, dir, FileName, `{
+		"mediagen": {
+			"retry_max": 4,
+			"retry_initial_delay": "200ms",
+			"retry_max_delay": "5s",
+			"retry_backoff_factor": 2.5,
+			"limiter_poll_interval": "150ms",
+			"tts_default_voice_openai": "nova",
+			"tts_default_voice_gemini": "Aoede"
+		},
+		"studio": {
+			"ffmpeg_video_codec": "libx265",
+			"ffmpeg_audio_sample_rate": 44100,
+			"max_video_dimension": 4096,
+			"grid_split_max_count": 12,
+			"timeline_wave_sample_rate": 16000,
+			"timeline_wave_block_samples": 160
+		}
+	}`)
+	res, err := Load(Source{
+		Mode:      ModeDesktop,
+		ConfigDir: dir,
+		EnvPrefix: "T_",
+		LookupEnv: env(map[string]string{
+			"T_MEDIAGEN_RETRY_MAX":         "5",
+			"T_STUDIO_MAX_VIDEO_DIMENSION": "8192",
+		}),
+		Args: []string{"--studio-grid-split-max-count=10", "--mediagen-tts-default-voice-minimax=custom-voice"},
+	})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if res.Config.MediaGen.RetryMax != 5 ||
+		res.Config.MediaGen.RetryBackoffFactor != 2.5 ||
+		res.Config.MediaGen.TTSDefaultVoiceOpenAI != "nova" ||
+		res.Config.MediaGen.TTSDefaultVoiceGemini != "Aoede" ||
+		res.Config.MediaGen.TTSDefaultVoiceMiniMax != "custom-voice" {
+		t.Fatalf("unexpected overridden MediaGen config: %+v", res.Config.MediaGen)
+	}
+	if res.Config.Studio.FFmpegVideoCodec != "libx265" ||
+		res.Config.Studio.FFmpegAudioSampleRate != 44100 ||
+		res.Config.Studio.MaxVideoDimension != 8192 ||
+		res.Config.Studio.GridSplitMaxCount != 10 ||
+		res.Config.Studio.TimelineWaveSampleRate != 16000 ||
+		res.Config.Studio.TimelineWaveBlockSamples != 160 {
+		t.Fatalf("unexpected overridden Studio config: %+v", res.Config.Studio)
+	}
+
+	// ResolveStudioConfig preserves explicit lossless FFmpegCRF == 0 when FFmpegPreset is configured,
+	// and falls back to default FFmpegCRF when FFmpegPreset is empty (unconfigured struct).
+	lossless := ResolveStudioConfig(StudioConfig{FFmpegPreset: "veryslow", FFmpegCRF: 0})
+	if lossless.FFmpegCRF != 0 || lossless.FFmpegPreset != "veryslow" {
+		t.Fatalf("expected explicit CRF=0 with preset preserved, got CRF=%d preset=%q", lossless.FFmpegCRF, lossless.FFmpegPreset)
+	}
+	unsetStudio := ResolveStudioConfig(StudioConfig{})
+	if unsetStudio.FFmpegCRF != def.Studio.FFmpegCRF || unsetStudio.QueueWorkers != def.Studio.QueueWorkers {
+		t.Fatalf("expected zero StudioConfig to resolve defaults, got %+v", unsetStudio)
+	}
+
+	// ResolveMediaGenConfig preserves explicit deterministic TextTemperature == 0 when text fields are configured.
+	detText := ResolveMediaGenConfig(MediaGenConfig{TextMaxTokens: 1024, TextTemperature: 0})
+	if detText.TextTemperature != 0 || detText.TextMaxTokens != 1024 {
+		t.Fatalf("expected explicit TextTemperature=0 preserved, got temp=%v tokens=%d", detText.TextTemperature, detText.TextMaxTokens)
+	}
+	unsetMG := ResolveMediaGenConfig(MediaGenConfig{})
+	if unsetMG.TextTemperature != def.MediaGen.TextTemperature || unsetMG.RetryMax != def.MediaGen.RetryMax {
+		t.Fatalf("expected zero MediaGenConfig to resolve defaults, got %+v", unsetMG)
+	}
+
+	validZeroCRF := Default(ModeDesktop)
+	validZeroCRF.Studio.FFmpegCRF = 0
+	if err := validZeroCRF.Validate(); err != nil {
+		t.Fatalf("expected FFmpegCRF=0 to validate cleanly, got %v", err)
+	}
+
+	for name, mutate := range map[string]func(*Config){
+		"empty ffmpeg_video_codec":         func(c *Config) { c.Studio.FFmpegVideoCodec = " " },
+		"negative ffmpeg_crf":              func(c *Config) { c.Studio.FFmpegCRF = -1 },
+		"zero max_video_dimension":         func(c *Config) { c.Studio.MaxVideoDimension = 0 },
+		"max_shot < default_shot":          func(c *Config) { c.Studio.DefaultShotDurationSec = 30; c.Studio.MaxShotDurationSec = 10 },
+		"grid_split_max_count out of range": func(c *Config) { c.Studio.GridSplitMaxCount = 33 },
+		"backoff_max < poll_interval":      func(c *Config) { c.Studio.QueuePollInterval = 10 * time.Second; c.Studio.QueuePollBackoffMax = 5 * time.Second },
+		"retry_backoff_factor <= 1":        func(c *Config) { c.MediaGen.RetryBackoffFactor = 1.0 },
+		"retry_max_delay < initial_delay":  func(c *Config) { c.MediaGen.RetryInitialDelay = 3 * time.Second; c.MediaGen.RetryMaxDelay = 1 * time.Second },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := Default(ModeDesktop)
+			mutate(c)
+			if err := c.Validate(); err == nil {
+				t.Fatalf("%s: expected validation error", name)
+			}
+		})
+	}
+}

@@ -13,6 +13,7 @@ import { rtClient } from "../../lib/rtClient";
 import { usePreferencesStore } from "../preferences/usePreferencesStore";
 import { useNodeSpecsStore } from "../workflow/useNodeSpecs";
 import { StudioView } from "./StudioView";
+import { ExportStagePanel } from "./StudioStages";
 import { useStudioStore } from "./useStudioStore";
 
 vi.mock("react-router-dom", async (importOriginal) => {
@@ -306,5 +307,162 @@ describe("/studio feature MVP", () => {
     });
     const viHtml = renderToStaticMarkup(React.createElement(StudioView));
     expect(viHtml).toContain("Đang phân tích và chuẩn hóa kịch bản…");
+  });
+
+  it("reads export/stage options from workflow specs, normalizes omitted slices, translates batchProgress, and resyncs on reconnect", async () => {
+    usePreferencesStore.setState({ prefs: { theme: "light", language: "vi" } });
+
+    // Empty workflow specs: ExportStagePanel must not invent hardcoded resolution or fps options
+    useNodeSpecsStore.setState({ specs: [] });
+    useStudioStore.setState({
+      projects: [sampleProject],
+      projectDetail: {
+        project: sampleProject,
+        episodes: [sampleEpisodeDetail.episode],
+        assets: sampleEpisodeDetail.assets,
+        active_episode: sampleEpisodeDetail,
+      },
+      episodeDetail: sampleEpisodeDetail,
+      activeProjectId: "proj-1",
+      activeEpisodeId: "ep-1",
+      activeStage: "export",
+      runningStage: "generate_assets",
+      batchProgress: {
+        project_id: "proj-1",
+        episode_id: "ep-1",
+        stage: "generate_assets",
+        status: "running",
+        current: 2,
+        total: 5,
+        percent: 40,
+        message: "raw English batch message",
+        msg_key: "studio.batch.generate_assets.running",
+        msg_params: { current: "2", total: "5" },
+      },
+    });
+    const studioHtml = renderToStaticMarkup(React.createElement(StudioView));
+    expect(studioHtml).toContain("40%");
+    expect(studioHtml).toContain("Đang tạo ảnh tham chiếu tài sản (2/5)…");
+    expect(studioHtml).not.toContain("raw English batch message");
+
+    const emptyExportHtml = renderToStaticMarkup(
+      React.createElement(ExportStagePanel, { detail: sampleEpisodeDetail })
+    );
+    expect(emptyExportHtml).not.toContain('value="1920x1080"');
+
+    // Loaded workflow specs populate resolution/fps dynamically in ExportStagePanel
+    useNodeSpecsStore.setState({
+      specs: [
+        {
+          type: NodeTypes.VIDEO_CONCAT_BASIC,
+          provider: "studio",
+          label: "Video Concat",
+          description: "Concat shots",
+          inputs: [],
+          outputs: [],
+          params: [
+            {
+              name: "resolution",
+              label: "Resolution",
+              kind: "select",
+              options: ["1920x1080", "1280x720"],
+              default: "1920x1080",
+            },
+            {
+              name: "fps",
+              label: "FPS",
+              kind: "integer",
+              min: 12,
+              max: 60,
+              default: "24",
+            },
+          ],
+        },
+      ],
+    });
+    const loadedSpecHtml = renderToStaticMarkup(
+      React.createElement(ExportStagePanel, { detail: sampleEpisodeDetail })
+    );
+    expect(loadedSpecHtml).toContain('value="1920x1080"');
+    expect(loadedSpecHtml).toContain('value="24"');
+
+    // Boundary normalization + WS disconnect cleanup + reconnect resync
+    useStudioStore.setState({
+      saving: true,
+      runningStage: "generate_videos",
+      timelineLoading: true,
+      actionProgress: { percent: 50, message: "working" },
+      batchProgress: {
+        project_id: "proj-1",
+        episode_id: "ep-1",
+        stage: "generate_videos",
+        status: "running",
+        current: 1,
+        total: 2,
+        percent: 50,
+        message: "working",
+      },
+    });
+    useStudioStore.getState().clearTransientState();
+    const afterClear = useStudioStore.getState();
+    expect(afterClear.saving).toBe(false);
+    expect(afterClear.runningStage).toBeNull();
+    expect(afterClear.actionProgress).toBeNull();
+    expect(afterClear.batchProgress).toBeNull();
+
+    const resyncCalls: string[] = [];
+    vi.spyOn(rtClient, "request").mockImplementation((async (action: string) => {
+      resyncCalls.push(action);
+      if (action === Actions.STUDIO_PROJECT_LIST) {
+        return { projects: [sampleProject], projects_dir: "C:/workspace/projects" };
+      }
+      if (action === Actions.STUDIO_EPISODE_GET) {
+        return {
+          ...sampleEpisodeDetail,
+          assets: undefined,
+          shots: [
+            {
+              ...sampleEpisodeDetail.shots[0],
+              dialogues: undefined,
+              ref_asset_tags: undefined,
+            },
+          ],
+          normalized_script: {
+            title: "Ep 1",
+            genre: "drama",
+            aspect_ratio: "16:9",
+            logline: "Logline",
+            characters: undefined,
+            scenes: [
+              {
+                code: "S01",
+                title: "Open",
+                beats: [
+                  {
+                    code: "B01",
+                    description: "Walk",
+                    duration_sec: 5,
+                    asset_tags: undefined,
+                    dialogues: undefined,
+                    narrations: undefined,
+                  },
+                ],
+              },
+            ],
+          },
+        };
+      }
+      return {};
+    }) as typeof rtClient.request);
+
+    await useStudioStore.getState().resyncAfterReconnect();
+    expect(resyncCalls).toContain(Actions.STUDIO_PROJECT_LIST);
+    expect(resyncCalls).toContain(Actions.STUDIO_EPISODE_GET);
+    const synced = useStudioStore.getState().episodeDetail!;
+    expect(synced.assets).toEqual([]);
+    expect(synced.shots[0].dialogues).toEqual([]);
+    expect(synced.shots[0].ref_asset_tags).toEqual([]);
+    expect(synced.normalized_script?.characters).toEqual([]);
+    expect(synced.normalized_script?.scenes[0].beats[0].dialogues).toEqual([]);
   });
 });

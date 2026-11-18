@@ -398,3 +398,110 @@ func TestPhase3TimelineAutoAssemblePeaksRenderAndNLEExport(t *testing.T) {
 		t.Fatalf("expected muted TrackVideo input 0 audio to be excluded from audio mix:\n%s", mutedArgsText)
 	}
 }
+
+func TestPhase3RenderTimeShiftExplicitCRFEmptyCuesAndEmptyShots(t *testing.T) {
+	// 1. formatSRT emits contiguous 1..N cue indices when blank cues exist
+	srt := formatSRT([]domainstudio.SubtitleCue{
+		{ID: "c1", StartMs: 0, EndMs: 1000, Text: "Line one"},
+		{ID: "c_blank", StartMs: 1000, EndMs: 2000, Text: "   "},
+		{ID: "c2", StartMs: 2000, EndMs: 3500, Text: "Line two", Speaker: "An"},
+	})
+	if !strings.Contains(srt, "1\n00:00:00,000 --> 00:00:01,000\nLine one\n\n2\n00:00:02,000 --> 00:00:03,500\nAn: Line two") {
+		t.Fatalf("expected contiguous 1, 2 indices skipping blank cue, got:\n%s", srt)
+	}
+	if strings.Contains(srt, "\n3\n") {
+		t.Fatalf("unexpected skipped gap index 3 in SRT:\n%s", srt)
+	}
+
+	// 2. parseShotsForAssemble accepts {"shots":[]} cleanly without error
+	shots, err := parseShotsForAssemble(`{"shots":[]}`)
+	if err != nil || len(shots) != 0 {
+		t.Fatalf("expected empty shots slice with nil error for {\"shots\":[]}, got shots=%v err=%v", shots, err)
+	}
+
+	tmp := t.TempDir()
+	projDir := filepath.Join(tmp, "proj")
+	mediaDir := filepath.Join(projDir, "media")
+	exportDir := filepath.Join(projDir, "exports")
+	_ = os.MkdirAll(mediaDir, 0o755)
+	_ = os.MkdirAll(exportDir, 0o755)
+	vid1 := filepath.Join(mediaDir, "v1.mp4")
+	vid2 := filepath.Join(mediaDir, "v2.mp4")
+	aud := filepath.Join(mediaDir, "a2.wav")
+	for _, p := range []string{vid1, vid2, aud} {
+		if werr := os.WriteFile(p, []byte("FAKE"), 0o600); werr != nil {
+			t.Fatal(werr)
+		}
+	}
+
+	ffprobeExe, ffmpegExe, argsLog := writePhase3FakeBinaries(t, tmp, makeTestPCMBytes())
+	opts := Options{
+		Binaries: &stubBinaryResolver{paths: map[domainbinaries.BinaryID]string{
+			domainbinaries.IDFFprobe: ffprobeExe,
+			domainbinaries.IDFFmpeg:  ffmpegExe,
+		}},
+		StudioConfig: config.Default(config.ModeDesktop).Studio,
+	}
+
+	_, aerr := NewTimelineAutoAssembleNode(opts).Run(context.Background(), mustJSON(t, contracts.TimelineAutoAssembleInput{
+		EpisodeID:  "ep-empty",
+		ShotsJSON:  `{"shots":[]}`,
+		ProjectDir: projDir,
+	}))
+	if aerr == nil || !strings.Contains(aerr.Error(), "contains no shots with video_path") {
+		t.Fatalf("expected clean 'no shots with video_path' validation (not parse error) for {\"shots\":[]}, got %v", aerr)
+	}
+
+	// 3. Abutting crossfade (500ms) shifts subsequent audio adelay & subtitles to 4500ms AND preserves explicit CRF=0
+	tl := domainstudio.EditTimeline{
+		Version: 1,
+		Width:   1280,
+		Height:  720,
+		FPS:     24,
+		Tracks: []domainstudio.Track{
+			{
+				ID:     "v1",
+				Kind:   domainstudio.TrackVideo,
+				Volume: 1,
+				Clips: []domainstudio.TimelineClip{
+					{ID: "vc1", FilePath: vid1, SourceInMs: 0, SourceOutMs: 5000, TimelineStartMs: 0, Speed: 1, Volume: 1},
+					{ID: "vc2", FilePath: vid2, SourceInMs: 0, SourceOutMs: 5000, TimelineStartMs: 5000, Speed: 1, TransitionIn: domainstudio.TransitionCrossfade, TransitionMs: 500, Volume: 1},
+				},
+			},
+			{
+				ID:     "a1",
+				Kind:   domainstudio.TrackAudioDialogue,
+				Volume: 1,
+				Clips: []domainstudio.TimelineClip{
+					{ID: "ac2", FilePath: aud, SourceInMs: 0, SourceOutMs: 2000, TimelineStartMs: 5000, Speed: 1, Volume: 1},
+				},
+			},
+		},
+		Subtitles: []domainstudio.SubtitleCue{
+			{ID: "sub1", StartMs: 5000, EndMs: 7000, Text: "Synced after xfade"},
+		},
+	}
+	zeroCRF := 0
+	outRaw, rerr := NewRenderTimelineNode(opts).Run(context.Background(), mustJSON(t, contracts.RenderTimelineInput{
+		TimelineJSON: string(mustJSON(t, tl)),
+		OutputDir:    exportDir,
+		Filename:     "crf0_sync.mp4",
+		CRF:          &zeroCRF,
+	}))
+	if rerr != nil {
+		t.Fatalf("render_timeline CRF=0 failed: %v", rerr)
+	}
+	out := outRaw.(contracts.RenderTimelineOutput)
+	argsBytes, _ := os.ReadFile(argsLog)
+	argsText := string(argsBytes)
+	if !strings.Contains(argsText, "-crf\n0\n") && !strings.Contains(strings.ReplaceAll(argsText, "\r\n", "\n"), "-crf\n0\n") {
+		t.Fatalf("expected explicit -crf 0 in ffmpeg args, got:\n%s", argsText)
+	}
+	if !strings.Contains(argsText, "adelay=4500|4500") {
+		t.Fatalf("expected audio adelay shifted to 4500|4500 after 500ms abutting xfade, got:\n%s", argsText)
+	}
+	srtBytes, _ := os.ReadFile(out.SRTPath)
+	if !strings.Contains(string(srtBytes), "00:00:04,500 --> 00:00:06,500") {
+		t.Fatalf("expected shifted SRT timestamp 00:00:04,500 --> 00:00:06,500, got:\n%s", string(srtBytes))
+	}
+}

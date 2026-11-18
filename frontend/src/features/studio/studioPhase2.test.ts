@@ -672,5 +672,63 @@ describe("Studio Phase 2 ArcReel helpers, store & modals", () => {
     const maskHtml = renderToStaticMarkup(React.createElement(StudioMaskEditorModal));
     expect(maskHtml).toContain("Mask &amp; Inpaint Editor");
     expect(maskHtml).toContain("cybernetic helmet");
+
+    // Server MsgKey/MsgParams i18n translation in Preflight warnings and QC issues
+    usePreferencesStore.setState({ prefs: { theme: "light", language: "vi" } });
+    useStudioStore.setState({
+      pendingPreflight: {
+        mode: "stage",
+        stage: "generate_videos",
+        opts: {},
+        preflight: {
+          ...samplePreflight,
+          warning_items: [
+            {
+              message: "Large batch (12 items): verify cost before starting",
+              msg_key: "studio.preflight.warn.large_batch",
+              msg_params: { count: "12" },
+            },
+          ],
+        },
+      },
+      qcByTarget: {
+        [targetVersionKey("shot_keyframe", "shot-1")]: {
+          id: "qc-vi-1",
+          project_id: "proj-p2",
+          episode_id: "ep-1",
+          target_kind: "shot_keyframe",
+          target_id: "shot-1",
+          media_path: "D:/studio/kf/shot1.png",
+          verdict: "warn",
+          overall_score: 6.5,
+          issues: [
+            {
+              severity: "warn",
+              category: "audio",
+              message: "Audio track is 95% silent",
+              msg_key: "studio.qc.issue.audio_silent",
+              msg_params: { percent: "95" },
+            },
+          ],
+          vision_summary: "",
+          created_at: 2000,
+        },
+      },
+    });
+    const viPreflightHtml = renderToStaticMarkup(React.createElement(StudioPreflightDialog));
+    expect(viPreflightHtml).toContain("Lô xử lý lớn (12 mục): hãy rà kỹ chi phí trước khi chạy");
+    expect(viPreflightHtml).not.toContain("Large batch (12 items)");
+
+    const viQcHtml = renderToStaticMarkup(React.createElement(StudioVersionDrawer));
+    expect(viQcHtml).toContain("Rãnh âm thanh bị im lặng 95%");
+    expect(viQcHtml).not.toContain("Audio track is 95% silent");
+
+    // Queue & Cost drawer localizes StudioJobKind and formats USD via formatUSD
+    useStudioStore.setState({
+      jobs: [{ ...sampleJob, id: "job-tts-1", job_kind: "tts", status: "queued" }],
+    });
+    const viQueueHtml = renderToStaticMarkup(React.createElement(StudioQueueCostDrawer));
+    expect(viQueueHtml).toContain("Giọng đọc TTS");
+    expect(viQueueHtml).toContain("$0.4000");
   });
 });

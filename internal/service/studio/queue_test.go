@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"app/internal/apperr"
 	"app/internal/config"
 	"app/internal/contracts"
 	domainmedia "app/internal/domain/mediagen"
@@ -22,6 +23,7 @@ import (
 	"app/internal/engine"
 	studiosvc "app/internal/service/studio"
 	"app/internal/storage/sqlite"
+	mediagennodes "app/internal/tools/mediagen"
 	studionodes "app/internal/tools/studio"
 )
 
@@ -323,6 +325,219 @@ func TestStudioCrashRecoveryQueueSubmitsExactlyOnceAcrossRestart(t *testing.T) {
 	}
 	if afterSub.Status != domainstudio.JobPaused || afterSub.ProviderJobID != "remote-late-1" {
 		t.Fatalf("expected paused status preserved alongside remote id, got status=%s id=%s", afterSub.Status, afterSub.ProviderJobID)
+	}
+}
+
+type programmableVideoDriver struct {
+	submitErr error
+}
+
+func (d *programmableVideoDriver) SubmitVideoJob(_ context.Context, _ domainmedia.VideoRequest) (domainmedia.VideoSubmitToken, error) {
+	return domainmedia.VideoSubmitToken{}, d.submitErr
+}
+
+func (d *programmableVideoDriver) PollVideoJobOnce(_ context.Context, _ domainmedia.VideoSubmitToken) (domainmedia.VideoPollStatus, error) {
+	return domainmedia.VideoPollStatus{}, d.submitErr
+}
+
+type hookableQueueWorkflow struct {
+	outDir    string
+	onImage   func(ctx context.Context, in mediagennodes.ImageGenerateInput) (mediagennodes.ImageGenerateOutput, error)
+	onTTS     func(ctx context.Context, in mediagennodes.TTSGenerateInput) (mediagennodes.TTSGenerateOutput, error)
+	lastTTSIn mediagennodes.TTSGenerateInput
+}
+
+func (w *hookableQueueWorkflow) RunNode(ctx context.Context, nodeType string, raw json.RawMessage) (any, error) {
+	switch nodeType {
+	case mediagennodes.NodeTypeImage:
+		var in mediagennodes.ImageGenerateInput
+		_ = json.Unmarshal(raw, &in)
+		if w.onImage != nil {
+			return w.onImage(ctx, in)
+		}
+		p := filepath.Join(w.outDir, "img.png")
+		_ = os.WriteFile(p, []byte("PNG"), 0o600)
+		return mediagennodes.ImageGenerateOutput{Path: p, MimeType: "image/png"}, nil
+	case mediagennodes.NodeTypeTTS:
+		var in mediagennodes.TTSGenerateInput
+		_ = json.Unmarshal(raw, &in)
+		w.lastTTSIn = in
+		if w.onTTS != nil {
+			return w.onTTS(ctx, in)
+		}
+		p := filepath.Join(w.outDir, "tts.wav")
+		_ = os.WriteFile(p, []byte("WAV"), 0o600)
+		return mediagennodes.TTSGenerateOutput{Path: p, MimeType: "audio/wav"}, nil
+	default:
+		return map[string]any{}, nil
+	}
+}
+
+func TestStudioQueuePermanentFastFailTransientBackoffPauseRaceAndVoiceLookup(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	db, err := sqlite.Open(ctx, sqlite.Options{
+		Path:          filepath.Join(tmp, "queue_edge.db"),
+		BackupDir:     filepath.Join(tmp, "backups"),
+		BackupsToKeep: 1,
+		BusyTimeout:   time.Second,
+		Logger:        slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	cfg := config.Default(config.ModeDesktop).Studio
+	cfg.QueuePollInterval = 1500 * time.Millisecond
+	cfg.QueuePollBackoffMax = 10 * time.Second
+	cfg.QueueMaxAttempts = 3
+
+	drv := &programmableVideoDriver{submitErr: apperr.Unavailable("transient upstream timeout")}
+	wf := &hookableQueueWorkflow{outDir: tmp}
+	svc := studiosvc.New(studiosvc.Options{
+		Repo:         sqlite.NewStudioRepository(db),
+		Workflow:     wf,
+		VideoMedia:   drv,
+		StudioConfig: cfg,
+		ProjectsDir:  filepath.Join(tmp, "projects"),
+		Logger:       slog.New(slog.DiscardHandler),
+	})
+
+	projRes, err := svc.CreateProject(ctx, contracts.StudioProjectCreatePayload{
+		Title:              "Queue Edge Cases",
+		DefaultImageModel:  "openai/gpt-image-1",
+		DefaultVideoModel:  "openai/sora-2",
+		DefaultTTSModel:    "openai/tts-1",
+		AutoApproveBatches: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	epID := projRes.ActiveEpisode.Episode.ID
+
+	// Create @Minh (no voice) and @Lan (explicit voice provider + ID)
+	if _, aerr := svc.UpsertAsset(ctx, contracts.StudioAssetUpsertPayload{
+		ProjectID: projRes.Project.ID, Kind: "character", Name: "Minh", CodeTag: "@Minh",
+	}); aerr != nil {
+		t.Fatal(aerr)
+	}
+	if _, aerr := svc.UpsertAsset(ctx, contracts.StudioAssetUpsertPayload{
+		ProjectID: projRes.Project.ID, Kind: "character", Name: "Lan", CodeTag: "@Lan",
+		VoiceProvider: "openai/tts-1-hd", VoiceID: "nova",
+	}); aerr != nil {
+		t.Fatal(aerr)
+	}
+
+	kfPath := filepath.Join(tmp, "kf.png")
+	_ = os.WriteFile(kfPath, []byte("PNG"), 0o600)
+	shotRes, err := svc.UpsertShot(ctx, contracts.StudioShotUpsertPayload{
+		EpisodeID:   epID,
+		SceneCode:   "S01",
+		Title:       "Shot 1",
+		ImagePrompt: ptrStr("rainy street"),
+		VideoPrompt: ptrStr("slow pan"),
+		DurationSec: ptrInt(5),
+		Dialogues: []contracts.StudioDialogueLine{
+			{Speaker: "@Minh", Line: "Trời mưa rồi."},
+			{Speaker: "@Lan", Line: "Vào nhà nhanh đi."},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shotID := shotRes.Shot.ID
+
+	// 1. Permanent error (CodeValidation) fast-fails on attempt 1 without retrying
+	wf.onImage = func(_ context.Context, _ mediagennodes.ImageGenerateInput) (mediagennodes.ImageGenerateOutput, error) {
+		return mediagennodes.ImageGenerateOutput{}, apperr.Validation("prompt violates policy")
+	}
+	enqImg, err := svc.EnqueueBatch(ctx, contracts.StudioQueueEnqueuePayload{
+		EpisodeID: epID, Stage: "generate_keyframes", Force: true,
+	})
+	if err != nil || len(enqImg.Jobs) != 1 {
+		t.Fatalf("enqueue image: %+v err=%v", enqImg, err)
+	}
+	if !svc.StepQueueOnce(ctx) {
+		t.Fatal("expected StepQueueOnce to process image job")
+	}
+	jobs1, _ := svc.ListJobs(ctx, contracts.StudioQueueListPayload{ProjectID: projRes.Project.ID})
+	if jobs1.Jobs[0].Status != "failed" || jobs1.Jobs[0].Attempts != 1 {
+		t.Fatalf("expected permanent error fast-fail at attempts=1, got %+v", jobs1.Jobs[0])
+	}
+	if svc.StepQueueOnce(ctx) {
+		t.Fatal("did not expect failed permanent job to be claimed again")
+	}
+
+	// 2. Transient error reschedules with future next_poll_at, respected by ClaimNextQueuedJob
+	_, err = svc.UpsertShot(ctx, contracts.StudioShotUpsertPayload{
+		ID: shotID, EpisodeID: epID, KeyframePath: ptrStr(kfPath),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enqVid, err := svc.EnqueueBatch(ctx, contracts.StudioQueueEnqueuePayload{
+		EpisodeID: epID, Stage: "generate_videos", Force: true,
+	})
+	if err != nil || len(enqVid.Jobs) != 1 {
+		t.Fatalf("enqueue video: %+v err=%v", enqVid, err)
+	}
+	beforeMs := time.Now().UnixMilli()
+	if !svc.StepQueueOnce(ctx) {
+		t.Fatal("expected StepQueueOnce to process video job")
+	}
+	jobs2, _ := svc.ListJobs(ctx, contracts.StudioQueueListPayload{ProjectID: projRes.Project.ID})
+	var vidJob contracts.StudioJob
+	for _, j := range jobs2.Jobs {
+		if j.ID == enqVid.Jobs[0].ID {
+			vidJob = j
+		}
+	}
+	if vidJob.Status != "queued" || vidJob.Attempts != 1 || vidJob.NextPollAt <= beforeMs+500 {
+		t.Fatalf("expected transient error requeued with future backoff next_poll_at, got %+v (beforeMs=%d)", vidJob, beforeMs)
+	}
+	// Immediate StepQueueOnce must skip the job because next_poll_at is in the future
+	if svc.StepQueueOnce(ctx) {
+		t.Fatal("expected ClaimNextQueuedJob to skip job whose next_poll_at is in the future")
+	}
+	// Cancel delayed video job before next step so only TTS job is queued
+	if _, cerr := svc.ControlQueue(ctx, contracts.StudioQueueControlPayload{JobID: vidJob.ID, Action: "cancel"}); cerr != nil {
+		t.Fatal(cerr)
+	}
+
+	// 3. Multi-dialogue voice lookup resolves @Lan (second speaker) when @Minh has no voice,
+	//    AND pause race guard prevents overwriting "paused" with "succeeded" or updating shot AudioPath.
+	var pauseJobID string
+	wf.onTTS = func(c context.Context, _ mediagennodes.TTSGenerateInput) (mediagennodes.TTSGenerateOutput, error) {
+		if pauseJobID != "" {
+			_, _ = svc.ControlQueue(c, contracts.StudioQueueControlPayload{JobID: pauseJobID, Action: "pause"})
+		}
+		p := filepath.Join(tmp, "paused_tts.wav")
+		_ = os.WriteFile(p, []byte("WAV"), 0o600)
+		return mediagennodes.TTSGenerateOutput{Path: p, MimeType: "audio/wav"}, nil
+	}
+	enqTTS, err := svc.EnqueueBatch(ctx, contracts.StudioQueueEnqueuePayload{
+		EpisodeID: epID, Stage: "generate_tts", Force: true,
+	})
+	if err != nil || len(enqTTS.Jobs) != 1 {
+		t.Fatalf("enqueue tts: %+v err=%v", enqTTS, err)
+	}
+	pauseJobID = enqTTS.Jobs[0].ID
+	if !svc.StepQueueOnce(ctx) {
+		t.Fatal("expected StepQueueOnce to process TTS job")
+	}
+	if wf.lastTTSIn.Model != "openai/tts-1-hd" || wf.lastTTSIn.Voice != "nova" {
+		t.Fatalf("expected multi-dialogue voice lookup to resolve @Lan voice/model, got model=%q voice=%q", wf.lastTTSIn.Model, wf.lastTTSIn.Voice)
+	}
+	jobs3, _ := svc.ListJobs(ctx, contracts.StudioQueueListPayload{ProjectID: projRes.Project.ID})
+	for _, j := range jobs3.Jobs {
+		if j.ID == pauseJobID && j.Status != "paused" {
+			t.Fatalf("expected paused sync job not to be overwritten by succeedJob, got status=%s", j.Status)
+		}
+	}
+	epAfterPause, err := svc.GetEpisode(ctx, epID)
+	if err != nil || epAfterPause.Shots[0].AudioPath != "" {
+		t.Fatalf("expected paused TTS job not to mutate shot audio_path, got %+v err=%v", epAfterPause.Shots[0], err)
 	}
 }
 

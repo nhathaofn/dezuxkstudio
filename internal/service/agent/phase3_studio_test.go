@@ -1,8 +1,13 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -16,6 +21,7 @@ import (
 	studiosvc "app/internal/service/studio"
 	"app/internal/service/workflow"
 	"app/internal/storage/sqlite"
+	studionodes "app/internal/tools/studio"
 )
 
 func TestStudioPhase3MCPTimelineToolsAndEditTimelineSkill(t *testing.T) {
@@ -438,5 +444,276 @@ func TestPhase3AgentWorkflowRunNode_RealSpecsAndFileGuard(t *testing.T) {
 	}
 	if !badExpRes.IsError {
 		t.Fatalf("expected untrusted media inside timeline_json to be denied by FileGuard, got %+v", badExpRes)
+	}
+}
+
+type p3ParityWorkflowStub struct {
+	maskCalls int
+}
+
+func (w *p3ParityWorkflowStub) RunNode(_ context.Context, nodeType string, raw json.RawMessage) (any, error) {
+	switch nodeType {
+	case studionodes.NodeTypeGridSplit:
+		var in contracts.GridSplitInput
+		_ = json.Unmarshal(raw, &in)
+		_ = os.MkdirAll(in.OutputDir, 0o755)
+		p := filepath.Join(in.OutputDir, "panel_0_0.png")
+		_ = os.WriteFile(p, []byte("PNGPANEL"), 0o600)
+		return contracts.GridSplitOutput{
+			Panels: []contracts.GridPanel{{Index: 0, Row: 0, Col: 0, Path: p, Width: 64, Height: 64}},
+		}, nil
+	case studionodes.NodeTypeMaskEdit:
+		w.maskCalls++
+		var in contracts.MaskEditInput
+		_ = json.Unmarshal(raw, &in)
+		_ = os.MkdirAll(in.OutputDir, 0o755)
+		p := filepath.Join(in.OutputDir, "masked_out.png")
+		_ = os.WriteFile(p, []byte("PNGMASKED"), 0o600)
+		return contracts.MaskEditOutput{Path: p, MimeType: "image/png", Provider: "openai", Model: "gpt-image-1"}, nil
+	case studionodes.NodeTypeExtractFrames:
+		var in contracts.ExtractFramesInput
+		_ = json.Unmarshal(raw, &in)
+		_ = os.MkdirAll(in.OutputDir, 0o755)
+		p := filepath.Join(in.OutputDir, "last_frame.png")
+		_ = os.WriteFile(p, []byte("PNGLAST"), 0o600)
+		return contracts.ExtractFramesOutput{
+			Frames:        []contracts.ExtractedFrame{{Path: p, TimestampSec: 4.9, Width: 1280, Height: 720}},
+			LastFramePath: p,
+			OutputDir:     in.OutputDir,
+		}, nil
+	case studionodes.NodeTypeTimelineAutoAssem:
+		var in contracts.TimelineAutoAssembleInput
+		_ = json.Unmarshal(raw, &in)
+		tl := contracts.StudioEditTimeline{
+			Version: 1,
+			FPS:     24,
+			Width:   1280,
+			Height:  720,
+			Tracks: []contracts.StudioTimelineTrack{{
+				ID:     "v1",
+				Kind:   "video",
+				Volume: 1,
+				Clips: []contracts.StudioTimelineClip{{
+					ID:          "clip-1",
+					FilePath:    filepath.Join(in.ProjectDir, "media", "videos", "shot1.mp4"),
+					SourceOutMs: 4000,
+					Speed:       1,
+					Volume:      1,
+				}},
+			}},
+		}
+		tlBytes, _ := json.Marshal(tl)
+		return contracts.TimelineAutoAssembleOutput{TimelineJSON: string(tlBytes), ClipCount: 1, DurationMs: 4000}, nil
+	case studionodes.NodeTypeMediaPeaksThumbs:
+		var in contracts.MediaPeaksThumbsInput
+		_ = json.Unmarshal(raw, &in)
+		_ = os.MkdirAll(in.OutputDir, 0o755)
+		sp := filepath.Join(in.OutputDir, "sprite.jpg")
+		_ = os.WriteFile(sp, []byte("SPRITE"), 0o600)
+		return contracts.MediaPeaksThumbsOutput{SpriteSheetPath: sp, Peaks: []float64{0.2, 0.8}, DurationMs: 4000}, nil
+	case studionodes.NodeTypeRenderTimeline:
+		var in contracts.RenderTimelineInput
+		_ = json.Unmarshal(raw, &in)
+		_ = os.MkdirAll(in.OutputDir, 0o755)
+		mp4 := filepath.Join(in.OutputDir, "final.mp4")
+		_ = os.WriteFile(mp4, []byte("FINALMP4"), 0o600)
+		return contracts.RenderTimelineOutput{OutputPath: mp4, DurationSec: 4.0}, nil
+	case studionodes.NodeTypeExportNLEDraft:
+		var in contracts.ExportNLEDraftInput
+		_ = json.Unmarshal(raw, &in)
+		_ = os.MkdirAll(in.OutputDir, 0o755)
+		z := filepath.Join(in.OutputDir, "draft.zip")
+		_ = os.WriteFile(z, []byte("PKZIP"), 0o600)
+		return contracts.ExportNLEDraftOutput{Format: in.Format, ExportPath: z, FileCount: 2}, nil
+	default:
+		return map[string]any{}, nil
+	}
+}
+
+func TestStudioExtendedMCPToolsParityPolicyAndMaskApproval(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	ws := filepath.Join(base, "ws")
+	projectsDir := filepath.Join(ws, "projects")
+	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := sqlite.Open(ctx, sqlite.Options{
+		Path:          filepath.Join(base, "studio_parity.db"),
+		BackupDir:     filepath.Join(base, "backups"),
+		BackupsToKeep: 1,
+		BusyTimeout:   time.Second,
+		Logger:        slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	wfStub := &p3ParityWorkflowStub{}
+	studioSvc := studiosvc.New(studiosvc.Options{
+		Repo:        sqlite.NewStudioRepository(db),
+		Workflow:    wfStub,
+		ProjectsDir: projectsDir,
+		Logger:      slog.New(slog.DiscardHandler),
+	})
+
+	created, err := studioSvc.CreateProject(ctx, contracts.StudioProjectCreatePayload{
+		Title:              "Parity Film",
+		AspectRatio:        "16:9",
+		AutoApproveBatches: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	epID := created.ActiveEpisode.Episode.ID
+	epRoot := filepath.Join(projectsDir, created.Project.Slug, "episodes", created.ActiveEpisode.Episode.Code)
+	gridImg := filepath.Join(epRoot, "media", "grid.png")
+	shotVid := filepath.Join(epRoot, "media", "videos", "shot1.mp4")
+	outsideFile := filepath.Join(base, "outside", "leak.png")
+	_ = os.MkdirAll(filepath.Dir(gridImg), 0o755)
+	_ = os.MkdirAll(filepath.Dir(shotVid), 0o755)
+	_ = os.MkdirAll(filepath.Dir(outsideFile), 0o755)
+
+	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	img.SetRGBA(0, 0, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+	var pngBuf bytes.Buffer
+	_ = png.Encode(&pngBuf, img)
+	_ = os.WriteFile(gridImg, pngBuf.Bytes(), 0o600)
+	_ = os.WriteFile(outsideFile, pngBuf.Bytes(), 0o600)
+	_ = os.WriteFile(shotVid, []byte("MP4BYTES"), 0o600)
+	maskB64 := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngBuf.Bytes())
+
+	shot1, err := studioSvc.UpsertShot(ctx, contracts.StudioShotUpsertPayload{
+		EpisodeID: epID, SceneCode: "S01", Title: "Shot 1",
+		KeyframePath: &gridImg, VideoPath: &shotVid,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shot2, err := studioSvc.UpsertShot(ctx, contracts.StudioShotUpsertPayload{
+		EpisodeID: epID, SceneCode: "S01", Title: "Shot 2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc, err := New(Options{
+		Repo:         newFakeRepo(),
+		DataDir:      filepath.Join(base, "data"),
+		WorkspaceDir: ws,
+		Studio:       studioSvc,
+		Logger:       slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = svc.Close() }()
+
+	sT, cT := mcp.NewInMemoryTransports()
+	ss, err := svc.buildMCPServer().Connect(ctx, sT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ss.Close() }()
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "parity-test"}, nil).Connect(ctx, cT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cs.Close() }()
+
+	tools, err := cs.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, tl := range tools.Tools {
+		seen[tl.Name] = true
+	}
+	for _, want := range []string{
+		"studio_project_update", "studio_shot_reorder", "studio_pricing_upsert",
+		"studio_grid_split", "studio_mask_edit", "studio_extract_last_frame",
+		"studio_timeline_auto_assemble", "studio_media_peaks_thumbs",
+		"studio_timeline_render", "studio_timeline_export_nle",
+	} {
+		if !seen[want] {
+			t.Fatalf("missing parity MCP tool %q", want)
+		}
+	}
+
+	// 1. Policy blocks outside paths on studio_grid_split & studio_mask_edit & studio_timeline_auto_assemble
+	for _, call := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"studio_grid_split", map[string]any{"project_id": created.Project.ID, "image_path": outsideFile, "rows": 2, "cols": 2}},
+		{"studio_mask_edit", map[string]any{"project_id": created.Project.ID, "image_path": outsideFile, "mask_data_base64": maskB64, "prompt": "fix"}},
+		{"studio_timeline_auto_assemble", map[string]any{"episode_id": epID, "bgm_path": outsideFile}},
+	} {
+		res, cerr := cs.CallTool(ctx, &mcp.CallToolParams{Name: call.name, Arguments: call.args})
+		if cerr != nil {
+			t.Fatal(cerr)
+		}
+		if !res.IsError {
+			t.Fatalf("%s should reject outside workspace path", call.name)
+		}
+	}
+
+	// 2. studio_mask_edit obeys AutoApproveBatches=false gate -> creates approval -> ResolveApproval executes ApplyMaskEdit
+	maskCallRes, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name: "studio_mask_edit",
+		Arguments: map[string]any{
+			"project_id":       created.Project.ID,
+			"episode_id":       epID,
+			"target_kind":      "keyframe",
+			"target_id":        shot1.Shot.ID,
+			"image_path":       gridImg,
+			"mask_data_base64": maskB64,
+			"prompt":           "replace raindrop",
+		},
+	})
+	if err != nil || maskCallRes.IsError {
+		t.Fatalf("studio_mask_edit approval enqueue failed: err=%v res=%+v", err, maskCallRes)
+	}
+	if wfStub.maskCalls != 0 {
+		t.Fatalf("expected 0 mask node executions before approval, got %d", wfStub.maskCalls)
+	}
+	pending := svc.ListApprovals()
+	if len(pending) != 1 || pending[0].Tool != "studio_mask_edit" {
+		t.Fatalf("expected pending studio_mask_edit approval, got %+v", pending)
+	}
+	if err := svc.ResolveApproval(ctx, pending[0].ID, true); err != nil {
+		t.Fatalf("ResolveApproval(studio_mask_edit): %v", err)
+	}
+	if wfStub.maskCalls != 1 {
+		t.Fatalf("expected 1 mask execution after approval, got %d", wfStub.maskCalls)
+	}
+
+	// 3. Trusted parity tools execute end-to-end
+	for _, call := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"studio_project_update", map[string]any{"id": created.Project.ID, "title": "Parity Film v2", "auto_approve_batches": true}},
+		{"studio_shot_reorder", map[string]any{"episode_id": epID, "shot_ids": []string{shot2.Shot.ID, shot1.Shot.ID}}},
+		{"studio_pricing_upsert", map[string]any{"provider_id": "openai", "model_id": "sora-2", "capability": "video", "unit": "second", "unit_price_usd": 0.12}},
+		{"studio_grid_split", map[string]any{"project_id": created.Project.ID, "episode_id": epID, "target_kind": "grid_panel", "target_id": shot1.Shot.ID, "image_path": gridImg, "rows": 2, "cols": 2}},
+		{"studio_extract_last_frame", map[string]any{"episode_id": epID, "source_shot_id": shot1.Shot.ID, "target_shot_id": shot2.Shot.ID}},
+		{"studio_timeline_auto_assemble", map[string]any{"episode_id": epID}},
+		{"studio_media_peaks_thumbs", map[string]any{"episode_id": epID, "media_path": shotVid, "clip_id": "clip-1"}},
+		{"studio_timeline_render", map[string]any{"episode_id": epID, "filename": "out.mp4"}},
+		{"studio_timeline_export_nle", map[string]any{"episode_id": epID, "format": "capcut"}},
+	} {
+		res, cerr := cs.CallTool(ctx, &mcp.CallToolParams{Name: call.name, Arguments: call.args})
+		if cerr != nil || res.IsError {
+			txt := ""
+			if res != nil && len(res.Content) > 0 {
+				if tc, ok := res.Content[0].(*mcp.TextContent); ok {
+					txt = tc.Text
+				}
+			}
+			t.Fatalf("%s failed: err=%v res=%q", call.name, cerr, txt)
+		}
 	}
 }

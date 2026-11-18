@@ -17,6 +17,7 @@ import (
 	"sync"
 	"testing"
 
+	"app/internal/config"
 	"app/internal/domain/mediagen"
 	"app/internal/engine"
 	"app/internal/paths"
@@ -320,5 +321,76 @@ func TestWorkflowRegistersStudioNodes(t *testing.T) {
 
 	if _, err := svc.RunNode(context.Background(), studionodes.NodeTypeScriptNormalize, json.RawMessage(`{"raw_script":"INT. ROOM - DAY"}`)); err != nil {
 		t.Fatalf("RunNode(script_normalize): %v", err)
+	}
+}
+
+func TestWorkflowWiresStudioConfigToSpecs(t *testing.T) {
+	cfg := config.Default(config.ModeDesktop)
+	cfg.Studio.MaxVideoDimension = 4096
+	cfg.Studio.DefaultFPS = 60
+	cfg.Studio.FFmpegCRF = 16
+	cfg.Studio.ExportLoudnormLUFS = -16
+	cfg.Studio.ExportSubtitleFontSize = 32
+	cfg.Studio.GridSplitMaxCount = 12
+	cfg.Studio.DefaultShotDurationSec = 7
+	cfg.Studio.MaxShotDurationSec = 45
+
+	svc, err := workflow.New(workflow.Options{
+		Paths:   paths.Paths{Data: t.TempDir()},
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		TextGen: &stubTextGen{},
+		Config:  cfg,
+	})
+	if err != nil {
+		t.Fatalf("workflow.New: %v", err)
+	}
+
+	specsByType := map[string]engine.Spec{}
+	for _, sp := range svc.Specs(context.Background()) {
+		specsByType[sp.Type] = sp
+	}
+	findParam := func(nodeType, paramName string) engine.Param {
+		sp, ok := specsByType[nodeType]
+		if !ok {
+			t.Fatalf("missing spec %s", nodeType)
+		}
+		for _, p := range sp.Params {
+			if p.Name == paramName {
+				return p
+			}
+		}
+		t.Fatalf("missing param %s.%s", nodeType, paramName)
+		return engine.Param{}
+	}
+
+	if x := findParam("tool.video_watermark_remove", "x"); x.Max != 4096 {
+		t.Fatalf("expected watermark x max 4096 from StudioConfig, got %v", x.Max)
+	}
+	if w := findParam("tool.video_watermark_remove", "width"); w.Max != 2048 {
+		t.Fatalf("expected watermark width max 2048 from StudioConfig, got %v", w.Max)
+	}
+	if crop := findParam("tool.video_watermark_remove", "crop_px"); crop.Max != 1024 {
+		t.Fatalf("expected watermark crop_px max 1024 from StudioConfig, got %v", crop.Max)
+	}
+	if rows := findParam(studionodes.NodeTypeGridSplit, "rows"); rows.Max != 12 {
+		t.Fatalf("expected grid_split rows max 12 from StudioConfig, got %v", rows.Max)
+	}
+	if dur := findParam(studionodes.NodeTypeAuthorShotPrompts, "default_duration_sec"); dur.Default != "7" || dur.Max != 45 {
+		t.Fatalf("expected author_shot_prompts default=7 max=45, got default=%q max=%v", dur.Default, dur.Max)
+	}
+	if fps := findParam(studionodes.NodeTypeTimelineAutoAssem, "fps"); fps.Default != "60" {
+		t.Fatalf("expected timeline auto assemble fps default 60, got %q", fps.Default)
+	}
+	if lufs := findParam(studionodes.NodeTypeRenderTimeline, "loudnorm_lufs"); lufs.Default != "-16.0" {
+		t.Fatalf("expected timeline render loudnorm_lufs default -16.0, got %q", lufs.Default)
+	}
+	if crf := findParam(studionodes.NodeTypeRenderTimeline, "crf"); crf.Default != "16" {
+		t.Fatalf("expected timeline render crf default 16, got %q", crf.Default)
+	}
+	if subSize := findParam(studionodes.NodeTypeRenderTimeline, "subtitle_font_size"); subSize.Default != "32" {
+		t.Fatalf("expected timeline render subtitle_font_size default 32, got %q", subSize.Default)
+	}
+	if concatFPS := findParam(studionodes.NodeTypeVideoConcatBasic, "fps"); concatFPS.Default != "60" {
+		t.Fatalf("expected video_concat_basic fps default 60, got %q", concatFPS.Default)
 	}
 }

@@ -440,4 +440,66 @@ describe("useStudioStore Phase 3 timeline & export flows", () => {
     expect(html).toContain('value="18"');
     expect(html).toContain('value="veryfast"');
   });
+
+  it("omits hardcoded RenderTimelineDialog bounds when specs are empty and normalizes omitted timeline slices", async () => {
+    useNodeSpecsStore.setState({ specs: [] });
+    const emptySpecHtml = renderToStaticMarkup(
+      createElement(RenderTimelineDialog, {
+        defaultFilename: "ep01_empty_spec.mp4",
+        onClose: () => {},
+      })
+    );
+    expect(emptySpecHtml).not.toContain('max="72"');
+    expect(emptySpecHtml).not.toContain('value="20"');
+    expect(emptySpecHtml).not.toContain('value="-14"');
+
+    // Boundary normalizer handles omitted/undefined omitempty arrays on StudioTimelineResult
+    vi.spyOn(rtClient, "request").mockResolvedValueOnce({
+      project_id: "proj-1",
+      episode_id: "ep-1",
+      revision: 9,
+      can_undo: false,
+      can_redo: false,
+      duration_ms: 0,
+      timeline: {
+        version: 1,
+        fps: 24,
+        width: 1920,
+        height: 1080,
+        tracks: [
+          {
+            id: "v1",
+            kind: "video",
+            muted: false,
+            locked: false,
+            volume: 1,
+            clips: undefined as unknown as StudioEditTimeline["tracks"][number]["clips"],
+          },
+        ],
+        subtitles: undefined as unknown as StudioEditTimeline["subtitles"],
+        markers: undefined,
+      },
+      updated_at: 200,
+    } as never);
+
+    await useStudioStore.getState().fetchTimeline("ep-1");
+    const fetched = useStudioStore.getState().timelineResult?.timeline;
+    expect(fetched?.tracks[0].clips).toEqual([]);
+    expect(fetched?.subtitles).toEqual([]);
+    expect(fetched?.markers).toEqual([]);
+
+    const safePreview = resolvePreviewStateAtTime(
+      {
+        version: 1,
+        fps: 24,
+        width: 1920,
+        height: 1080,
+        tracks: undefined as unknown as StudioEditTimeline["tracks"],
+        subtitles: undefined as unknown as StudioEditTimeline["subtitles"],
+      },
+      0
+    );
+    expect(safePreview.videoClip).toBeNull();
+    expect(safePreview.activeSubtitles).toEqual([]);
+  });
 });

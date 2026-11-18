@@ -3,10 +3,12 @@ package studio_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -307,5 +309,123 @@ func TestStudioService_FullMVPWorkflowAndWorkspaceSync(t *testing.T) {
 	svc.SetProjectsDir(newProjectsDir)
 	if svc.ProjectsDir() != newProjectsDir {
 		t.Fatalf("expected updated projects dir %q, got %q", newProjectsDir, svc.ProjectsDir())
+	}
+}
+
+func TestStudioService_FileGuardsAndResolvedVersionModel(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	db, err := sqlite.Open(ctx, sqlite.Options{
+		Path:          filepath.Join(tmp, "studio_guards.db"),
+		BackupDir:     filepath.Join(tmp, "backups"),
+		BackupsToKeep: 1,
+		BusyTimeout:   time.Second,
+		Logger:        slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	projectsDir := filepath.Join(tmp, "projects")
+	svc := studio.New(studio.Options{
+		Repo:        sqlite.NewStudioRepository(db),
+		Workflow:    &fakeWorkflow{},
+		StudioConfig: config.Default(config.ModeDesktop).Studio,
+		ProjectsDir: projectsDir,
+		Logger:      slog.New(slog.DiscardHandler),
+	})
+
+	created, err := svc.CreateProject(ctx, contracts.StudioProjectCreatePayload{
+		Title:              "Guarded Project",
+		DefaultImageModel:  "openai/gpt-image-1",
+		DefaultVideoModel:  "openai/sora-2",
+		AutoApproveBatches: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	epID := created.ActiveEpisode.Episode.ID
+
+	// 1. SaveScript enforces FileGuard before writing workspace files
+	denyWriteCtx := engine.WithFileGuard(ctx, func(_ string, write bool) error {
+		if write {
+			return errors.New("write blocked by guard")
+		}
+		return nil
+	})
+	blockedScript := "SHOULD NOT WRITE"
+	if _, serr := svc.SaveScript(denyWriteCtx, contracts.StudioEpisodeSaveScriptPayload{
+		EpisodeID: epID,
+		RawScript: &blockedScript,
+	}); serr == nil || !strings.Contains(serr.Error(), "write blocked by guard") {
+		t.Fatalf("expected SaveScript write guard error, got %v", serr)
+	}
+	rawPath := created.ActiveEpisode.Episode.RawScriptPath
+	if rawBytes, rerr := os.ReadFile(rawPath); rerr == nil && strings.Contains(string(rawBytes), blockedScript) {
+		t.Fatalf("expected raw script not written when FileGuard blocks write")
+	}
+
+	// 2. RunStage(generate_assets, generate_keyframes, generate_videos) with empty p.Model
+	//    records resolved DefaultImageModel / DefaultVideoModel on MediaVersions.
+	validScript := "Minh walks into a cafe."
+	if _, serr := svc.SaveScript(ctx, contracts.StudioEpisodeSaveScriptPayload{
+		EpisodeID: epID, RawScript: &validScript,
+	}); serr != nil {
+		t.Fatal(serr)
+	}
+	for _, st := range []contracts.StudioRunStageAction{
+		contracts.StudioStageScriptNormalize,
+		contracts.StudioStageExtractAssets,
+		contracts.StudioStageGenerateAssets,
+		contracts.StudioStageAuthorShots,
+		contracts.StudioStageGenerateKeyframes,
+		contracts.StudioStageGenerateVideos,
+	} {
+		if _, rerr := svc.RunStage(ctx, contracts.StudioEpisodeRunStagePayload{EpisodeID: epID, Stage: st}); rerr != nil {
+			t.Fatalf("RunStage(%s): %v", st, rerr)
+		}
+	}
+	epDetail, err := svc.GetEpisode(ctx, epID)
+	if err != nil || len(epDetail.Assets) == 0 || len(epDetail.Shots) == 0 {
+		t.Fatalf("unexpected episode detail: %+v err=%v", epDetail, err)
+	}
+	assetVers, err := svc.ListVersions(ctx, contracts.StudioVersionsListPayload{
+		TargetKind: "asset", TargetID: epDetail.Assets[0].ID,
+	})
+	if err != nil || len(assetVers.Versions) == 0 || assetVers.Versions[0].ModelRef != "openai/gpt-image-1" {
+		t.Fatalf("expected resolved asset version model_ref openai/gpt-image-1, got %+v err=%v", assetVers.Versions, err)
+	}
+	vidVers, err := svc.ListVersions(ctx, contracts.StudioVersionsListPayload{
+		TargetKind: "video", TargetID: epDetail.Shots[0].ID,
+	})
+	if err != nil || len(vidVers.Versions) == 0 || vidVers.Versions[0].ModelRef != "openai/sora-2" {
+		t.Fatalf("expected resolved video version model_ref openai/sora-2, got %+v err=%v", vidVers.Versions, err)
+	}
+
+	// 3. DeleteProject(DeleteFiles: true) enforces FileGuard before os.RemoveAll
+	if derr := svc.DeleteProject(denyWriteCtx, contracts.StudioProjectDeletePayload{
+		ID:          created.Project.ID,
+		DeleteFiles: true,
+	}); derr == nil || !strings.Contains(derr.Error(), "write blocked by guard") {
+		t.Fatalf("expected DeleteProject FileGuard error, got %v", derr)
+	}
+	if _, serr := os.Stat(filepath.Join(created.Project.RootDir, "project.json")); serr != nil {
+		t.Fatalf("expected project directory preserved when FileGuard denied DeleteFiles: %v", serr)
+	}
+
+	// Clean DeleteProject with permitted FileGuard removes project dir on disk
+	created2, err := svc.CreateProject(ctx, contracts.StudioProjectCreatePayload{Title: "Disposable Film"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if derr := svc.DeleteProject(ctx, contracts.StudioProjectDeletePayload{
+		ID:          created2.Project.ID,
+		DeleteFiles: true,
+	}); derr != nil {
+		t.Fatalf("expected permitted DeleteProject to succeed, got %v", derr)
+	}
+	if _, serr := os.Stat(created2.Project.RootDir); !os.IsNotExist(serr) {
+		t.Fatalf("expected project dir deleted, stat err=%v", serr)
 	}
 }

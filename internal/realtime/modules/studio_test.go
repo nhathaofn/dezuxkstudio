@@ -168,4 +168,9 @@ func TestStudioModule_RegisterDispatchAndFileGuard(t *testing.T) {
 	if _, err := hOpenFolder(context.Background(), &realtime.Request{}, []byte(`{"episode_id":"`+epID+`"}`)); !apperr.IsCode(err, apperr.CodeUnavailable) {
 		t.Fatalf("expected ERR_UNAVAILABLE when LockHostAdmin is true, got %v", err)
 	}
+
+	hTimelineGet, _ := reg.Lookup(contracts.ActionStudioTimelineGet)
+	if _, err := hTimelineGet(context.Background(), &realtime.Request{}, []byte(`{"episode_id":"   "}`)); !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected ERR_VALIDATION for blank episode_id on ActionStudioTimelineGet, got %v", err)
+	}
 }
