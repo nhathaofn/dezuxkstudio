@@ -23,6 +23,41 @@ import (
 	"app/internal/service/media"
 )
 
+const (
+	// minSubtitleFontSize and maxSubtitleFontSize match config.Validate bounds on studio.export_subtitle_font_size.
+	minSubtitleFontSize = 8
+	maxSubtitleFontSize = 96
+
+	// minLoudnormLUFS and maxLoudnormLUFS match config.Validate bounds on studio.export_loudnorm_lufs.
+	minLoudnormLUFS = -36.0
+	maxLoudnormLUFS = -5.0
+
+	// minH264CRF and maxH264CRF are libx264's documented constant-rate-factor range [0..51].
+	minH264CRF = 0
+	maxH264CRF = 51
+
+	// loudnormTruePeakDB and loudnormRangeLU are EBU R128 / ITU-R BS.1770 streaming loudness envelope standards.
+	loudnormTruePeakDB = -1.5
+	loudnormRangeLU    = 11
+
+	// minXfadeOverlapMs and xfadeGuardSec keep FFmpeg xfade durations strictly positive and inside clip bounds.
+	minXfadeOverlapMs = 40
+	xfadeGuardSec     = 0.04
+	minXfadeSec       = 0.02
+
+	// kenBurnsZoomStep, kenBurnsMaxZoom, kenBurnsPanZoom, and kenBurnsPanSpan define smooth 24..60fps still-image camera motion.
+	kenBurnsZoomStep = 0.0012
+	kenBurnsMaxZoom  = 1.15
+	kenBurnsPanZoom  = 1.10
+	kenBurnsPanSpan  = 0.09
+
+	// assOutlinePx, assShadowPx, assMarginH, and assMarginV define readable SubStation Alpha v4+ subtitle styling.
+	assOutlinePx = 2.2
+	assShadowPx  = 1.0
+	assMarginH   = 28
+	assMarginV   = 36
+)
+
 type resolvedTimelineClip struct {
 	trackIndex int
 	track      domainstudio.Track
@@ -39,10 +74,11 @@ func NewRenderTimelineNode(opts Options) engine.Node {
 	defFontSize := opts.StudioConfig.ExportSubtitleFontSize
 	defCRF := opts.StudioConfig.FFmpegCRF
 	defPreset := opts.StudioConfig.FFmpegPreset
+	validPresets := config.ValidFFmpegPresets()
 
 	spec := engine.Spec{
 		Type:        NodeTypeRenderTimeline,
-		Provider:    "studio",
+		Provider:    studioProviderID,
 		Label:       "Timeline FFmpeg Renderer",
 		Description: "Renders a multi-track EditTimeline into an H.264/AAC MP4 using FFmpeg filter_complex with xfade transitions, -14 LUFS loudness normalization, and optional UTF-8 Vietnamese subtitle burn-in.",
 		Inputs: []engine.Port{
@@ -55,24 +91,62 @@ func NewRenderTimelineNode(opts Options) engine.Node {
 			{Name: "output_dir", Label: "Output Directory", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
 			{Name: "filename", Label: "Output Filename", Kind: engine.ParamText, Default: "timeline_final.mp4"},
 			{Name: "burn_subtitles", Label: "Burn Subtitles into Video", Kind: engine.ParamToggle, Default: "false"},
-			{Name: "subtitle_font_size", Label: "Subtitle Font Size", Kind: engine.ParamInteger, Min: 8, Max: 96, Default: strconv.Itoa(defFontSize)},
+			{Name: "subtitle_font_size", Label: "Subtitle Font Size", Kind: engine.ParamInteger, Min: minSubtitleFontSize, Max: maxSubtitleFontSize, Default: strconv.Itoa(defFontSize)},
 			{Name: "loudnorm_lufs", Label: "Loudnorm Target (LUFS)", Kind: engine.ParamText, Default: defLUFS},
-			{Name: "crf", Label: "FFmpeg CRF (0-51)", Kind: engine.ParamInteger, Min: 0, Max: 51, Default: strconv.Itoa(defCRF)},
-			{Name: "preset", Label: "FFmpeg Preset", Kind: engine.ParamSelect, Options: []string{"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"}, Default: defPreset},
+			{Name: "crf", Label: "FFmpeg CRF (0-51)", Kind: engine.ParamInteger, Min: minH264CRF, Max: maxH264CRF, Default: strconv.Itoa(defCRF)},
+			{Name: "preset", Label: "FFmpeg Preset", Kind: engine.ParamSelect, Options: validPresets, Default: defPreset},
+			{Name: "overwrite", Label: "Overwrite Existing Output", Kind: engine.ParamToggle, Default: "false", Destructive: true},
 		},
 	}
 
 	return engine.Typed(spec, func(ctx context.Context, in contracts.RenderTimelineInput) (contracts.RenderTimelineOutput, error) {
 		trimmed := strings.TrimSpace(in.TimelineJSON)
 		if trimmed == "" {
-			return contracts.RenderTimelineOutput{}, apperr.Validation("timeline_json is required")
+			return contracts.RenderTimelineOutput{}, apperr.Validation("timeline_json is required").
+				WithMsg("errors.studio.timeline_required", nil)
 		}
 		var tl domainstudio.EditTimeline
 		if err := json.Unmarshal([]byte(trimmed), &tl); err != nil {
-			return contracts.RenderTimelineOutput{}, apperr.Validation("invalid timeline_json: " + err.Error())
+			return contracts.RenderTimelineOutput{}, apperr.Wrap(apperr.CodeValidation, "invalid timeline_json", err).
+				WithMsg("errors.studio.invalid_timeline_json", nil)
 		}
-		if err := tl.Validate(); err != nil {
+		if err := tl.ValidateWithMaxDim(opts.StudioConfig.MaxVideoDimension); err != nil {
 			return contracts.RenderTimelineOutput{}, err
+		}
+
+		if in.SubtitleFontSize < 0 || (in.SubtitleFontSize > 0 && (in.SubtitleFontSize < minSubtitleFontSize || in.SubtitleFontSize > maxSubtitleFontSize)) {
+			return contracts.RenderTimelineOutput{}, apperr.Validation(fmt.Sprintf("subtitle_font_size must be between %d and %d", minSubtitleFontSize, maxSubtitleFontSize)).
+				WithMsg("errors.studio.invalid_subtitle_font_size", map[string]any{"min": minSubtitleFontSize, "max": maxSubtitleFontSize})
+		}
+		fontSize := in.SubtitleFontSize
+		if fontSize == 0 {
+			fontSize = opts.StudioConfig.ExportSubtitleFontSize
+		}
+
+		lufs := in.LoudnormLUFS
+		if lufs == 0 {
+			lufs = opts.StudioConfig.ExportLoudnormLUFS
+		}
+		if math.IsNaN(lufs) || math.IsInf(lufs, 0) || lufs < minLoudnormLUFS || lufs > maxLoudnormLUFS {
+			return contracts.RenderTimelineOutput{}, apperr.Validation(fmt.Sprintf("loudnorm_lufs must be between %.0f and %.0f", minLoudnormLUFS, maxLoudnormLUFS)).
+				WithMsg("errors.studio.invalid_loudnorm_lufs", nil)
+		}
+
+		crf := opts.StudioConfig.FFmpegCRF
+		if in.CRF != nil {
+			crf = *in.CRF
+		}
+		if crf < minH264CRF || crf > maxH264CRF {
+			return contracts.RenderTimelineOutput{}, apperr.Validation(fmt.Sprintf("crf must be between %d and %d", minH264CRF, maxH264CRF)).
+				WithMsg("errors.studio.invalid_crf", nil)
+		}
+		preset := strings.TrimSpace(in.Preset)
+		if preset == "" {
+			preset = opts.StudioConfig.FFmpegPreset
+		}
+		if !slices.Contains(validPresets, preset) {
+			return contracts.RenderTimelineOutput{}, apperr.Validation(fmt.Sprintf("unsupported ffmpeg preset %q", preset)).
+				WithMsg("errors.studio.invalid_preset", map[string]any{"preset": preset})
 		}
 
 		outDir, err := resolveNodeOutputDir(ctx, opts, in.OutputDir, filepath.Join("studio", "exports"))
@@ -81,37 +155,9 @@ func NewRenderTimelineNode(opts Options) engine.Node {
 		}
 
 		baseName := sanitizeExportFileBase(in.Filename, "timeline_final", ".mp4")
-		outPath := filepath.Join(outDir, baseName)
-		if err := engine.CheckFile(ctx, outPath, true); err != nil {
+		outPath := deduplicateOutputPath(filepath.Join(outDir, baseName), in.Overwrite)
+		if err := checkStudioFile(ctx, outPath, true); err != nil {
 			return contracts.RenderTimelineOutput{}, err
-		}
-
-		fontSize := in.SubtitleFontSize
-		if fontSize <= 0 {
-			fontSize = opts.StudioConfig.ExportSubtitleFontSize
-		}
-		if fontSize < 8 || fontSize > 96 {
-			return contracts.RenderTimelineOutput{}, apperr.Validation("subtitle_font_size must be between 8 and 96")
-		}
-
-		lufs := in.LoudnormLUFS
-		if lufs == 0 {
-			lufs = opts.StudioConfig.ExportLoudnormLUFS
-		}
-		if math.IsNaN(lufs) || math.IsInf(lufs, 0) || lufs < -36 || lufs > -5 {
-			return contracts.RenderTimelineOutput{}, apperr.Validation("loudnorm_lufs must be between -36 and -5")
-		}
-
-		crf := opts.StudioConfig.FFmpegCRF
-		if in.CRF != nil {
-			crf = *in.CRF
-		}
-		if crf < 0 || crf > 51 {
-			return contracts.RenderTimelineOutput{}, apperr.Validation("crf must be between 0 and 51")
-		}
-		preset := strings.TrimSpace(in.Preset)
-		if preset == "" {
-			preset = opts.StudioConfig.FFmpegPreset
 		}
 
 		ffmpegExe, err := resolveBinary(ctx, opts.Binaries, domainbinaries.IDFFmpeg)
@@ -125,32 +171,55 @@ func NewRenderTimelineNode(opts Options) engine.Node {
 			}
 		}
 
-		progress.Report(ctx, progress.Update{Percent: 5, Message: "Validating timeline media sources…", Key: "studio.progress.render_prepare"})
+		totalClips := 0
+		for _, tr := range tl.Tracks {
+			totalClips += len(tr.Clips)
+		}
+		progress.Report(ctx, progress.Update{
+			Percent: 5,
+			Message: "Validating timeline media sources…",
+			Key:     "studio.progress.render_prepare",
+			Params: map[string]string{
+				"current": "0",
+				"total":   strconv.Itoa(totalClips),
+			},
+		})
 
-		// Resolve and FileGuard-check all referenced media files first.
 		var resolved []resolvedTimelineClip
 		inputIdx := 0
 		for ti, tr := range tl.Tracks {
+			allowedKind := inputKindVideo | inputKindImage
+			if tr.Kind != domainstudio.TrackVideo {
+				allowedKind = inputKindAudio
+			}
 			for _, cl := range tr.Clips {
-				if strings.TrimSpace(cl.FilePath) == "" {
-					return contracts.RenderTimelineOutput{}, apperr.Validation(fmt.Sprintf("clip %q requires file_path for rendering", cl.ID))
+				if err := ctx.Err(); err != nil {
+					return contracts.RenderTimelineOutput{}, err
 				}
-				p, rerr := resolveInputFile(ctx, opts, cl.FilePath)
+				if strings.TrimSpace(cl.FilePath) == "" {
+					return contracts.RenderTimelineOutput{}, apperr.Validation(fmt.Sprintf("clip %q requires file_path for rendering", cl.ID)).
+						WithMsg("errors.studio.clip_path_required", nil)
+				}
+				p, rerr := resolveMediaInput(ctx, opts, cl.FilePath, allowedKind)
 				if rerr != nil {
 					return contracts.RenderTimelineOutput{}, rerr
 				}
 				if _, serr := os.Stat(p); serr != nil {
-					return contracts.RenderTimelineOutput{}, apperr.Validation(fmt.Sprintf("timeline media file not found: %s", filepath.Base(p)))
+					return contracts.RenderTimelineOutput{}, apperr.NotFound(fmt.Sprintf("timeline media file not found: %s", filepath.Base(p))).
+						WithMsg("errors.studio.media_not_found", nil)
 				}
 				cl.FilePath = p
 				isImg := isImageExtension(p)
 				hasAudio := !isImg
 				if !isImg && ffprobeExe != "" {
 					probeCtx, cancel := context.WithTimeout(ctx, opts.StudioConfig.FFprobeTimeout)
-					if pOut, perr := probeWithFFprobe(probeCtx, ffprobeExe, p); perr == nil {
+					stop := progress.KeepAlive(ctx)
+					pOut, perr := probeWithFFprobe(probeCtx, ffprobeExe, p)
+					stop()
+					cancel()
+					if perr == nil {
 						hasAudio = pOut.HasAudio
 					}
-					cancel()
 				}
 				resolved = append(resolved, resolvedTimelineClip{
 					trackIndex: ti,
@@ -161,23 +230,33 @@ func NewRenderTimelineNode(opts Options) engine.Node {
 					hasAudio:   hasAudio,
 				})
 				inputIdx++
+				progress.Report(ctx, progress.Update{
+					Percent: 5.0 + float64(inputIdx)/float64(max(1, totalClips))*5.0,
+					Message: fmt.Sprintf("Validated timeline clip %d/%d…", inputIdx, totalClips),
+					Key:     "studio.progress.render_prepare",
+					Params: map[string]string{
+						"current": strconv.Itoa(inputIdx),
+						"total":   strconv.Itoa(totalClips),
+					},
+				})
 			}
 		}
 
 		if len(resolved) == 0 && len(tl.Subtitles) == 0 {
-			return contracts.RenderTimelineOutput{}, apperr.Validation("timeline has no clips or subtitles to render")
+			return contracts.RenderTimelineOutput{}, apperr.Validation("timeline has no clips or subtitles to render").
+				WithMsg("errors.studio.empty_timeline", nil)
 		}
 
 		var srtPath, assPath string
 		burnPath := ""
 		if len(tl.Subtitles) > 0 {
-			stem := strings.TrimSuffix(baseName, filepath.Ext(baseName))
-			srtPath = filepath.Join(outDir, stem+".srt")
-			assPath = filepath.Join(outDir, stem+".ass")
-			if err := engine.CheckFile(ctx, srtPath, true); err != nil {
+			stem := strings.TrimSuffix(filepath.Base(outPath), filepath.Ext(outPath))
+			srtPath = deduplicateOutputPath(filepath.Join(outDir, stem+".srt"), in.Overwrite)
+			assPath = deduplicateOutputPath(filepath.Join(outDir, stem+".ass"), in.Overwrite)
+			if err := checkStudioFile(ctx, srtPath, true); err != nil {
 				return contracts.RenderTimelineOutput{}, err
 			}
-			if err := engine.CheckFile(ctx, assPath, true); err != nil {
+			if err := checkStudioFile(ctx, assPath, true); err != nil {
 				return contracts.RenderTimelineOutput{}, err
 			}
 			if in.BurnSubtitles {
@@ -185,53 +264,50 @@ func NewRenderTimelineNode(opts Options) engine.Node {
 			}
 		}
 
-		tmpOut := outPath + ".tmp.mp4"
+		tmpOut, err := createTempMediaFile(outDir, ".tmp-render-", ".mp4")
+		if err != nil {
+			return contracts.RenderTimelineOutput{}, err
+		}
 		defer func() { _ = os.Remove(tmpOut) }()
 
 		args, expectedDurSec, shifts := buildRenderTimelineArgs(tl, resolved, burnPath, lufs, preset, crf, opts.StudioConfig, tmpOut)
 
 		if len(tl.Subtitles) > 0 {
 			shiftedSubs := shiftSubtitleCues(tl.Subtitles, shifts)
-			if err := fsutil.WriteFileAtomic(srtPath, []byte(formatSRT(shiftedSubs)), 0o644); err != nil {
-				return contracts.RenderTimelineOutput{}, apperr.Internal(err)
+			if err := fsutil.WriteFileAtomic(srtPath, []byte(formatSRT(shiftedSubs)), 0o600); err != nil {
+				return contracts.RenderTimelineOutput{}, ioUnavailableErr("Failed to write rendered SRT subtitle file", err)
 			}
-			if err := fsutil.WriteFileAtomic(assPath, []byte(formatASS(shiftedSubs, tl.Width, tl.Height, fontSize)), 0o644); err != nil {
-				return contracts.RenderTimelineOutput{}, apperr.Internal(err)
+			assContent := formatASS(shiftedSubs, tl.Width, tl.Height, fontSize, opts.StudioConfig.ExportSubtitleFontFamily)
+			if err := fsutil.WriteFileAtomic(assPath, []byte(assContent), 0o600); err != nil {
+				return contracts.RenderTimelineOutput{}, ioUnavailableErr("Failed to write rendered ASS subtitle file", err)
 			}
 		}
 
 		runCtx, cancelRun := context.WithTimeout(ctx, opts.StudioConfig.FFmpegTimeout)
 		defer cancelRun()
-		parser := &pipeProgressParser{totalDurationUs: int64(expectedDurSec * 1_000_000)}
-		res, err := runner.RunWithOptions(runCtx, ffmpegExe, args, runner.RunOptions{
-			ProgressParser: parser,
-			OnProgress: func(pct float64, msg string) {
-				progress.Report(ctx, progress.Update{
-					Percent: pct,
-					Message: msg,
-					Key:     "studio.progress.render_timeline",
-				})
-			},
-		})
-		if err != nil {
-			detail := strings.TrimSpace(resStderr(res))
-			if detail == "" {
-				detail = err.Error()
+		runOpts := runner.FFmpegPipeProgressOptions(ctx, int64(expectedDurSec*microsecondsPerSecond), "studio.progress.render_timeline", "Rendering timeline")
+		res, err := runner.RunWithOptions(runCtx, ffmpegExe, args, runOpts)
+		if err != nil || res == nil || res.ExitCode != 0 {
+			if ctx.Err() != nil {
+				return contracts.RenderTimelineOutput{}, ctx.Err()
 			}
-			return contracts.RenderTimelineOutput{}, apperr.Unavailable("ffmpeg timeline render failed: " + detail)
+			return contracts.RenderTimelineOutput{}, ioUnavailableErr("FFmpeg timeline render failed", err)
 		}
 
-		if err := os.Rename(tmpOut, outPath); err != nil {
-			return contracts.RenderTimelineOutput{}, apperr.Internal(err)
+		if err := commitTempMediaFile(tmpOut, outPath); err != nil {
+			return contracts.RenderTimelineOutput{}, err
 		}
 
 		finalDurSec := expectedDurSec
 		if ffprobeExe != "" {
 			probeCtx, cancelProbe := context.WithTimeout(ctx, opts.StudioConfig.FFprobeTimeout)
-			if pOut, perr := probeWithFFprobe(probeCtx, ffprobeExe, outPath); perr == nil && pOut.DurationSec > 0 {
+			stopProbe := progress.KeepAlive(ctx)
+			pOut, perr := probeWithFFprobe(probeCtx, ffprobeExe, outPath)
+			stopProbe()
+			cancelProbe()
+			if perr == nil && pOut.DurationSec > 0 {
 				finalDurSec = pOut.DurationSec
 			}
-			cancelProbe()
 		}
 
 		var sizeBytes int64
@@ -252,7 +328,14 @@ func NewRenderTimelineNode(opts Options) engine.Node {
 				Height:         tl.Height,
 				DurationSec:    finalDurSec,
 			})
-			if rerr == nil && item != nil {
+			if rerr != nil {
+				if opts.Logger != nil {
+					opts.Logger.WarnContext(ctx, "studio: failed to register rendered timeline video",
+						"source_node", NodeTypeRenderTimeline,
+						"error", rerr,
+					)
+				}
+			} else if item != nil {
 				assetID = item.ID
 			}
 		}
@@ -334,11 +417,11 @@ func buildRenderTimelineArgs(
 		switch rc.track.Kind {
 		case domainstudio.TrackVideo:
 			videoClips = append(videoClips, rc)
-			if rc.hasAudio && !rc.track.Muted && (!anyAudioSolo || rc.track.Solo) {
+			if rc.hasAudio && !rc.track.Muted && !rc.clip.Mute && (!anyAudioSolo || rc.track.Solo) {
 				audioClips = append(audioClips, rc)
 			}
 		case domainstudio.TrackAudioDialogue, domainstudio.TrackAudioNarration, domainstudio.TrackAudioBGM, domainstudio.TrackAudioSFX:
-			if !rc.track.Muted && (!anyAudioSolo || rc.track.Solo) {
+			if !rc.track.Muted && !rc.clip.Mute && (!anyAudioSolo || rc.track.Solo) {
 				audioClips = append(audioClips, rc)
 			}
 		}
@@ -357,7 +440,6 @@ func buildRenderTimelineArgs(
 	totalDurSec = math.Max(1.0, float64(tl.DurationMs())/1000.0)
 	var fc []string
 
-	// 1. Build normalized video segments and sequence/xfade chain.
 	vOutLabel := "[vbase]"
 	if len(videoClips) == 0 {
 		fc = append(fc, fmt.Sprintf("color=c=black:s=%dx%d:r=%d:d=%.3f,settb=AVTB,format=%s[vbase]", tl.Width, tl.Height, tl.FPS, totalDurSec, cfg.FFmpegPixelFormat))
@@ -413,9 +495,9 @@ func buildRenderTimelineArgs(
 			nextLabel := fmt.Sprintf("[vchain%d]", i)
 
 			overlapMs := prevEndMs - cur.clip.TimelineStartMs
-			if overlapMs > 40 && cur.clip.TransitionIn != domainstudio.TransitionNone {
-				overlapSec := math.Min(float64(overlapMs)/1000.0, math.Min(prevDurSec, curDurSec)-0.04)
-				if overlapSec > 0.02 {
+			if overlapMs > minXfadeOverlapMs && cur.clip.TransitionIn != domainstudio.TransitionNone {
+				overlapSec := math.Min(float64(overlapMs)/1000.0, math.Min(prevDurSec, curDurSec)-xfadeGuardSec)
+				if overlapSec > minXfadeSec {
 					offsetSec := math.Max(0, accumSec-overlapSec)
 					xf := ffmpegXfadeName(cur.clip.TransitionIn)
 					fc = append(fc, fmt.Sprintf("%s%sxfade=transition=%s:duration=%.3f:offset=%.3f%s",
@@ -435,7 +517,7 @@ func buildRenderTimelineArgs(
 				(cur.clip.TransitionIn == domainstudio.TransitionCrossfade || cur.clip.TransitionIn == domainstudio.TransitionWipeLeft || cur.clip.TransitionIn == domainstudio.TransitionSlideLeft) &&
 				cur.clip.TransitionMs > 0 {
 				overlapSec := math.Min(float64(cur.clip.TransitionMs)/1000.0, math.Min(prevDurSec/3, curDurSec/3))
-				if overlapSec > 0.04 {
+				if overlapSec > xfadeGuardSec {
 					offsetSec := math.Max(0, accumSec-overlapSec)
 					xf := ffmpegXfadeName(cur.clip.TransitionIn)
 					fc = append(fc, fmt.Sprintf("%s%sxfade=transition=%s:duration=%.3f:offset=%.3f%s",
@@ -473,6 +555,9 @@ func buildRenderTimelineArgs(
 			curLabel = nextLabel
 			prevEndMs = max(prevEndMs, cur.clip.TimelineEndMs())
 			prevDurSec = curDurSec
+			if delta := int64(math.Round(accumSec*1000)) - prevEndMs; delta != 0 {
+				shifts = append(shifts, renderTimeShift{fromTimelineMs: cur.clip.TimelineStartMs, deltaMs: delta})
+			}
 		}
 		vOutLabel = curLabel
 		totalDurSec = math.Max(1.0, accumSec)
@@ -497,10 +582,10 @@ func buildRenderTimelineArgs(
 		vOutLabel = "[vout]"
 	}
 
-	// 2. Build multi-track audio mix + loudnorm (-14 LUFS default).
 	aOutLabel := "[aout]"
 	if len(audioClips) == 0 {
-		fc = append(fc, fmt.Sprintf("anullsrc=r=%d:cl=stereo,atrim=duration=%.3f,loudnorm=I=%.1f:TP=-1.5:LRA=11[aout]", cfg.FFmpegAudioSampleRate, totalDurSec, lufs))
+		fc = append(fc, fmt.Sprintf("anullsrc=r=%d:cl=stereo,atrim=duration=%.3f,loudnorm=I=%.1f:TP=%.1f:LRA=%d[aout]",
+			cfg.FFmpegAudioSampleRate, totalDurSec, lufs, loudnormTruePeakDB, loudnormRangeLU))
 	} else {
 		var mixLabels []string
 		for i, rc := range audioClips {
@@ -534,10 +619,11 @@ func buildRenderTimelineArgs(
 			mixLabels = append(mixLabels, lbl)
 		}
 		if len(mixLabels) == 1 {
-			fc = append(fc, fmt.Sprintf("%sloudnorm=I=%.1f:TP=-1.5:LRA=11[aout]", mixLabels[0], lufs))
+			fc = append(fc, fmt.Sprintf("%sloudnorm=I=%.1f:TP=%.1f:LRA=%d[aout]",
+				mixLabels[0], lufs, loudnormTruePeakDB, loudnormRangeLU))
 		} else {
-			fc = append(fc, fmt.Sprintf("%samix=inputs=%d:duration=longest:dropout_transition=0:normalize=0,loudnorm=I=%.1f:TP=-1.5:LRA=11[aout]",
-				strings.Join(mixLabels, ""), len(mixLabels), lufs))
+			fc = append(fc, fmt.Sprintf("%samix=inputs=%d:duration=longest:dropout_transition=0:normalize=0,loudnorm=I=%.1f:TP=%.1f:LRA=%d[aout]",
+				strings.Join(mixLabels, ""), len(mixLabels), lufs, loudnormTruePeakDB, loudnormRangeLU))
 		}
 	}
 
@@ -561,13 +647,17 @@ func kenBurnsFilter(preset domainstudio.KenBurnsPreset, w, h, fps int, durSec fl
 	frames := max(1, int(math.Round(durSec*float64(fps))))
 	switch preset {
 	case domainstudio.KenBurnsZoomIn:
-		return fmt.Sprintf(",zoompan=z='min(zoom+0.0012,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=%d:s=%dx%d:fps=%d", frames, w, h, fps)
+		return fmt.Sprintf(",zoompan=z='min(zoom+%.4f,%.2f)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=%d:s=%dx%d:fps=%d",
+			kenBurnsZoomStep, kenBurnsMaxZoom, frames, w, h, fps)
 	case domainstudio.KenBurnsZoomOut:
-		return fmt.Sprintf(",zoompan=z='if(lte(zoom,1.0),1.15,max(1.0,zoom-0.0012))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=%d:s=%dx%d:fps=%d", frames, w, h, fps)
+		return fmt.Sprintf(",zoompan=z='if(lte(zoom,1.0),%.2f,max(1.0,zoom-%.4f))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=%d:s=%dx%d:fps=%d",
+			kenBurnsMaxZoom, kenBurnsZoomStep, frames, w, h, fps)
 	case domainstudio.KenBurnsPanLeft:
-		return fmt.Sprintf(",zoompan=z='1.10':x='iw*0.09*(1-on/%d)':y='ih/2-(ih/zoom/2)':d=%d:s=%dx%d:fps=%d", frames, frames, w, h, fps)
+		return fmt.Sprintf(",zoompan=z='%.2f':x='iw*%.2f*(1-on/%d)':y='ih/2-(ih/zoom/2)':d=%d:s=%dx%d:fps=%d",
+			kenBurnsPanZoom, kenBurnsPanSpan, frames, frames, w, h, fps)
 	case domainstudio.KenBurnsPanRight:
-		return fmt.Sprintf(",zoompan=z='1.10':x='iw*0.09*(on/%d)':y='ih/2-(ih/zoom/2)':d=%d:s=%dx%d:fps=%d", frames, frames, w, h, fps)
+		return fmt.Sprintf(",zoompan=z='%.2f':x='iw*%.2f*(on/%d)':y='ih/2-(ih/zoom/2)':d=%d:s=%dx%d:fps=%d",
+			kenBurnsPanZoom, kenBurnsPanSpan, frames, frames, w, h, fps)
 	default:
 		return ""
 	}
@@ -628,13 +718,19 @@ func formatSRTTimestamp(ms int64) string {
 	return fmt.Sprintf("%02d:%02d:%02d,%03d", hrs, mins, secs, millis)
 }
 
-func formatASS(cues []domainstudio.SubtitleCue, width, height, fontSize int) string {
+func formatASS(cues []domainstudio.SubtitleCue, width, height, fontSize int, fontFamily string) string {
+	font := strings.ReplaceAll(strings.TrimSpace(fontFamily), ",", " ")
+	if font == "" {
+		font = withStudioDefaults(config.StudioConfig{}).ExportSubtitleFontFamily
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "[Script Info]\nScriptType: v4.00+\nWrapStyle: 0\nScaledBorderAndShadow: yes\nPlayResX: %d\nPlayResY: %d\n\n", width, height)
 	b.WriteString("[V4+ Styles]\n")
 	b.WriteString("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n")
-	fmt.Fprintf(&b, "Style: Default,Arial,%d,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2.2,1.0,2,28,28,36,1\n", fontSize)
-	fmt.Fprintf(&b, "Style: Top,Arial,%d,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2.2,1.0,8,28,28,36,1\n\n", fontSize)
+	fmt.Fprintf(&b, "Style: Default,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,%.1f,%.1f,2,%d,%d,%d,1\n",
+		font, fontSize, assOutlinePx, assShadowPx, assMarginH, assMarginH, assMarginV)
+	fmt.Fprintf(&b, "Style: Top,%s,%d,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,%.1f,%.1f,8,%d,%d,%d,1\n\n",
+		font, fontSize, assOutlinePx, assShadowPx, assMarginH, assMarginH, assMarginV)
 	b.WriteString("[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
 	for _, c := range cues {
 		text := strings.TrimSpace(c.Text)
@@ -687,7 +783,7 @@ func sanitizeExportFileBase(raw, fallbackStem, wantExt string) string {
 
 func isImageExtension(p string) bool {
 	switch strings.ToLower(filepath.Ext(p)) {
-	case ".png", ".jpg", ".jpeg", ".webp", ".bmp":
+	case ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".avif":
 		return true
 	default:
 		return false

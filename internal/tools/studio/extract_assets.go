@@ -39,9 +39,10 @@ var assetBibleSchema = json.RawMessage(`{
 
 // NewExtractAssetsNode builds the tool.extract_assets workflow node.
 func NewExtractAssetsNode(opts Options) engine.Node {
+	opts.StudioConfig = withStudioDefaults(opts.StudioConfig)
 	spec := engine.Spec{
 		Type:        NodeTypeExtractAssets,
-		Provider:    "tool",
+		Provider:    studioProviderID,
 		Label:       "Asset Bible Extractor",
 		Description: "Extract recurring characters, scenes/locations, and key props with consistent @Tags and reference-sheet image prompts from a normalized script",
 		Inputs: []engine.Port{
@@ -98,7 +99,8 @@ func NewExtractAssetsNode(opts Options) engine.Node {
 
 		var pkg domainstudio.AssetBiblePackage
 		if err := json.Unmarshal(res.ParsedJSON, &pkg); err != nil {
-			return contracts.ExtractAssetsOutput{}, apperr.Unavailable("Failed to decode asset bible JSON: " + err.Error())
+			return contracts.ExtractAssetsOutput{}, apperr.Wrap(apperr.CodeUnavailable, "Failed to decode asset bible JSON", err).
+				WithMsg("errors.studio.llm_invalid_json", nil)
 		}
 		if strings.TrimSpace(in.StylePrompt) != "" && strings.TrimSpace(pkg.StylePrompt) == "" {
 			pkg.StylePrompt = strings.TrimSpace(in.StylePrompt)

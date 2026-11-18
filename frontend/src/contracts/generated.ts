@@ -367,6 +367,7 @@ export interface AuthorShotPromptsInput {
   asset_bible_json?: string;
   production_mode?: string;
   shot_mode_default?: string;
+  default_duration_sec?: number;
   style_prompt?: string;
   model?: string;
   project_dir?: string;
@@ -387,7 +388,6 @@ export interface BatchPreflightInput {
   capability: string;
   item_count: number;
   units_per_item?: number;
-  output_dir?: string;
 }
 
 export interface BatchPreflightMessage {
@@ -397,6 +397,7 @@ export interface BatchPreflightMessage {
 }
 
 export interface BatchPreflightOutput {
+  report: string;
   ready: boolean;
   provider_id?: string;
   model_id?: string;
@@ -406,9 +407,10 @@ export interface BatchPreflightOutput {
   unit_price_usd: number;
   estimated_usd: number;
   estimated_sec: number;
-  warnings?: string[];
-  warning_items?: BatchPreflightMessage[];
-  blockers?: string[];
+  warnings: string[];
+  warning_items: BatchPreflightMessage[];
+  blockers: string[];
+  blocker_items: BatchPreflightMessage[];
 }
 
 export interface BinaryIDPayload {
@@ -618,7 +620,7 @@ export interface ExtractAssetsOutput {
 }
 
 export interface ExtractFramesInput {
-  video_path: string;
+  video_path: ImageInputRef;
   mode?: string;
   timestamps_sec?: number[];
   timestamps_csv?: string;
@@ -627,6 +629,7 @@ export interface ExtractFramesInput {
 }
 
 export interface ExtractFramesOutput {
+  last_frame: MediaRef;
   frames: ExtractedFrame[];
   last_frame_path?: string;
   output_dir: string;
@@ -668,7 +671,7 @@ export interface GridPanel {
 }
 
 export interface GridSplitInput {
-  image_path: string;
+  image_path: ImageInputRef;
   rows?: number;
   cols?: number;
   margin_px?: number;
@@ -679,6 +682,7 @@ export interface GridSplitInput {
 }
 
 export interface GridSplitOutput {
+  images: MediaRef[];
   panels: GridPanel[];
   output_dir: string;
 }
@@ -710,8 +714,8 @@ export interface ImageInputRef {
 }
 
 export interface LipSyncGenerateInput {
-  video_path: string;
-  audio_path: string;
+  video_path: ImageInputRef;
+  audio_path: ImageInputRef;
   model_ref?: string;
   face_index?: number;
   prompt?: string;
@@ -728,8 +732,8 @@ export interface LipSyncGenerateOutput {
 }
 
 export interface MaskEditInput {
-  image_path: string;
-  mask_path: string;
+  image_path: ImageInputRef;
+  mask_path: ImageInputRef;
   prompt: string;
   model_ref?: string;
   aspect_ratio?: string;
@@ -1017,10 +1021,10 @@ export interface PurposeDefault {
 }
 
 export interface QCReviewInput {
-  media_path: string;
+  media_path: ImageInputRef;
   target_kind?: string;
   target_id?: string;
-  reference_paths?: string[];
+  reference_paths?: MediaRef[];
   prompt_expected?: string;
   vision_model_ref?: string;
   sample_count?: number;
@@ -1037,12 +1041,13 @@ export interface QCReviewIssue {
 }
 
 export interface QCReviewOutput {
+  report: string;
   verdict: string;
   overall_score: number;
   ffprobe_json?: string;
   issues: QCReviewIssue[];
   vision_summary?: string;
-  sample_frames?: string[];
+  sample_frames: string[];
 }
 
 export interface RemoverInput {
@@ -1077,7 +1082,7 @@ export interface RemoverOutput {
   detected: boolean;
   total_count: number;
   detected_count: number;
-  results?: RemoverItem[];
+  results: RemoverItem[];
 }
 
 export interface RenderTimelineInput {
@@ -1089,6 +1094,7 @@ export interface RenderTimelineInput {
   loudnorm_lufs?: number;
   crf?: number;
   preset?: string;
+  overwrite?: boolean;
 }
 
 export interface RenderTimelineOutput {
@@ -1955,9 +1961,9 @@ export interface SystemInfo {
 }
 
 export interface TTSDubMuxInput {
-  video_path: string;
+  video_path: ImageInputRef;
   text?: string;
-  audio_path?: string;
+  audio_path?: ImageInputRef;
   model_ref?: string;
   voice?: string;
   language?: string;
@@ -2084,7 +2090,7 @@ export interface VideoGenerateOutput {
 }
 
 export interface VideoWatermarkRemoveInput {
-  video_path: string;
+  video_path: ImageInputRef;
   mode?: string;
   x?: number;
   y?: number;
@@ -2465,6 +2471,7 @@ export interface ActionMap {
 /** Built-in workflow node types (contracts.Nodes). Settings come from workflow:specs. */
 export const NodeTypes = {
   WATERMARK_REMOVER: "tool.watermark_remover",
+  PROVIDER_LIST: "tool.provider_list",
   IMAGE_GENERATE: "tool.generate_image",
   VIDEO_GENERATE: "tool.generate_video",
   TTS_GENERATE: "tool.generate_tts",
@@ -2490,6 +2497,7 @@ export type NodeType = (typeof NodeTypes)[keyof typeof NodeTypes];
 
 export interface NodeMap {
   "tool.watermark_remover": { input: RemoverInput; output: RemoverOutput };
+  "tool.provider_list": { input: Empty; output: unknown };
   "tool.generate_image": { input: ImageGenerateInput; output: ImageGenerateOutput };
   "tool.generate_video": { input: VideoGenerateInput; output: VideoGenerateOutput };
   "tool.generate_tts": { input: TTSGenerateInput; output: TTSGenerateOutput };

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"app/internal/apperr"
@@ -84,9 +85,10 @@ var normalizedScriptSchema = json.RawMessage(`{
 
 // NewScriptNormalizeNode builds the tool.script_normalize workflow node.
 func NewScriptNormalizeNode(opts Options) engine.Node {
+	opts.StudioConfig = withStudioDefaults(opts.StudioConfig)
 	spec := engine.Spec{
 		Type:        NodeTypeScriptNormalize,
-		Provider:    "tool",
+		Provider:    studioProviderID,
 		Label:       "Screenplay Normalizer",
 		Description: "Parse a raw screenplay or narration script into structured scenes, visual beats, dialogue lines, and narration segments",
 		Inputs: []engine.Port{
@@ -137,6 +139,10 @@ func NewScriptNormalizeNode(opts Options) engine.Node {
 		if aspect == "" {
 			aspect = domainmedia.DefaultVideoAspectRatio
 		}
+		if !slices.Contains(domainmedia.VideoAspectRatios(), aspect) {
+			return contracts.ScriptNormalizeOutput{}, apperr.Validation("unsupported aspect_ratio").
+				WithMsg("errors.studio.invalid_aspect_ratio", nil)
+		}
 		title := strings.TrimSpace(in.EpisodeTitle)
 		if title == "" {
 			title = "Episode 1"
@@ -148,11 +154,14 @@ func NewScriptNormalizeNode(opts Options) engine.Node {
 			Key:     "studio.progress.script_normalize",
 		})
 
-		sysPrompt := "You are an expert film director and screenplay structurer. " +
-			"Convert the provided script into a clean, faithful NormalizedScript JSON object preserving the original story language in dialogue and narration. " +
-			"Split each scene into concise visual beats (typically 4-8 seconds each) suitable for AI video shot production. " +
-			"For genre='drama', populate beat.dialogues with speaker lines; for genre='narration', populate beat.narrations with voiceover segments. " +
-			"Use consistent @Tag identifiers in beat.asset_tags (e.g. @Hero, @Cafe)."
+		defaultDur := opts.StudioConfig.DefaultShotDurationSec
+		maxDur := opts.StudioConfig.MaxShotDurationSec
+		sysPrompt := fmt.Sprintf("You are an expert film director and screenplay structurer. "+
+			"Convert the provided script into a clean, faithful NormalizedScript JSON object preserving the original story language in dialogue and narration. "+
+			"Split each scene into concise visual beats (typically %d-%d seconds each) suitable for AI video shot production. "+
+			"For genre='drama', populate beat.dialogues with speaker lines; for genre='narration', populate beat.narrations with voiceover segments. "+
+			"Use consistent @Tag identifiers in beat.asset_tags (e.g. @Hero, @Cafe).",
+			max(domainstudio.MinShotDurationSec, defaultDur-1), maxDur)
 
 		userPrompt := fmt.Sprintf("Genre: %s\nEpisode Title: %s\nTarget Aspect Ratio: %s\n\nRaw Script:\n%s",
 			genre, title, aspect, rawScript)
@@ -170,7 +179,8 @@ func NewScriptNormalizeNode(opts Options) engine.Node {
 
 		var script domainstudio.NormalizedScript
 		if err := json.Unmarshal(res.ParsedJSON, &script); err != nil {
-			return contracts.ScriptNormalizeOutput{}, apperr.Unavailable("Failed to decode normalized script JSON: " + err.Error())
+			return contracts.ScriptNormalizeOutput{}, apperr.Wrap(apperr.CodeUnavailable, "Failed to decode normalized script JSON", err).
+				WithMsg("errors.studio.llm_invalid_json", nil)
 		}
 		if strings.TrimSpace(script.Title) == "" {
 			script.Title = title
@@ -191,7 +201,9 @@ func NewScriptNormalizeNode(opts Options) engine.Node {
 					script.Scenes[si].Beats[bi].Code = fmt.Sprintf("B%02d", beatCount)
 				}
 				if script.Scenes[si].Beats[bi].DurationSec <= 0 {
-					script.Scenes[si].Beats[bi].DurationSec = domainmedia.DefaultVideoDurationSec
+					script.Scenes[si].Beats[bi].DurationSec = defaultDur
+				} else if script.Scenes[si].Beats[bi].DurationSec > maxDur {
+					script.Scenes[si].Beats[bi].DurationSec = maxDur
 				}
 			}
 		}

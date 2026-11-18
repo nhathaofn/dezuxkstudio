@@ -19,6 +19,35 @@ import (
 	"app/internal/progress"
 )
 
+const (
+	// minTimelineFPS and maxTimelineFPS match domain/studio.EditTimeline FPS invariants.
+	minTimelineFPS = 1
+	maxTimelineFPS = 120
+
+	// maxAssembleTransitionMs caps automatic shot-to-shot xfade duration to 5 seconds.
+	maxAssembleTransitionMs = 5000
+
+	// maxAssembleTrackVolume caps linear track/clip gain to 2.0 (200%).
+	maxAssembleTrackVolume = 2.0
+
+	// minProbeValidSec rejects near-zero probe durations before falling back to shot metadata.
+	minProbeValidSec = 0.05
+
+	// minShotDurMs and fallbackShotDurMs keep every assembled timeline clip at least 200ms long.
+	minShotDurMs      = 200
+	fallbackShotDurMs = 1000
+
+	// minTransitionOverlapMs skips xfade overlap when adjacent clips are too short for clean blending.
+	minTransitionOverlapMs = 80
+
+	// minDialogueSliceMs and minCueGapMs enforce readable subtitle display windows when splitting multi-line shots.
+	minDialogueSliceMs = 300
+	minCueGapMs        = 200
+
+	// bgmMaxFadeRatio limits BGM fade-in to at most one quarter of total BGM clip duration.
+	bgmMaxFadeRatio = 4
+)
+
 type externalAudioManifestEntry struct {
 	TrackKind       domainstudio.TrackKind `json:"track_kind,omitempty"`
 	Label           string                 `json:"label,omitempty"`
@@ -38,7 +67,7 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 
 	spec := engine.Spec{
 		Type:        NodeTypeTimelineAutoAssem,
-		Provider:    "studio",
+		Provider:    studioProviderID,
 		Label:       "Timeline Auto-Assembler",
 		Description: "Sequentially assembles ready video shots, narration/dialogue audio tracks, Vietnamese subtitle cues, transitions, and optional BGM into a canonical multi-track EditTimeline.",
 		Inputs: []engine.Port{
@@ -51,9 +80,9 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 		Params: []engine.Param{
 			{Name: "episode_id", Label: "Episode ID", Kind: engine.ParamText},
 			{Name: "resolution", Label: "Resolution (WxH)", Kind: engine.ParamText, Default: defaultRes},
-			{Name: "fps", Label: "Frame Rate (FPS)", Kind: engine.ParamInteger, Min: 1, Max: 120, Default: strconv.Itoa(defaultFPS)},
+			{Name: "fps", Label: "Frame Rate (FPS)", Kind: engine.ParamInteger, Min: minTimelineFPS, Max: maxTimelineFPS, Default: strconv.Itoa(defaultFPS)},
 			{Name: "transition_default", Label: "Default Transition", Kind: engine.ParamSelect, Options: optionStrings(domainstudio.TransitionTypes()), Default: string(domainstudio.TransitionCrossfade)},
-			{Name: "transition_ms", Label: "Transition Duration (ms)", Kind: engine.ParamInteger, Min: 0, Max: 5000, Default: strconv.Itoa(opts.StudioConfig.TimelineDefaultTransitionMs)},
+			{Name: "transition_ms", Label: "Transition Duration (ms)", Kind: engine.ParamInteger, Min: 0, Max: maxAssembleTransitionMs, Default: strconv.Itoa(opts.StudioConfig.TimelineDefaultTransitionMs)},
 			{Name: "bgm_path", Label: "Background Music File", Kind: engine.ParamText},
 			{Name: "bgm_volume", Label: "BGM Volume (0..2)", Kind: engine.ParamText, Default: fmt.Sprintf("%.2f", opts.StudioConfig.TimelineDefaultBGMVolume)},
 			{Name: "project_dir", Label: "Episode Directory", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
@@ -78,12 +107,13 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 		if err != nil {
 			return contracts.TimelineAutoAssembleOutput{}, err
 		}
-		fps := in.FPS
-		if fps <= 0 {
-			fps = defaultFPS
+		if in.FPS < 0 || (in.FPS > 0 && (in.FPS < minTimelineFPS || in.FPS > maxTimelineFPS)) {
+			return contracts.TimelineAutoAssembleOutput{}, apperr.Validation(fmt.Sprintf("fps must be between %d and %d", minTimelineFPS, maxTimelineFPS)).
+				WithMsg("errors.studio.invalid_fps", map[string]any{"min": minTimelineFPS, "max": maxTimelineFPS})
 		}
-		if fps < 1 || fps > 120 {
-			return contracts.TimelineAutoAssembleOutput{}, apperr.Validation("fps must be between 1 and 120")
+		fps := in.FPS
+		if fps == 0 {
+			fps = defaultFPS
 		}
 
 		transType := domainstudio.TransitionType(strings.TrimSpace(in.TransitionDefault))
@@ -91,22 +121,28 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 			transType = domainstudio.TransitionCrossfade
 		}
 		if !transType.Valid() {
-			return contracts.TimelineAutoAssembleOutput{}, apperr.Validation(fmt.Sprintf("unsupported transition_default %q", transType))
-		}
-		transMs := in.TransitionMs
-		if transMs < 0 {
-			transMs = 0
+			return contracts.TimelineAutoAssembleOutput{}, apperr.Validation(fmt.Sprintf("unsupported transition_default %q", transType)).
+				WithMsg("errors.studio.invalid_transition", map[string]any{"transition": string(transType)})
 		}
 
-		bgmVol := in.BGMVolume
-		if bgmVol <= 0 {
-			bgmVol = opts.StudioConfig.TimelineDefaultBGMVolume
-		}
-		if bgmVol > 2.0 {
-			bgmVol = 2.0
+		transMs := int64(opts.StudioConfig.TimelineDefaultTransitionMs)
+		if in.TransitionMs != nil {
+			if *in.TransitionMs < 0 || *in.TransitionMs > maxAssembleTransitionMs {
+				return contracts.TimelineAutoAssembleOutput{}, apperr.Validation(fmt.Sprintf("transition_ms must be between 0 and %d", maxAssembleTransitionMs)).
+					WithMsg("errors.studio.invalid_transition_ms", map[string]any{"max": maxAssembleTransitionMs})
+			}
+			transMs = *in.TransitionMs
 		}
 
-		// Filter shots with video media and sort by seq.
+		bgmVol := opts.StudioConfig.TimelineDefaultBGMVolume
+		if in.BGMVolume != nil {
+			if math.IsNaN(*in.BGMVolume) || math.IsInf(*in.BGMVolume, 0) || *in.BGMVolume < 0 || *in.BGMVolume > maxAssembleTrackVolume {
+				return contracts.TimelineAutoAssembleOutput{}, apperr.Validation("bgm_volume must be between 0 and 2").
+					WithMsg("errors.studio.invalid_volume", nil)
+			}
+			bgmVol = *in.BGMVolume
+		}
+
 		ready := make([]domainstudio.Shot, 0, len(shots))
 		for _, sh := range shots {
 			if strings.TrimSpace(sh.VideoPath) == "" {
@@ -115,7 +151,8 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 			ready = append(ready, sh)
 		}
 		if len(ready) == 0 {
-			return contracts.TimelineAutoAssembleOutput{}, apperr.Validation("shots_json contains no shots with video_path")
+			return contracts.TimelineAutoAssembleOutput{}, apperr.Validation("shots_json contains no shots with video_path").
+				WithMsg("errors.studio.no_ready_shots", nil)
 		}
 		slices.SortStableFunc(ready, func(a, b domainstudio.Shot) int {
 			if a.Seq != b.Seq {
@@ -127,7 +164,15 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 			return strings.Compare(a.ID, b.ID)
 		})
 
-		progress.Report(ctx, progress.Update{Percent: 10, Message: "Validating and probing timeline clips…", Key: "studio.progress.timeline_assemble"})
+		progress.Report(ctx, progress.Update{
+			Percent: 10,
+			Message: "Validating and probing timeline clips…",
+			Key:     "studio.progress.timeline_assemble",
+			Params: map[string]string{
+				"current": "0",
+				"total":   strconv.Itoa(len(ready)),
+			},
+		})
 
 		var ffprobeExe string
 		if opts.Binaries != nil {
@@ -139,8 +184,11 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 		probeMs := func(path string, fallbackSec int) int64 {
 			if ffprobeExe != "" {
 				probeCtx, cancel := context.WithTimeout(ctx, opts.StudioConfig.FFprobeTimeout)
-				defer cancel()
-				if pOut, perr := probeWithFFprobe(probeCtx, ffprobeExe, path); perr == nil && pOut.DurationSec > 0.05 {
+				stop := progress.KeepAlive(ctx)
+				pOut, perr := probeWithFFprobe(probeCtx, ffprobeExe, path)
+				stop()
+				cancel()
+				if perr == nil && pOut.DurationSec > minProbeValidSec {
 					return int64(math.Round(pOut.DurationSec * 1000))
 				}
 			}
@@ -173,20 +221,34 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 		var cursorMs int64
 		var prevClipDurMs int64
 
+		totalReady := len(ready)
 		for idx, sh := range ready {
-			vidPath, rerr := resolveInputFile(ctx, opts, sh.VideoPath)
+			if err := ctx.Err(); err != nil {
+				return contracts.TimelineAutoAssembleOutput{}, err
+			}
+			progress.Report(ctx, progress.Update{
+				Percent: 10.0 + float64(idx+1)/float64(max(1, totalReady))*70.0,
+				Message: fmt.Sprintf("Assembling shot %d/%d…", idx+1, totalReady),
+				Key:     "studio.progress.timeline_assemble",
+				Params: map[string]string{
+					"current": strconv.Itoa(idx + 1),
+					"total":   strconv.Itoa(totalReady),
+				},
+			})
+
+			vidPath, rerr := resolveMediaInput(ctx, opts, sh.VideoPath, inputKindVideo|inputKindImage)
 			if rerr != nil {
 				return contracts.TimelineAutoAssembleOutput{}, rerr
 			}
 			vidDurMs := probeMs(vidPath, sh.DurationSec)
-			if vidDurMs < 200 {
-				vidDurMs = 1000
+			if vidDurMs < minShotDurMs {
+				vidDurMs = fallbackShotDurMs
 			}
 
 			var audPath string
 			var audDurMs int64
 			if strings.TrimSpace(sh.AudioPath) != "" {
-				resolvedAud, aerr := resolveInputFile(ctx, opts, sh.AudioPath)
+				resolvedAud, aerr := resolveMediaInput(ctx, opts, sh.AudioPath, inputKindAudio)
 				if aerr != nil {
 					return contracts.TimelineAutoAssembleOutput{}, aerr
 				}
@@ -204,7 +266,7 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 					clipTransMs = min(transMs, vidDurMs/3)
 				default:
 					overlap := min(transMs, prevClipDurMs/3, vidDurMs/3)
-					if overlap >= 80 {
+					if overlap >= minTransitionOverlapMs {
 						startMs = max(0, cursorMs-overlap)
 						clipTrans = transType
 						clipTransMs = overlap
@@ -267,13 +329,15 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 			tl.Tracks = append(tl.Tracks, speechTrack)
 		}
 
-		// Optional extra audio manifest clips (grouped by track kind).
 		extraTracks := make(map[domainstudio.TrackKind]*domainstudio.Track)
 		for i, ea := range extraAudio {
+			if err := ctx.Err(); err != nil {
+				return contracts.TimelineAutoAssembleOutput{}, err
+			}
 			if strings.TrimSpace(ea.FilePath) == "" {
 				continue
 			}
-			resolved, rerr := resolveInputFile(ctx, opts, ea.FilePath)
+			resolved, rerr := resolveMediaInput(ctx, opts, ea.FilePath, inputKindAudio)
 			if rerr != nil {
 				return contracts.TimelineAutoAssembleOutput{}, rerr
 			}
@@ -294,11 +358,13 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 			}
 			outMs := ea.SourceOutMs
 			if outMs <= ea.SourceInMs {
-				outMs = ea.SourceInMs + probeMs(resolved, 5)
+				outMs = ea.SourceInMs + probeMs(resolved, opts.StudioConfig.DefaultShotDurationSec)
 			}
 			vol := ea.Volume
-			if vol <= 0 {
+			if math.IsNaN(vol) || math.IsInf(vol, 0) || vol <= 0 {
 				vol = 1.0
+			} else if vol > maxAssembleTrackVolume {
+				vol = maxAssembleTrackVolume
 			}
 			tr.Clips = append(tr.Clips, domainstudio.TimelineClip{
 				ID:              fmt.Sprintf("xaud-%d", i+1),
@@ -323,22 +389,23 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 			}
 		}
 
-		// Optional BGM track spanning full video duration.
 		if strings.TrimSpace(in.BGMPath) != "" {
-			bgmResolved, berr := resolveInputFile(ctx, opts, in.BGMPath)
+			bgmResolved, berr := resolveMediaInput(ctx, opts, in.BGMPath, inputKindAudio)
 			if berr != nil {
 				return contracts.TimelineAutoAssembleOutput{}, berr
 			}
-			totalVideoMs := max(1000, cursorMs)
+			totalVideoMs := max(fallbackShotDurMs, cursorMs)
 			bgmSrcMs := probeMs(bgmResolved, int(totalVideoMs/1000))
 			bgmOutMs := min(bgmSrcMs, totalVideoMs)
 			if bgmOutMs <= 0 {
 				bgmOutMs = totalVideoMs
 			}
+			bgmFadeMs := max(int64(opts.StudioConfig.TimelineDefaultTransitionMs)*2, fallbackShotDurMs/2)
 			tl.Tracks = append(tl.Tracks, domainstudio.Track{
 				ID:     "a-bgm",
 				Name:   "BGM",
 				Kind:   domainstudio.TrackAudioBGM,
+				Muted:  bgmVol == 0,
 				Volume: bgmVol,
 				Clips: []domainstudio.TimelineClip{{
 					ID:              "bgm-1",
@@ -349,13 +416,14 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 					SourceOutMs:     bgmOutMs,
 					Speed:           1.0,
 					Volume:          1.0,
+					Mute:            bgmVol == 0,
 					TransitionIn:    domainstudio.TransitionFade,
-					TransitionMs:    min(800, bgmOutMs/4),
+					TransitionMs:    min(bgmFadeMs, bgmOutMs/bgmMaxFadeRatio),
 				}},
 			})
 		}
 
-		if err := tl.Validate(); err != nil {
+		if err := tl.ValidateWithMaxDim(opts.StudioConfig.MaxVideoDimension); err != nil {
 			return contracts.TimelineAutoAssembleOutput{}, err
 		}
 
@@ -391,8 +459,8 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 }
 
 func buildSubtitleCuesForShot(sh domainstudio.Shot, startMs, spanMs int64, shotIdx int) []domainstudio.SubtitleCue {
-	if spanMs < 200 {
-		spanMs = 1000
+	if spanMs < minShotDurMs {
+		spanMs = fallbackShotDurMs
 	}
 	if len(sh.Dialogues) > 0 {
 		type part struct {
@@ -419,11 +487,11 @@ func buildSubtitleCuesForShot(sh domainstudio.Shot, startMs, spanMs int64, shotI
 				end := endLimit
 				if i < len(parts)-1 {
 					sliceMs := int64(math.Round(float64(spanMs) * float64(pt.weight) / float64(totalWeight)))
-					sliceMs = max(300, sliceMs)
-					end = min(endLimit-int64(len(parts)-1-i)*200, cur+sliceMs)
+					sliceMs = max(minDialogueSliceMs, sliceMs)
+					end = min(endLimit-int64(len(parts)-1-i)*minCueGapMs, cur+sliceMs)
 				}
 				if end <= cur {
-					end = cur + 200
+					end = cur + minCueGapMs
 				}
 				cues = append(cues, domainstudio.SubtitleCue{
 					ID:      fmt.Sprintf("sub-%d-%d", shotIdx, i+1),
@@ -451,7 +519,8 @@ func buildSubtitleCuesForShot(sh domainstudio.Shot, startMs, spanMs int64, shotI
 func parseShotsForAssemble(raw string) ([]domainstudio.Shot, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return nil, apperr.Validation("shots_json is required")
+		return nil, apperr.Validation("shots_json is required").
+			WithMsg("errors.studio.shots_required", nil)
 	}
 	var pkg domainstudio.ShotPromptPackage
 	if err := json.Unmarshal([]byte(trimmed), &pkg); err == nil && pkg.Shots != nil {
@@ -461,7 +530,8 @@ func parseShotsForAssemble(raw string) ([]domainstudio.Shot, error) {
 	if err := json.Unmarshal([]byte(trimmed), &arr); err == nil {
 		return arr, nil
 	}
-	return nil, apperr.Validation("shots_json must be a JSON array of shots or ShotPromptPackage object")
+	return nil, apperr.Validation("shots_json must be a JSON array of shots or ShotPromptPackage object").
+		WithMsg("errors.studio.invalid_shots_json", nil)
 }
 
 func parseAudioManifestForAssemble(raw string) ([]externalAudioManifestEntry, error) {
@@ -485,5 +555,6 @@ func parseAudioManifestForAssemble(raw string) ([]externalAudioManifestEntry, er
 			return wrap.Clips, nil
 		}
 	}
-	return nil, apperr.Validation("audio_manifest_json must be a JSON array or object with tracks/clips")
+	return nil, apperr.Validation("audio_manifest_json must be a JSON array or object with tracks/clips").
+		WithMsg("errors.studio.invalid_audio_manifest", nil)
 }

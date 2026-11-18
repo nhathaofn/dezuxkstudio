@@ -2,10 +2,11 @@ package studio
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"app/internal/apperr"
@@ -18,20 +19,35 @@ import (
 	"app/internal/runner"
 )
 
-type ttsDubMuxNode struct {
-	opts Options
-}
+const (
+	// maxDubSpeedUpRatio caps voiceover time-compression to 4x so speech remains intelligible.
+	maxDubSpeedUpRatio = 4.0
+
+	// maxDubOriginalVolume caps original-track gain to 2.0 (200% linear amplitude, matching timeline clip max).
+	maxDubOriginalVolume = 2.0
+
+	// atempoMaxFactor and atempoMinFactor are FFmpeg's documented per-stage `atempo` filter bounds [0.5, 2.0].
+	atempoMaxFactor = 2.0
+	atempoMinFactor = 0.5
+
+	// duckCompRatio, duckCompAttackMs, and duckCompReleaseMs are standard broadcast dialogue sidechain-ducking envelope constants.
+	duckCompRatio     = 6
+	duckCompAttackMs  = 20
+	duckCompReleaseMs = 250
+
+	// microsecondsPerSecond converts seconds to FFmpeg microsecond duration units.
+	microsecondsPerSecond = 1_000_000.0
+)
+
+var dubOverflowModes = []string{"freeze_last_frame", "speed_up", "trim"}
 
 // NewTTSDubMuxNode returns tool.tts_dub_mux for synthesizing dub voiceover (when needed) and muxing it onto video with overflow & ducking control.
 func NewTTSDubMuxNode(opts Options) engine.Node {
 	opts.StudioConfig = withStudioDefaults(opts.StudioConfig)
-	return &ttsDubMuxNode{opts: opts}
-}
 
-func (n *ttsDubMuxNode) Spec() engine.Spec {
-	return engine.Spec{
+	spec := engine.Spec{
 		Type:        NodeTypeTTSDubMux,
-		Provider:    "studio",
+		Provider:    studioProviderID,
 		Label:       "TTS Dubbing & Audio Mux",
 		Description: "Synthesizes dialogue/narration audio (or uses an existing audio file) and muxes it onto a video shot with overflow alignment and optional original audio ducking.",
 		Inputs: []engine.Port{
@@ -46,102 +62,138 @@ func (n *ttsDubMuxNode) Spec() engine.Spec {
 			{Name: "model_ref", Label: "TTS Model", Kind: engine.ParamText},
 			{Name: "voice", Label: "Voice ID", Kind: engine.ParamText},
 			{Name: "language", Label: "Language", Kind: engine.ParamText},
-			{Name: "overflow_mode", Label: "Audio Overflow Mode", Kind: engine.ParamSelect, Options: []string{"freeze_last_frame", "speed_up", "trim"}, Default: "freeze_last_frame"},
+			{Name: "overflow_mode", Label: "Audio Overflow Mode", Kind: engine.ParamSelect, Options: dubOverflowModes, Default: "freeze_last_frame"},
 			{Name: "duck_original", Label: "Duck Original Audio", Kind: engine.ParamToggle, Default: "true"},
+			{Name: "original_volume", Label: "Original Audio Volume (0..2)", Kind: engine.ParamText, Default: fmt.Sprintf("%.2f", opts.StudioConfig.TimelineAudioDuckOrigVol)},
 			{Name: "output_dir", Label: "Output Folder", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
 		},
 	}
+
+	return engine.Typed(spec, func(ctx context.Context, in contracts.TTSDubMuxInput) (contracts.TTSDubMuxOutput, error) {
+		vidPath, err := resolveMediaInput(ctx, opts, in.VideoPath.LocalURL, inputKindVideo)
+		if err != nil {
+			return contracts.TTSDubMuxOutput{}, err
+		}
+		if vidPath == "" {
+			return contracts.TTSDubMuxOutput{}, apperr.Validation("video_path is required").
+				WithMsg("errors.studio.video_required", nil)
+		}
+
+		mode := strings.ToLower(strings.TrimSpace(in.OverflowMode))
+		if mode == "" {
+			mode = "freeze_last_frame"
+		}
+		if !slices.Contains(dubOverflowModes, mode) {
+			return contracts.TTSDubMuxOutput{}, apperr.Validation(fmt.Sprintf("unsupported overflow_mode %q", mode)).
+				WithMsg("errors.studio.invalid_overflow_mode", map[string]any{"mode": mode})
+		}
+		if math.IsNaN(in.OriginalVolume) || math.IsInf(in.OriginalVolume, 0) || in.OriginalVolume < 0 || in.OriginalVolume > maxDubOriginalVolume {
+			return contracts.TTSDubMuxOutput{}, apperr.Validation("original_volume must be between 0 and 2").
+				WithMsg("errors.studio.invalid_volume", nil)
+		}
+
+		outDir, err := resolveNodeOutputDir(ctx, opts, in.OutputDir, filepath.Join("studio", "dubs"))
+		if err != nil {
+			return contracts.TTSDubMuxOutput{}, err
+		}
+
+		audioPath, err := resolveMediaInput(ctx, opts, in.AudioPath.LocalURL, inputKindAudio)
+		if err != nil {
+			return contracts.TTSDubMuxOutput{}, err
+		}
+		if audioPath == "" {
+			text := strings.TrimSpace(in.Text)
+			if text == "" {
+				return contracts.TTSDubMuxOutput{}, apperr.Validation("either audio_path or text is required for tts_dub_mux").
+					WithMsg("errors.studio.dub_audio_or_text_required", nil)
+			}
+			if opts.TTSGen == nil {
+				return contracts.TTSDubMuxOutput{}, apperr.Unavailable("TTS generator service is unavailable").
+					WithMsg("errors.studio.tts_service_unavailable", nil)
+			}
+			progress.Report(ctx, progress.Update{
+				Percent: 5,
+				Message: "Synthesizing dub voiceover…",
+				Key:     "studio.progress.tts_synthesize",
+			})
+			ttsRes, err := opts.TTSGen.GenerateTTS(ctx, domainmedia.TTSRequest{
+				ModelRef:  in.ModelRef,
+				Text:      text,
+				Voice:     in.Voice,
+				Language:  in.Language,
+				OutputDir: outDir,
+			})
+			if err != nil {
+				return contracts.TTSDubMuxOutput{}, err
+			}
+			audioPath = ttsRes.Path
+		}
+
+		ffmpegExe, err := resolveBinary(ctx, opts.Binaries, domainbinaries.IDFFmpeg)
+		if err != nil {
+			return contracts.TTSDubMuxOutput{}, err
+		}
+		ffprobeExe, err := resolveBinary(ctx, opts.Binaries, domainbinaries.IDFFprobe)
+		if err != nil {
+			return contracts.TTSDubMuxOutput{}, err
+		}
+
+		probeCtx, cancelProbe := context.WithTimeout(ctx, opts.StudioConfig.FFprobeTimeout)
+		stopProbe := progress.KeepAlive(ctx)
+		vInfo, err := probeWithFFprobe(probeCtx, ffprobeExe, vidPath)
+		if err == nil {
+			var aInfo contracts.ProbeMediaOutput
+			aInfo, err = probeWithFFprobe(probeCtx, ffprobeExe, audioPath)
+			stopProbe()
+			cancelProbe()
+			if err != nil {
+				return contracts.TTSDubMuxOutput{}, err
+			}
+			return runDubMuxEncode(ctx, opts, in, mode, ffmpegExe, vidPath, audioPath, outDir, vInfo, aInfo)
+		}
+		stopProbe()
+		cancelProbe()
+		return contracts.TTSDubMuxOutput{}, err
+	})
 }
 
-func (n *ttsDubMuxNode) Run(ctx context.Context, raw json.RawMessage) (any, error) {
-	var in contracts.TTSDubMuxInput
-	if err := json.Unmarshal(raw, &in); err != nil {
-		return nil, apperr.Validation("invalid tts_dub_mux input").WithDetails(map[string]any{"cause": err.Error()})
-	}
-	vidPath, err := resolveInputFile(ctx, n.opts, in.VideoPath)
-	if err != nil {
-		return nil, err
-	}
-	if vidPath == "" {
-		return nil, apperr.Validation("video_path is required")
-	}
-
-	outDir, err := resolveNodeOutputDir(ctx, n.opts, in.OutputDir, filepath.Join("studio", "dubs"))
-	if err != nil {
-		return nil, err
-	}
-
-	audioPath, err := resolveInputFile(ctx, n.opts, in.AudioPath)
-	if err != nil {
-		return nil, err
-	}
-	if audioPath == "" {
-		text := strings.TrimSpace(in.Text)
-		if text == "" {
-			return nil, apperr.Validation("either audio_path or text is required for tts_dub_mux")
-		}
-		if n.opts.TTSGen == nil {
-			return nil, apperr.Unavailable("TTS generator service is unavailable")
-		}
-		ttsRes, err := n.opts.TTSGen.GenerateTTS(ctx, domainmedia.TTSRequest{
-			ModelRef:  in.ModelRef,
-			Text:      text,
-			Voice:     in.Voice,
-			Language:  in.Language,
-			OutputDir: outDir,
-		})
-		if err != nil {
-			return nil, err
-		}
-		audioPath = ttsRes.Path
-	}
-
-	ffmpegExe, err := resolveBinary(ctx, n.opts.Binaries, domainbinaries.IDFFmpeg)
-	if err != nil {
-		return nil, err
-	}
-	ffprobeExe, err := resolveBinary(ctx, n.opts.Binaries, domainbinaries.IDFFprobe)
-	if err != nil {
-		return nil, err
-	}
-
-	probeCtx, cancelProbe := context.WithTimeout(ctx, n.opts.StudioConfig.FFprobeTimeout)
-	defer cancelProbe()
-	vInfo, err := probeWithFFprobe(probeCtx, ffprobeExe, vidPath)
-	if err != nil {
-		return nil, err
-	}
-	aInfo, err := probeWithFFprobe(probeCtx, ffprobeExe, audioPath)
-	if err != nil {
-		return nil, err
-	}
-
+func runDubMuxEncode(
+	ctx context.Context,
+	opts Options,
+	in contracts.TTSDubMuxInput,
+	mode, ffmpegExe, vidPath, audioPath, outDir string,
+	vInfo, aInfo contracts.ProbeMediaOutput,
+) (contracts.TTSDubMuxOutput, error) {
 	outPath := filepath.Join(outDir, uniqueExportFilename("dubbed", ".mp4"))
-	if err := engine.CheckFile(ctx, outPath, true); err != nil {
-		return nil, err
+	if err := checkStudioFile(ctx, outPath, true); err != nil {
+		return contracts.TTSDubMuxOutput{}, err
 	}
-
-	args, targetDur, adjRatio := buildDubMuxArgs(in, n.opts.StudioConfig, vidPath, audioPath, outPath, vInfo, aInfo)
-
-	ffCtx, cancelFF := context.WithTimeout(ctx, n.opts.StudioConfig.FFmpegTimeout)
-	defer cancelFF()
-	progress.Report(ctx, progress.Update{Percent: 10, Message: "Muxing dubbed audio onto video…", Key: "studio.progress.tts_dub_mux"})
-	parser := &pipeProgressParser{totalDurationUs: int64(targetDur * 1_000_000)}
-	res, err := runner.RunWithOptions(ffCtx, ffmpegExe, args, runner.RunOptions{
-		ProgressParser: parser,
-		OnProgress: func(pct float64, msg string) {
-			progress.Report(ctx, progress.Update{Percent: pct, Message: msg, Key: "studio.progress.tts_dub_mux"})
-		},
-	})
+	tmpOut, err := createTempMediaFile(outDir, ".tmp-dub-", ".mp4")
 	if err != nil {
-		return nil, apperr.Wrap(apperr.CodeUnavailable, "FFmpeg tts_dub_mux failed: "+resStderr(res), err)
+		return contracts.TTSDubMuxOutput{}, err
 	}
-	if res.ExitCode != 0 {
-		return nil, apperr.Unavailable("FFmpeg tts_dub_mux failed: " + resStderr(res))
+
+	in.OverflowMode = mode
+	args, targetDur, adjRatio := buildDubMuxArgs(in, opts.StudioConfig, vidPath, audioPath, tmpOut, vInfo, aInfo)
+
+	ffCtx, cancelFF := context.WithTimeout(ctx, opts.StudioConfig.FFmpegTimeout)
+	defer cancelFF()
+	progress.Report(ctx, progress.Update{Percent: 15, Message: "Muxing dubbed audio onto video…", Key: "studio.progress.tts_dub_mux"})
+	runOpts := runner.FFmpegPipeProgressOptions(ctx, int64(targetDur*microsecondsPerSecond), "studio.progress.tts_dub_mux", "Muxing dubbed audio")
+	res, err := runner.RunWithOptions(ffCtx, ffmpegExe, args, runOpts)
+	if err != nil || res == nil || res.ExitCode != 0 {
+		_ = os.Remove(tmpOut)
+		if ctx.Err() != nil {
+			return contracts.TTSDubMuxOutput{}, ctx.Err()
+		}
+		return contracts.TTSDubMuxOutput{}, ioUnavailableErr("FFmpeg failed to mux dubbed audio onto video", err)
+	}
+	if cerr := commitTempMediaFile(tmpOut, outPath); cerr != nil {
+		return contracts.TTSDubMuxOutput{}, cerr
 	}
 	progress.Report(ctx, progress.Update{Percent: 100, Message: "Dubbing & mux ready", Key: "studio.progress.done"})
 
-	assetID := registerStudioAsset(ctx, n.opts, "video", NodeTypeTTSDubMux, outPath, outDir)
+	assetID := registerStudioAsset(ctx, opts, "video", NodeTypeTTSDubMux, outPath, outDir)
 	return contracts.TTSDubMuxOutput{
 		Video:         engine.RefFor(outPath, engine.MediaVideo),
 		Path:          outPath,
@@ -165,6 +217,10 @@ func buildDubMuxArgs(
 	if mode == "" {
 		mode = "freeze_last_frame"
 	}
+	duckOriginal := true
+	if in.DuckOriginal != nil {
+		duckOriginal = *in.DuckOriginal
+	}
 
 	vDur := vInfo.DurationSec
 	aDur := aInfo.DurationSec
@@ -177,10 +233,10 @@ func buildDubMuxArgs(
 	var vFilters []string
 	var aFilters []string
 
-	if vDur > 0 && aDur > vDur+cfg.ExtractFrameEndPadSec {
+	if vDur > 0 && aDur > vDur+cfg.AudioOverflowToleranceSec {
 		switch mode {
 		case "speed_up":
-			ratio = math.Min(4.0, aDur/vDur)
+			ratio = math.Min(maxDubSpeedUpRatio, aDur/vDur)
 			aFilters = append(aFilters, buildAtempoChain(ratio)...)
 			outDur = vDur
 		case "trim":
@@ -207,11 +263,12 @@ func buildDubMuxArgs(
 	if origVol <= 0 {
 		origVol = cfg.TimelineAudioDuckOrigVol
 	}
-	if vInfo.HasAudio && in.DuckOriginal {
+	if vInfo.HasAudio && duckOriginal {
 		fc = append(fc,
 			fmt.Sprintf("[0:a]volume=%.2f[bg]", origVol),
 			fmt.Sprintf("%sasplit=2[sc][dub]", dubLabel),
-			fmt.Sprintf("[bg][sc]sidechaincompress=threshold=%.3f:ratio=6:attack=20:release=250[ducked]", cfg.TimelineAudioDuckThreshold),
+			fmt.Sprintf("[bg][sc]sidechaincompress=threshold=%.3f:ratio=%d:attack=%d:release=%d[ducked]",
+				cfg.TimelineAudioDuckThreshold, duckCompRatio, duckCompAttackMs, duckCompReleaseMs),
 			"[ducked][dub]amix=inputs=2:duration=longest:normalize=0[aout]",
 		)
 	} else if vInfo.HasAudio && in.OriginalVolume > 0 {
@@ -229,7 +286,7 @@ func buildDubMuxArgs(
 		} else {
 			args = append(args, "-map", "0:v", "-c:v", "copy")
 		}
-		if vInfo.HasAudio && (in.DuckOriginal || in.OriginalVolume > 0) {
+		if vInfo.HasAudio && (duckOriginal || in.OriginalVolume > 0) {
 			args = append(args, "-map", "[aout]")
 		} else {
 			args = append(args, "-map", dubLabel)
@@ -245,13 +302,13 @@ func buildDubMuxArgs(
 func buildAtempoChain(factor float64) []string {
 	var filters []string
 	rem := factor
-	for rem > 2.0 {
+	for rem > atempoMaxFactor {
 		filters = append(filters, "atempo=2.0")
-		rem /= 2.0
+		rem /= atempoMaxFactor
 	}
-	for rem < 0.5 {
+	for rem < atempoMinFactor {
 		filters = append(filters, "atempo=0.5")
-		rem /= 0.5
+		rem /= atempoMinFactor
 	}
 	filters = append(filters, fmt.Sprintf("atempo=%.4f", rem))
 	return filters

@@ -10,6 +10,7 @@ import (
 	"io"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -247,4 +248,77 @@ func (p *YtDlpProgressParser) ParseLine(line string) (float64, string, bool) {
 	speed := matches[3]
 	msg := fmt.Sprintf("%s / %s at %s", matches[1]+"%", size, speed)
 	return pct, msg, true
+}
+
+const (
+	// ffmpegPipeMicrosecondsPerSec converts FFmpeg `-progress` out_time_us microsecond counters to seconds.
+	ffmpegPipeMicrosecondsPerSec = 1_000_000.0
+	// ffmpegPipeDefaultUnknownPct reports non-zero activity when total clip duration metadata is unavailable.
+	ffmpegPipeDefaultUnknownPct = 10.0
+	// ffmpegPipeMinPct and ffmpegPipeMaxPct keep mid-encode progress bounded inside (0, 100) before finalization.
+	ffmpegPipeMinPct = 5.0
+	ffmpegPipeMaxPct = 98.0
+)
+
+// FFmpegPipeProgressParser parses FFmpeg `-progress pipe:1` key=value lines (`out_time_us` / `out_time_ms`).
+type FFmpegPipeProgressParser struct {
+	TotalDurationUs int64
+	MessagePrefix   string
+	FallbackPercent float64
+	OnTime          func(percent, seconds float64, message string)
+}
+
+// ParseLine implements LineParser for FFmpeg `-progress pipe:1` output.
+func (p *FFmpegPipeProgressParser) ParseLine(line string) (float64, string, bool) {
+	k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+	if !ok || (k != "out_time_us" && k != "out_time_ms") {
+		return 0, "", false
+	}
+	us, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	if err != nil || us < 0 {
+		return 0, "", false
+	}
+	pct := p.FallbackPercent
+	if pct <= 0 {
+		pct = ffmpegPipeDefaultUnknownPct
+	}
+	if p.TotalDurationUs > 0 {
+		pct = float64(us) / float64(p.TotalDurationUs) * 100.0
+		if pct < ffmpegPipeMinPct {
+			pct = ffmpegPipeMinPct
+		}
+		if pct > ffmpegPipeMaxPct {
+			pct = ffmpegPipeMaxPct
+		}
+	}
+	sec := float64(us) / ffmpegPipeMicrosecondsPerSec
+	prefix := strings.TrimSpace(p.MessagePrefix)
+	if prefix == "" {
+		prefix = "Processing media"
+	}
+	msg := fmt.Sprintf("%s (%.1fs)…", prefix, sec)
+	if p.OnTime != nil {
+		p.OnTime(pct, sec, msg)
+		return pct, msg, false
+	}
+	return pct, msg, true
+}
+
+// FFmpegPipeProgressOptions builds RunOptions that stream FFmpeg `-progress pipe:1` updates to progress.Report
+// with localized `Key` and `Params{"sec": "<elapsed>"}`.
+func FFmpegPipeProgressOptions(ctx context.Context, totalDurationUs int64, key, messagePrefix string) RunOptions {
+	return RunOptions{
+		ProgressParser: &FFmpegPipeProgressParser{
+			TotalDurationUs: totalDurationUs,
+			MessagePrefix:   messagePrefix,
+			OnTime: func(pct, sec float64, msg string) {
+				progress.Report(ctx, progress.Update{
+					Percent: pct,
+					Message: msg,
+					Key:     key,
+					Params:  map[string]string{"sec": fmt.Sprintf("%.1f", sec)},
+				})
+			},
+		},
+	}
 }

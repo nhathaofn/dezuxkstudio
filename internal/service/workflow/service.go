@@ -100,21 +100,26 @@ func New(o Options) (*Service, error) {
 	// Built-in feature nodes. A new feature = one entry here: the UI, workflows and the agent
 	// (MCP workflow_* tools) all pick it up from its Spec, with no agent-specific code.
 	studioCfg := config.ResolveStudioConfig(o.StudioConfig)
-	if o.Config != nil && o.StudioConfig == (config.StudioConfig{}) {
+	if o.Config != nil {
 		studioCfg = o.Config.StudioOrDefault()
 	}
+	watermarkCfg := o.Config.WatermarkOrDefault()
+
 	wmOpts := watermark.Options{
-		MediaDir:      defaultMedia,
-		MediaDirFunc:  mediaDirFunc,
-		OutputDirFunc: watermarkDirFunc,
-		Registrar:     o.Registrar,
-		Binaries:      o.Binaries,
-		StudioConfig:  studioCfg,
-		Config:        o.Config,
+		MediaDir:          defaultMedia,
+		MediaDirFunc:      mediaDirFunc,
+		OutputDirFunc:     watermarkDirFunc,
+		WorkspaceTreeFunc: o.WorkspaceTreeFunc,
+		Registrar:         o.Registrar,
+		Binaries:          o.Binaries,
+		StudioConfig:      studioCfg,
+		WatermarkConfig:   watermarkCfg,
+		Config:            o.Config,
+		Logger:            o.Logger,
 	}
 	nodes := []engine.Node{
 		watermark.NewNode(wmOpts),
-		watermark.NewVideoNode(wmOpts),
+		watermark.NewVideoRemoveNode(wmOpts),
 	}
 	nodes = append(nodes, studionodes.NewNodes(studionodes.Options{
 		TextGen:           textGen,
@@ -129,12 +134,15 @@ func New(o Options) (*Service, error) {
 		MediaDir:          defaultMedia,
 		WorkspaceDir:      defaultWorkspace,
 		WorkspaceTreeFunc: o.WorkspaceTreeFunc,
+		Logger:            o.Logger,
 	})...)
 	if o.MediaGen != nil {
 		nodes = append(nodes, mediagennodes.NewNodes(mediagennodes.Options{
-			MediaDir:     defaultMedia,
-			MediaDirFunc: mediaDirFunc,
-			Service:      o.MediaGen,
+			MediaDir:                defaultMedia,
+			MediaDirFunc:            mediaDirFunc,
+			Service:                 o.MediaGen,
+			MaxVideoDurationSec:     studioCfg.MaxShotDurationSec,
+			DefaultVideoDurationSec: studioCfg.DefaultShotDurationSec,
 		})...)
 	}
 	if o.Providers != nil {
@@ -174,12 +182,12 @@ func (s *Service) Specs(ctx context.Context) []engine.Spec {
 
 // RunNode executes a single node by type with raw JSON input.
 func (s *Service) RunNode(ctx context.Context, nodeType string, input json.RawMessage) (any, error) {
-	s.log.Debug("workflow: running single node", "type", nodeType)
+	s.log.DebugContext(ctx, "workflow: running single node", "type", nodeType)
 	return s.registry.Run(ctx, nodeType, input)
 }
 
 // RunGraph executes a complete workflow graph.
 func (s *Service) RunGraph(ctx context.Context, g engine.Graph) (engine.GraphResult, error) {
-	s.log.Info("workflow: running graph", "nodes_count", len(g.Nodes), "edges_count", len(g.Edges))
+	s.log.InfoContext(ctx, "workflow: running graph", "nodes_count", len(g.Nodes), "edges_count", len(g.Edges))
 	return s.registry.RunGraph(ctx, g)
 }

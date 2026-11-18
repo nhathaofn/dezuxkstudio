@@ -1,6 +1,9 @@
 package contracts
 
-import "reflect"
+import (
+	"encoding/json"
+	"reflect"
+)
 
 // NodeSpec names a built-in workflow node whose input/output shapes the frontend uses directly
 // (a feature screen that runs one node). Its settings (options, min/max, defaults) are NOT
@@ -16,6 +19,7 @@ type NodeSpec struct {
 func Nodes() []NodeSpec {
 	return []NodeSpec{
 		{"WATERMARK_REMOVER", NodeTypeWatermarkRemover, t[RemoverInput](), t[RemoverOutput]()},
+		{"PROVIDER_LIST", NodeTypeProviderList, t[Empty](), t[json.RawMessage]()},
 		{"IMAGE_GENERATE", NodeTypeImageGenerate, t[ImageGenerateInput](), t[ImageGenerateOutput]()},
 		{"VIDEO_GENERATE", NodeTypeVideoGenerate, t[VideoGenerateInput](), t[VideoGenerateOutput]()},
 		{"TTS_GENERATE", NodeTypeTTSGenerate, t[TTSGenerateInput](), t[TTSGenerateOutput]()},

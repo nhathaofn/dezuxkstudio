@@ -61,7 +61,7 @@ func NewAuthorShotPromptsNode(opts Options) engine.Node {
 	opts.StudioConfig = withStudioDefaults(opts.StudioConfig)
 	spec := engine.Spec{
 		Type:        NodeTypeAuthorShotPrompts,
-		Provider:    "tool",
+		Provider:    studioProviderID,
 		Label:       "Shot Prompt Author",
 		Description: "Convert a normalized script and asset bible into an ordered storyboard shot list with tailored image_prompt, video_prompt, @Tag references, dialogue, and narration text",
 		Inputs: []engine.Port{
@@ -136,21 +136,32 @@ func NewAuthorShotPromptsNode(opts Options) engine.Node {
 			return contracts.AuthorShotPromptsOutput{}, err
 		}
 
+		defaultDur := opts.StudioConfig.DefaultShotDurationSec
+		maxDur := opts.StudioConfig.MaxShotDurationSec
+		if in.DefaultDurationSec != 0 {
+			if in.DefaultDurationSec < domainstudio.MinShotDurationSec || in.DefaultDurationSec > maxDur {
+				return contracts.AuthorShotPromptsOutput{}, apperr.Validation(fmt.Sprintf("default_duration_sec must be between %d and %d", domainstudio.MinShotDurationSec, maxDur)).
+					WithMsg("errors.studio.invalid_duration", map[string]any{"min": domainstudio.MinShotDurationSec, "max": maxDur})
+			}
+			defaultDur = in.DefaultDurationSec
+		}
+
 		progress.Report(ctx, progress.Update{
 			Percent: 15,
 			Message: "Authoring storyboard and video prompts…",
 			Key:     "studio.progress.author_shots",
 		})
 
-		sysPrompt := "You are an AI cinematography supervisor. Transform every beat of the normalized script into concrete, sequential video shots. " +
-			"For each shot, write: (1) image_prompt (detailed English keyframe composition, lighting, character wardrobe/appearance, framing), " +
-			"(2) video_prompt (motion, camera movement, acting beats, lip/audio cues; preserve dialogue cues when Drama), " +
-			"(3) ref_asset_tags matching the @Tags in the asset bible, " +
-			"(4) narration_text and dialogues preserved verbatim in the original script language. " +
-			"Keep duration_sec realistic (4-10 seconds per shot)."
+		sysPrompt := fmt.Sprintf("You are an AI cinematography supervisor. Transform every beat of the normalized script into concrete, sequential video shots. "+
+			"For each shot, write: (1) image_prompt (detailed English keyframe composition, lighting, character wardrobe/appearance, framing), "+
+			"(2) video_prompt (motion, camera movement, acting beats, lip/audio cues; preserve dialogue cues when Drama), "+
+			"(3) ref_asset_tags matching the @Tags in the asset bible, "+
+			"(4) narration_text and dialogues preserved verbatim in the original script language. "+
+			"Keep duration_sec realistic (%d-%d seconds per shot, default %ds).",
+			domainstudio.MinShotDurationSec, maxDur, defaultDur)
 
-		userPrompt := fmt.Sprintf("Production Mode: %s\nDefault Shot Mode: %s\nStyle Prompt: %s\n\nNormalized Script JSON:\n%s\n\nAsset Bible JSON:\n%s",
-			prodMode, shotModeDef, strings.TrimSpace(in.StylePrompt), scriptRaw, bibleRaw)
+		userPrompt := fmt.Sprintf("Production Mode: %s\nDefault Shot Mode: %s\nDefault Shot Duration (s): %d\nStyle Prompt: %s\n\nNormalized Script JSON:\n%s\n\nAsset Bible JSON:\n%s",
+			prodMode, shotModeDef, defaultDur, strings.TrimSpace(in.StylePrompt), scriptRaw, bibleRaw)
 
 		res, err := opts.TextGen.GenerateText(ctx, domainmedia.TextRequest{
 			ModelRef:       strings.TrimSpace(in.Model),
@@ -165,7 +176,8 @@ func NewAuthorShotPromptsNode(opts Options) engine.Node {
 
 		var pkg domainstudio.ShotPromptPackage
 		if err := json.Unmarshal(res.ParsedJSON, &pkg); err != nil {
-			return contracts.AuthorShotPromptsOutput{}, apperr.Unavailable("Failed to decode shots JSON: " + err.Error())
+			return contracts.AuthorShotPromptsOutput{}, apperr.Wrap(apperr.CodeUnavailable, "Failed to decode shots JSON", err).
+				WithMsg("errors.studio.llm_invalid_json", nil)
 		}
 		pkg.ProductionMode = prodMode
 
@@ -177,7 +189,10 @@ func NewAuthorShotPromptsNode(opts Options) engine.Node {
 			if pkg.Shots[i].Status == "" {
 				pkg.Shots[i].Status = domainstudio.ShotPending
 			}
-			pkg.Shots[i].Normalize()
+			pkg.Shots[i].NormalizeWithDefaultDuration(defaultDur)
+			if pkg.Shots[i].DurationSec > maxDur {
+				pkg.Shots[i].DurationSec = maxDur
+			}
 		}
 
 		pretty, err := json.MarshalIndent(pkg, "", "  ")

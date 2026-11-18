@@ -2,10 +2,11 @@ package studio
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -18,20 +19,17 @@ import (
 	"app/internal/runner"
 )
 
-type extractFramesNode struct {
-	opts Options
-}
+var extractFrameModes = []string{"last", "first", "uniform", "timestamps"}
 
 // NewExtractFramesNode returns tool.extract_frames for extracting the last, first, or sample frames from video clips.
 func NewExtractFramesNode(opts Options) engine.Node {
 	opts.StudioConfig = withStudioDefaults(opts.StudioConfig)
-	return &extractFramesNode{opts: opts}
-}
+	defCount := opts.StudioConfig.ExtractFrameDefaultCount
+	maxCount := opts.StudioConfig.ExtractFrameMaxCount
 
-func (n *extractFramesNode) Spec() engine.Spec {
-	return engine.Spec{
+	spec := engine.Spec{
 		Type:        NodeTypeExtractFrames,
-		Provider:    "studio",
+		Provider:    studioProviderID,
 		Label:       "Extract Video Frames",
 		Description: "Extracts the last frame (for shot continuity keyframes), first frame, or evenly spaced timestamps from an MP4 clip using FFmpeg.",
 		Inputs: []engine.Port{
@@ -41,121 +39,176 @@ func (n *extractFramesNode) Spec() engine.Spec {
 			{Name: "last_frame", Label: "Extracted Frame", Type: engine.PortImage},
 		},
 		Params: []engine.Param{
-			{Name: "mode", Label: "Extraction Mode", Kind: engine.ParamSelect, Options: []string{"last", "first", "uniform", "timestamps"}, Default: "last"},
-			{Name: "count", Label: "Frame Count (uniform)", Kind: engine.ParamInteger, Min: 1, Max: 24, Default: "4"},
+			{Name: "mode", Label: "Extraction Mode", Kind: engine.ParamSelect, Options: extractFrameModes, Default: "last"},
+			{Name: "count", Label: "Frame Count (uniform)", Kind: engine.ParamInteger, Min: 1, Max: maxCount, Default: strconv.Itoa(defCount)},
 			{Name: "timestamps_csv", Label: "Timestamps CSV (sec)", Kind: engine.ParamText},
 			{Name: "output_dir", Label: "Output Folder", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
 		},
 	}
+
+	return engine.Typed(spec, func(ctx context.Context, in contracts.ExtractFramesInput) (contracts.ExtractFramesOutput, error) {
+		vidPath, err := resolveMediaInput(ctx, opts, in.VideoPath.LocalURL, inputKindVideo)
+		if err != nil {
+			return contracts.ExtractFramesOutput{}, err
+		}
+		if vidPath == "" {
+			return contracts.ExtractFramesOutput{}, apperr.Validation("video_path is required").
+				WithMsg("errors.studio.video_required", nil)
+		}
+
+		mode := strings.ToLower(strings.TrimSpace(in.Mode))
+		if mode == "" {
+			mode = "last"
+		}
+		if !slices.Contains(extractFrameModes, mode) {
+			return contracts.ExtractFramesOutput{}, apperr.Validation(fmt.Sprintf("unsupported extract_frames mode %q", mode)).
+				WithMsg("errors.studio.invalid_mode", map[string]any{"mode": mode})
+		}
+		if in.Count < 0 || in.Count > maxCount {
+			return contracts.ExtractFramesOutput{}, apperr.Validation(fmt.Sprintf("count must be between 1 and %d", maxCount)).
+				WithMsg("errors.studio.invalid_frame_count", map[string]any{"min": 1, "max": maxCount})
+		}
+		if len(in.TimestampsSec) > maxCount {
+			return contracts.ExtractFramesOutput{}, apperr.Validation(fmt.Sprintf("timestamps_sec cannot exceed %d entries", maxCount)).
+				WithMsg("errors.studio.invalid_frame_count", map[string]any{"min": 1, "max": maxCount})
+		}
+		for _, ts := range in.TimestampsSec {
+			if math.IsNaN(ts) || math.IsInf(ts, 0) {
+				return contracts.ExtractFramesOutput{}, apperr.Validation("timestamps_sec must contain finite numbers").
+					WithMsg("errors.studio.invalid_timestamp", nil)
+			}
+		}
+
+		ffmpegExe, err := resolveBinary(ctx, opts.Binaries, domainbinaries.IDFFmpeg)
+		if err != nil {
+			return contracts.ExtractFramesOutput{}, err
+		}
+		ffprobeExe, err := resolveBinary(ctx, opts.Binaries, domainbinaries.IDFFprobe)
+		if err != nil {
+			return contracts.ExtractFramesOutput{}, err
+		}
+		outDir, err := resolveNodeOutputDir(ctx, opts, in.OutputDir, filepath.Join("studio", "frames"))
+		if err != nil {
+			return contracts.ExtractFramesOutput{}, err
+		}
+
+		probeCtx, cancelProbe := context.WithTimeout(ctx, opts.StudioConfig.FFprobeTimeout)
+		stopProbe := progress.KeepAlive(ctx)
+		info, err := probeWithFFprobe(probeCtx, ffprobeExe, vidPath)
+		stopProbe()
+		cancelProbe()
+		if err != nil {
+			return contracts.ExtractFramesOutput{}, err
+		}
+
+		timestamps, err := resolveFrameTimestamps(in, info.DurationSec, opts.StudioConfig)
+		if err != nil {
+			return contracts.ExtractFramesOutput{}, err
+		}
+		out := contracts.ExtractFramesOutput{
+			Frames:    make([]contracts.ExtractedFrame, 0, len(timestamps)),
+			OutputDir: outDir,
+		}
+
+		ffCtx, cancelFF := context.WithTimeout(ctx, opts.StudioConfig.FFmpegTimeout)
+		defer cancelFF()
+
+		total := len(timestamps)
+		for i, ts := range timestamps {
+			if err := ctx.Err(); err != nil {
+				return contracts.ExtractFramesOutput{}, err
+			}
+			progress.Report(ctx, progress.Update{
+				Percent: float64(i) / float64(max(1, total)) * 90.0,
+				Message: fmt.Sprintf("Extracting frame %d/%d…", i+1, total),
+				Key:     "studio.progress.extract_frames",
+				Params: map[string]string{
+					"current": strconv.Itoa(i + 1),
+					"total":   strconv.Itoa(total),
+				},
+			})
+			outPath := filepath.Join(outDir, uniqueExportFilename(fmt.Sprintf("frame_%02d", i+1), ".png"))
+			if err := checkStudioFile(ctx, outPath, true); err != nil {
+				return contracts.ExtractFramesOutput{}, err
+			}
+			tmpOut, terr := createTempMediaFile(outDir, ".tmp-frame-", ".png")
+			if terr != nil {
+				return contracts.ExtractFramesOutput{}, terr
+			}
+			var args []string
+			if ts < 0 {
+				args = []string{"-y", "-sseof", fmt.Sprintf("-%.2f", opts.StudioConfig.ExtractFrameEOFOffsetSec), "-i", vidPath, "-frames:v", "1", tmpOut}
+			} else {
+				args = []string{"-y", "-ss", fmt.Sprintf("%.3f", ts), "-i", vidPath, "-frames:v", "1", tmpOut}
+			}
+			stopRun := progress.KeepAlive(ctx)
+			res, runErr := runner.Run(ffCtx, ffmpegExe, args...)
+			stopRun()
+			if runErr != nil || res == nil || res.ExitCode != 0 {
+				_ = os.Remove(tmpOut)
+				if ctx.Err() != nil {
+					return contracts.ExtractFramesOutput{}, ctx.Err()
+				}
+				return contracts.ExtractFramesOutput{}, ioUnavailableErr("FFmpeg failed to extract video frame", runErr)
+			}
+			if cerr := commitTempMediaFile(tmpOut, outPath); cerr != nil {
+				return contracts.ExtractFramesOutput{}, cerr
+			}
+			assetID := registerStudioAsset(ctx, opts, "image", NodeTypeExtractFrames, outPath, outDir)
+			out.Frames = append(out.Frames, contracts.ExtractedFrame{
+				Path:         outPath,
+				TimestampSec: math.Max(0, ts),
+				Width:        info.Width,
+				Height:       info.Height,
+				AssetID:      assetID,
+			})
+		}
+		if len(out.Frames) > 0 {
+			lastPath := out.Frames[len(out.Frames)-1].Path
+			out.LastFramePath = lastPath
+			out.LastFrame = engine.RefFor(lastPath, engine.MediaImage)
+		}
+		progress.Report(ctx, progress.Update{Percent: 100, Message: "Frames extracted", Key: "studio.progress.done"})
+		return out, nil
+	})
 }
 
-func (n *extractFramesNode) Run(ctx context.Context, raw json.RawMessage) (any, error) {
-	var in contracts.ExtractFramesInput
-	if err := json.Unmarshal(raw, &in); err != nil {
-		return nil, apperr.Validation("invalid extract_frames input").WithDetails(map[string]any{"cause": err.Error()})
-	}
-	vidPath, err := resolveInputFile(ctx, n.opts, in.VideoPath)
-	if err != nil {
-		return nil, err
-	}
-	if vidPath == "" {
-		return nil, apperr.Validation("video_path is required")
-	}
-
-	ffmpegExe, err := resolveBinary(ctx, n.opts.Binaries, domainbinaries.IDFFmpeg)
-	if err != nil {
-		return nil, err
-	}
-	ffprobeExe, err := resolveBinary(ctx, n.opts.Binaries, domainbinaries.IDFFprobe)
-	if err != nil {
-		return nil, err
-	}
-	outDir, err := resolveNodeOutputDir(ctx, n.opts, in.OutputDir, filepath.Join("studio", "frames"))
-	if err != nil {
-		return nil, err
-	}
-
-	probeCtx, cancelProbe := context.WithTimeout(ctx, n.opts.StudioConfig.FFprobeTimeout)
-	defer cancelProbe()
-	info, err := probeWithFFprobe(probeCtx, ffprobeExe, vidPath)
-	if err != nil {
-		return nil, err
-	}
-
-	timestamps := resolveFrameTimestamps(in, info.DurationSec, n.opts.StudioConfig)
-	out := contracts.ExtractFramesOutput{
-		Frames:    make([]contracts.ExtractedFrame, 0, len(timestamps)),
-		OutputDir: outDir,
-	}
-
-	ffCtx, cancelFF := context.WithTimeout(ctx, n.opts.StudioConfig.FFmpegTimeout)
-	defer cancelFF()
-
-	for i, ts := range timestamps {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		progress.Report(ctx, progress.Update{
-			Percent: float64(i) / float64(max(1, len(timestamps))) * 90.0,
-			Message: fmt.Sprintf("Extracting frame %d/%d…", i+1, len(timestamps)),
-			Key:     "studio.progress.extract_frames",
-		})
-		outPath := filepath.Join(outDir, uniqueExportFilename(fmt.Sprintf("frame_%02d", i+1), ".png"))
-		if err := engine.CheckFile(ctx, outPath, true); err != nil {
-			return nil, err
-		}
-		var args []string
-		if ts < 0 {
-			// Fallback when duration metadata was unavailable: seek near EOF directly
-			args = []string{"-y", "-sseof", fmt.Sprintf("-%.2f", n.opts.StudioConfig.ExtractFrameEOFOffsetSec), "-i", vidPath, "-frames:v", "1", "-q:v", "2", outPath}
-		} else {
-			args = []string{"-y", "-ss", fmt.Sprintf("%.3f", ts), "-i", vidPath, "-frames:v", "1", "-q:v", "2", outPath}
-		}
-		res, runErr := runner.Run(ffCtx, ffmpegExe, args...)
-		if runErr != nil {
-			return nil, apperr.Wrap(apperr.CodeUnavailable, "FFmpeg extract_frames failed: "+resStderr(res), runErr)
-		}
-		if res.ExitCode != 0 {
-			return nil, apperr.Unavailable("FFmpeg extract_frames failed: " + resStderr(res))
-		}
-		assetID := registerStudioAsset(ctx, n.opts, "image", NodeTypeExtractFrames, outPath, outDir)
-		out.Frames = append(out.Frames, contracts.ExtractedFrame{
-			Path:         outPath,
-			TimestampSec: math.Max(0, ts),
-			Width:        info.Width,
-			Height:       info.Height,
-			AssetID:      assetID,
-		})
-	}
-	if len(out.Frames) > 0 {
-		out.LastFramePath = out.Frames[len(out.Frames)-1].Path
-	}
-	progress.Report(ctx, progress.Update{Percent: 100, Message: "Frames extracted", Key: "studio.progress.done"})
-	return out, nil
-}
-
-func resolveFrameTimestamps(in contracts.ExtractFramesInput, dur float64, sCfg config.StudioConfig) []float64 {
+func resolveFrameTimestamps(in contracts.ExtractFramesInput, dur float64, sCfg config.StudioConfig) ([]float64, error) {
 	sCfg = withStudioDefaults(sCfg)
 	endPad := sCfg.ExtractFrameEndPadSec
 	lastPad := sCfg.ExtractFrameLastPadSec
+	defCount := sCfg.ExtractFrameDefaultCount
+	maxCount := sCfg.ExtractFrameMaxCount
+
 	mode := strings.ToLower(strings.TrimSpace(in.Mode))
 	if mode == "" {
 		mode = "last"
 	}
 	switch mode {
 	case "first":
-		return []float64{0}
+		return []float64{0}, nil
 	case "timestamps":
 		rawStamps := append([]float64(nil), in.TimestampsSec...)
 		if len(rawStamps) == 0 && strings.TrimSpace(in.TimestampsCSV) != "" {
 			for _, part := range strings.Split(in.TimestampsCSV, ",") {
-				if v, err := strconv.ParseFloat(strings.TrimSpace(part), 64); err == nil {
-					rawStamps = append(rawStamps, v)
+				trimmed := strings.TrimSpace(part)
+				if trimmed == "" {
+					continue
 				}
+				v, err := strconv.ParseFloat(trimmed, 64)
+				if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+					return nil, apperr.Validation("timestamps_csv contains an invalid timestamp").
+						WithMsg("errors.studio.invalid_timestamp", nil)
+				}
+				rawStamps = append(rawStamps, v)
 			}
 		}
+		if len(rawStamps) > maxCount {
+			return nil, apperr.Validation(fmt.Sprintf("timestamps cannot exceed %d entries", maxCount)).
+				WithMsg("errors.studio.invalid_frame_count", map[string]any{"min": 1, "max": maxCount})
+		}
 		if len(rawStamps) == 0 {
-			return []float64{0}
+			return []float64{0}, nil
 		}
 		out := make([]float64, 0, len(rawStamps))
 		for _, t := range rawStamps {
@@ -167,26 +220,29 @@ func resolveFrameTimestamps(in contracts.ExtractFramesInput, dur float64, sCfg c
 			}
 			out = append(out, t)
 		}
-		return out
+		return out, nil
 	case "uniform":
-		count := clampInt(in.Count, 4, 1, 24)
+		count := in.Count
+		if count == 0 {
+			count = defCount
+		}
 		if dur <= endPad*2 {
-			return []float64{0}
+			return []float64{0}, nil
 		}
 		out := make([]float64, 0, count)
 		step := dur / float64(count+1)
 		for i := 1; i <= count; i++ {
 			out = append(out, math.Min(dur-endPad, step*float64(i)))
 		}
-		return out
+		return out, nil
 	default: // "last"
 		if dur <= 0 {
-			return []float64{-1}
+			return []float64{-1}, nil
 		}
 		ts := dur - lastPad
 		if ts < 0 {
 			ts = 0
 		}
-		return []float64{ts}
+		return []float64{ts}, nil
 	}
 }

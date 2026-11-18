@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,9 +27,12 @@ import (
 )
 
 const (
-	// CapCut / Jianying draft schema version identifier required by desktop draft_content.json importers.
+	// capCutDraftSchemaVersion is the CapCut / Jianying desktop draft_content.json schema version identifier.
 	capCutDraftSchemaVersion = 360000
-	capCutSubtitleFontSize   = 8.0
+	// capCutSubtitleFontSize is the normalized CapCut desktop subtitle scale unit (8.0 = standard 1080p caption).
+	capCutSubtitleFontSize = 8.0
+	// defaultExportProjectName is the neutral default slug used when project_name is omitted.
+	defaultExportProjectName = "studio_timeline"
 )
 
 // NewExportNLEDraftNode builds tool.export_nle_draft supporting CapCut/Jianying Draft (.zip), FCPXML v1.10, and OpenTimelineIO (.otio).
@@ -36,7 +41,7 @@ func NewExportNLEDraftNode(opts Options) engine.Node {
 
 	spec := engine.Spec{
 		Type:        NodeTypeExportNLEDraft,
-		Provider:    "studio",
+		Provider:    studioProviderID,
 		Label:       "NLE Draft Exporter",
 		Description: "Exports a multi-track EditTimeline to a CapCut/Jianying draft zip bundle (with optional copied media assets), Final Cut Pro XML (FCPXML v1.10), or OpenTimelineIO (.otio).",
 		Inputs: []engine.Port{
@@ -48,7 +53,7 @@ func NewExportNLEDraftNode(opts Options) engine.Node {
 		Params: []engine.Param{
 			{Name: "format", Label: "Export Format", Kind: engine.ParamSelect, Options: optionStrings(domainstudio.NLEExportFormats()), Default: string(domainstudio.NLEFormatCapCut)},
 			{Name: "output_dir", Label: "Output Directory", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
-			{Name: "project_name", Label: "Draft Project Name", Kind: engine.ParamText, Default: "dezuxk_timeline"},
+			{Name: "project_name", Label: "Draft Project Name", Kind: engine.ParamText, Default: defaultExportProjectName},
 			{Name: "include_media_copy", Label: "Include Media Files in Draft Zip", Kind: engine.ParamToggle, Default: "true"},
 		},
 	}
@@ -56,13 +61,15 @@ func NewExportNLEDraftNode(opts Options) engine.Node {
 	return engine.Typed(spec, func(ctx context.Context, in contracts.ExportNLEDraftInput) (contracts.ExportNLEDraftOutput, error) {
 		trimmed := strings.TrimSpace(in.TimelineJSON)
 		if trimmed == "" {
-			return contracts.ExportNLEDraftOutput{}, apperr.Validation("timeline_json is required")
+			return contracts.ExportNLEDraftOutput{}, apperr.Validation("timeline_json is required").
+				WithMsg("errors.studio.timeline_required", nil)
 		}
 		var tl domainstudio.EditTimeline
 		if err := json.Unmarshal([]byte(trimmed), &tl); err != nil {
-			return contracts.ExportNLEDraftOutput{}, apperr.Validation("invalid timeline_json: " + err.Error())
+			return contracts.ExportNLEDraftOutput{}, apperr.Wrap(apperr.CodeValidation, "invalid timeline_json", err).
+				WithMsg("errors.studio.invalid_timeline_json", nil)
 		}
-		if err := tl.Validate(); err != nil {
+		if err := tl.ValidateWithMaxDim(opts.StudioConfig.MaxVideoDimension); err != nil {
 			return contracts.ExportNLEDraftOutput{}, err
 		}
 
@@ -71,7 +78,8 @@ func NewExportNLEDraftNode(opts Options) engine.Node {
 			format = domainstudio.NLEFormatCapCut
 		}
 		if !format.Valid() {
-			return contracts.ExportNLEDraftOutput{}, apperr.Validation(fmt.Sprintf("unsupported export format %q", format))
+			return contracts.ExportNLEDraftOutput{}, apperr.Validation(fmt.Sprintf("unsupported export format %q", format)).
+				WithMsg("errors.studio.invalid_export_format", map[string]any{"format": string(format)})
 		}
 
 		includeMedia := true
@@ -81,7 +89,7 @@ func NewExportNLEDraftNode(opts Options) engine.Node {
 
 		projectName := strings.TrimSpace(in.ProjectName)
 		if projectName == "" {
-			projectName = "dezuxk_timeline"
+			projectName = defaultExportProjectName
 		}
 		safeSlug := domainstudio.Slugify(projectName)
 
@@ -90,29 +98,42 @@ func NewExportNLEDraftNode(opts Options) engine.Node {
 			return contracts.ExportNLEDraftOutput{}, err
 		}
 
-		// Guard & resolve all source paths upfront.
-		resolvedPaths := make(map[string]string)
 		for ti := range tl.Tracks {
+			allowedKind := inputKindVideo | inputKindImage
+			if tl.Tracks[ti].Kind != domainstudio.TrackVideo {
+				allowedKind = inputKindAudio
+			}
 			for ci := range tl.Tracks[ti].Clips {
+				if err := ctx.Err(); err != nil {
+					return contracts.ExportNLEDraftOutput{}, err
+				}
 				rawP := strings.TrimSpace(tl.Tracks[ti].Clips[ci].FilePath)
 				if rawP == "" {
 					continue
 				}
-				p, rerr := resolveInputFile(ctx, opts, rawP)
+				p, rerr := resolveMediaInput(ctx, opts, rawP, allowedKind)
 				if rerr != nil {
 					return contracts.ExportNLEDraftOutput{}, rerr
 				}
-				resolvedPaths[rawP] = p
 				tl.Tracks[ti].Clips[ci].FilePath = p
 			}
 		}
 
-		progress.Report(ctx, progress.Update{Percent: 25, Message: fmt.Sprintf("Exporting %s project…", format), Key: "studio.progress.export_nle"})
+		progress.Report(ctx, progress.Update{
+			Percent: 20,
+			Message: fmt.Sprintf("Exporting %s project…", format),
+			Key:     "studio.progress.export_nle",
+			Params: map[string]string{
+				"format":  string(format),
+				"current": "0",
+				"total":   "1",
+			},
+		})
 
 		switch format {
 		case domainstudio.NLEFormatCapCut, domainstudio.NLEFormatJianying:
 			outPath := filepath.Join(outDir, uniqueExportFilename(safeSlug+"_"+string(format)+"_draft", ".zip"))
-			if err := engine.CheckFile(ctx, outPath, true); err != nil {
+			if err := checkStudioFile(ctx, outPath, true); err != nil {
 				return contracts.ExportNLEDraftOutput{}, err
 			}
 			fileCount, totalBytes, err := exportCapCutJianyingZip(ctx, tl, format, projectName, outPath, includeMedia, opts.StudioConfig.ExportMaxZipBytes)
@@ -131,15 +152,15 @@ func NewExportNLEDraftNode(opts Options) engine.Node {
 
 		case domainstudio.NLEFormatFCPXML:
 			outPath := filepath.Join(outDir, uniqueExportFilename(safeSlug, ".fcpxml"))
-			if err := engine.CheckFile(ctx, outPath, true); err != nil {
+			if err := checkStudioFile(ctx, outPath, true); err != nil {
 				return contracts.ExportNLEDraftOutput{}, err
 			}
 			xmlBytes, err := buildFCPXML(tl, projectName)
 			if err != nil {
 				return contracts.ExportNLEDraftOutput{}, apperr.Internal(err)
 			}
-			if err := fsutil.WriteFileAtomic(outPath, xmlBytes, 0o644); err != nil {
-				return contracts.ExportNLEDraftOutput{}, apperr.Internal(err)
+			if err := fsutil.WriteFileAtomic(outPath, xmlBytes, 0o600); err != nil {
+				return contracts.ExportNLEDraftOutput{}, ioUnavailableErr("Failed to write FCPXML draft file", err)
 			}
 			assetID := registerStudioAsset(ctx, opts, "export", NodeTypeExportNLEDraft, outPath, outDir)
 			progress.Report(ctx, progress.Update{Percent: 100, Message: "FCPXML exported", Key: "studio.progress.done"})
@@ -153,15 +174,15 @@ func NewExportNLEDraftNode(opts Options) engine.Node {
 
 		case domainstudio.NLEFormatOTIO:
 			outPath := filepath.Join(outDir, uniqueExportFilename(safeSlug, ".otio"))
-			if err := engine.CheckFile(ctx, outPath, true); err != nil {
+			if err := checkStudioFile(ctx, outPath, true); err != nil {
 				return contracts.ExportNLEDraftOutput{}, err
 			}
 			otioBytes, err := buildOTIOJSON(tl, projectName)
 			if err != nil {
 				return contracts.ExportNLEDraftOutput{}, apperr.Internal(err)
 			}
-			if err := fsutil.WriteFileAtomic(outPath, otioBytes, 0o644); err != nil {
-				return contracts.ExportNLEDraftOutput{}, apperr.Internal(err)
+			if err := fsutil.WriteFileAtomic(outPath, otioBytes, 0o600); err != nil {
+				return contracts.ExportNLEDraftOutput{}, ioUnavailableErr("Failed to write OTIO timeline file", err)
 			}
 			assetID := registerStudioAsset(ctx, opts, "export", NodeTypeExportNLEDraft, outPath, outDir)
 			progress.Report(ctx, progress.Update{Percent: 100, Message: "OTIO exported", Key: "studio.progress.done"})
@@ -354,7 +375,7 @@ func exportCapCutJianyingZip(
 			"ratio":  "original",
 		},
 		"platform": map[string]any{
-			"os":         "windows",
+			"os":         runtime.GOOS,
 			"app_source": string(format),
 		},
 		"materials": map[string]any{
@@ -382,107 +403,123 @@ func exportCapCutJianyingZip(
 		return 0, 0, err
 	}
 
-	tmpZip := outPath + ".tmp.zip"
-	defer func() { _ = os.Remove(tmpZip) }()
+	writeErr := fsutil.WriteAtomic(outPath, 0o600, func(dst io.Writer) error {
+		fileCount = 0
+		totalBytes = 0
+		zw := zip.NewWriter(dst)
 
-	f, err := os.OpenFile(tmpZip, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return 0, 0, apperr.Internal(err)
-	}
-	zw := zip.NewWriter(f)
-
-	writeEntry := func(name string, data []byte) error {
-		if totalBytes+int64(len(data)) > maxZipBytes {
-			return apperr.Validation(fmt.Sprintf("exported draft exceeds studio.export_max_zip_bytes (%d bytes)", maxZipBytes))
-		}
-		w, werr := zw.Create(name)
-		if werr != nil {
-			return werr
-		}
-		if _, werr := w.Write(data); werr != nil {
-			return werr
-		}
-		fileCount++
-		totalBytes += int64(len(data))
-		return nil
-	}
-
-	prefix := domainstudio.Slugify(projectName) + "/"
-	if err := writeEntry(prefix+"draft_content.json", append(contentBytes, '\n')); err != nil {
-		_ = zw.Close()
-		_ = f.Close()
-		return 0, 0, err
-	}
-	if err := writeEntry(prefix+"draft_meta_info.json", append(metaBytes, '\n')); err != nil {
-		_ = zw.Close()
-		_ = f.Close()
-		return 0, 0, err
-	}
-
-	if includeMedia {
-		seenFiles := make(map[string]bool)
-		for _, m := range materials {
-			if ctx.Err() != nil {
-				_ = zw.Close()
-				_ = f.Close()
-				return 0, 0, ctx.Err()
+		writeEntry := func(name string, data []byte) error {
+			if totalBytes+int64(len(data)) > maxZipBytes {
+				return apperr.Validation(fmt.Sprintf("exported draft exceeds studio.export_max_zip_bytes (%d bytes)", maxZipBytes)).
+					WithMsg("errors.studio.export_too_large", map[string]any{"max_bytes": maxZipBytes})
 			}
-			if seenFiles[m.zipRelPath] {
-				continue
-			}
-			seenFiles[m.zipRelPath] = true
-
-			st, serr := os.Stat(m.srcPath)
-			if serr != nil {
-				_ = zw.Close()
-				_ = f.Close()
-				return 0, 0, apperr.Validation(fmt.Sprintf("media file missing for export: %s", filepath.Base(m.srcPath)))
-			}
-			if totalBytes+st.Size() > maxZipBytes {
-				_ = zw.Close()
-				_ = f.Close()
-				return 0, 0, apperr.Validation(fmt.Sprintf("exported draft media exceeds studio.export_max_zip_bytes (%d bytes)", maxZipBytes))
-			}
-
-			src, oerr := os.Open(m.srcPath)
-			if oerr != nil {
-				_ = zw.Close()
-				_ = f.Close()
-				return 0, 0, apperr.Internal(oerr)
-			}
-			w, werr := zw.Create(prefix + m.zipRelPath)
+			w, werr := zw.Create(name)
 			if werr != nil {
-				_ = src.Close()
-				_ = zw.Close()
-				_ = f.Close()
-				return 0, 0, apperr.Internal(werr)
+				return ioUnavailableErr("Failed to create NLE draft zip entry", werr)
 			}
-			written, cerr := io.Copy(w, io.LimitReader(src, maxZipBytes-totalBytes+1))
-			_ = src.Close()
-			if cerr != nil {
-				_ = zw.Close()
-				_ = f.Close()
-				return 0, 0, apperr.Internal(cerr)
-			}
-			totalBytes += written
-			if totalBytes > maxZipBytes {
-				_ = zw.Close()
-				_ = f.Close()
-				return 0, 0, apperr.Validation(fmt.Sprintf("exported draft media exceeds studio.export_max_zip_bytes (%d bytes)", maxZipBytes))
+			if _, werr := w.Write(data); werr != nil {
+				return ioUnavailableErr("Failed to write NLE draft zip entry", werr)
 			}
 			fileCount++
+			totalBytes += int64(len(data))
+			return nil
 		}
-	}
 
-	if err := zw.Close(); err != nil {
-		_ = f.Close()
-		return 0, 0, apperr.Internal(err)
-	}
-	if err := f.Close(); err != nil {
-		return 0, 0, apperr.Internal(err)
-	}
-	if err := os.Rename(tmpZip, outPath); err != nil {
-		return 0, 0, apperr.Internal(err)
+		prefix := domainstudio.Slugify(projectName) + "/"
+		if err := writeEntry(prefix+"draft_content.json", append(contentBytes, '\n')); err != nil {
+			_ = zw.Close()
+			return err
+		}
+		if err := writeEntry(prefix+"draft_meta_info.json", append(metaBytes, '\n')); err != nil {
+			_ = zw.Close()
+			return err
+		}
+
+		if includeMedia {
+			seenFiles := make(map[string]bool)
+			totalMats := len(materials)
+			for idx, m := range materials {
+				if err := ctx.Err(); err != nil {
+					_ = zw.Close()
+					return err
+				}
+				if seenFiles[m.zipRelPath] {
+					continue
+				}
+				seenFiles[m.zipRelPath] = true
+
+				progress.Report(ctx, progress.Update{
+					Percent: 25.0 + float64(idx+1)/float64(max(1, totalMats))*70.0,
+					Message: fmt.Sprintf("Packaging %s media %d/%d…", format, idx+1, totalMats),
+					Key:     "studio.progress.export_nle",
+					Params: map[string]string{
+						"format":  string(format),
+						"current": strconv.Itoa(idx + 1),
+						"total":   strconv.Itoa(totalMats),
+					},
+				})
+
+				st, serr := os.Stat(m.srcPath)
+				if serr != nil {
+					_ = zw.Close()
+					return apperr.NotFound(fmt.Sprintf("media file missing for export: %s", filepath.Base(m.srcPath))).
+						WithMsg("errors.studio.media_not_found", nil)
+				}
+				if st.IsDir() {
+					_ = zw.Close()
+					return apperr.Validation("timeline media path must be a regular file").
+						WithMsg("errors.studio.input_not_file", nil)
+				}
+				if totalBytes+st.Size() > maxZipBytes {
+					_ = zw.Close()
+					return apperr.Validation(fmt.Sprintf("exported draft media exceeds studio.export_max_zip_bytes (%d bytes)", maxZipBytes)).
+						WithMsg("errors.studio.export_too_large", map[string]any{"max_bytes": maxZipBytes})
+				}
+
+				src, oerr := os.Open(m.srcPath)
+				if oerr != nil {
+					_ = zw.Close()
+					return ioUnavailableErr("Failed to open source media file for NLE draft", oerr)
+				}
+				w, werr := zw.Create(prefix + m.zipRelPath)
+				if werr != nil {
+					_ = src.Close()
+					_ = zw.Close()
+					return ioUnavailableErr("Failed to add media file to NLE draft zip", werr)
+				}
+				written, cerr := io.Copy(w, io.LimitReader(src, maxZipBytes-totalBytes+1))
+				_ = src.Close()
+				if cerr != nil {
+					_ = zw.Close()
+					return ioUnavailableErr("Failed to stream media file into NLE draft zip", cerr)
+				}
+				totalBytes += written
+				if totalBytes > maxZipBytes {
+					_ = zw.Close()
+					return apperr.Validation(fmt.Sprintf("exported draft media exceeds studio.export_max_zip_bytes (%d bytes)", maxZipBytes)).
+						WithMsg("errors.studio.export_too_large", map[string]any{"max_bytes": maxZipBytes})
+				}
+				fileCount++
+			}
+		}
+
+		if err := zw.Close(); err != nil {
+			return ioUnavailableErr("Failed to finalize NLE draft zip archive", err)
+		}
+		return nil
+	})
+	if writeErr != nil {
+		var appErr *apperr.Error
+		if os.IsExist(writeErr) || ctx.Err() != nil {
+			if ctx.Err() != nil {
+				return 0, 0, ctx.Err()
+			}
+		}
+		if apperr.IsCode(writeErr, apperr.CodeValidation) || apperr.IsCode(writeErr, apperr.CodeNotFound) || apperr.IsCode(writeErr, apperr.CodeUnauthorized) {
+			return 0, 0, writeErr
+		}
+		_ = appErr
+		return 0, 0, ioUnavailableErr("Failed to write NLE draft zip archive", writeErr)
 	}
 	return fileCount, totalBytes, nil
 }

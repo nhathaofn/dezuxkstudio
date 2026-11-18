@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -27,36 +28,6 @@ type manifestClip struct {
 	DurationSec float64 `json:"duration_sec,omitempty"`
 }
 
-type pipeProgressParser struct {
-	totalDurationUs int64
-}
-
-func (p *pipeProgressParser) ParseLine(line string) (float64, string, bool) {
-	k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
-	if !ok {
-		return 0, "", false
-	}
-	if k != "out_time_us" && k != "out_time_ms" {
-		return 0, "", false
-	}
-	us, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
-	if err != nil || us < 0 {
-		return 0, "", false
-	}
-	pct := 10.0
-	if p.totalDurationUs > 0 {
-		pct = float64(us) / float64(p.totalDurationUs) * 100.0
-		if pct < 5 {
-			pct = 5
-		}
-		if pct > 98 {
-			pct = 98
-		}
-	}
-	sec := float64(us) / 1_000_000.0
-	return pct, fmt.Sprintf("Rendering assembled video (%.1fs)…", sec), true
-}
-
 // NewVideoConcatBasicNode builds the tool.video_concat_basic workflow node for MVP MP4 assembly.
 func NewVideoConcatBasicNode(opts Options) engine.Node {
 	opts.StudioConfig = withStudioDefaults(opts.StudioConfig)
@@ -65,7 +36,7 @@ func NewVideoConcatBasicNode(opts Options) engine.Node {
 
 	spec := engine.Spec{
 		Type:        NodeTypeVideoConcatBasic,
-		Provider:    "tool",
+		Provider:    studioProviderID,
 		Label:       "Basic Video Assembler",
 		Description: "Normalize resolution/frame rate, concatenate video clips, optionally mix a narration audio track, and export an assembled MP4 via FFmpeg",
 		Inputs: []engine.Port{
@@ -78,7 +49,7 @@ func NewVideoConcatBasicNode(opts Options) engine.Node {
 			{Name: "output_dir", Label: "Output directory (empty = workspace media/videos)", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
 			{Name: "narration_audio_path", Label: "Optional narration/voiceover audio path", Kind: engine.ParamText},
 			{Name: "resolution", Label: "Target resolution (WxH)", Kind: engine.ParamText, Default: defaultRes},
-			{Name: "fps", Label: "Target frame rate (FPS)", Kind: engine.ParamInteger, Min: 1, Max: 120, Default: strconv.Itoa(defaultFPS)},
+			{Name: "fps", Label: "Target frame rate (FPS)", Kind: engine.ParamInteger, Min: minTimelineFPS, Max: maxTimelineFPS, Default: strconv.Itoa(defaultFPS)},
 		},
 	}
 
@@ -88,7 +59,8 @@ func NewVideoConcatBasicNode(opts Options) engine.Node {
 			return contracts.VideoConcatBasicOutput{}, err
 		}
 		if len(clips) == 0 {
-			return contracts.VideoConcatBasicOutput{}, apperr.Validation("clips_manifest_json must contain at least one video clip")
+			return contracts.VideoConcatBasicOutput{}, apperr.Validation("clips_manifest_json must contain at least one video clip").
+				WithMsg("errors.studio.clips_required", nil)
 		}
 
 		targetRes := strings.TrimSpace(in.Resolution)
@@ -99,34 +71,43 @@ func NewVideoConcatBasicNode(opts Options) engine.Node {
 		if err != nil {
 			return contracts.VideoConcatBasicOutput{}, err
 		}
+		if in.FPS < 0 || (in.FPS > 0 && (in.FPS < minTimelineFPS || in.FPS > maxTimelineFPS)) {
+			return contracts.VideoConcatBasicOutput{}, apperr.Validation(fmt.Sprintf("fps must be between %d and %d", minTimelineFPS, maxTimelineFPS)).
+				WithMsg("errors.studio.invalid_fps", map[string]any{"min": minTimelineFPS, "max": maxTimelineFPS})
+		}
 		fps := in.FPS
-		if fps <= 0 {
+		if fps == 0 {
 			fps = defaultFPS
 		}
-		if fps < 1 || fps > 120 {
-			return contracts.VideoConcatBasicOutput{}, apperr.Validation("fps must be between 1 and 120")
-		}
 
-		// Resolve and guard all input clips.
 		for i := range clips {
-			resolved, rerr := resolveInputFile(ctx, opts, clips[i].Path)
+			if err := ctx.Err(); err != nil {
+				return contracts.VideoConcatBasicOutput{}, err
+			}
+			if math.IsNaN(clips[i].DurationSec) || math.IsInf(clips[i].DurationSec, 0) || clips[i].DurationSec < 0 {
+				return contracts.VideoConcatBasicOutput{}, apperr.Validation("clip duration_sec must be a non-negative finite number").
+					WithMsg("errors.studio.invalid_duration", nil)
+			}
+			resolved, rerr := resolveMediaInput(ctx, opts, clips[i].Path, inputKindVideo)
 			if rerr != nil {
 				return contracts.VideoConcatBasicOutput{}, rerr
 			}
 			if _, serr := os.Stat(resolved); serr != nil {
-				return contracts.VideoConcatBasicOutput{}, apperr.Validation(fmt.Sprintf("clip not accessible: %s", filepath.Base(resolved)))
+				return contracts.VideoConcatBasicOutput{}, apperr.NotFound(fmt.Sprintf("clip not accessible: %s", filepath.Base(resolved))).
+					WithMsg("errors.studio.media_not_found", nil)
 			}
 			clips[i].Path = resolved
 		}
 
 		narrationPath := ""
 		if strings.TrimSpace(in.NarrationAudioPath) != "" {
-			narrationPath, err = resolveInputFile(ctx, opts, in.NarrationAudioPath)
+			narrationPath, err = resolveMediaInput(ctx, opts, in.NarrationAudioPath, inputKindAudio)
 			if err != nil {
 				return contracts.VideoConcatBasicOutput{}, err
 			}
 			if _, serr := os.Stat(narrationPath); serr != nil {
-				return contracts.VideoConcatBasicOutput{}, apperr.Validation(fmt.Sprintf("narration audio not accessible: %s", filepath.Base(narrationPath)))
+				return contracts.VideoConcatBasicOutput{}, apperr.NotFound(fmt.Sprintf("narration audio not accessible: %s", filepath.Base(narrationPath))).
+					WithMsg("errors.studio.media_not_found", nil)
 			}
 		}
 
@@ -135,7 +116,7 @@ func NewVideoConcatBasicNode(opts Options) engine.Node {
 			return contracts.VideoConcatBasicOutput{}, err
 		}
 		outPath := filepath.Join(outDir, uniqueExportFilename("studio_assembly", ".mp4"))
-		if err := engine.CheckFile(ctx, outPath, true); err != nil {
+		if err := checkStudioFile(ctx, outPath, true); err != nil {
 			return contracts.VideoConcatBasicOutput{}, err
 		}
 
@@ -143,20 +124,36 @@ func NewVideoConcatBasicNode(opts Options) engine.Node {
 		if err != nil {
 			return contracts.VideoConcatBasicOutput{}, err
 		}
-		ffprobeExe, _, _, _ := opts.Binaries.Resolve(ctx, domainbinaries.IDFFprobe)
+		var ffprobeExe string
+		if opts.Binaries != nil {
+			if exe, _, _, rerr := opts.Binaries.Resolve(ctx, domainbinaries.IDFFprobe); rerr == nil {
+				ffprobeExe = strings.TrimSpace(exe)
+			}
+		}
 
 		progress.Report(ctx, progress.Update{
 			Percent: 5,
 			Message: fmt.Sprintf("Inspecting %d video clip(s)…", len(clips)),
 			Key:     "studio.progress.concat_probe",
+			Params: map[string]string{
+				"count": strconv.Itoa(len(clips)),
+			},
 		})
 
 		clipHasAudio := make([]bool, len(clips))
 		var totalDurSec float64
 		for i := range clips {
+			if err := ctx.Err(); err != nil {
+				return contracts.VideoConcatBasicOutput{}, err
+			}
 			dur := clips[i].DurationSec
-			if strings.TrimSpace(ffprobeExe) != "" {
-				if pOut, perr := probeWithFFprobe(ctx, ffprobeExe, clips[i].Path); perr == nil {
+			if ffprobeExe != "" {
+				probeCtx, cancelProbe := context.WithTimeout(ctx, opts.StudioConfig.FFprobeTimeout)
+				stopProbe := progress.KeepAlive(ctx)
+				pOut, perr := probeWithFFprobe(probeCtx, ffprobeExe, clips[i].Path)
+				stopProbe()
+				cancelProbe()
+				if perr == nil {
 					clipHasAudio[i] = pOut.HasAudio
 					if pOut.DurationSec > 0 {
 						dur = pOut.DurationSec
@@ -170,41 +167,39 @@ func NewVideoConcatBasicNode(opts Options) engine.Node {
 			totalDurSec += dur
 		}
 
-		if err := os.MkdirAll(outDir, 0o755); err != nil {
-			return contracts.VideoConcatBasicOutput{}, apperr.Internal(err)
+		if err := os.MkdirAll(outDir, 0o750); err != nil {
+			return contracts.VideoConcatBasicOutput{}, ioUnavailableErr("Failed to create video assembly output directory", err)
 		}
-		tmpOut := outPath + ".tmp.mp4"
+		tmpOut, err := createTempMediaFile(outDir, ".tmp-concat-", ".mp4")
+		if err != nil {
+			return contracts.VideoConcatBasicOutput{}, err
+		}
 		defer func() { _ = os.Remove(tmpOut) }()
 
 		args := buildFFmpegConcatArgs(clips, clipHasAudio, narrationPath, width, height, fps, opts.StudioConfig, tmpOut)
 		runCtx, cancel := context.WithTimeout(ctx, opts.StudioConfig.FFmpegTimeout)
 		defer cancel()
 
-		parser := &pipeProgressParser{totalDurationUs: int64(totalDurSec * 1_000_000)}
-		res, err := runner.RunWithOptions(runCtx, ffmpegExe, args, runner.RunOptions{
-			ProgressParser: parser,
-			OnProgress: func(pct float64, msg string) {
-				progress.Report(ctx, progress.Update{
-					Percent: pct,
-					Message: msg,
-					Key:     "studio.progress.concat_render",
-				})
-			},
-		})
-		if err != nil {
-			detail := strings.TrimSpace(resStderr(res))
-			if detail == "" {
-				detail = err.Error()
+		runOpts := runner.FFmpegPipeProgressOptions(ctx, int64(totalDurSec*microsecondsPerSecond), "studio.progress.concat_render", "Rendering assembled video")
+		res, err := runner.RunWithOptions(runCtx, ffmpegExe, args, runOpts)
+		if err != nil || res == nil || res.ExitCode != 0 {
+			if ctx.Err() != nil {
+				return contracts.VideoConcatBasicOutput{}, ctx.Err()
 			}
-			return contracts.VideoConcatBasicOutput{}, apperr.Unavailable("ffmpeg assembly failed: " + detail)
+			return contracts.VideoConcatBasicOutput{}, ioUnavailableErr("FFmpeg video assembly failed", err)
 		}
 
-		if err := os.Rename(tmpOut, outPath); err != nil {
-			return contracts.VideoConcatBasicOutput{}, apperr.Internal(err)
+		if err := commitTempMediaFile(tmpOut, outPath); err != nil {
+			return contracts.VideoConcatBasicOutput{}, err
 		}
 
-		if strings.TrimSpace(ffprobeExe) != "" {
-			if pOut, perr := probeWithFFprobe(ctx, ffprobeExe, outPath); perr == nil && pOut.DurationSec > 0 {
+		if ffprobeExe != "" {
+			probeCtx, cancelProbe := context.WithTimeout(ctx, opts.StudioConfig.FFprobeTimeout)
+			stopProbe := progress.KeepAlive(ctx)
+			pOut, perr := probeWithFFprobe(probeCtx, ffprobeExe, outPath)
+			stopProbe()
+			cancelProbe()
+			if perr == nil && pOut.DurationSec > 0 {
 				totalDurSec = pOut.DurationSec
 			}
 		}
@@ -227,7 +222,14 @@ func NewVideoConcatBasicNode(opts Options) engine.Node {
 				Height:         height,
 				DurationSec:    totalDurSec,
 			})
-			if rerr == nil && item != nil {
+			if rerr != nil {
+				if opts.Logger != nil {
+					opts.Logger.WarnContext(ctx, "studio: failed to register assembled video",
+						"source_node", NodeTypeVideoConcatBasic,
+						"error", rerr,
+					)
+				}
+			} else if item != nil {
 				assetID = item.ID
 			}
 		}
@@ -251,7 +253,8 @@ func NewVideoConcatBasicNode(opts Options) engine.Node {
 func parseClipsManifest(raw string) ([]manifestClip, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return nil, apperr.Validation("clips_manifest_json is required")
+		return nil, apperr.Validation("clips_manifest_json is required").
+			WithMsg("errors.studio.clips_required", nil)
 	}
 
 	var rawItems []json.RawMessage
@@ -260,7 +263,8 @@ func parseClipsManifest(raw string) ([]manifestClip, error) {
 			Clips []json.RawMessage `json:"clips"`
 		}
 		if werr := json.Unmarshal([]byte(trimmed), &wrapper); werr != nil || wrapper.Clips == nil {
-			return nil, apperr.Validation("clips_manifest_json must be a JSON array of paths/objects or {\"clips\":[...]}")
+			return nil, apperr.Validation("clips_manifest_json must be a JSON array of paths/objects or {\"clips\":[...]}").
+				WithMsg("errors.studio.invalid_clips_manifest", nil)
 		}
 		rawItems = wrapper.Clips
 	}
@@ -276,7 +280,8 @@ func parseClipsManifest(raw string) ([]manifestClip, error) {
 		}
 		var obj manifestClip
 		if err := json.Unmarshal(elem, &obj); err != nil {
-			return nil, apperr.Validation("clips_manifest_json entries must be path strings or {\"path\":...} objects")
+			return nil, apperr.Validation("clips_manifest_json entries must be path strings or {\"path\":...} objects").
+				WithMsg("errors.studio.invalid_clips_manifest", nil)
 		}
 		if p := strings.TrimSpace(obj.Path); p != "" {
 			obj.Path = p
@@ -288,24 +293,44 @@ func parseClipsManifest(raw string) ([]manifestClip, error) {
 
 func resolveConcatOutputDir(ctx context.Context, opts Options, rawOutDir string) (string, error) {
 	tree := resolveTree(opts)
-	mediaDir := tree.MediaDir
+	mediaDir := strings.TrimSpace(tree.MediaDir)
 	trimmed := strings.TrimSpace(rawOutDir)
 	var target string
 	switch {
 	case trimmed != "":
-		resolved := engine.ResolveMediaPath(trimmed, mediaDir)
-		if resolved == "" {
-			return "", apperr.Validation("output_dir is invalid or escapes workspace")
+		if filepath.IsAbs(filepath.Clean(trimmed)) {
+			target = filepath.Clean(trimmed)
+		} else {
+			var anchor string
+			if strings.HasPrefix(filepath.ToSlash(trimmed), "/media/") {
+				anchor = mediaDir
+			} else {
+				for _, cand := range []string{mediaDir, tree.WorkspaceDir, resolveProjectsDir(opts)} {
+					if c := strings.TrimSpace(cand); c != "" && filepath.IsAbs(c) {
+						anchor = c
+						break
+					}
+				}
+			}
+			if anchor == "" {
+				return "", apperr.Validation("relative output_dir requires a configured workspace or media directory").
+					WithMsg("errors.studio.output_dir_required", nil)
+			}
+			target = engine.ResolveMediaPath(trimmed, anchor)
 		}
-		target = resolved
-	case strings.TrimSpace(tree.VideosDir) != "":
-		target = tree.VideosDir
-	case strings.TrimSpace(mediaDir) != "":
+	case strings.TrimSpace(tree.VideosDir) != "" && filepath.IsAbs(strings.TrimSpace(tree.VideosDir)):
+		target = filepath.Clean(strings.TrimSpace(tree.VideosDir))
+	case mediaDir != "" && filepath.IsAbs(mediaDir):
 		target = filepath.Join(mediaDir, "videos")
 	default:
-		return "", apperr.Validation("output_dir is required when no workspace media directory is configured")
+		return "", apperr.Validation("output_dir is required when no workspace media directory is configured").
+			WithMsg("errors.studio.output_dir_required", nil)
 	}
-	if err := engine.CheckFile(ctx, target, true); err != nil {
+	if target == "" || !filepath.IsAbs(target) {
+		return "", apperr.Validation("output_dir is invalid or escapes workspace").
+			WithMsg("errors.studio.output_dir_escape", nil)
+	}
+	if err := checkStudioFile(ctx, filepath.Join(target, ".write-check"), true); err != nil {
 		return "", err
 	}
 	return target, nil

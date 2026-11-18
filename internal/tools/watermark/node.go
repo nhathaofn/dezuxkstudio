@@ -5,6 +5,7 @@ package watermark
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,6 +19,7 @@ import (
 	domainbinaries "app/internal/domain/binaries"
 	"app/internal/engine"
 	"app/internal/fsutil"
+	"app/internal/paths"
 	"app/internal/progress"
 	"app/internal/safego"
 	"app/internal/service/media"
@@ -26,6 +28,9 @@ import (
 
 // NodeType is the unique identifier for the watermark remover node.
 const NodeType = contracts.NodeTypeWatermarkRemover
+
+// maxUserWorkers caps explicit per-batch CPU worker pool size in tool.watermark_remover.
+const maxUserWorkers = 64
 
 // VideoBinaryResolver resolves managed ffmpeg/ffprobe binaries for video watermark removal.
 type VideoBinaryResolver interface {
@@ -39,15 +44,18 @@ type MediaRegistrar interface {
 
 // Options configures default directories for the watermark nodes.
 type Options struct {
-	MediaDir      string // Application media storage directory
-	MediaDirFunc  func() string
-	OutputDir     string // Default folder to save cleaned images
-	OutputDirFunc func() string
-	Templates     []watermark.Template
-	Registrar     MediaRegistrar
-	Binaries      VideoBinaryResolver
-	StudioConfig  config.StudioConfig
-	Config        *config.Config
+	MediaDir          string // Application media storage directory
+	MediaDirFunc      func() string
+	OutputDir         string // Default folder to save cleaned images
+	OutputDirFunc     func() string
+	WorkspaceTreeFunc func() paths.WorkspaceTree
+	Templates         []watermark.Template
+	Registrar         MediaRegistrar
+	Binaries          VideoBinaryResolver
+	StudioConfig      config.StudioConfig
+	WatermarkConfig   config.WatermarkConfig
+	Config            *config.Config
+	Logger            *slog.Logger
 }
 
 func resolveMediaDir(opts Options) string {
@@ -97,7 +105,7 @@ func NewNode(opts Options) engine.Node {
 		Params: []engine.Param{
 			{Name: "inplace", Label: "Overwrite original file", Kind: engine.ParamToggle, Default: "false", Destructive: true},
 			{Name: "output_dir", Label: "Output directory (empty = workspace watermark folder)", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
-			{Name: "workers", Label: "CPU worker threads (0 = Auto)", Kind: engine.ParamInteger, Min: 0, Max: 64, Default: "0"},
+			{Name: "workers", Label: "CPU worker threads (0 = Auto)", Kind: engine.ParamInteger, Min: 0, Max: maxUserWorkers, Default: "0"},
 			{
 				Name: "corner", Label: "Scan corner", Kind: engine.ParamSelect,
 				Options: []string{
@@ -124,6 +132,15 @@ func NewNode(opts Options) engine.Node {
 
 		if len(rawPaths) == 0 {
 			return RemoverOutput{}, engine.Invalid("Watermark Remover input port 'image' or 'images' received no file path")
+		}
+		if in.Workers < 0 || in.Workers > maxUserWorkers {
+			return RemoverOutput{}, engine.Invalid(fmt.Sprintf("workers must be between 0 and %d", maxUserWorkers))
+		}
+		if c := strings.TrimSpace(in.Corner); c != "" && !slices.Contains([]string{
+			string(watermark.CornerBottomRight), string(watermark.CornerBottomLeft),
+			string(watermark.CornerTopRight), string(watermark.CornerTopLeft), string(watermark.CornerAny),
+		}, c) {
+			return RemoverOutput{}, engine.Invalid(fmt.Sprintf("unsupported scan corner %q", c))
 		}
 
 		maxWorkers := opts.Config.WatermarkMaxWorkers()
@@ -267,7 +284,7 @@ func NewNode(opts Options) engine.Node {
 // readInput resolves one input path, asks the caller's file guard for read access and loads it.
 func readInput(ctx context.Context, raw, mediaDir string) (string, []byte, error) {
 	resPath := engine.ResolveMediaPath(raw, mediaDir)
-	if resPath == "" {
+	if resPath == "" || !filepath.IsAbs(resPath) {
 		return "", nil, fmt.Errorf("failed to read file: path %q is outside the media folder", filepath.Base(raw))
 	}
 	if err := engine.CheckFile(ctx, resPath, false); err != nil {
@@ -467,7 +484,16 @@ func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPat
 		return res, ""
 	}
 	if in.InPlace && !strings.EqualFold(outPath, resPath) {
-		_ = os.Remove(resPath)
+		if err := engine.CheckFile(ctx, resPath, true); err != nil {
+			res.Status = watermark.StatusFailed
+			res.Error = formatPathError("delete original", resPath, err)
+			return res, ""
+		}
+		if rerr := os.Remove(resPath); rerr != nil && !os.IsNotExist(rerr) {
+			res.Status = watermark.StatusFailed
+			res.Error = formatPathError("delete original", resPath, rerr)
+			return res, ""
+		}
 	}
 
 	watermark.DefaultProvenance.Record(outPath, taskParams)
@@ -489,8 +515,10 @@ func registerWatermarkAsset(ctx context.Context, nodeOpts []Options, destDir, ou
 	if root == "" {
 		root = filepath.Dir(outPath)
 	}
-	if adder, ok := opts.Registrar.(interface{ AddAllowedRoot(string) }); ok && root != "" {
-		adder.AddAllowedRoot(root)
+	if !engine.HasFileGuard(ctx) {
+		if adder, ok := opts.Registrar.(interface{ AddAllowedRoot(string) }); ok && root != "" {
+			adder.AddAllowedRoot(root)
+		}
 	}
 	asset, err := opts.Registrar.RegisterAsset(ctx, media.RegisterAssetParams{
 		Kind:           "image",
@@ -498,7 +526,16 @@ func registerWatermarkAsset(ctx context.Context, nodeOpts []Options, destDir, ou
 		FilePath:       outPath,
 		RegisteredRoot: root,
 	})
-	if err != nil || asset == nil {
+	if err != nil {
+		if opts.Logger != nil {
+			opts.Logger.WarnContext(ctx, "watermark: failed to register cleaned image asset",
+				"source_node", NodeType,
+				"error", err,
+			)
+		}
+		return ""
+	}
+	if asset == nil {
 		return ""
 	}
 	return asset.ID

@@ -110,7 +110,7 @@ func (s *Service) SplitGrid(ctx context.Context, p contracts.StudioGridSplitPayl
 		}
 	}
 	inBytes, _ := json.Marshal(contracts.GridSplitInput{
-		ImagePath:  p.ImagePath,
+		ImagePath:  engine.InputRef(p.ImagePath, engine.MediaImage),
 		Rows:       p.Rows,
 		Cols:       p.Cols,
 		MarginPx:   p.MarginPx,
@@ -195,8 +195,8 @@ func (s *Service) ApplyMaskEdit(ctx context.Context, p contracts.StudioMaskEditP
 
 	modelRef := firstNonEmpty(p.ModelRef, proj.DefaultImageModel)
 	inBytes, _ := json.Marshal(contracts.MaskEditInput{
-		ImagePath:   p.ImagePath,
-		MaskPath:    maskPath,
+		ImagePath:   engine.InputRef(p.ImagePath, engine.MediaImage),
+		MaskPath:    engine.InputRef(maskPath, engine.MediaImage),
 		Prompt:      p.Prompt,
 		ModelRef:    modelRef,
 		AspectRatio: proj.AspectRatio,
@@ -259,7 +259,7 @@ func (s *Service) ExtractLastFrame(ctx context.Context, p contracts.StudioExtrac
 
 	outDir := filepath.Join(s.resolveEpisodeRoot(proj, ep.Code), "images")
 	inBytes, _ := json.Marshal(contracts.ExtractFramesInput{
-		VideoPath: srcShot.VideoPath,
+		VideoPath: engine.InputRef(srcShot.VideoPath, engine.MediaVideo),
 		Mode:      "last",
 		OutputDir: outDir,
 	})
@@ -314,10 +314,10 @@ func (s *Service) RunQCReview(ctx context.Context, p contracts.StudioQCReviewPay
 	}
 	visionModel := firstNonEmpty(p.VisionModelRef, proj.DefaultTextModel)
 	inBytes, _ := json.Marshal(contracts.QCReviewInput{
-		MediaPath:      p.MediaPath,
+		MediaPath:      engine.InputRef(p.MediaPath, engine.MediaImage),
 		TargetKind:     p.TargetKind,
 		TargetID:       p.TargetID,
-		ReferencePaths: p.ReferencePaths,
+		ReferencePaths: engine.InputRefs(p.ReferencePaths, engine.MediaImage),
 		PromptExpected: p.PromptExpected,
 		VisionModelRef: visionModel,
 		SampleCount:    p.SampleCount,

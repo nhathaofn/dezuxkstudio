@@ -158,6 +158,7 @@ describe("Watermark UI Components Runtime Rendering & State Bindings", () => {
         detected: true,
         total_count: 1,
         detected_count: 1,
+        results: [],
       },
     });
 
@@ -286,6 +287,7 @@ describe("Adversarial Stress Testing & Edge Cases", () => {
         detected: true,
         total_count: 1_000_000,
         detected_count: 999_999,
+        results: [],
       },
     });
 
@@ -305,6 +307,7 @@ describe("Adversarial Stress Testing & Edge Cases", () => {
         detected: true,
         total_count: 1,
         detected_count: 1,
+        results: [],
       },
     });
 
@@ -351,7 +354,7 @@ describe("Adversarial Stress Testing & Edge Cases", () => {
         detected: true,
         total_count: 1,
         detected_count: 1,
-        results: undefined,
+        results: [],
       },
     });
 
@@ -477,6 +480,7 @@ describe("useWatermarkStore Actions & Edge Case Robustness", () => {
         detected: true,
         total_count: 1,
         detected_count: 1,
+        results: [],
       },
       error: new ActionError("ERR_INTERNAL", "some error"),
       loading: true,
@@ -780,6 +784,7 @@ describe("Phase 1 Wave B Watermark Policy & Compare UX Enhancement", () => {
         detected: true,
         total_count: 1,
         detected_count: 1,
+        results: [],
       },
     });
 

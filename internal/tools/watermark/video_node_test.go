@@ -89,7 +89,7 @@ func TestVideoWatermarkRemoveDelogoCropAndGuardSanitization(t *testing.T) {
 		return errors.New("cannot read " + p)
 	})
 	_, err := node.Run(deniedCtx, mustJSON(t, contracts.VideoWatermarkRemoveInput{
-		VideoPath: src, Mode: "delogo", X: 10, Y: 20, Width: 100, Height: 40, OutputDir: dir,
+		VideoPath: engine.InputRef(src, engine.MediaVideo), Mode: "delogo", X: 10, Y: 20, Width: 100, Height: 40, OutputDir: dir,
 	}))
 	if err == nil || strings.Contains(err.Error(), "private-client-folder") {
 		t.Fatalf("expected sanitized FileGuard error hiding parent dir, got: %v", err)
@@ -101,7 +101,7 @@ func TestVideoWatermarkRemoveDelogoCropAndGuardSanitization(t *testing.T) {
 		Report: func(u progress.Update) { updates = append(updates, u) },
 	})
 	rawOut, err := node.Run(pCtx, mustJSON(t, contracts.VideoWatermarkRemoveInput{
-		VideoPath: src, Mode: "delogo", X: 12, Y: 16, Width: 120, Height: 48, OutputDir: dir,
+		VideoPath: engine.InputRef(src, engine.MediaVideo), Mode: "delogo", X: 12, Y: 16, Width: 120, Height: 48, OutputDir: dir,
 	}))
 	if err != nil {
 		t.Fatalf("delogo run: %v", err)
@@ -116,7 +116,7 @@ func TestVideoWatermarkRemoveDelogoCropAndGuardSanitization(t *testing.T) {
 
 	// Crop mode
 	_, err = node.Run(context.Background(), mustJSON(t, contracts.VideoWatermarkRemoveInput{
-		VideoPath: src, Mode: "crop", CropEdge: "bottom", CropPx: 40, OutputDir: dir,
+		VideoPath: engine.InputRef(src, engine.MediaVideo), Mode: "crop", CropEdge: "bottom", CropPx: 40, OutputDir: dir,
 	}))
 	if err != nil {
 		t.Fatalf("crop run: %v", err)

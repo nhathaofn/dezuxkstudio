@@ -3,6 +3,7 @@ package studio
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 
@@ -222,6 +223,7 @@ func (s *Service) RunBatchPreflight(ctx context.Context, p contracts.StudioBatch
 	workers := s.cfg.MaxConcurrentBatch
 	batches := (itemCount + workers - 1) / workers
 	return contracts.BatchPreflightOutput{
+		Report:       fmt.Sprintf("Preflight READY: capability=%s items=%d estimated_usd=$%.4f", capName, itemCount, math.Round(float64(itemCount)*unitsPerItem*price*10000)/10000),
 		Ready:        true,
 		ProviderID:   provID,
 		ModelID:      modelID,
@@ -231,6 +233,10 @@ func (s *Service) RunBatchPreflight(ctx context.Context, p contracts.StudioBatch
 		UnitPriceUSD: math.Round(price*10000) / 10000,
 		EstimatedUSD: math.Round(float64(itemCount)*unitsPerItem*price*10000) / 10000,
 		EstimatedSec: batches * spec.EstimatedSecPerItem,
+		Warnings:     []string{},
+		WarningItems: []contracts.BatchPreflightMessage{},
+		Blockers:     []string{},
+		BlockerItems: []contracts.BatchPreflightMessage{},
 	}, nil
 }
 

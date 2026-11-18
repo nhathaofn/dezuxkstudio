@@ -3,6 +3,7 @@ package studio
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -40,7 +41,7 @@ func NewProbeMediaNode(opts Options) engine.Node {
 	opts.StudioConfig = withStudioDefaults(opts.StudioConfig)
 	spec := engine.Spec{
 		Type:        NodeTypeProbeMedia,
-		Provider:    "tool",
+		Provider:    studioProviderID,
 		Label:       "Media Inspector (FFprobe)",
 		Description: "Inspect duration, dimensions, frame rate, codecs, audio presence, and silence ratio of a video, audio, or image file via FFprobe",
 		Inputs: []engine.Port{
@@ -54,14 +55,17 @@ func NewProbeMediaNode(opts Options) engine.Node {
 
 	return engine.Typed(spec, func(ctx context.Context, in contracts.ProbeMediaInput) (contracts.ProbeMediaOutput, error) {
 		rawTarget := strings.TrimSpace(in.Media.LocalURL)
+		allowed := inputKindAnyMedia
 		if rawTarget == "" {
 			rawTarget = strings.TrimSpace(in.Audio.LocalURL)
+			allowed = inputKindAudio
 		}
 		if rawTarget == "" {
-			return contracts.ProbeMediaOutput{}, apperr.Validation("media or audio input path is required")
+			return contracts.ProbeMediaOutput{}, apperr.Validation("media or audio input path is required").
+				WithMsg("errors.studio.media_required", nil)
 		}
 
-		resolvedPath, err := resolveInputFile(ctx, opts, rawTarget)
+		resolvedPath, err := resolveMediaInput(ctx, opts, rawTarget, allowed)
 		if err != nil {
 			return contracts.ProbeMediaOutput{}, err
 		}
@@ -71,11 +75,17 @@ func NewProbeMediaNode(opts Options) engine.Node {
 			return contracts.ProbeMediaOutput{}, err
 		}
 
-		probeCtx, cancel := context.WithTimeout(ctx, opts.StudioConfig.FFprobeTimeout)
-		defer cancel()
-		defer progress.KeepAlive(probeCtx)()
+		progress.Report(ctx, progress.Update{
+			Percent: 15,
+			Message: "Inspecting media streams…",
+			Key:     "studio.progress.probe_media",
+		})
 
+		probeCtx, cancelProbe := context.WithTimeout(ctx, opts.StudioConfig.FFprobeTimeout)
+		stopProbe := progress.KeepAlive(ctx)
 		out, err := probeWithFFprobe(probeCtx, ffprobeExe, resolvedPath)
+		stopProbe()
+		cancelProbe()
 		if err != nil {
 			return contracts.ProbeMediaOutput{}, err
 		}
@@ -83,29 +93,41 @@ func NewProbeMediaNode(opts Options) engine.Node {
 		if !out.HasAudio {
 			out.SilentRatio = 1.0
 		} else if out.DurationSec > 0 {
-			if ffmpegExe, _, _, ferr := opts.Binaries.Resolve(probeCtx, domainbinaries.IDFFmpeg); ferr == nil && strings.TrimSpace(ffmpegExe) != "" {
-				out.SilentRatio = detectSilenceRatio(probeCtx, ffmpegExe, resolvedPath, out.DurationSec, opts.StudioConfig)
+			if ffmpegExe, ferr := resolveBinary(ctx, opts.Binaries, domainbinaries.IDFFmpeg); ferr == nil {
+				silCtx, cancelSil := context.WithTimeout(ctx, opts.StudioConfig.FFmpegTimeout)
+				stopSil := progress.KeepAlive(ctx)
+				out.SilentRatio = detectSilenceRatio(silCtx, ffmpegExe, resolvedPath, out.DurationSec, opts.StudioConfig)
+				stopSil()
+				cancelSil()
 			}
 		}
 
-		summaryBytes, err := json.Marshal(map[string]any{
-			"path":         resolvedPath,
-			"duration_sec": out.DurationSec,
-			"width":        out.Width,
-			"height":       out.Height,
-			"fps":          out.FPS,
-			"has_audio":    out.HasAudio,
-			"silent_ratio": out.SilentRatio,
-			"video_codec":  out.VideoCodec,
-			"audio_codec":  out.AudioCodec,
-			"format_name":  out.FormatName,
+		out.ProbeJSON = marshalProbeSummary(out)
+		progress.Report(ctx, progress.Update{
+			Percent: 100,
+			Message: "Media inspection complete",
+			Key:     "studio.progress.done",
 		})
-		if err != nil {
-			return contracts.ProbeMediaOutput{}, apperr.Internal(err)
-		}
-		out.ProbeJSON = string(summaryBytes)
 		return out, nil
 	})
+}
+
+func marshalProbeSummary(out contracts.ProbeMediaOutput) string {
+	b, err := json.Marshal(map[string]any{
+		"duration_sec": out.DurationSec,
+		"width":        out.Width,
+		"height":       out.Height,
+		"fps":          out.FPS,
+		"has_audio":    out.HasAudio,
+		"silent_ratio": out.SilentRatio,
+		"video_codec":  out.VideoCodec,
+		"audio_codec":  out.AudioCodec,
+		"format_name":  out.FormatName,
+	})
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }
 
 func probeWithFFprobe(ctx context.Context, ffprobeExe, filePath string) (contracts.ProbeMediaOutput, error) {
@@ -118,16 +140,17 @@ func probeWithFFprobe(ctx context.Context, ffprobeExe, filePath string) (contrac
 	}
 	res, err := runner.RunWithOptions(ctx, ffprobeExe, args, runner.RunOptions{})
 	if err != nil {
-		detail := strings.TrimSpace(resStderr(res))
-		if detail == "" {
-			detail = err.Error()
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return contracts.ProbeMediaOutput{}, err
 		}
-		return contracts.ProbeMediaOutput{}, apperr.Unavailable("ffprobe failed: " + detail)
+		return contracts.ProbeMediaOutput{}, apperr.Wrap(apperr.CodeIntegrity, "Media file could not be inspected or is corrupted", err).
+			WithMsg("errors.studio.media_corrupt", nil)
 	}
 
 	var raw ffprobeRaw
 	if err := json.Unmarshal([]byte(res.Stdout), &raw); err != nil {
-		return contracts.ProbeMediaOutput{}, apperr.Unavailable("failed to parse ffprobe JSON output: " + err.Error())
+		return contracts.ProbeMediaOutput{}, apperr.Wrap(apperr.CodeIntegrity, "Media probe output was unreadable or corrupted", err).
+			WithMsg("errors.studio.media_corrupt", nil)
 	}
 
 	out := contracts.ProbeMediaOutput{
@@ -170,6 +193,11 @@ func probeWithFFprobe(ctx context.Context, ffprobeExe, filePath string) (contrac
 			}
 		}
 	}
+	if len(raw.Streams) == 0 && out.FormatName == "" && out.DurationSec == 0 {
+		return contracts.ProbeMediaOutput{}, apperr.New(apperr.CodeIntegrity, "Media file contains no readable streams").
+			WithMsg("errors.studio.media_corrupt", nil)
+	}
+	out.ProbeJSON = marshalProbeSummary(out)
 	return out, nil
 }
 
@@ -231,11 +259,4 @@ func parseFFprobeRate(raw string) float64 {
 		return 0
 	}
 	return f
-}
-
-func resStderr(res *runner.RunResult) string {
-	if res == nil {
-		return ""
-	}
-	return fmt.Sprintf("%s %s", res.Stderr, res.Stdout)
 }

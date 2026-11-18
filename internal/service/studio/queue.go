@@ -623,8 +623,8 @@ func (s *Service) enqueueShotLipSync(ctx context.Context, proj domainstudio.Proj
 		est := math.Round(float64(dur)*unitPrice*10000) / 10000
 		payload := queuedLipSyncJobRequest{
 			Input: contracts.LipSyncGenerateInput{
-				VideoPath: sh.VideoPath,
-				AudioPath: sh.AudioPath,
+				VideoPath: engine.InputRef(sh.VideoPath, engine.MediaVideo),
+				AudioPath: engine.InputRef(sh.AudioPath, engine.MediaAudio),
 				ModelRef:  p.Model,
 				OutputDir: outDir,
 			},

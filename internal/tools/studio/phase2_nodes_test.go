@@ -174,13 +174,19 @@ func TestPhase2BatchPreflightAndMaskEdit(t *testing.T) {
 		return nil
 	})
 	if _, err := NewMaskEditNode(opts).Run(guardCtx, mustJSON(t, contracts.MaskEditInput{
-		ImagePath: baseImg, MaskPath: maskImg, Prompt: "add hat", OutputDir: tmp,
+		ImagePath: engine.InputRef(baseImg, engine.MediaImage),
+		MaskPath:  engine.InputRef(maskImg, engine.MediaImage),
+		Prompt:    "add hat",
+		OutputDir: tmp,
 	})); err == nil {
 		t.Fatal("expected FileGuard to reject denied mask path")
 	}
 
 	mOutRaw, err := NewMaskEditNode(opts).Run(context.Background(), mustJSON(t, contracts.MaskEditInput{
-		ImagePath: baseImg, MaskPath: maskImg, Prompt: "change coat to red", OutputDir: tmp,
+		ImagePath: engine.InputRef(baseImg, engine.MediaImage),
+		MaskPath:  engine.InputRef(maskImg, engine.MediaImage),
+		Prompt:    "change coat to red",
+		OutputDir: tmp,
 	}))
 	if err != nil {
 		t.Fatalf("mask_edit: %v", err)
@@ -217,7 +223,7 @@ func TestPhase2GridSplitAsymmetricCropsAndGuard(t *testing.T) {
 	_ = f.Close()
 
 	outRaw, err := NewGridSplitNode(Options{MediaDir: tmp}).Run(context.Background(), mustJSON(t, contracts.GridSplitInput{
-		ImagePath:  gridPath,
+		ImagePath:  engine.InputRef(gridPath, engine.MediaImage),
 		Rows:       2,
 		Cols:       2,
 		RowWeights: []float64{30, 50},
@@ -264,7 +270,7 @@ func TestPhase2ExtractFramesTTSDubMuxLipSyncAndQCReview(t *testing.T) {
 
 	// Extract last frame
 	efRaw, err := NewExtractFramesNode(opts).Run(context.Background(), mustJSON(t, contracts.ExtractFramesInput{
-		VideoPath: vidPath, Mode: "last", OutputDir: tmp,
+		VideoPath: engine.InputRef(vidPath, engine.MediaVideo), Mode: "last", OutputDir: tmp,
 	}))
 	if err != nil {
 		t.Fatalf("extract_frames: %v", err)
@@ -275,8 +281,9 @@ func TestPhase2ExtractFramesTTSDubMuxLipSyncAndQCReview(t *testing.T) {
 	}
 
 	// TTS Dub Mux (synthesizing TTS + sidechaincompress ducking)
+	duckTrue := true
 	dubRaw, err := NewTTSDubMuxNode(opts).Run(context.Background(), mustJSON(t, contracts.TTSDubMuxInput{
-		VideoPath: vidPath, Text: "Xin chao moi nguoi", Voice: "nova", DuckOriginal: true, OutputDir: tmp,
+		VideoPath: engine.InputRef(vidPath, engine.MediaVideo), Text: "Xin chao moi nguoi", Voice: "nova", DuckOriginal: &duckTrue, OutputDir: tmp,
 	}))
 	if err != nil {
 		t.Fatalf("tts_dub_mux: %v", err)
@@ -292,7 +299,7 @@ func TestPhase2ExtractFramesTTSDubMuxLipSyncAndQCReview(t *testing.T) {
 
 	// LipSync Generate
 	lsRaw, err := NewLipSyncGenerateNode(opts).Run(context.Background(), mustJSON(t, contracts.LipSyncGenerateInput{
-		VideoPath: vidPath, AudioPath: audPath, FaceIndex: 1, OutputDir: tmp,
+		VideoPath: engine.InputRef(vidPath, engine.MediaVideo), AudioPath: engine.InputRef(audPath, engine.MediaAudio), FaceIndex: 1, OutputDir: tmp,
 	}))
 	if err != nil {
 		t.Fatalf("lipsync_generate: %v", err)
@@ -303,7 +310,7 @@ func TestPhase2ExtractFramesTTSDubMuxLipSyncAndQCReview(t *testing.T) {
 
 	// Extract frames using timestamps_csv + verify FileGuard runs before os.Stat
 	efCSVRaw, err := NewExtractFramesNode(opts).Run(context.Background(), mustJSON(t, contracts.ExtractFramesInput{
-		VideoPath: vidPath, Mode: "timestamps", TimestampsCSV: "1.0, 3.5", OutputDir: tmp,
+		VideoPath: engine.InputRef(vidPath, engine.MediaVideo), Mode: "timestamps", TimestampsCSV: "1.0, 3.5", OutputDir: tmp,
 	}))
 	if err != nil {
 		t.Fatalf("extract_frames timestamps_csv: %v", err)
@@ -315,16 +322,16 @@ func TestPhase2ExtractFramesTTSDubMuxLipSyncAndQCReview(t *testing.T) {
 		return errors.New("server mode denied read")
 	})
 	if _, err := NewExtractFramesNode(opts).Run(denyReadCtx, mustJSON(t, contracts.ExtractFramesInput{
-		VideoPath: filepath.Join(tmp, "nonexistent_should_still_guard_first.mp4"), Mode: "last", OutputDir: tmp,
+		VideoPath: engine.InputRef(filepath.Join(tmp, "nonexistent_should_still_guard_first.mp4"), engine.MediaVideo), Mode: "last", OutputDir: tmp,
 	})); err == nil || !strings.Contains(err.Error(), "server mode denied read") {
 		t.Fatalf("expected CheckFile to reject guarded path before stat, got: %v", err)
 	}
 
 	// QC Review multimodal on video + reference image
 	qcRaw, err := NewQCReviewNode(opts).Run(context.Background(), mustJSON(t, contracts.QCReviewInput{
-		MediaPath:      vidPath,
+		MediaPath:      engine.InputRef(vidPath, engine.MediaVideo),
 		TargetKind:     "video",
-		ReferencePaths: []string{refPath},
+		ReferencePaths: engine.InputRefs([]string{refPath}, engine.MediaImage),
 		PromptExpected: "boy in blue jacket",
 		SampleCount:    2,
 	}))

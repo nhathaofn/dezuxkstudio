@@ -72,7 +72,7 @@ func (w *phase2NodeStubWorkflow) RunNode(_ context.Context, nodeType string, raw
 	case studionodes.NodeTypeMaskEdit:
 		var in contracts.MaskEditInput
 		_ = json.Unmarshal(raw, &in)
-		w.lastMaskPath = in.MaskPath
+		w.lastMaskPath = in.MaskPath.LocalURL
 		w.lastPrompt = in.Prompt
 		outPath := filepath.Join(w.outDir, "edited_frame.png")
 		_ = os.WriteFile(outPath, []byte("PNGEDITED"), 0o600)

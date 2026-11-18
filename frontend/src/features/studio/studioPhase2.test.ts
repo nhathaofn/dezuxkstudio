@@ -141,6 +141,7 @@ function makeEpisodeDetail(autoApprove = false): StudioEpisodeDetailResult {
 }
 
 const samplePreflight: BatchPreflightOutput = {
+  report: "Preflight READY",
   ready: true,
   provider_id: "openai",
   model_id: "sora-2",
@@ -151,6 +152,9 @@ const samplePreflight: BatchPreflightOutput = {
   estimated_usd: 0.72,
   estimated_sec: 9,
   warnings: ["High motion complexity"],
+  warning_items: [{ message: "High motion complexity" }],
+  blockers: [],
+  blocker_items: [],
 };
 
 const sampleJob: StudioJob = {

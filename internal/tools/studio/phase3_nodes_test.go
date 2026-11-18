@@ -207,14 +207,16 @@ func TestPhase3TimelineAutoAssemblePeaksRenderAndNLEExport(t *testing.T) {
 		},
 	}
 	shotsBytes, _ := json.Marshal(shotsPkg)
+	transMs := int64(400)
+	bgmVol := 0.25
 	assemRaw, err := NewTimelineAutoAssembleNode(opts).Run(context.Background(), mustJSON(t, contracts.TimelineAutoAssembleInput{
 		ShotsJSON:         string(shotsBytes),
 		Resolution:        "1280x720",
 		FPS:               24,
 		TransitionDefault: "crossfade",
-		TransitionMs:      400,
+		TransitionMs:      &transMs,
 		BGMPath:           bgm,
-		BGMVolume:         0.25,
+		BGMVolume:         &bgmVol,
 		ProjectDir:        projDir,
 	}))
 	if err != nil {

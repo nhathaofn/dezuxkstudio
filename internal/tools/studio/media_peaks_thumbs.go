@@ -24,6 +24,37 @@ import (
 	"app/internal/safego"
 )
 
+const (
+	// minPeakBins and maxPeakBins match config.Validate bounds on studio.timeline_peak_bins.
+	minPeakBins = 16
+	maxPeakBins = 4096
+
+	// minThumbHeight and maxThumbHeight match config.Validate bounds on studio.timeline_thumb_height.
+	minThumbHeight = 32
+	maxThumbHeight = 360
+
+	// minThumbIntervalSec prevents `fps=1/%.4f` from rounding to zero on sub-millisecond clips.
+	minThumbIntervalSec = 0.05
+
+	// spriteJPEGQuality sets FFmpeg mjpeg `-q:v` quantizer scale (2..31) for compact timeline preview strips.
+	spriteJPEGQuality = "4"
+
+	// pcmMaxStderrBytes caps retained FFmpeg diagnostic stderr while the remaining pipe is drained to io.Discard.
+	pcmMaxStderrBytes = 64 * 1024
+
+	// pcmReadBufBytes is the streaming chunk size (1024 float32 samples) when reading f32le PCM from stdout.
+	pcmReadBufBytes = 4096
+
+	// pcmSampleBytes is the IEEE-754 float32 little-endian sample width emitted by `-f f32le`.
+	pcmSampleBytes = 4
+
+	// pcmMaxValidAmplitude filters corrupt/denormalized float32 spikes above +20 dBFS when normalizing peaks.
+	pcmMaxValidAmplitude = 10.0
+
+	// peakRoundingScale rounds normalized [0..1] waveform peak bins to 3 decimal places.
+	peakRoundingScale = 1000.0
+)
+
 // NewMediaPeaksThumbsNode builds tool.media_peaks_thumbs for lightweight timeline thumbnail strips and PCM waveform peaks.
 func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 	opts.StudioConfig = withStudioDefaults(opts.StudioConfig)
@@ -32,7 +63,7 @@ func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 
 	spec := engine.Spec{
 		Type:        NodeTypeMediaPeaksThumbs,
-		Provider:    "studio",
+		Provider:    studioProviderID,
 		Label:       "Media Peaks & Thumbnail Strip",
 		Description: "Extracts an evenly sampled thumbnail sprite sheet and PCM f32le audio waveform peaks via FFmpeg for smooth browser timeline scrubbing.",
 		Inputs: []engine.Port{
@@ -44,22 +75,38 @@ func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 		},
 		Params: []engine.Param{
 			{Name: "thumb_interval_sec", Label: "Thumbnail Interval (sec)", Kind: engine.ParamText, Default: defInterval},
-			{Name: "peak_bins", Label: "Waveform Peak Bins", Kind: engine.ParamInteger, Min: 16, Max: 4096, Default: strconv.Itoa(defBins)},
-			{Name: "thumb_height", Label: "Thumbnail Height (px)", Kind: engine.ParamInteger, Min: 32, Max: 360, Default: strconv.Itoa(opts.StudioConfig.TimelineThumbHeight)},
+			{Name: "peak_bins", Label: "Waveform Peak Bins", Kind: engine.ParamInteger, Min: minPeakBins, Max: maxPeakBins, Default: strconv.Itoa(defBins)},
+			{Name: "thumb_height", Label: "Thumbnail Height (px)", Kind: engine.ParamInteger, Min: minThumbHeight, Max: maxThumbHeight, Default: strconv.Itoa(opts.StudioConfig.TimelineThumbHeight)},
 			{Name: "output_dir", Label: "Output Directory", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
 		},
 	}
 
 	return engine.Typed(spec, func(ctx context.Context, in contracts.MediaPeaksThumbsInput) (contracts.MediaPeaksThumbsOutput, error) {
 		rawTarget := strings.TrimSpace(in.Media.LocalURL)
+		allowed := inputKindAnyMedia
 		if rawTarget == "" {
 			rawTarget = strings.TrimSpace(in.Audio.LocalURL)
+			allowed = inputKindAudio
 		}
 		if rawTarget == "" {
-			return contracts.MediaPeaksThumbsOutput{}, apperr.Validation("media or audio input path is required")
+			return contracts.MediaPeaksThumbsOutput{}, apperr.Validation("media or audio input path is required").
+				WithMsg("errors.studio.media_required", nil)
 		}
 
-		resolvedPath, err := resolveInputFile(ctx, opts, rawTarget)
+		if math.IsNaN(in.ThumbIntervalSec) || math.IsInf(in.ThumbIntervalSec, 0) || in.ThumbIntervalSec < 0 {
+			return contracts.MediaPeaksThumbsOutput{}, apperr.Validation("thumb_interval_sec must be a non-negative finite number").
+				WithMsg("errors.studio.invalid_thumb_interval", nil)
+		}
+		if in.PeakBins < 0 || (in.PeakBins > 0 && (in.PeakBins < minPeakBins || in.PeakBins > maxPeakBins)) {
+			return contracts.MediaPeaksThumbsOutput{}, apperr.Validation(fmt.Sprintf("peak_bins must be between %d and %d", minPeakBins, maxPeakBins)).
+				WithMsg("errors.studio.invalid_peak_bins", map[string]any{"min": minPeakBins, "max": maxPeakBins})
+		}
+		if in.ThumbHeight < 0 || (in.ThumbHeight > 0 && (in.ThumbHeight < minThumbHeight || in.ThumbHeight > maxThumbHeight)) {
+			return contracts.MediaPeaksThumbsOutput{}, apperr.Validation(fmt.Sprintf("thumb_height must be between %d and %d", minThumbHeight, maxThumbHeight)).
+				WithMsg("errors.studio.invalid_thumb_height", map[string]any{"min": minThumbHeight, "max": maxThumbHeight})
+		}
+
+		resolvedPath, err := resolveMediaInput(ctx, opts, rawTarget, allowed)
 		if err != nil {
 			return contracts.MediaPeaksThumbsOutput{}, err
 		}
@@ -73,18 +120,12 @@ func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 			interval = opts.StudioConfig.TimelineThumbIntervalSec
 		}
 		bins := in.PeakBins
-		if bins <= 0 {
+		if bins == 0 {
 			bins = defBins
 		}
-		if bins < 16 || bins > 4096 {
-			return contracts.MediaPeaksThumbsOutput{}, apperr.Validation("peak_bins must be between 16 and 4096")
-		}
 		thumbH := in.ThumbHeight
-		if thumbH <= 0 {
+		if thumbH == 0 {
 			thumbH = opts.StudioConfig.TimelineThumbHeight
-		}
-		if thumbH < 32 || thumbH > 360 {
-			return contracts.MediaPeaksThumbsOutput{}, apperr.Validation("thumb_height must be between 32 and 360")
 		}
 
 		ffmpegExe, err := resolveBinary(ctx, opts.Binaries, domainbinaries.IDFFmpeg)
@@ -97,8 +138,10 @@ func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 		}
 
 		probeCtx, cancelProbe := context.WithTimeout(ctx, opts.StudioConfig.FFprobeTimeout)
-		defer cancelProbe()
+		stopProbe := progress.KeepAlive(ctx)
 		info, err := probeWithFFprobe(probeCtx, ffprobeExe, resolvedPath)
+		stopProbe()
+		cancelProbe()
 		if err != nil {
 			return contracts.MediaPeaksThumbsOutput{}, err
 		}
@@ -119,43 +162,60 @@ func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 		thumbCount := 0
 		if info.Width > 0 && info.Height > 0 {
 			maxStripThumbs := opts.StudioConfig.TimelineMaxStripThumbs
-			thumbCount = max(1, int(math.Ceil(durSec/interval)))
-			effInterval := interval
+			effInterval := math.Max(minThumbIntervalSec, interval)
+			thumbCount = max(1, int(math.Ceil(durSec/effInterval)))
 			if thumbCount > maxStripThumbs {
 				thumbCount = maxStripThumbs
-				effInterval = durSec / float64(maxStripThumbs)
+				effInterval = math.Max(minThumbIntervalSec, durSec/float64(maxStripThumbs))
 			}
 			interval = effInterval
 
 			spritePath = filepath.Join(outDir, uniqueExportFilename(baseStem+"_sprite", ".jpg"))
-			if err := engine.CheckFile(ctx, spritePath, true); err != nil {
+			if err := checkStudioFile(ctx, spritePath, true); err != nil {
 				return contracts.MediaPeaksThumbsOutput{}, err
+			}
+			tmpSprite, terr := createTempMediaFile(outDir, ".tmp-sprite-", ".jpg")
+			if terr != nil {
+				return contracts.MediaPeaksThumbsOutput{}, terr
 			}
 			vf := fmt.Sprintf("fps=1/%.4f,scale=-2:%d,tile=%dx1", effInterval, thumbH, thumbCount)
 			ffCtx, cancelFF := context.WithTimeout(ctx, opts.StudioConfig.FFmpegTimeout)
+			stopFF := progress.KeepAlive(ctx)
 			res, ferr := runner.RunWithOptions(ffCtx, ffmpegExe, []string{
 				"-y", "-hide_banner", "-v", "error",
 				"-i", resolvedPath,
 				"-vf", vf,
 				"-frames:v", "1",
-				"-q:v", "4",
-				spritePath,
+				"-q:v", spriteJPEGQuality,
+				tmpSprite,
 			}, runner.RunOptions{})
+			stopFF()
 			cancelFF()
-			if ferr != nil {
-				return contracts.MediaPeaksThumbsOutput{}, apperr.Unavailable("ffmpeg thumbnail sprite failed: " + resStderr(res))
+			if ferr != nil || res == nil || res.ExitCode != 0 {
+				_ = os.Remove(tmpSprite)
+				if ctx.Err() != nil {
+					return contracts.MediaPeaksThumbsOutput{}, ctx.Err()
+				}
+				return contracts.MediaPeaksThumbsOutput{}, ioUnavailableErr("FFmpeg failed to extract timeline thumbnail strip", ferr)
 			}
-			if _, serr := os.Stat(spritePath); serr == nil {
+			if infoStat, serr := os.Stat(tmpSprite); serr == nil && infoStat.Size() > 0 {
+				if cerr := commitTempMediaFile(tmpSprite, spritePath); cerr != nil {
+					return contracts.MediaPeaksThumbsOutput{}, cerr
+				}
 				spriteAssetID = registerStudioAsset(ctx, opts, "image", NodeTypeMediaPeaksThumbs, spritePath, outDir)
 			} else {
+				_ = os.Remove(tmpSprite)
 				spritePath = ""
 			}
 		}
 
 		var peaks []float64
 		if info.HasAudio {
+			progress.Report(ctx, progress.Update{Percent: 60, Message: "Computing PCM audio waveform peaks…", Key: "studio.progress.peaks_waveform"})
 			ffCtx, cancelPCM := context.WithTimeout(ctx, opts.StudioConfig.FFmpegTimeout)
+			stopPCM := progress.KeepAlive(ctx)
 			peaks, err = extractAudioPeaksPCM(ffCtx, ffmpegExe, resolvedPath, bins, opts.StudioConfig)
+			stopPCM()
 			cancelPCM()
 			if err != nil {
 				return contracts.MediaPeaksThumbsOutput{}, err
@@ -165,12 +225,11 @@ func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 		}
 
 		peaksPath := filepath.Join(outDir, uniqueExportFilename(baseStem+"_peaks", ".json"))
-		if err := engine.CheckFile(ctx, peaksPath, true); err != nil {
+		if err := checkStudioFile(ctx, peaksPath, true); err != nil {
 			return contracts.MediaPeaksThumbsOutput{}, err
 		}
 
 		metaObj := map[string]any{
-			"source_path":        resolvedPath,
 			"duration_ms":        durationMs,
 			"sprite_sheet_path":  spritePath,
 			"sprite_asset_id":    spriteAssetID,
@@ -182,8 +241,8 @@ func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 		if err != nil {
 			return contracts.MediaPeaksThumbsOutput{}, apperr.Internal(err)
 		}
-		if err := fsutil.WriteFileAtomic(peaksPath, append(metaBytes, '\n'), 0o644); err != nil {
-			return contracts.MediaPeaksThumbsOutput{}, apperr.Internal(err)
+		if err := fsutil.WriteFileAtomic(peaksPath, append(metaBytes, '\n'), 0o600); err != nil {
+			return contracts.MediaPeaksThumbsOutput{}, ioUnavailableErr("Failed to write timeline waveform peaks cache", err)
 		}
 
 		progress.Report(ctx, progress.Update{Percent: 100, Message: "Timeline peaks & thumbnails ready", Key: "studio.progress.done"})
@@ -212,42 +271,50 @@ func extractAudioPeaksPCM(ctx context.Context, ffmpegExe, mediaPath string, bins
 	cmd := proc.Command(context.Background(), ffmpegExe, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, apperr.Internal(err)
+		return nil, ioUnavailableErr("Failed to open FFmpeg PCM stdout pipe", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return nil, apperr.Internal(err)
+		return nil, ioUnavailableErr("Failed to open FFmpeg PCM stderr pipe", err)
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, apperr.Unavailable("failed to start ffmpeg PCM peak extraction: " + err.Error())
+		return nil, ioUnavailableErr("Failed to start FFmpeg PCM peak extraction", err)
 	}
 
 	var stderrMsg strings.Builder
 	stderrDone := make(chan struct{})
 	safego.Go("peaks.stderr", func() {
 		defer close(stderrDone)
-		b, _ := io.ReadAll(io.LimitReader(stderr, 64*1024))
+		b, _ := io.ReadAll(io.LimitReader(stderr, pcmMaxStderrBytes))
+		_, _ = io.Copy(io.Discard, stderr)
 		stderrMsg.Write(b)
 	})
 
-	// Cancel watcher kills the child tree cleanly when ctx expires.
-	waitDone := make(chan struct{})
-	safego.Go("peaks.cancel", func() {
-		select {
-		case <-ctx.Done():
-			proc.KillTree(cmd)
-		case <-waitDone:
-		}
+	pcmDone := make(chan struct{})
+	waitCh := make(chan error, 1)
+	safego.Go("peaks.wait", func() {
+		<-pcmDone
+		<-stderrDone
+		waitCh <- cmd.Wait()
 	})
 
-	// Stream float32 samples into 80-sample (~10ms @ 8kHz) frame blocks to keep memory small.
 	blockSamples := cfg.TimelineWaveBlockSamples
 	var blocks []float64
 	var curMax float64
 	var inBlock int
-	var carry [4]byte
+	var carry [pcmSampleBytes]byte
 	carryLen := 0
-	buf := make([]byte, 4096)
+	buf := make([]byte, pcmReadBufBytes)
+
+	// Kill child tree if ctx cancels while stdout is blocking on Read.
+	stopCancel := make(chan struct{})
+	safego.Go("peaks.cancel", func() {
+		select {
+		case <-ctx.Done():
+			proc.KillTree(cmd)
+		case <-stopCancel:
+		}
+	})
 
 	for {
 		n, rerr := stdout.Read(buf)
@@ -255,12 +322,12 @@ func extractAudioPeaksPCM(ctx context.Context, ffmpegExe, mediaPath string, bins
 			chunk := buf[:n]
 			pos := 0
 			if carryLen > 0 {
-				need := 4 - carryLen
+				need := pcmSampleBytes - carryLen
 				if n >= need {
 					copy(carry[carryLen:], chunk[:need])
 					pos = need
 					sample := math.Abs(float64(math.Float32frombits(binary.LittleEndian.Uint32(carry[:]))))
-					if !math.IsNaN(sample) && !math.IsInf(sample, 0) && sample <= 10.0 && sample > curMax {
+					if !math.IsNaN(sample) && !math.IsInf(sample, 0) && sample <= pcmMaxValidAmplitude && sample > curMax {
 						curMax = sample
 					}
 					inBlock++
@@ -276,9 +343,9 @@ func extractAudioPeaksPCM(ctx context.Context, ffmpegExe, mediaPath string, bins
 					pos = n
 				}
 			}
-			for pos+4 <= len(chunk) {
-				sample := math.Abs(float64(math.Float32frombits(binary.LittleEndian.Uint32(chunk[pos : pos+4]))))
-				if !math.IsNaN(sample) && !math.IsInf(sample, 0) && sample <= 10.0 && sample > curMax {
+			for pos+pcmSampleBytes <= len(chunk) {
+				sample := math.Abs(float64(math.Float32frombits(binary.LittleEndian.Uint32(chunk[pos : pos+pcmSampleBytes]))))
+				if !math.IsNaN(sample) && !math.IsInf(sample, 0) && sample <= pcmMaxValidAmplitude && sample > curMax {
 					curMax = sample
 				}
 				inBlock++
@@ -287,7 +354,7 @@ func extractAudioPeaksPCM(ctx context.Context, ffmpegExe, mediaPath string, bins
 					curMax = 0
 					inBlock = 0
 				}
-				pos += 4
+				pos += pcmSampleBytes
 			}
 			if rem := len(chunk) - pos; rem > 0 {
 				copy(carry[:], chunk[pos:])
@@ -298,18 +365,23 @@ func extractAudioPeaksPCM(ctx context.Context, ffmpegExe, mediaPath string, bins
 			break
 		}
 	}
+	_, _ = io.Copy(io.Discard, stdout)
+	close(pcmDone)
+
+	waitErr := <-waitCh
+	close(stopCancel)
+
 	if inBlock > 0 {
 		blocks = append(blocks, curMax)
 	}
-
-	<-stderrDone
-	waitErr := cmd.Wait()
-	close(waitDone)
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	if waitErr != nil {
-		return nil, apperr.Unavailable("ffmpeg PCM peak extraction failed: " + strings.TrimSpace(stderrMsg.String()))
+		if detail := strings.TrimSpace(stderrMsg.String()); detail != "" {
+			return nil, ioUnavailableErr("FFmpeg PCM peak extraction failed", fmt.Errorf("%w: %s", waitErr, detail))
+		}
+		return nil, ioUnavailableErr("FFmpeg PCM peak extraction failed", waitErr)
 	}
 
 	return resamplePeaks(blocks, bins), nil
@@ -340,7 +412,7 @@ func resamplePeaks(blocks []float64, bins int) []float64 {
 	}
 	if globalMax > 0 {
 		for i := range out {
-			out[i] = math.Round((out[i]/globalMax)*1000) / 1000
+			out[i] = math.Round((out[i]/globalMax)*peakRoundingScale) / peakRoundingScale
 		}
 	}
 	return out

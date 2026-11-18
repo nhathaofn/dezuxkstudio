@@ -220,15 +220,25 @@ func (s *Service) AutoAssembleTimeline(ctx context.Context, p contracts.StudioTi
 	if err != nil {
 		return contracts.StudioTimelineResult{}, apperr.Internal(err)
 	}
+	var transMsPtr *int64
+	if p.TransitionMs > 0 {
+		tm := p.TransitionMs
+		transMsPtr = &tm
+	}
+	var bgmVolPtr *float64
+	if p.BGMVolume > 0 {
+		bv := p.BGMVolume
+		bgmVolPtr = &bv
+	}
 	inBytes, err := json.Marshal(contracts.TimelineAutoAssembleInput{
 		ShotsJSON:         string(shotsBytes),
 		EpisodeID:         ep.ID,
 		Resolution:        resolution,
 		FPS:               fps,
 		TransitionDefault: string(p.TransitionDefault),
-		TransitionMs:      p.TransitionMs,
+		TransitionMs:      transMsPtr,
 		BGMPath:           bgmPath,
-		BGMVolume:         p.BGMVolume,
+		BGMVolume:         bgmVolPtr,
 		ProjectDir:        epRoot,
 	})
 	if err != nil {
