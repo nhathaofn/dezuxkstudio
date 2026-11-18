@@ -14,13 +14,16 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"app/internal/apperr"
 	"app/internal/config"
 	"app/internal/contracts"
 	domainbinaries "app/internal/domain/binaries"
 	domainstudio "app/internal/domain/studio"
 	"app/internal/engine"
 	"app/internal/progress"
+	"app/internal/service/agent"
 )
 
 func writePhase3FakeBinaries(t *testing.T, dir string, pcmBytes []byte) (ffprobeExe, ffmpegExe, argsLog string) {
@@ -505,5 +508,343 @@ func TestPhase3RenderTimeShiftExplicitCRFEmptyCuesAndEmptyShots(t *testing.T) {
 	srtBytes, _ := os.ReadFile(out.SRTPath)
 	if !strings.Contains(string(srtBytes), "00:00:04,500 --> 00:00:06,500") {
 		t.Fatalf("expected shifted SRT timestamp 00:00:04,500 --> 00:00:06,500, got:\n%s", string(srtBytes))
+	}
+}
+
+func TestPhase3PCMStderrOver64KiBNoDeadlockAndMicroIntervalFloor(t *testing.T) {
+	tmp := t.TempDir()
+	tmpRoot := filepath.Join("..", "..", "..", "build", ".gotmp")
+	if err := os.MkdirAll(tmpRoot, 0o755); err != nil {
+		tmpRoot = tmp
+	}
+	binDir, err := os.MkdirTemp(tmpRoot, "p3noisy-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(binDir) })
+
+	pcmBytes := makeTestPCMBytes()
+	pcmPath := filepath.Join(binDir, "sample.f32le")
+	argsLog := filepath.Join(tmp, "noisy_args.log")
+	argsLogPtr := filepath.Join(binDir, "args_log.txt")
+	probePath := filepath.Join(binDir, "ffprobe.json")
+	probePayload := `{"format":{"format_name":"mov,mp4","duration":"0.020"},"streams":[{"codec_type":"video","codec_name":"h264","width":640,"height":360,"avg_frame_rate":"24/1"},{"codec_type":"audio","codec_name":"aac"}]}`
+	_ = os.WriteFile(pcmPath, pcmBytes, 0o600)
+	_ = os.WriteFile(argsLogPtr, []byte(argsLog), 0o600)
+	_ = os.WriteFile(probePath, []byte(probePayload), 0o600)
+
+	// Child writes 256 KiB (> 64 KiB OS pipe buffer) to stderr while emitting PCM on stdout!
+	srcPath := filepath.Join(binDir, "main.go")
+	const noisySrc = `package main
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+func main() {
+	exeDir := filepath.Dir(os.Args[0])
+	base := strings.ToLower(filepath.Base(os.Args[0]))
+	if strings.HasPrefix(base, "ffprobe") {
+		b, _ := os.ReadFile(filepath.Join(exeDir, "ffprobe.json"))
+		_, _ = os.Stdout.Write(b)
+		return
+	}
+	if logPtr, err := os.ReadFile(filepath.Join(exeDir, "args_log.txt")); err == nil {
+		if f, oerr := os.OpenFile(strings.TrimSpace(string(logPtr)), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); oerr == nil {
+			for _, a := range os.Args[1:] {
+				_, _ = fmt.Fprintln(f, a)
+			}
+			_ = f.Close()
+		}
+	}
+	last := os.Args[len(os.Args)-1]
+	if last == "pipe:1" {
+		noise := bytes.Repeat([]byte("W"), 256*1024)
+		_, _ = os.Stderr.Write(noise)
+		b, _ := os.ReadFile(filepath.Join(exeDir, "sample.f32le"))
+		_, _ = os.Stdout.Write(b)
+		_, _ = os.Stderr.Write(noise)
+		return
+	}
+	_ = os.WriteFile(last, []byte("JPG"), 0o600)
+}
+`
+	if err := os.WriteFile(srcPath, []byte(noisySrc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ext := ""
+	if runtime.GOOS == "windows" {
+		ext = ".exe"
+	}
+	ffmpegExe := filepath.Join(binDir, "ffmpeg"+ext)
+	ffprobeExe := filepath.Join(binDir, "ffprobe"+ext)
+	if out, berr := exec.Command("go", "build", "-o", ffmpegExe, srcPath).CombinedOutput(); berr != nil {
+		t.Fatalf("build noisy ffmpeg: %v\n%s", berr, string(out))
+	}
+	binData, _ := os.ReadFile(ffmpegExe)
+	_ = os.WriteFile(ffprobeExe, binData, 0o755)
+
+	vid := filepath.Join(tmp, "tiny.mp4")
+	_ = os.WriteFile(vid, []byte("MP4"), 0o600)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cfg := config.Default(config.ModeDesktop).Studio
+	cfg.TimelineMaxStripThumbs = 100
+	node := NewMediaPeaksThumbsNode(Options{
+		MediaDir:     tmp,
+		WorkspaceDir: tmp,
+		StudioConfig: cfg,
+		Binaries: &stubBinaryResolver{paths: map[domainbinaries.BinaryID]string{
+			domainbinaries.IDFFprobe: ffprobeExe,
+			domainbinaries.IDFFmpeg:  ffmpegExe,
+		}},
+	})
+	rawOut, err := node.Run(ctx, mustJSON(t, contracts.MediaPeaksThumbsInput{
+		Media:            engine.InputRef(vid, engine.MediaVideo),
+		ThumbIntervalSec: 0.0001,
+		PeakBins:         16,
+		OutputDir:        tmp,
+	}))
+	if err != nil {
+		t.Fatalf("media_peaks_thumbs deadlocked or failed on >256KiB stderr: %v", err)
+	}
+	out := rawOut.(contracts.MediaPeaksThumbsOutput)
+	if len(out.Peaks) != 16 || out.Peaks[15] != 1.0 {
+		t.Fatalf("unexpected PCM peaks after heavy stderr drain: %v", out.Peaks)
+	}
+	argsBytes, _ := os.ReadFile(argsLog)
+	if strings.Contains(string(argsBytes), "fps=1/0.0000") || !strings.Contains(string(argsBytes), "fps=1/0.0500") {
+		t.Fatalf("expected minThumbIntervalSec floor (fps=1/0.0500), got:\n%s", string(argsBytes))
+	}
+}
+
+func TestPhase3RealAccessPolicyGuardsAndNLESecretExfiltrationBlock(t *testing.T) {
+	base := t.TempDir()
+	wsDir := filepath.Join(base, "ws")
+	projDir := filepath.Join(wsDir, "projects")
+	mediaDir := filepath.Join(base, "media")
+	outsideDir := t.TempDir()
+	for _, d := range []string{wsDir, projDir, mediaDir} {
+		_ = os.MkdirAll(d, 0o755)
+	}
+
+	insideVid := filepath.Join(mediaDir, "ok.mp4")
+	outsideVid := filepath.Join(outsideDir, "outside.mp4")
+	insideEnv := filepath.Join(wsDir, ".env")
+	insideSecretJSON := filepath.Join(projDir, "secrets.json")
+	_ = os.WriteFile(insideVid, []byte("MP4"), 0o600)
+	_ = os.WriteFile(outsideVid, []byte("OUTSIDE"), 0o600)
+	_ = os.WriteFile(insideEnv, []byte("API_KEY=topsecret"), 0o600)
+	_ = os.WriteFile(insideSecretJSON, []byte(`{"token":"secret"}`), 0o600)
+
+	policy := agent.NewAccessPolicy(filepath.Join(base, "data"), wsDir, mediaDir, filepath.Join(base, "profiles"), nil)
+	policy.SetProjectsDir(projDir)
+	guardedCtx := engine.WithFileGuard(context.Background(), policy.CheckTrustedFile)
+
+	opts := Options{
+		MediaDir:     mediaDir,
+		WorkspaceDir: wsDir,
+		StudioConfig: config.Default(config.ModeDesktop).Studio,
+	}
+
+	// 1. timeline_auto_assemble blocks JSON-embedded outside video_path with CodeUnauthorized
+	outsideShots, _ := json.Marshal(domainstudio.ShotPromptPackage{
+		Shots: []domainstudio.Shot{{ID: "s1", Seq: 1, DurationSec: 5, VideoPath: outsideVid}},
+	})
+	if _, err := NewTimelineAutoAssembleNode(opts).Run(guardedCtx, mustJSON(t, contracts.TimelineAutoAssembleInput{
+		ShotsJSON: string(outsideShots),
+	})); err == nil || !apperr.IsCode(err, apperr.CodeUnauthorized) {
+		t.Fatalf("expected CodeUnauthorized on JSON-embedded outside shot video_path, got %v", err)
+	}
+
+	// 2. video_concat_basic blocks JSON-embedded outside clip path with CodeUnauthorized
+	if _, err := NewVideoConcatBasicNode(opts).Run(guardedCtx, mustJSON(t, contracts.VideoConcatBasicInput{
+		ClipsManifestJSON: `["` + filepath.ToSlash(outsideVid) + `"]`,
+	})); err == nil || !apperr.IsCode(err, apperr.CodeUnauthorized) {
+		t.Fatalf("expected CodeUnauthorized on JSON-embedded outside concat clip, got %v", err)
+	}
+
+	// 3. export_nle_draft (include_media_copy: true) blocks .env and secrets.json exfiltration
+	// both WITH AccessPolicy (CodeUnauthorized) AND WITHOUT FileGuard (CodeValidation unsupported_media_ext)!
+	incTrue := true
+	for _, badPath := range []string{insideEnv, insideSecretJSON, outsideVid} {
+		tl := domainstudio.EditTimeline{
+			Version: 1, Width: 1280, Height: 720, FPS: 24,
+			Tracks: []domainstudio.Track{{
+				ID: "v1", Kind: domainstudio.TrackVideo, Volume: 1,
+				Clips: []domainstudio.TimelineClip{{
+					ID: "c1", FilePath: badPath, SourceInMs: 0, SourceOutMs: 2000, Speed: 1, Volume: 1,
+				}},
+			}},
+		}
+		tlBytes, _ := json.Marshal(tl)
+		if _, err := NewExportNLEDraftNode(opts).Run(guardedCtx, mustJSON(t, contracts.ExportNLEDraftInput{
+			TimelineJSON:     string(tlBytes),
+			Format:           "capcut",
+			OutputDir:        projDir,
+			IncludeMediaCopy: &incTrue,
+		})); err == nil {
+			t.Fatalf("expected guarded export_nle_draft to reject %s", badPath)
+		}
+		if badPath != outsideVid {
+			if _, err := NewExportNLEDraftNode(opts).Run(context.Background(), mustJSON(t, contracts.ExportNLEDraftInput{
+				TimelineJSON:     string(tlBytes),
+				Format:           "capcut",
+				OutputDir:        projDir,
+				IncludeMediaCopy: &incTrue,
+			})); err == nil || !apperr.IsCode(err, apperr.CodeValidation) {
+				t.Fatalf("expected unguarded export_nle_draft to reject non-media file %s with CodeValidation, got %v", badPath, err)
+			}
+		}
+	}
+}
+
+func TestPhase3SpecDefaultsExplicitZeroBGMOverwriteDedupeAndOverlapShift(t *testing.T) {
+	tmp := t.TempDir()
+	projDir := filepath.Join(tmp, "projects", "ep01")
+	exportDir := filepath.Join(projDir, "exports")
+	_ = os.MkdirAll(exportDir, 0o755)
+
+	vid1 := filepath.Join(tmp, "s1.mp4")
+	vid2 := filepath.Join(tmp, "s2.mp4")
+	bgm := filepath.Join(tmp, "bgm.mp3")
+	for _, p := range []string{vid1, vid2, bgm} {
+		_ = os.WriteFile(p, []byte("MEDIA"), 0o600)
+	}
+
+	ffprobeExe, ffmpegExe, argsLog := writePhase3FakeBinaries(t, tmp, makeTestPCMBytes())
+	customCfg := config.Default(config.ModeDesktop).Studio
+	customCfg.TimelineDefaultTransitionMs = 450
+	customCfg.TimelineDefaultBGMVolume = 0.33
+	customCfg.ExportSubtitleFontFamily = "Noto Sans"
+	customCfg.FFmpegVideoCodec = "libx265"
+	customCfg.FFmpegAudioSampleRate = 44100
+	customCfg.FFmpegAudioBitrate = "256k"
+
+	opts := Options{
+		MediaDir:     tmp,
+		WorkspaceDir: tmp,
+		StudioConfig: customCfg,
+		Binaries: &stubBinaryResolver{paths: map[domainbinaries.BinaryID]string{
+			domainbinaries.IDFFprobe: ffprobeExe,
+			domainbinaries.IDFFmpeg:  ffmpegExe,
+		}},
+	}
+
+	shotsBytes, _ := json.Marshal(domainstudio.ShotPromptPackage{
+		Shots: []domainstudio.Shot{
+			{ID: "s1", Seq: 1, DurationSec: 5, VideoPath: vid1, NarrationText: "Một"},
+			{ID: "s2", Seq: 2, DurationSec: 5, VideoPath: vid2, NarrationText: "Hai"},
+		},
+	})
+
+	// 1. Omitted transition_ms & bgm_volume use StudioConfig defaults (450ms & 0.33)
+	rawDef, err := NewTimelineAutoAssembleNode(opts).Run(context.Background(), json.RawMessage(`{
+		"shots_json": `+strconvQuote(string(shotsBytes))+`,
+		"bgm_path": `+strconvQuote(bgm)+`
+	}`))
+	if err != nil {
+		t.Fatalf("assemble defaults: %v", err)
+	}
+	var tlDef domainstudio.EditTimeline
+	_ = json.Unmarshal([]byte(rawDef.(contracts.TimelineAutoAssembleOutput).TimelineJSON), &tlDef)
+	if tlDef.Tracks[0].Clips[1].TransitionMs != 450 {
+		t.Fatalf("expected omitted transition_ms to default to 450ms, got %d", tlDef.Tracks[0].Clips[1].TransitionMs)
+	}
+	if math.Abs(tlDef.Tracks[len(tlDef.Tracks)-1].Volume-0.33) > 0.001 {
+		t.Fatalf("expected omitted bgm_volume to default to 0.33, got %v", tlDef.Tracks[len(tlDef.Tracks)-1].Volume)
+	}
+
+	// 2. Explicit bgm_volume: 0 and transition_ms: 0 are preserved (NOT overwritten with defaults!)
+	rawZero, err := NewTimelineAutoAssembleNode(opts).Run(context.Background(), json.RawMessage(`{
+		"shots_json": `+strconvQuote(string(shotsBytes))+`,
+		"transition_ms": 0,
+		"bgm_path": `+strconvQuote(bgm)+`,
+		"bgm_volume": 0
+	}`))
+	if err != nil {
+		t.Fatalf("assemble explicit zero: %v", err)
+	}
+	var tlZero domainstudio.EditTimeline
+	_ = json.Unmarshal([]byte(rawZero.(contracts.TimelineAutoAssembleOutput).TimelineJSON), &tlZero)
+	if tlZero.Tracks[0].Clips[1].TransitionMs != 0 || tlZero.Tracks[len(tlZero.Tracks)-1].Volume != 0 || !tlZero.Tracks[len(tlZero.Tracks)-1].Muted {
+		t.Fatalf("expected explicit 0 preserved for transition_ms & bgm_volume, got clip1=%+v bgmTrack=%+v",
+			tlZero.Tracks[0].Clips[1], tlZero.Tracks[len(tlZero.Tracks)-1])
+	}
+
+	// 3. render_timeline overwrite=false deduplicates output filename; custom StudioConfig propagates to FFmpeg & ASS;
+	// overlapping TransitionNone shifts subsequent subtitles accurately!
+	overlapTL := domainstudio.EditTimeline{
+		Version: 1, Width: 1280, Height: 720, FPS: 24,
+		Tracks: []domainstudio.Track{{
+			ID: "v1", Kind: domainstudio.TrackVideo, Volume: 1,
+			Clips: []domainstudio.TimelineClip{
+				{ID: "c1", FilePath: vid1, SourceInMs: 0, SourceOutMs: 5000, TimelineStartMs: 0, Speed: 1, Volume: 1},
+				// Overlaps by 1000ms with TransitionNone -> concat=n=2 pushes end from 9000ms to 10000ms (+1000ms shift!)
+				{ID: "c2", FilePath: vid2, SourceInMs: 0, SourceOutMs: 5000, TimelineStartMs: 4000, Speed: 1, TransitionIn: domainstudio.TransitionNone, Volume: 1},
+			},
+		}},
+		Subtitles: []domainstudio.SubtitleCue{
+			{ID: "sub-after", StartMs: 5000, EndMs: 6000, Text: "Shifted by non-xfade overlap"},
+		},
+	}
+	overlapJSON := string(mustJSON(t, overlapTL))
+	_ = os.Remove(argsLog)
+	r1Raw, err := NewRenderTimelineNode(opts).Run(context.Background(), mustJSON(t, contracts.RenderTimelineInput{
+		TimelineJSON: overlapJSON,
+		OutputDir:    exportDir,
+		Filename:     "dup_check.mp4",
+		Overwrite:    false,
+	}))
+	if err != nil {
+		t.Fatalf("render 1: %v", err)
+	}
+	r1 := r1Raw.(contracts.RenderTimelineOutput)
+	r2Raw, err := NewRenderTimelineNode(opts).Run(context.Background(), mustJSON(t, contracts.RenderTimelineInput{
+		TimelineJSON: overlapJSON,
+		OutputDir:    exportDir,
+		Filename:     "dup_check.mp4",
+		Overwrite:    false,
+	}))
+	if err != nil {
+		t.Fatalf("render 2: %v", err)
+	}
+	r2 := r2Raw.(contracts.RenderTimelineOutput)
+	if r1.OutputPath == r2.OutputPath || !strings.HasSuffix(r2.OutputPath, "dup_check_1.mp4") {
+		t.Fatalf("expected overwrite=false to deduplicate dup_check.mp4 -> dup_check_1.mp4, got r1=%s r2=%s", r1.OutputPath, r2.OutputPath)
+	}
+
+	assBytes, _ := os.ReadFile(r1.ASSPath)
+	if !strings.Contains(string(assBytes), "Style: Default,Noto Sans,") {
+		t.Fatalf("expected custom ExportSubtitleFontFamily 'Noto Sans' in ASS, got:\n%s", string(assBytes))
+	}
+	srtBytes, _ := os.ReadFile(r1.SRTPath)
+	if !strings.Contains(string(srtBytes), "00:00:06,000 --> 00:00:07,000") {
+		t.Fatalf("expected +1000ms shift on subtitle after overlapping TransitionNone concat, got:\n%s", string(srtBytes))
+	}
+	argsBytes, _ := os.ReadFile(argsLog)
+	argsStr := string(argsBytes)
+	if !strings.Contains(argsStr, "libx265") || !strings.Contains(argsStr, "sample_rates=44100") || !strings.Contains(argsStr, "256k") {
+		t.Fatalf("expected custom StudioConfig FFmpeg codec/sample_rate/bitrate in args, got:\n%s", argsStr)
+	}
+
+	// 4. export_nle_draft default project_name uses neutral "studio_timeline"
+	expRaw, err := NewExportNLEDraftNode(opts).Run(context.Background(), mustJSON(t, contracts.ExportNLEDraftInput{
+		TimelineJSON: overlapJSON,
+		Format:       "otio",
+		OutputDir:    exportDir,
+	}))
+	if err != nil {
+		t.Fatalf("export default project_name: %v", err)
+	}
+	expPath := expRaw.(contracts.ExportNLEDraftOutput).ExportPath
+	if !strings.Contains(filepath.Base(expPath), "studio-timeline") || strings.Contains(filepath.Base(expPath), "dezuxk") {
+		t.Fatalf("expected neutral studio-timeline slug in exported filename, got %s", expPath)
 	}
 }

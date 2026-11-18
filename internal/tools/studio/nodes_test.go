@@ -546,6 +546,75 @@ func TestDirectNodeConstructorsApplyStudioDefaults(t *testing.T) {
 	}
 }
 
+func TestAuthorShotPromptsDefaultDurationOverrideAndEmptyResolveTree(t *testing.T) {
+	// Empty Options must never resolve a relative "projects" directory in process CWD.
+	tree := resolveTree(Options{})
+	if tree.ProjectsDir != "" || resolveProjectsDir(Options{}) != "" {
+		t.Fatalf("expected empty ProjectsDir for empty Options, got tree=%+v projects=%q", tree, resolveProjectsDir(Options{}))
+	}
+
+	// Verify Spec.Provider is unified across all 16 studio nodes.
+	for _, n := range NewNodes(Options{}) {
+		if n.Spec().Provider != "studio" {
+			t.Fatalf("expected Provider=\"studio\" on %s, got %q", n.Spec().Type, n.Spec().Provider)
+		}
+	}
+
+	cfg := config.Default(config.ModeDesktop).Studio
+	cfg.DefaultShotDurationSec = 6
+	cfg.MaxShotDurationSec = 12
+	stub := &zeroDurShotStubTextGen{}
+	node := NewAuthorShotPromptsNode(Options{
+		TextGen:      stub,
+		StudioConfig: cfg,
+	})
+
+	// 1. Uses StudioConfig.DefaultShotDurationSec (6s) when default_duration_sec omitted
+	raw1, err := node.Run(context.Background(), json.RawMessage(`{"normalized_script_json":{"title":"Ep","genre":"drama","aspect_ratio":"16:9","logline":"L","scenes":[]}}`))
+	if err != nil {
+		t.Fatalf("author_shot_prompts default duration: %v", err)
+	}
+	var pkg1 domainstudio.ShotPromptPackage
+	if err := json.Unmarshal([]byte(raw1.(contracts.AuthorShotPromptsOutput).ShotsJSON), &pkg1); err != nil {
+		t.Fatal(err)
+	}
+	if len(pkg1.Shots) != 2 || pkg1.Shots[0].DurationSec != 6 || pkg1.Shots[1].DurationSec != 12 {
+		t.Fatalf("expected shot0=6s (config default) and shot1=12s (clamped to MaxShotDurationSec), got %+v", pkg1.Shots)
+	}
+
+	// 2. Explicit default_duration_sec param overrides StudioConfig default
+	raw2, err := node.Run(context.Background(), json.RawMessage(`{"normalized_script_json":{"title":"Ep","genre":"drama","aspect_ratio":"16:9","logline":"L","scenes":[]},"default_duration_sec":9}`))
+	if err != nil {
+		t.Fatalf("author_shot_prompts override duration: %v", err)
+	}
+	var pkg2 domainstudio.ShotPromptPackage
+	if err := json.Unmarshal([]byte(raw2.(contracts.AuthorShotPromptsOutput).ShotsJSON), &pkg2); err != nil {
+		t.Fatal(err)
+	}
+	if pkg2.Shots[0].DurationSec != 9 {
+		t.Fatalf("expected shot0=9s from default_duration_sec param, got %+v", pkg2.Shots[0])
+	}
+
+	// 3. Out-of-bounds default_duration_sec rejected
+	if _, err := node.Run(context.Background(), json.RawMessage(`{"normalized_script_json":"{}","default_duration_sec":99}`)); err == nil {
+		t.Fatal("expected out-of-bounds default_duration_sec to fail validation")
+	}
+}
+
+type zeroDurShotStubTextGen struct{}
+
+func (z *zeroDurShotStubTextGen) GenerateText(_ context.Context, _ domainmedia.TextRequest) (domainmedia.TextResult, error) {
+	payload := json.RawMessage(`{
+		"episode_title":"Ep",
+		"production_mode":"storyboard_i2v",
+		"shots":[
+			{"seq":1,"scene_code":"S01","title":"A","shot_mode":"single","duration_sec":0,"image_prompt":"img","video_prompt":"vid"},
+			{"seq":2,"scene_code":"S01","title":"B","shot_mode":"single","duration_sec":40,"image_prompt":"img2","video_prompt":"vid2"}
+		]
+	}`)
+	return domainmedia.TextResult{Text: string(payload), ParsedJSON: payload, Provider: "stub", Model: "m1"}, nil
+}
+
 func mustJSON(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(v)

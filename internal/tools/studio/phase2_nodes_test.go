@@ -13,11 +13,13 @@ import (
 	"strings"
 	"testing"
 
+	"app/internal/apperr"
 	"app/internal/contracts"
 	domainbinaries "app/internal/domain/binaries"
 	domainmedia "app/internal/domain/mediagen"
 	domainprovider "app/internal/domain/provider"
 	"app/internal/engine"
+	"app/internal/service/agent"
 )
 
 type stubPhase2Media struct {
@@ -56,7 +58,8 @@ func (s *stubPhase2Media) GenerateText(_ context.Context, req domainmedia.TextRe
 }
 
 type stubPreflightDeps struct {
-	block bool
+	block    bool
+	freeRate bool
 }
 
 func (s *stubPreflightDeps) CheckCapability(_ context.Context, _ domainprovider.Capability, _ string) (string, string, error) {
@@ -67,6 +70,9 @@ func (s *stubPreflightDeps) CheckCapability(_ context.Context, _ domainprovider.
 }
 
 func (s *stubPreflightDeps) EstimateUnitPriceUSD(_ context.Context, _, _, _, _ string) (float64, bool, error) {
+	if s.freeRate {
+		return 0.0, false, nil
+	}
 	return 0.10, false, nil
 }
 
@@ -199,7 +205,14 @@ func TestPhase2BatchPreflightAndMaskEdit(t *testing.T) {
 
 func TestPhase2GridSplitAsymmetricCropsAndGuard(t *testing.T) {
 	tmp := t.TempDir()
-	gridPath := filepath.Join(tmp, "grid.png")
+	wsDir := filepath.Join(tmp, "ws")
+	mediaDir := filepath.Join(tmp, "media")
+	outsideDir := t.TempDir()
+	_ = os.MkdirAll(wsDir, 0o755)
+	_ = os.MkdirAll(mediaDir, 0o755)
+
+	gridPath := filepath.Join(mediaDir, "grid.png")
+	outsideGrid := filepath.Join(outsideDir, "outside.png")
 	// Construct a 100x80 image where left-top=Red, right-top=Green, left-bottom=Blue, right-bottom=Yellow
 	img := image.NewRGBA(image.Rect(0, 0, 100, 80))
 	for y := 0; y < 80; y++ {
@@ -213,7 +226,7 @@ func TestPhase2GridSplitAsymmetricCropsAndGuard(t *testing.T) {
 			case x < 40 && y >= 30:
 				c = color.RGBA{B: 255, A: 255}
 			default:
-				c = color.RGBA{R: 255, G: 255, A: 255}
+				c = color.RGBA{R: 255, G: 255, B: 255, A: 255}
 			}
 			img.SetRGBA(x, y, c)
 		}
@@ -221,21 +234,39 @@ func TestPhase2GridSplitAsymmetricCropsAndGuard(t *testing.T) {
 	f, _ := os.Create(gridPath)
 	_ = png.Encode(f, img)
 	_ = f.Close()
+	writeSolidPNG(outsideGrid, 40, 40, color.RGBA{R: 255, A: 255})
 
-	outRaw, err := NewGridSplitNode(Options{MediaDir: tmp}).Run(context.Background(), mustJSON(t, contracts.GridSplitInput{
-		ImagePath:  engine.InputRef(gridPath, engine.MediaImage),
-		Rows:       2,
-		Cols:       2,
-		RowWeights: []float64{30, 50},
-		ColWeights: []float64{40, 60},
-		OutputDir:  tmp,
-	}))
+	policy := agent.NewAccessPolicy(filepath.Join(tmp, "data"), wsDir, mediaDir, filepath.Join(tmp, "profiles"), nil)
+	guardedCtx := engine.WithFileGuard(context.Background(), policy.CheckTrustedFile)
+	node := NewGridSplitNode(Options{MediaDir: mediaDir, WorkspaceDir: wsDir})
+
+	if _, err := node.Run(guardedCtx, mustJSON(t, contracts.GridSplitInput{
+		ImagePath: engine.InputRef(outsideGrid, engine.MediaImage),
+		OutputDir: mediaDir,
+	})); err == nil || !apperr.IsCode(err, apperr.CodeUnauthorized) {
+		t.Fatalf("expected AccessPolicy unauthorized error on outside image_path, got %v", err)
+	}
+	if _, err := node.Run(guardedCtx, mustJSON(t, contracts.GridSplitInput{
+		ImagePath: engine.InputRef(gridPath, engine.MediaImage),
+		OutputDir: outsideDir,
+	})); err == nil || !apperr.IsCode(err, apperr.CodeUnauthorized) {
+		t.Fatalf("expected AccessPolicy unauthorized error on outside output_dir, got %v", err)
+	}
+
+	outRaw, err := node.Run(guardedCtx, json.RawMessage(`{
+		"image_path": `+strconvQuote(gridPath)+`,
+		"rows": 2,
+		"cols": 2,
+		"row_weights": "30, 50",
+		"col_weights": "40, 60",
+		"output_dir": `+strconvQuote(mediaDir)+`
+	}`))
 	if err != nil {
 		t.Fatalf("grid_split: %v", err)
 	}
 	out := outRaw.(contracts.GridSplitOutput)
-	if len(out.Panels) != 4 || out.Panels[0].Width != 40 || out.Panels[0].Height != 30 || out.Panels[3].Width != 60 || out.Panels[3].Height != 50 {
-		t.Fatalf("unexpected panel geometries: %+v", out.Panels)
+	if len(out.Panels) != 4 || len(out.Images) != 4 || out.Panels[0].Width != 40 || out.Panels[0].Height != 30 || out.Panels[3].Width != 60 || out.Panels[3].Height != 50 {
+		t.Fatalf("unexpected panel geometries: panels=%+v images=%+v", out.Panels, out.Images)
 	}
 	f0, _ := os.Open(out.Panels[0].Path)
 	p0, _ := png.Decode(f0)
@@ -246,8 +277,18 @@ func TestPhase2GridSplitAsymmetricCropsAndGuard(t *testing.T) {
 	}
 }
 
+func strconvQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
 func TestPhase2ExtractFramesTTSDubMuxLipSyncAndQCReview(t *testing.T) {
 	tmp := t.TempDir()
+	wsDir := filepath.Join(tmp, "ws")
+	stagingDir := filepath.Join(tmp, "staging")
+	_ = os.MkdirAll(wsDir, 0o755)
+	_ = os.MkdirAll(stagingDir, 0o755)
+
 	ffprobeExe, ffmpegExe, argsLog := writePhase2FakeBinaries(t, tmp)
 	vidPath := filepath.Join(tmp, "shot.mp4")
 	audPath := filepath.Join(tmp, "voice.mp3")
@@ -259,13 +300,16 @@ func TestPhase2ExtractFramesTTSDubMuxLipSyncAndQCReview(t *testing.T) {
 	mediaStub := &stubPhase2Media{outDir: tmp}
 	opts := Options{
 		TextGen:    mediaStub,
+		ImageGen:   mediaStub,
 		TTSGen:     mediaStub,
 		LipSyncGen: mediaStub,
 		Binaries: &stubBinaryResolver{paths: map[domainbinaries.BinaryID]string{
 			domainbinaries.IDFFprobe: ffprobeExe,
 			domainbinaries.IDFFmpeg:  ffmpegExe,
 		}},
-		MediaDir: tmp,
+		MediaDir:     tmp,
+		WorkspaceDir: wsDir,
+		StagingDir:   stagingDir,
 	}
 
 	// Extract last frame
@@ -339,7 +383,217 @@ func TestPhase2ExtractFramesTTSDubMuxLipSyncAndQCReview(t *testing.T) {
 		t.Fatalf("qc_review: %v", err)
 	}
 	qcOut := qcRaw.(contracts.QCReviewOutput)
-	if qcOut.Verdict != "pass" || qcOut.OverallScore < 9.0 || len(mediaStub.lastTextReq.ImageInputs) != 3 {
+	if qcOut.Verdict != "pass" || qcOut.OverallScore < 9.0 || len(mediaStub.lastTextReq.ImageInputs) != 3 || qcOut.Report == "" {
 		t.Fatalf("unexpected qc_review output (%+v), imageInputs=%v", qcOut, mediaStub.lastTextReq.ImageInputs)
+	}
+	// Ensure zero repo CWD pollution and zero leftover run-* staging directories
+	if _, serr := os.Stat("projects"); !os.IsNotExist(serr) {
+		t.Fatalf("unexpected 'projects' directory created in package CWD: %v", serr)
+	}
+	entries, _ := os.ReadDir(filepath.Join(stagingDir, "qc_samples"))
+	if len(entries) != 0 {
+		t.Fatalf("expected temporary qc_samples/run-* directories cleaned up, found %d", len(entries))
+	}
+}
+
+func TestPhase2RunGraphMediaPortWiringAndSpecDefaults(t *testing.T) {
+	tmp := t.TempDir()
+	wsDir := filepath.Join(tmp, "ws")
+	stagingDir := filepath.Join(tmp, "staging")
+	_ = os.MkdirAll(wsDir, 0o755)
+	_ = os.MkdirAll(stagingDir, 0o755)
+
+	ffprobeExe, ffmpegExe, argsLog := writePhase2FakeBinaries(t, tmp)
+	// Override fake ffmpeg on extract_frames/dub so extracted .png is a valid PNG for downstream grid_split!
+	validPNG := filepath.Join(tmp, "valid_frame.png")
+	writeSolidPNG(validPNG, 64, 64, color.RGBA{R: 200, G: 80, B: 40, A: 255})
+	if runtime.GOOS == "windows" {
+		ffmpegScript := "@echo off\r\n" +
+			"echo %*>> \"" + argsLog + "\"\r\n" +
+			"setlocal enabledelayedexpansion\r\n" +
+			"set \"last=\"\r\n" +
+			":loop\r\n" +
+			"if \"%~1\"==\"\" goto done\r\n" +
+			"set \"last=%~1\"\r\n" +
+			"shift\r\n" +
+			"goto loop\r\n" +
+			":done\r\n" +
+			"if \"%last%\"==\"-\" exit /b 0\r\n" +
+			"copy /Y \"" + validPNG + "\" \"%last%\" >NUL\r\n" +
+			"echo out_time_us=2000000\r\n" +
+			"echo progress=end\r\n"
+		_ = os.WriteFile(ffmpegExe, []byte(ffmpegScript), 0o700)
+	} else {
+		ffmpegScript := "#!/bin/sh\necho \"$@\" >> \"" + argsLog + "\"\nfor last; do :; done\nif [ \"$last\" = \"-\" ]; then exit 0; fi\ncp \"" + validPNG + "\" \"$last\"\necho \"out_time_us=2000000\"\necho \"progress=end\"\n"
+		_ = os.WriteFile(ffmpegExe, []byte(ffmpegScript), 0o755)
+	}
+
+	vidPath := filepath.Join(tmp, "source.mp4")
+	audPath := filepath.Join(tmp, "dialog.mp3")
+	maskPath := filepath.Join(tmp, "mask.png")
+	_ = os.WriteFile(vidPath, []byte("MP4"), 0o600)
+	_ = os.WriteFile(audPath, []byte("MP3"), 0o600)
+	writeSolidPNG(maskPath, 64, 64, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+
+	mediaStub := &stubPhase2Media{outDir: tmp}
+	freePre := &stubPreflightDeps{freeRate: true}
+	opts := Options{
+		TextGen:         mediaStub,
+		ImageGen:        mediaStub,
+		TTSGen:          mediaStub,
+		LipSyncGen:      mediaStub,
+		ProviderChecker: freePre,
+		CostEstimator:   freePre,
+		Binaries: &stubBinaryResolver{paths: map[domainbinaries.BinaryID]string{
+			domainbinaries.IDFFprobe: ffprobeExe,
+			domainbinaries.IDFFmpeg:  ffmpegExe,
+		}},
+		MediaDir:     tmp,
+		WorkspaceDir: wsDir,
+		StagingDir:   stagingDir,
+	}
+
+	reg := engine.NewRegistry()
+	if err := reg.Register(NewNodes(opts)...); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Minimal "{}" input on batch_preflight applies Spec defaults AND honors $0.00 free catalog rate!
+	preRaw, err := reg.Run(context.Background(), NodeTypeBatchPreflight, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("batch_preflight {}: %v", err)
+	}
+	preOut := preRaw.(contracts.BatchPreflightOutput)
+	if !preOut.Ready || preOut.UnitPriceUSD != 0 || preOut.EstimatedUSD != 0 || preOut.Warnings == nil || preOut.Blockers == nil || preOut.BlockerItems == nil {
+		t.Fatalf("expected $0.00 free rate and non-nil slices on {}, got %+v", preOut)
+	}
+
+	// 2. Full Phase 2 media-port DAG:
+	// extract_frames.last_frame -> grid_split.image_path -> qc_review.reference_paths
+	// extract_frames.last_frame -> mask_edit.image_path -> qc_review.media_path
+	// tts_dub_mux (DuckOriginal omitted -> Spec default true!) -> lipsync_generate.video_path
+	_ = os.Remove(argsLog)
+	graphRes, err := reg.RunGraph(context.Background(), engine.Graph{
+		Nodes: []engine.GraphNode{
+			{
+				ID:     "ef",
+				Type:   NodeTypeExtractFrames,
+				Params: mustJSON(t, map[string]any{"video_path": vidPath, "mode": "last", "output_dir": tmp}),
+			},
+			{
+				ID:     "split",
+				Type:   NodeTypeGridSplit,
+				Params: mustJSON(t, map[string]any{"rows": 2, "cols": 2, "output_dir": tmp}),
+			},
+			{
+				ID:     "mask",
+				Type:   NodeTypeMaskEdit,
+				Params: mustJSON(t, map[string]any{"mask_path": maskPath, "prompt": "clean jacket", "output_dir": tmp}),
+			},
+			{
+				ID:     "qc",
+				Type:   NodeTypeQCReview,
+				Params: mustJSON(t, map[string]any{"prompt_expected": "clean jacket"}),
+			},
+			{
+				ID:     "dub",
+				Type:   NodeTypeTTSDubMux,
+				Params: mustJSON(t, map[string]any{"video_path": vidPath, "audio_path": audPath, "output_dir": tmp}),
+			},
+			{
+				ID:     "ls",
+				Type:   NodeTypeLipSyncGenerate,
+				Params: mustJSON(t, map[string]any{"audio_path": audPath, "output_dir": tmp}),
+			},
+		},
+		Edges: []engine.Edge{
+			{From: engine.Endpoint{Node: "ef", Port: "last_frame"}, To: engine.Endpoint{Node: "split", Port: "image_path"}},
+			{From: engine.Endpoint{Node: "ef", Port: "last_frame"}, To: engine.Endpoint{Node: "mask", Port: "image_path"}},
+			{From: engine.Endpoint{Node: "mask", Port: "image"}, To: engine.Endpoint{Node: "qc", Port: "media_path"}},
+			{From: engine.Endpoint{Node: "split", Port: "images"}, To: engine.Endpoint{Node: "qc", Port: "reference_paths"}},
+			{From: engine.Endpoint{Node: "dub", Port: "video"}, To: engine.Endpoint{Node: "ls", Port: "video_path"}},
+		},
+	})
+	if err != nil || !graphRes.Done() {
+		t.Fatalf("Phase 2 RunGraph failed: err=%v nodes=%+v", err, graphRes.Nodes)
+	}
+
+	// Verify DuckOriginal omitted in dub node defaulted to true (sidechaincompress present in FFmpeg args)
+	argsBytes, _ := os.ReadFile(argsLog)
+	if !strings.Contains(string(argsBytes), "sidechaincompress") {
+		t.Fatalf("expected omitted duck_original to default to true (sidechaincompress), got:\n%s", string(argsBytes))
+	}
+}
+
+func TestPhase2QCReviewFailsOnCorruptMediaAndPopulatesFFprobeJSON(t *testing.T) {
+	tmp := t.TempDir()
+	wsDir := filepath.Join(tmp, "ws")
+	_ = os.MkdirAll(wsDir, 0o755)
+
+	// 1. Corrupt image with Binaries == nil fails technical QC instead of false-pass 9.0
+	corruptImg := filepath.Join(tmp, "corrupt.png")
+	_ = os.WriteFile(corruptImg, []byte("NOT_A_VALID_PNG"), 0o600)
+	qcNoBin := NewQCReviewNode(Options{MediaDir: tmp, WorkspaceDir: wsDir})
+	rawCorruptImg, err := qcNoBin.Run(context.Background(), mustJSON(t, contracts.QCReviewInput{
+		MediaPath:  engine.InputRef(corruptImg, engine.MediaImage),
+		SkipVision: true,
+	}))
+	if err != nil {
+		t.Fatalf("qc_review corrupt image: %v", err)
+	}
+	outCorruptImg := rawCorruptImg.(contracts.QCReviewOutput)
+	if outCorruptImg.Verdict != "fail" || outCorruptImg.OverallScore > 4.0 || len(outCorruptImg.Issues) == 0 {
+		t.Fatalf("expected Verdict=fail on corrupt image, got %+v", outCorruptImg)
+	}
+
+	// 2. Failing ffprobe on corrupt/zero-byte video with SkipVision:true fails QC instead of false-pass 9.0
+	failProbe := filepath.Join(tmp, "ffprobe_fail.cmd")
+	if runtime.GOOS == "windows" {
+		_ = os.WriteFile(failProbe, []byte("@echo off\r\necho invalid data found 1>&2\r\nexit /b 1\r\n"), 0o700)
+	} else {
+		failProbe = filepath.Join(tmp, "ffprobe_fail.sh")
+		_ = os.WriteFile(failProbe, []byte("#!/bin/sh\necho 'invalid data found' >&2\nexit 1\n"), 0o755)
+	}
+	corruptVid := filepath.Join(tmp, "zero.mp4")
+	_ = os.WriteFile(corruptVid, nil, 0o600)
+	qcFailProbe := NewQCReviewNode(Options{
+		MediaDir:     tmp,
+		WorkspaceDir: wsDir,
+		Binaries:     &stubBinaryResolver{paths: map[domainbinaries.BinaryID]string{domainbinaries.IDFFprobe: failProbe}},
+	})
+	rawCorruptVid, err := qcFailProbe.Run(context.Background(), mustJSON(t, contracts.QCReviewInput{
+		MediaPath:  engine.InputRef(corruptVid, engine.MediaVideo),
+		SkipVision: true,
+	}))
+	if err != nil {
+		t.Fatalf("qc_review corrupt video: %v", err)
+	}
+	outCorruptVid := rawCorruptVid.(contracts.QCReviewOutput)
+	if outCorruptVid.Verdict != "fail" || len(outCorruptVid.Issues) == 0 || outCorruptVid.SampleFrames == nil {
+		t.Fatalf("expected Verdict=fail and non-nil SampleFrames on corrupt video, got %+v", outCorruptVid)
+	}
+
+	// 3. Valid ffprobe populates non-empty FFprobeJSON without leaking host directory path
+	ffprobeExe, ffmpegExe, _ := writePhase2FakeBinaries(t, tmp)
+	validVid := filepath.Join(tmp, "clean.mp4")
+	_ = os.WriteFile(validVid, []byte("MP4"), 0o600)
+	qcValid := NewQCReviewNode(Options{
+		MediaDir:     tmp,
+		WorkspaceDir: wsDir,
+		Binaries: &stubBinaryResolver{paths: map[domainbinaries.BinaryID]string{
+			domainbinaries.IDFFprobe: ffprobeExe,
+			domainbinaries.IDFFmpeg:  ffmpegExe,
+		}},
+	})
+	rawValid, err := qcValid.Run(context.Background(), mustJSON(t, contracts.QCReviewInput{
+		MediaPath:  engine.InputRef(validVid, engine.MediaVideo),
+		SkipVision: true,
+	}))
+	if err != nil {
+		t.Fatalf("qc_review valid video: %v", err)
+	}
+	outValid := rawValid.(contracts.QCReviewOutput)
+	if outValid.Verdict != "pass" || outValid.FFprobeJSON == "" || strings.Contains(outValid.FFprobeJSON, filepath.Base(tmp)) {
+		t.Fatalf("expected Verdict=pass and clean FFprobeJSON, got %+v", outValid)
 	}
 }

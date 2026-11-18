@@ -311,6 +311,10 @@ func TestWorkflowRegistersStudioNodes(t *testing.T) {
 		studionodes.NodeTypeTTSDubMux,
 		studionodes.NodeTypeLipSyncGenerate,
 		studionodes.NodeTypeQCReview,
+		studionodes.NodeTypeTimelineAutoAssem,
+		studionodes.NodeTypeMediaPeaksThumbs,
+		studionodes.NodeTypeRenderTimeline,
+		studionodes.NodeTypeExportNLEDraft,
 		"tool.video_watermark_remove",
 	}
 	for _, want := range wantNodes {
@@ -334,12 +338,16 @@ func TestWorkflowWiresStudioConfigToSpecs(t *testing.T) {
 	cfg.Studio.GridSplitMaxCount = 12
 	cfg.Studio.DefaultShotDurationSec = 7
 	cfg.Studio.MaxShotDurationSec = 45
+	cfg.Watermark.VideoDefaultWidth = 240
+	cfg.Watermark.VideoDefaultHeight = 90
+	cfg.Watermark.VideoDefaultCropPx = 80
 
 	svc, err := workflow.New(workflow.Options{
-		Paths:   paths.Paths{Data: t.TempDir()},
-		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
-		TextGen: &stubTextGen{},
-		Config:  cfg,
+		Paths:    paths.Paths{Data: t.TempDir()},
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		TextGen:  &stubTextGen{},
+		MediaGen: &stubWorkflowMediaGen{},
+		Config:   cfg,
 	})
 	if err != nil {
 		t.Fatalf("workflow.New: %v", err)
@@ -393,4 +401,30 @@ func TestWorkflowWiresStudioConfigToSpecs(t *testing.T) {
 	if concatFPS := findParam(studionodes.NodeTypeVideoConcatBasic, "fps"); concatFPS.Default != "60" {
 		t.Fatalf("expected video_concat_basic fps default 60, got %q", concatFPS.Default)
 	}
+	if wmW := findParam("tool.video_watermark_remove", "width"); wmW.Default != "240" {
+		t.Fatalf("expected watermark width default 240 from WatermarkConfig, got %q", wmW.Default)
+	}
+	if wmH := findParam("tool.video_watermark_remove", "height"); wmH.Default != "90" {
+		t.Fatalf("expected watermark height default 90 from WatermarkConfig, got %q", wmH.Default)
+	}
+	if wmCrop := findParam("tool.video_watermark_remove", "crop_px"); wmCrop.Default != "80" {
+		t.Fatalf("expected watermark crop_px default 80 from WatermarkConfig, got %q", wmCrop.Default)
+	}
+	if vidDur := findParam("tool.generate_video", "duration"); vidDur.Max != 45 {
+		t.Fatalf("expected tool.generate_video duration max 45 from StudioConfig.MaxShotDurationSec, got %v", vidDur.Max)
+	}
+}
+
+type stubWorkflowMediaGen struct{}
+
+func (s *stubWorkflowMediaGen) GenerateImage(context.Context, mediagen.ImageRequest) (mediagen.Result, error) {
+	return mediagen.Result{}, nil
+}
+
+func (s *stubWorkflowMediaGen) GenerateVideo(context.Context, mediagen.VideoRequest) (mediagen.Result, error) {
+	return mediagen.Result{}, nil
+}
+
+func (s *stubWorkflowMediaGen) GenerateTTS(context.Context, mediagen.TTSRequest) (mediagen.Result, error) {
+	return mediagen.Result{}, nil
 }
