@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"runtime/debug"
 
 	"app/internal/buildinfo"
@@ -44,17 +43,12 @@ func run() (code int) {
 	}
 
 	envPrefix := config.EnvPrefixFor(buildinfo.AppID)
-	exeDir := ""
-	if exe, err := os.Executable(); err == nil {
-		exeDir = filepath.Dir(exe)
-	}
 	res, cfgErr := config.Load(config.Source{
 		Mode:      config.ModeDesktop,
 		Args:      os.Args[1:],
 		LookupEnv: os.LookupEnv,
 		EnvPrefix: envPrefix,
 		ConfigDir: appPaths.Config,
-		ExeDir:    exeDir,
 	})
 	if errors.Is(cfgErr, flag.ErrHelp) {
 		config.Usage(os.Stdout, config.ModeDesktop, envPrefix)

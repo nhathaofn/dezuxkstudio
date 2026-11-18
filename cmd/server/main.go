@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime/debug"
 	"syscall"
 
@@ -42,17 +41,12 @@ func run() (code int) {
 	}()
 
 	envPrefix := config.EnvPrefixFor(buildinfo.AppID)
-	exeDir := ""
-	if exe, err := os.Executable(); err == nil {
-		exeDir = filepath.Dir(exe)
-	}
 	res, err := config.Load(config.Source{
 		Mode:      config.ModeServer,
 		Args:      os.Args[1:],
 		LookupEnv: os.LookupEnv,
 		EnvPrefix: envPrefix,
 		ConfigDir: appPaths.Config,
-		ExeDir:    exeDir,
 	})
 	if errors.Is(err, flag.ErrHelp) {
 		config.Usage(os.Stdout, config.ModeServer, envPrefix)

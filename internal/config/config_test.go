@@ -957,6 +957,16 @@ func TestCentralizedWave1TunablesAndValidation(t *testing.T) {
 		"negative overflow_tolerance":       func(c *Config) { c.Studio.AudioOverflowToleranceSec = -0.1 },
 		"nul byte in workspace_dir":         func(c *Config) { c.Agent.WorkspaceDir = "D:\\ws\x00bad" },
 		"nul byte in storage.data_dir":      func(c *Config) { c.Storage.DataDir = "D:\\data\x00bad" },
+		"wildcard origin anon server":       func(c *Config) { c.Mode = ModeServer; c.Server.AuthToken = ""; c.Server.AllowedOrigins = []string{"*"} },
+		"remote url semicolon injection":    func(c *Config) { c.Mode = ModeClient; c.Client.RemoteURL = "wss://example.com;script-src/ws" },
+		"remote url comma injection":        func(c *Config) { c.Mode = ModeClient; c.Client.RemoteURL = "wss://example.com,evil.com/ws" },
+		"remote url space injection":        func(c *Config) { c.Mode = ModeClient; c.Client.RemoteURL = "wss://example.com%20evil/ws" },
+		"negative mediagen retry_max":       func(c *Config) { c.MediaGen.RetryMax = -1 },
+		"zero server read_timeout":          func(c *Config) { c.Server.ReadTimeout = 0 },
+		"zero server write_timeout":         func(c *Config) { c.Server.WriteTimeout = 0 },
+		"zero cli_session_persist_timeout":  func(c *Config) { c.Agent.CLISessionPersistTimeout = 0 },
+		"zero studio queue_max_poll_errors": func(c *Config) { c.Studio.QueueMaxPollErrors = 0 },
+		"zero studio queue_max_poll_age":    func(c *Config) { c.Studio.QueueMaxPollAge = 0 },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := Default(ModeDesktop)
@@ -965,5 +975,45 @@ func TestCentralizedWave1TunablesAndValidation(t *testing.T) {
 				t.Fatalf("%s: expected validation error", name)
 			}
 		})
+	}
+}
+
+func TestConfigPlantingBlockedAndExplicitZeroPreserved(t *testing.T) {
+	otherDir := t.TempDir()
+	writeFile(t, otherDir, FileName, `{"server":{"allow_host_admin":true,"port":9999}}`)
+	cfgDir := t.TempDir()
+
+	res, err := Load(Source{
+		Mode:      ModeDesktop,
+		ConfigDir: cfgDir,
+	})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if res.File != "" || res.Config.Server.AllowHostAdmin || res.Config.Server.Port == 9999 {
+		t.Fatalf("unexpected config auto-loaded: file=%q cfg=%+v", res.File, res.Config.Server)
+	}
+
+	// Explicit --config still loads portable config intentionally.
+	explicitRes, err := Load(Source{
+		Mode:      ModeDesktop,
+		ConfigDir: cfgDir,
+		Args:      []string{"--config", filepath.Join(otherDir, FileName)},
+	})
+	if err != nil {
+		t.Fatalf("explicit --config failed: %v", err)
+	}
+	if !explicitRes.Config.Server.AllowHostAdmin || explicitRes.Config.Server.Port != 9999 {
+		t.Fatalf("explicit --config should load target file, got %+v", explicitRes.Config.Server)
+	}
+
+	// Explicit zeros on partial structs must not be silently overwritten by heuristics.
+	zeroRetry := ResolveMediaGenConfig(MediaGenConfig{RequestTimeout: 5 * time.Second, RetryMax: 0, TextTemperature: 0})
+	if zeroRetry.RetryMax != 0 || zeroRetry.TextTemperature != 0 {
+		t.Fatalf("expected explicit 0 RetryMax and TextTemperature preserved, got RetryMax=%d Temp=%v", zeroRetry.RetryMax, zeroRetry.TextTemperature)
+	}
+	zeroCRFNoPreset := ResolveStudioConfig(StudioConfig{DefaultFPS: 30, FFmpegCRF: 0})
+	if zeroCRFNoPreset.FFmpegCRF != 0 {
+		t.Fatalf("expected explicit 0 FFmpegCRF preserved without FFmpegPreset, got %d", zeroCRFNoPreset.FFmpegCRF)
 	}
 }

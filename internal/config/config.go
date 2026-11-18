@@ -71,6 +71,8 @@ type ServerConfig struct {
 	AuthTokenFile               string
 	AllowedOrigins              []string
 	ReadHeaderTimeout           time.Duration
+	ReadTimeout                 time.Duration
+	WriteTimeout                time.Duration
 	IdleTimeout                 time.Duration
 	ShutdownTimeout             time.Duration
 	EnableBroadcast             bool
@@ -217,6 +219,8 @@ type StudioConfig struct {
 	QueuePollLeaseMin            time.Duration // minimum lease extension while polling remote video jobs
 	QueuePollBackoffMax          time.Duration // maximum adaptive delay between remote job status polls
 	QueueMaxAttempts             int           // max submission retry attempts before marking job failed
+	QueueMaxPollErrors           int           // max consecutive transient poll errors before failing a remote job
+	QueueMaxPollAge              time.Duration // max age of a submitted remote job before poll timeout failure
 	ExportMaxZipBytes            int64         // safety cap on packed NLE draft zip archives in bytes
 	ExportLoudnormLUFS           float64       // integrated loudness target in LUFS for timeline renders (e.g. -14.0)
 	ExportSubtitleFontSize       int           // default subtitle font size for timeline .ass burn-in
@@ -273,6 +277,7 @@ type AgentConfig struct {
 	ModelCatalogTimeout      time.Duration // max duration of reading a CLI's model catalog
 	InterruptWait            time.Duration // how long a cancelled turn waits for the CLI to report what it produced
 	StatusCacheTTL           time.Duration // how long CLI auth/version probe results are reused
+	CLISessionPersistTimeout time.Duration // timeout when persisting CLI session IDs to SQLite
 	AutoInstallCLI           bool          // download the agent CLIs into the app's own folder when they are missing
 	AutoUpdateCLI            bool          // check once at startup to keep the app's own agent CLIs on the newest official release
 	ApprovalTTL              time.Duration // pending approvals expire after this long
@@ -330,6 +335,8 @@ func Default(mode Mode) *Config {
 			Port:                        0, // OS-assigned free port
 			AllowedOrigins:              origins,
 			ReadHeaderTimeout:           10 * time.Second,
+			ReadTimeout:                 30 * time.Second,
+			WriteTimeout:                60 * time.Second,
 			IdleTimeout:                 120 * time.Second,
 			ShutdownTimeout:             5 * time.Second,
 			EnableBroadcast:             false,
@@ -443,6 +450,8 @@ func Default(mode Mode) *Config {
 			QueuePollLeaseMin:            15 * time.Second,
 			QueuePollBackoffMax:          60 * time.Second,
 			QueueMaxAttempts:             3,
+			QueueMaxPollErrors:           10,
+			QueueMaxPollAge:              2 * time.Hour,
 			ExportMaxZipBytes:            512 << 20, // 512 MiB
 			ExportLoudnormLUFS:           -14.0,
 			ExportSubtitleFontSize:       24,
@@ -483,6 +492,7 @@ func Default(mode Mode) *Config {
 			ModelCatalogTimeout:      30 * time.Second,
 			InterruptWait:            5 * time.Second,
 			StatusCacheTTL:           5 * time.Minute,
+			CLISessionPersistTimeout: 3 * time.Second,
 			AutoInstallCLI:           true,
 			AutoUpdateCLI:            releaseBuild,
 			ApprovalTTL:              24 * time.Hour,
@@ -685,29 +695,19 @@ func (c *Config) StudioOrDefault() StudioConfig {
 // such as FFmpegCRF == 0, TimelineDefaultTransitionMs == 0, TimelineDefaultBGMVolume == 0, and TimelineAudioDuckOrigVol == 0.
 func ResolveStudioConfig(cfg StudioConfig) StudioConfig {
 	def := Default(ModeDesktop).Studio
-	presetWasEmpty := strings.TrimSpace(cfg.FFmpegPreset) == ""
-	studioWasEmpty := cfg == (StudioConfig{})
-	timelineUnset := studioWasEmpty || (cfg.DefaultFPS <= 0 &&
-		strings.TrimSpace(cfg.DefaultResolution) == "" &&
-		presetWasEmpty &&
-		cfg.TimelineThumbIntervalSec <= 0 &&
-		cfg.TimelineThumbHeight <= 0 &&
-		cfg.TimelineMaxStripThumbs <= 0 &&
-		cfg.TimelinePeakBins <= 0 &&
-		cfg.TimelineWaveSampleRate <= 0 &&
-		cfg.TimelineWaveBlockSamples <= 0 &&
-		cfg.TimelineRevisionLimit <= 0 &&
-		cfg.TimelineAudioDuckThreshold <= 0)
+	if cfg == (StudioConfig{}) {
+		return def
+	}
 	if cfg.DefaultFPS <= 0 {
 		cfg.DefaultFPS = def.DefaultFPS
 	}
 	if strings.TrimSpace(cfg.DefaultResolution) == "" {
 		cfg.DefaultResolution = def.DefaultResolution
 	}
-	if presetWasEmpty {
+	if strings.TrimSpace(cfg.FFmpegPreset) == "" {
 		cfg.FFmpegPreset = def.FFmpegPreset
 	}
-	if cfg.FFmpegCRF < 0 || cfg.FFmpegCRF > 51 || (cfg.FFmpegCRF == 0 && presetWasEmpty) {
+	if cfg.FFmpegCRF < 0 || cfg.FFmpegCRF > 51 {
 		cfg.FFmpegCRF = def.FFmpegCRF
 	}
 	if strings.TrimSpace(cfg.FFmpegVideoCodec) == "" {
@@ -797,7 +797,7 @@ func ResolveStudioConfig(cfg StudioConfig) StudioConfig {
 	if cfg.LipSyncMaxFaceIndex <= 0 {
 		cfg.LipSyncMaxFaceIndex = def.LipSyncMaxFaceIndex
 	}
-	if math.IsNaN(cfg.AudioOverflowToleranceSec) || math.IsInf(cfg.AudioOverflowToleranceSec, 0) || cfg.AudioOverflowToleranceSec < 0 || (cfg.AudioOverflowToleranceSec == 0 && studioWasEmpty) {
+	if math.IsNaN(cfg.AudioOverflowToleranceSec) || math.IsInf(cfg.AudioOverflowToleranceSec, 0) || cfg.AudioOverflowToleranceSec < 0 {
 		cfg.AudioOverflowToleranceSec = def.AudioOverflowToleranceSec
 	}
 	if cfg.PreflightMaxItems <= 0 {
@@ -827,6 +827,12 @@ func ResolveStudioConfig(cfg StudioConfig) StudioConfig {
 	if cfg.QueueMaxAttempts <= 0 {
 		cfg.QueueMaxAttempts = def.QueueMaxAttempts
 	}
+	if cfg.QueueMaxPollErrors <= 0 {
+		cfg.QueueMaxPollErrors = def.QueueMaxPollErrors
+	}
+	if cfg.QueueMaxPollAge <= 0 {
+		cfg.QueueMaxPollAge = def.QueueMaxPollAge
+	}
 	if cfg.ExportMaxZipBytes <= 0 {
 		cfg.ExportMaxZipBytes = def.ExportMaxZipBytes
 	}
@@ -839,16 +845,16 @@ func ResolveStudioConfig(cfg StudioConfig) StudioConfig {
 	if strings.TrimSpace(cfg.ExportSubtitleFontFamily) == "" {
 		cfg.ExportSubtitleFontFamily = def.ExportSubtitleFontFamily
 	}
-	if cfg.TimelineDefaultTransitionMs < 0 || (cfg.TimelineDefaultTransitionMs == 0 && timelineUnset) {
+	if cfg.TimelineDefaultTransitionMs < 0 {
 		cfg.TimelineDefaultTransitionMs = def.TimelineDefaultTransitionMs
 	}
-	if math.IsNaN(cfg.TimelineDefaultBGMVolume) || math.IsInf(cfg.TimelineDefaultBGMVolume, 0) || cfg.TimelineDefaultBGMVolume < 0 || cfg.TimelineDefaultBGMVolume > 2 || (cfg.TimelineDefaultBGMVolume == 0 && timelineUnset) {
+	if math.IsNaN(cfg.TimelineDefaultBGMVolume) || math.IsInf(cfg.TimelineDefaultBGMVolume, 0) || cfg.TimelineDefaultBGMVolume < 0 || cfg.TimelineDefaultBGMVolume > 2 {
 		cfg.TimelineDefaultBGMVolume = def.TimelineDefaultBGMVolume
 	}
 	if cfg.TimelineAudioDuckThreshold <= 0 {
 		cfg.TimelineAudioDuckThreshold = def.TimelineAudioDuckThreshold
 	}
-	if math.IsNaN(cfg.TimelineAudioDuckOrigVol) || math.IsInf(cfg.TimelineAudioDuckOrigVol, 0) || cfg.TimelineAudioDuckOrigVol < 0 || cfg.TimelineAudioDuckOrigVol > 2 || (cfg.TimelineAudioDuckOrigVol == 0 && timelineUnset) {
+	if math.IsNaN(cfg.TimelineAudioDuckOrigVol) || math.IsInf(cfg.TimelineAudioDuckOrigVol, 0) || cfg.TimelineAudioDuckOrigVol < 0 || cfg.TimelineAudioDuckOrigVol > 2 {
 		cfg.TimelineAudioDuckOrigVol = def.TimelineAudioDuckOrigVol
 	}
 	if cfg.TimelineThumbIntervalSec <= 0 {
@@ -883,10 +889,13 @@ func (c *Config) MediaGenOrDefault() MediaGenConfig {
 	return ResolveMediaGenConfig(c.MediaGen)
 }
 
-// ResolveMediaGenConfig fills unset fields on cfg from Default(ModeDesktop).MediaGen while preserving explicit valid zero temperature when text settings are configured.
+// ResolveMediaGenConfig fills unset fields on cfg from Default(ModeDesktop).MediaGen while preserving explicit valid zero values
+// such as TextTemperature == 0 and RetryMax == 0.
 func ResolveMediaGenConfig(cfg MediaGenConfig) MediaGenConfig {
 	def := Default(ModeDesktop).MediaGen
-	textUnset := cfg.TextMaxTokens <= 0 && cfg.TextTimeout <= 0
+	if cfg == (MediaGenConfig{}) {
+		return def
+	}
 	if cfg.RequestTimeout <= 0 {
 		cfg.RequestTimeout = def.RequestTimeout
 	}
@@ -911,11 +920,11 @@ func ResolveMediaGenConfig(cfg MediaGenConfig) MediaGenConfig {
 	if cfg.TextMaxTokens <= 0 {
 		cfg.TextMaxTokens = def.TextMaxTokens
 	}
-	if cfg.TextTemperature < 0 || cfg.TextTemperature > 2 || (cfg.TextTemperature == 0 && textUnset) {
+	if math.IsNaN(cfg.TextTemperature) || math.IsInf(cfg.TextTemperature, 0) || cfg.TextTemperature < 0 || cfg.TextTemperature > 2 {
 		cfg.TextTemperature = def.TextTemperature
 	}
-	if cfg.RetryMax <= 0 {
-		cfg.RetryMax = def.RetryMax
+	if cfg.RetryMax < 0 {
+		cfg.RetryMax = 0
 	}
 	if cfg.RetryInitialDelay <= 0 {
 		cfg.RetryInitialDelay = def.RetryInitialDelay

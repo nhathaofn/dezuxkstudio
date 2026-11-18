@@ -27,7 +27,6 @@ type Source struct {
 	LookupEnv func(string) (string, bool)  // usually os.LookupEnv
 	EnvPrefix string                       // e.g. "DEZUXKSTUDIO_"
 	ConfigDir string                       // per-user config directory
-	ExeDir    string                       // executable directory (portable installs)
 	ReadFile  func(string) ([]byte, error) // usually os.ReadFile
 }
 
@@ -147,11 +146,8 @@ func locateFile(explicit string, src Source) (string, error) {
 		}
 		return abs, nil
 	}
-	for _, dir := range []string{src.ConfigDir, src.ExeDir} {
-		if dir == "" {
-			continue
-		}
-		candidate := filepath.Join(dir, FileName)
+	if src.ConfigDir != "" {
+		candidate := filepath.Join(src.ConfigDir, FileName)
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate, nil
 		} else if !errors.Is(err, os.ErrNotExist) {

@@ -50,12 +50,14 @@ func (c *Config) Validate() error {
 			add("server.enable_broadcast requires server.auth_token")
 		}
 		for _, o := range c.Server.AllowedOrigins {
-			if o == "*" && c.Mode == ModeDesktop {
-				add("server.allowed_origins must not contain \"*\" in desktop mode")
+			if o == "*" && (c.Mode == ModeDesktop || (c.Mode == ModeServer && c.Server.AuthToken == "")) {
+				add("server.allowed_origins must not contain \"*\" in %s mode without auth_token", c.Mode)
 			}
 		}
 		positiveDurations(add, map[string]time.Duration{
 			"server.read_header_timeout":            c.Server.ReadHeaderTimeout,
+			"server.read_timeout":                   c.Server.ReadTimeout,
+			"server.write_timeout":                  c.Server.WriteTimeout,
 			"server.idle_timeout":                   c.Server.IdleTimeout,
 			"server.shutdown_timeout":               c.Server.ShutdownTimeout,
 			"server.media_staging_ttl":              c.Server.MediaStagingTTL,
@@ -89,6 +91,7 @@ func (c *Config) Validate() error {
 			"studio.queue_poll_interval":            c.Studio.QueuePollInterval,
 			"studio.queue_poll_lease_min":           c.Studio.QueuePollLeaseMin,
 			"studio.queue_poll_backoff_max":         c.Studio.QueuePollBackoffMax,
+			"studio.queue_max_poll_age":             c.Studio.QueueMaxPollAge,
 			"network.idle_conn_timeout":             c.Network.IdleConnTimeout,
 			"agent.turn_timeout":                    c.Agent.TurnTimeout,
 			"agent.initialize_timeout":              c.Agent.InitializeTimeout,
@@ -98,6 +101,7 @@ func (c *Config) Validate() error {
 			"agent.model_catalog_timeout":           c.Agent.ModelCatalogTimeout,
 			"agent.interrupt_wait":                  c.Agent.InterruptWait,
 			"agent.status_cache_ttl":                c.Agent.StatusCacheTTL,
+			"agent.cli_session_persist_timeout":     c.Agent.CLISessionPersistTimeout,
 			"agent.approval_ttl":                    c.Agent.ApprovalTTL,
 		})
 		positiveInts(add, map[string]int{
@@ -114,7 +118,6 @@ func (c *Config) Validate() error {
 			"agent.max_approval_continuations":        c.Agent.MaxApprovalContinuations,
 			"agent.max_concurrent_subagents":          c.Agent.MaxConcurrentSubagents,
 			"mediagen.text_max_tokens":                c.MediaGen.TextMaxTokens,
-			"mediagen.retry_max":                      c.MediaGen.RetryMax,
 			"media.library_max_items":                 c.Media.LibraryMaxItems,
 			"media.registered_roots_max":              c.Media.RegisteredRootsMax,
 			"watermark.max_workers":                   c.Watermark.MaxWorkers,
@@ -140,6 +143,7 @@ func (c *Config) Validate() error {
 			"studio.max_concurrent_batch":             c.Studio.MaxConcurrentBatch,
 			"studio.queue_workers":                    c.Studio.QueueWorkers,
 			"studio.queue_max_attempts":               c.Studio.QueueMaxAttempts,
+			"studio.queue_max_poll_errors":            c.Studio.QueueMaxPollErrors,
 			"studio.timeline_thumb_height":            c.Studio.TimelineThumbHeight,
 			"studio.timeline_max_strip_thumbs":        c.Studio.TimelineMaxStripThumbs,
 			"studio.timeline_wave_sample_rate":        c.Studio.TimelineWaveSampleRate,
@@ -250,6 +254,9 @@ func (c *Config) Validate() error {
 		add("mediagen.max_output_bytes, mediagen.max_reference_bytes, and mediagen.max_json_response_bytes must be > 0")
 	}
 	if c.Mode != ModeClient {
+		if c.MediaGen.RetryMax < 0 {
+			add("mediagen.retry_max must be >= 0, got %d", c.MediaGen.RetryMax)
+		}
 		if c.Binaries.DownloadRetryMax < 0 {
 			add("binaries.download_retry_max must be >= 0, got %d", c.Binaries.DownloadRetryMax)
 		}
@@ -426,7 +433,29 @@ func ValidateRemoteURL(raw string) error {
 	if u.User != nil {
 		return errors.New("credentials must not be embedded in the URL")
 	}
+	if hasUnsafeHostChars(u.Host) || hasUnsafeHostChars(u.Hostname()) {
+		return errors.New("host contains invalid characters")
+	}
+	if u.Hostname() == "" {
+		return errors.New("hostname is required")
+	}
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("invalid port %q", p)
+		}
+	}
 	return nil
+}
+
+func hasUnsafeHostChars(s string) bool {
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b <= 0x20 || b == 0x7f || b == ';' || b == ',' {
+			return true
+		}
+	}
+	return false
 }
 
 func validateFeedURL(raw string) error {
