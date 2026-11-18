@@ -403,7 +403,7 @@ func TestPhase3Timeline4KScalingRealAutoAssembleTransitionAndSafeNotFound(t *tes
 		BackupDir:     filepath.Join(tmp, "backups"),
 		BackupsToKeep: 1,
 		BusyTimeout:   time.Second,
-		Logger:       slog.New(slog.DiscardHandler),
+		Logger:        slog.New(slog.DiscardHandler),
 	})
 	if err != nil {
 		t.Fatal(err)

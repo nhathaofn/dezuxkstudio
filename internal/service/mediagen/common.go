@@ -49,9 +49,9 @@ const (
 )
 
 var (
-	errStageTooLarge     = errors.New("staged media payload exceeded size limit")
-	secretTokenPattern   = regexp.MustCompile(`(?i)(bearer\s+[A-Za-z0-9._\-~+/=]+|sk-[A-Za-z0-9_\-]{8,}|(?:api[_-]?key|token|secret|signature|sig)=[^&\s"']+)`)
-	embeddedURLPattern   = regexp.MustCompile(`https?://[^\s"'<>]+`)
+	errStageTooLarge   = errors.New("staged media payload exceeded size limit")
+	secretTokenPattern = regexp.MustCompile(`(?i)(bearer\s+[A-Za-z0-9._\-~+/=]+|sk-[A-Za-z0-9_\-]{8,}|(?:api[_-]?key|token|secret|signature|sig)=[^&\s"']+)`)
+	embeddedURLPattern = regexp.MustCompile(`https?://[^\s"'<>]+`)
 )
 
 // MediaRegistrar registers newly produced media files into the media library.
