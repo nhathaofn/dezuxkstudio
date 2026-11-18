@@ -93,6 +93,11 @@ func TestValidateBaseURLAndSSRFGuards(t *testing.T) {
 		"https://user:pass@example.com/v1",
 		"https://example.com/v1?x=1",
 		"http://169.254.169.254/latest/meta-data",
+		"http://[fe80::1%25eth0]/v1",
+		"http://[fd00:ec2::254]/latest",
+		"http://100.100.100.200/latest",
+		"http://[::ffff:169.254.169.254]/latest",
+		"http://192.0.0.192/v1",
 		"http://metadata.google.internal/computeMetadata/v1",
 		"http://service.internal/v1",
 	} {
