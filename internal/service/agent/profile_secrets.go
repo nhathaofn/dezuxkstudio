@@ -9,18 +9,13 @@ import (
 	"strings"
 	"sync"
 
+	domainagent "app/internal/domain/agent"
 	"app/internal/secrets"
 	providersvc "app/internal/service/provider"
-	"app/internal/storage/sqlite"
 )
 
-// ProviderLinkStore defines persistence operations for agent provider links.
-type ProviderLinkStore interface {
-	GetProviderLink(ctx context.Context, agentProviderID string) (sqlite.AgentProviderLink, error)
-	ListProviderLinks(ctx context.Context) ([]sqlite.AgentProviderLink, error)
-	SetProviderLink(ctx context.Context, link sqlite.AgentProviderLink) error
-	DeleteProviderLink(ctx context.Context, agentProviderID string) error
-}
+// ProviderLinkStore aliases domainagent.ProviderLinkRepository for opt-in agent provider links.
+type ProviderLinkStore = domainagent.ProviderLinkRepository
 
 // MediaAssetMetadata holds safe metadata of a media asset without raw paths or tickets.
 type MediaAssetMetadata struct {

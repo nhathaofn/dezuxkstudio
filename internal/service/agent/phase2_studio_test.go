@@ -382,37 +382,50 @@ func TestPhase2NodesAndUntrustedGuardThroughRealWorkflowAndAgentMCP(t *testing.T
 		t.Fatalf("workflow_run_node(tool.grid_split) failed: err=%v res=%+v", err, gridRes)
 	}
 
-	maskRes, err := cs.CallTool(ctx, &mcp.CallToolParams{
-		Name: "workflow_run_node",
-		Arguments: map[string]any{
-			"type": contracts.NodeTypeMaskEdit,
-			"input": map[string]any{
-				"image_path":   gridImg,
-				"mask_path":    maskImg,
-				"prompt":       "glowing visor",
-				"aspect_ratio": "16:9",
-				"output_dir":   mediaDir,
-			},
+	maskOut := callMCPJSON(t, cs, "workflow_run_node", map[string]any{
+		"type": contracts.NodeTypeMaskEdit,
+		"input": map[string]any{
+			"image_path":   gridImg,
+			"mask_path":    maskImg,
+			"prompt":       "glowing visor",
+			"aspect_ratio": "16:9",
+			"output_dir":   mediaDir,
 		},
 	})
-	if err != nil || maskRes.IsError {
-		t.Fatalf("workflow_run_node(tool.mask_edit) failed: err=%v res=%+v", err, maskRes)
+	if maskOut["status"] != "needs_approval" {
+		t.Fatalf("expected paid workflow_run_node(tool.mask_edit) to require approval, got %+v", maskOut)
+	}
+	if err := svc.ResolveApproval(ctx, maskOut["approval_id"].(string), true); err != nil {
+		t.Fatalf("ResolveApproval(tool.mask_edit): %v", err)
 	}
 
-	qcRes, err := cs.CallTool(ctx, &mcp.CallToolParams{
-		Name: "workflow_run_node",
-		Arguments: map[string]any{
-			"type": contracts.NodeTypeQCReview,
-			"input": map[string]any{
-				"media_path":      gridImg,
-				"reference_paths": []string{maskImg},
-				"prompt_expected": "clean portrait",
-				"target_kind":     "keyframe",
-			},
+	// Vision QC gates for approval when skip_vision=false, whereas skip_vision=true runs directly
+	qcSkipVision := callMCPJSON(t, cs, "workflow_run_node", map[string]any{
+		"type": contracts.NodeTypeQCReview,
+		"input": map[string]any{
+			"media_path":  gridImg,
+			"target_kind": "keyframe",
+			"skip_vision": true,
 		},
 	})
-	if err != nil || qcRes.IsError {
-		t.Fatalf("workflow_run_node(tool.qc_review) failed: err=%v res=%+v", err, qcRes)
+	if qcSkipVision["ok"] != true {
+		t.Fatalf("expected workflow_run_node(tool.qc_review, skip_vision=true) to run directly, got %+v", qcSkipVision)
+	}
+
+	qcOut := callMCPJSON(t, cs, "workflow_run_node", map[string]any{
+		"type": contracts.NodeTypeQCReview,
+		"input": map[string]any{
+			"media_path":      gridImg,
+			"reference_paths": []string{maskImg},
+			"prompt_expected": "clean portrait",
+			"target_kind":     "keyframe",
+		},
+	})
+	if qcOut["status"] != "needs_approval" {
+		t.Fatalf("expected paid workflow_run_node(tool.qc_review) to require approval, got %+v", qcOut)
+	}
+	if err := svc.ResolveApproval(ctx, qcOut["approval_id"].(string), true); err != nil {
+		t.Fatalf("ResolveApproval(tool.qc_review): %v", err)
 	}
 
 	preRes, err := cs.CallTool(ctx, &mcp.CallToolParams{
@@ -429,21 +442,21 @@ func TestPhase2NodesAndUntrustedGuardThroughRealWorkflowAndAgentMCP(t *testing.T
 		t.Fatalf("workflow_run_node(tool.batch_preflight) failed: err=%v res=%+v", err, preRes)
 	}
 
-	// Verify lip-sync node validates both PortVideo and PortAudio through Agent MCP
-	lsRes, err := cs.CallTool(ctx, &mcp.CallToolParams{
-		Name: "workflow_run_node",
-		Arguments: map[string]any{
-			"type": contracts.NodeTypeLipSyncGenerate,
-			"input": map[string]any{
-				"video_path": vidClip,
-				"audio_path": audTrack,
-				"face_index": 0,
-				"output_dir": mediaDir,
-			},
+	// Verify lip-sync node validates both PortVideo and PortAudio through Agent MCP and gates paid run
+	lsOut := callMCPJSON(t, cs, "workflow_run_node", map[string]any{
+		"type": contracts.NodeTypeLipSyncGenerate,
+		"input": map[string]any{
+			"video_path": vidClip,
+			"audio_path": audTrack,
+			"face_index": 0,
+			"output_dir": mediaDir,
 		},
 	})
-	if err != nil || lsRes.IsError {
-		t.Fatalf("workflow_run_node(tool.lipsync_generate) failed: err=%v res=%+v", err, lsRes)
+	if lsOut["status"] != "needs_approval" {
+		t.Fatalf("expected paid workflow_run_node(tool.lipsync_generate) to require approval, got %+v", lsOut)
+	}
+	if err := svc.ResolveApproval(ctx, lsOut["approval_id"].(string), true); err != nil {
+		t.Fatalf("ResolveApproval(tool.lipsync_generate): %v", err)
 	}
 
 	// 3. Untrusted outside-workspace path rejected cleanly before node execution

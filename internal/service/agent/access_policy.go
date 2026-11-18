@@ -110,6 +110,13 @@ func (p *AccessPolicy) SetProjectsDir(projectsDir string) {
 	p.projectsDir = normalizeAbsPath(projectsDir)
 }
 
+// ProjectsDir returns the currently configured studio projects root directory.
+func (p *AccessPolicy) ProjectsDir() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.projectsDir
+}
+
 // AddLegacyRoots retains previous built-in studio/media roots (including default <Data>/studio/* directories)
 // so existing projects and assets remain accessible after switching WorkspaceRoot.
 func (p *AccessPolicy) AddLegacyRoots(dirs ...string) {

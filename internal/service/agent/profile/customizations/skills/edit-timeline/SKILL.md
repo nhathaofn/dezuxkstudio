@@ -15,7 +15,7 @@ When editing or rendering an episode's multi-track timeline on `/studio`:
 2. **Keep cuts musical, paced, and artifact-free**:
    - Use `studio_timeline_auto_assemble` (or `tool.timeline_auto_assemble`) if the episode has shots and TTS audio ready but the timeline is still empty.
    - Use `studio_media_peaks_thumbs` (or `tool.media_peaks_thumbs`) to inspect audio RMS peaks (`peaks`) and thumbnail sprites before trimming dead-air heads/tails or placing BGM ducking cues.
-   - Prefer crisp atomic ops (`split_clip`, `move_clip`, `update_clip` for `transition_in`/`transition_ms`/`speed`/`volume`/`ken_burns_preset`, `update_track` for `muted`/`solo`/`volume`, `update_subtitle` for Vietnamese UTF-8 diacritics & timing).
+   - Prefer crisp atomic ops (`split_clip`, `move_clip`, `update_clip` for `transition_in`/`transition_ms`/`speed`/`volume`/`mute`/`ken_burns_preset`, `update_track` for `muted`/`solo`/`volume`, `update_subtitle` for Vietnamese UTF-8 diacritics & timing).
 3. **Final Render & External NLE Handoff**:
-   - Final MP4 mastering uses `studio_timeline_render` (or `tool.render_timeline` — `xfade` transitions, EBU R128 `-14 LUFS` loudness normalization, and UTF-8 `.srt`/`.ass` Vietnamese subtitle burn-in).
+   - Final MP4 mastering uses `studio_timeline_render` (or `tool.render_timeline` — `xfade` transitions, EBU R128 loudness normalization using the configured `export_loudnorm_lufs` default `-14 LUFS` inspectable via `workflow_list_specs`, and UTF-8 `.srt`/`.ass` Vietnamese subtitle burn-in).
    - For external NLE handoff, export via `studio_timeline_export_nle` (or `tool.export_nle_draft`) prioritizing `format="capcut"` / `"jianying"` (draft `.zip` bundle with `draft_content.json` + `draft_meta_info.json` + local media copies under ZIP limits) or `"fcpxml"` / `"otio"`.

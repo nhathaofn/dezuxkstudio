@@ -632,6 +632,7 @@ func TestStudioExtendedMCPToolsParityPolicyAndMaskApproval(t *testing.T) {
 		seen[tl.Name] = true
 	}
 	for _, want := range []string{
+		"studio_project_get", "studio_project_delete",
 		"studio_project_update", "studio_shot_reorder", "studio_pricing_upsert",
 		"studio_grid_split", "studio_mask_edit", "studio_extract_last_frame",
 		"studio_timeline_auto_assemble", "studio_media_peaks_thumbs",
@@ -690,14 +691,44 @@ func TestStudioExtendedMCPToolsParityPolicyAndMaskApproval(t *testing.T) {
 		t.Fatalf("expected 1 mask execution after approval, got %d", wfStub.maskCalls)
 	}
 
-	// 3. Trusted parity tools execute end-to-end
+	// 3. studio_project_get reads detail; studio_project_update(auto_approve_batches=true) & studio_pricing_upsert gate for approval
+	gotProj := callMCPJSON(t, cs, "studio_project_get", map[string]any{"id": created.Project.ID})
+	if gotProj["project"].(map[string]any)["id"] != created.Project.ID {
+		t.Fatalf("unexpected studio_project_get result: %+v", gotProj)
+	}
+
+	updOut := callMCPJSON(t, cs, "studio_project_update", map[string]any{
+		"id":                   created.Project.ID,
+		"title":                "Parity Film v2",
+		"auto_approve_batches": true,
+	})
+	if updOut["status"] != "needs_approval" {
+		t.Fatalf("expected studio_project_update(auto_approve_batches=true) to require approval, got %+v", updOut)
+	}
+	if err := svc.ResolveApproval(ctx, updOut["approval_id"].(string), true); err != nil {
+		t.Fatalf("ResolveApproval(studio_project_update): %v", err)
+	}
+
+	priceOut := callMCPJSON(t, cs, "studio_pricing_upsert", map[string]any{
+		"provider_id":    "openai",
+		"model_id":       "sora-2",
+		"capability":     "video",
+		"unit":           "second",
+		"unit_price_usd": 0.12,
+	})
+	if priceOut["status"] != "needs_approval" {
+		t.Fatalf("expected studio_pricing_upsert to require approval, got %+v", priceOut)
+	}
+	if err := svc.ResolveApproval(ctx, priceOut["approval_id"].(string), true); err != nil {
+		t.Fatalf("ResolveApproval(studio_pricing_upsert): %v", err)
+	}
+
+	// 4. Trusted parity tools execute end-to-end once project is approved inside trusted workspace
 	for _, call := range []struct {
 		name string
 		args map[string]any
 	}{
-		{"studio_project_update", map[string]any{"id": created.Project.ID, "title": "Parity Film v2", "auto_approve_batches": true}},
 		{"studio_shot_reorder", map[string]any{"episode_id": epID, "shot_ids": []string{shot2.Shot.ID, shot1.Shot.ID}}},
-		{"studio_pricing_upsert", map[string]any{"provider_id": "openai", "model_id": "sora-2", "capability": "video", "unit": "second", "unit_price_usd": 0.12}},
 		{"studio_grid_split", map[string]any{"project_id": created.Project.ID, "episode_id": epID, "target_kind": "grid_panel", "target_id": shot1.Shot.ID, "image_path": gridImg, "rows": 2, "cols": 2}},
 		{"studio_extract_last_frame", map[string]any{"episode_id": epID, "source_shot_id": shot1.Shot.ID, "target_shot_id": shot2.Shot.ID}},
 		{"studio_timeline_auto_assemble", map[string]any{"episode_id": epID}},
@@ -705,15 +736,24 @@ func TestStudioExtendedMCPToolsParityPolicyAndMaskApproval(t *testing.T) {
 		{"studio_timeline_render", map[string]any{"episode_id": epID, "filename": "out.mp4"}},
 		{"studio_timeline_export_nle", map[string]any{"episode_id": epID, "format": "capcut"}},
 	} {
-		res, cerr := cs.CallTool(ctx, &mcp.CallToolParams{Name: call.name, Arguments: call.args})
-		if cerr != nil || res.IsError {
-			txt := ""
-			if res != nil && len(res.Content) > 0 {
-				if tc, ok := res.Content[0].(*mcp.TextContent); ok {
-					txt = tc.Text
-				}
-			}
-			t.Fatalf("%s failed: err=%v res=%q", call.name, cerr, txt)
+		out := callMCPJSON(t, cs, call.name, call.args)
+		if out["status"] == "needs_approval" {
+			t.Fatalf("%s unexpectedly gated on auto-approved trusted project: %+v", call.name, out)
 		}
+	}
+
+	// 5. studio_project_delete always requires approval even on auto-approved projects
+	delOut := callMCPJSON(t, cs, "studio_project_delete", map[string]any{
+		"id":           created.Project.ID,
+		"delete_files": true,
+	})
+	if delOut["status"] != "needs_approval" {
+		t.Fatalf("expected studio_project_delete to require approval, got %+v", delOut)
+	}
+	if err := svc.ResolveApproval(ctx, delOut["approval_id"].(string), true); err != nil {
+		t.Fatalf("ResolveApproval(studio_project_delete): %v", err)
+	}
+	if _, err := studioSvc.GetProject(ctx, created.Project.ID); err == nil {
+		t.Fatalf("expected deleted project %s to be gone after ResolveApproval", created.Project.ID)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"app/internal/apperr"
 )
@@ -342,6 +343,49 @@ type ApprovalRequest struct {
 	Title      string     `json:"title"`
 	Summary    string     `json:"summary"`
 	CreatedAt  string     `json:"created_at"`
+}
+
+// ApprovalRecord stores a durable approval state machine row in agent_approvals.
+type ApprovalRecord struct {
+	ID                string `json:"id"`
+	ConversationID    string `json:"conversation_id"`
+	ToolName          string `json:"tool_name"`
+	NodeType          string `json:"node_type"`
+	InputJSON         string `json:"input_json"`
+	InputHash         string `json:"input_hash"`
+	Status            string `json:"status"`
+	Decision          string `json:"decision"`
+	ResultJSON        string `json:"result_json"`
+	ErrorText         string `json:"error_text"`
+	ContinuationDepth int    `json:"continuation_depth"`
+	CreatedAt         int64  `json:"created_at"`
+	UpdatedAt         int64  `json:"updated_at"`
+}
+
+// ApprovalRepository defines persistence operations for agent MCP approvals.
+type ApprovalRepository interface {
+	InsertApproval(ctx context.Context, app *ApprovalRecord) error
+	GetApproval(ctx context.Context, id string) (*ApprovalRecord, error)
+	ListPendingApprovals(ctx context.Context, conversationID string) ([]*ApprovalRecord, error)
+	UpdateApprovalStatus(ctx context.Context, id string, oldStatus, newStatus string, decision string, resultJSON string, errorText string) (bool, error)
+	RecoverAmbiguousApprovals(ctx context.Context) error
+}
+
+// ProviderLink maps an agent CLI provider to an API provider credential without storing raw secrets.
+type ProviderLink struct {
+	AgentProviderID string    `json:"agent_provider_id"`
+	ProviderID      string    `json:"provider_id"`
+	CredentialID    string    `json:"credential_id"`
+	AuthMethod      string    `json:"auth_method"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// ProviderLinkRepository defines persistence operations for opt-in agent provider links.
+type ProviderLinkRepository interface {
+	GetProviderLink(ctx context.Context, agentProviderID string) (ProviderLink, error)
+	ListProviderLinks(ctx context.Context) ([]ProviderLink, error)
+	SetProviderLink(ctx context.Context, link ProviderLink) error
+	DeleteProviderLink(ctx context.Context, agentProviderID string) error
 }
 
 // ValidateProviderID checks that id belongs to the registered provider set.

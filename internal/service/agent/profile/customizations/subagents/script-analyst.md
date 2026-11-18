@@ -6,6 +6,7 @@ skills:
   - prompt-authoring
 tools:
   - studio_project_list
+  - studio_project_get
   - studio_episode_get
   - studio_save_script
   - studio_asset_upsert

@@ -15,6 +15,7 @@ import (
 	domainagent "app/internal/domain/agent"
 	domainmedia "app/internal/domain/mediagen"
 	domainstudio "app/internal/domain/studio"
+	"app/internal/engine"
 	"app/internal/paths"
 	studiosvc "app/internal/service/studio"
 	"app/internal/service/workflow"
@@ -396,3 +397,320 @@ func (s *stubUntrustedStudioManager) RunStage(context.Context, contracts.StudioE
 
 // Keep unused domainagent import satisfied if needed in extended assertions.
 var _ = domainagent.ApprovalRequest{}
+
+type postRestartStudioWorkflowStub struct {
+	p3ParityWorkflowStub
+	qcCalls int
+}
+
+func (w *postRestartStudioWorkflowStub) Specs(context.Context) []engine.Spec {
+	return nil
+}
+
+func (w *postRestartStudioWorkflowStub) RunGraph(context.Context, engine.Graph) (engine.GraphResult, error) {
+	return engine.GraphResult{}, nil
+}
+
+func (w *postRestartStudioWorkflowStub) RunNode(ctx context.Context, nodeType string, raw json.RawMessage) (any, error) {
+	if nodeType == contracts.NodeTypeQCReview {
+		w.qcCalls++
+		return contracts.QCReviewOutput{
+			Verdict:       "pass",
+			OverallScore:  9.2,
+			VisionSummary: "Clean frame",
+			Issues:        []contracts.QCReviewIssue{},
+			SampleFrames:  []string{},
+		}, nil
+	}
+	return w.p3ParityWorkflowStub.RunNode(ctx, nodeType, raw)
+}
+
+func TestStudioSecurityGatesPostRestartApprovalsAndSubagentManifests(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	dataDir := filepath.Join(base, "data")
+	ws := filepath.Join(dataDir, "workspace")
+	projectsDir := filepath.Join(ws, "projects")
+	mediaDir := filepath.Join(dataDir, "media")
+	profilesDir := filepath.Join(dataDir, "agent-profiles")
+	outsideDir := t.TempDir()
+	for _, d := range []string{ws, projectsDir, mediaDir, profilesDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	db, err := sqlite.Open(ctx, sqlite.Options{
+		Path:          filepath.Join(dataDir, "studio_gates.db"),
+		BackupDir:     filepath.Join(dataDir, "backups"),
+		BackupsToKeep: 1,
+		BusyTimeout:   time.Second,
+		Logger:        slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	wfStub := &postRestartStudioWorkflowStub{}
+	studioRepo := sqlite.NewStudioRepository(db)
+	stSvc := studiosvc.New(studiosvc.Options{
+		Repo:         studioRepo,
+		Workflow:     wfStub,
+		StudioConfig: config.Default(config.ModeDesktop).Studio,
+		ProjectsDir:  projectsDir,
+		Logger:       slog.New(slog.DiscardHandler),
+	})
+
+	agentRepo := sqlite.NewAgentRepository(db)
+	convID := "conv-post-restart"
+	if err := agentRepo.SaveConversation(ctx, domainagent.Conversation{
+		ID:         convID,
+		ProviderID: domainagent.ProviderCodex,
+		Title:      "Post-Restart Security Gates",
+		CreatedAt:  time.Now().UnixMilli(),
+		UpdatedAt:  time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	newAgentSvc := func() *Service {
+		s, err := New(Options{
+			Repo:         agentRepo,
+			DataDir:      dataDir,
+			WorkspaceDir: ws,
+			ProjectsDir:  projectsDir,
+			MediaDir:     mediaDir,
+			ProfilesDir:  profilesDir,
+			Logger:       slog.New(slog.DiscardHandler),
+			Workflow:     wfStub,
+			Studio:       stSvc,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.policy.protected = []string{profilesDir, filepath.Join(dataDir, "logs")}
+		s.mu.Lock()
+		s.conversationID = convID
+		s.mu.Unlock()
+		return s
+	}
+
+	svc1 := newAgentSvc()
+	t.Cleanup(func() { _ = svc1.Close() })
+
+	// 1. Validate built-in subagent manifests: both enabled, zero non-existent tools
+	availTools := make(map[string]bool)
+	for _, tl := range svc1.availableSubagentTools() {
+		availTools[tl] = true
+	}
+	for _, subName := range []string{"visual-reviewer", "script-analyst"} {
+		spec, _, rerr := svc1.customizations.ResolveSubagent(subName)
+		if rerr != nil {
+			t.Fatalf("ResolveSubagent(%s): %v", subName, rerr)
+		}
+		if !spec.Enabled {
+			t.Fatalf("expected built-in subagent %q to be enabled by default", subName)
+		}
+		if len(spec.Tools) == 0 {
+			t.Fatalf("expected built-in subagent %q to declare tools", subName)
+		}
+		for _, toolName := range spec.Tools {
+			if !availTools[toolName] {
+				t.Fatalf("subagent %q declares unavailable/unknown MCP tool %q", subName, toolName)
+			}
+		}
+	}
+
+	sT, cT := mcp.NewInMemoryTransports()
+	if _, err := svc1.buildMCPServer().Connect(ctx, sT, nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "gates-test"}, nil).Connect(ctx, cT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cs.Close() }()
+
+	created := callMCPJSON(t, cs, "studio_project_create", map[string]any{
+		"title":                "Gated Film",
+		"auto_approve_batches": false,
+	})
+	projID := created["project"].(map[string]any)["id"].(string)
+	epID := created["active_episode"].(map[string]any)["episode"].(map[string]any)["id"].(string)
+	projRoot := created["project"].(map[string]any)["root_dir"].(string)
+
+	validImg := filepath.Join(projRoot, "assets", "frame.png")
+	validVid := filepath.Join(projRoot, "episodes", "ep01", "media", "videos", "shot1.mp4")
+	outsideImg := filepath.Join(outsideDir, "outside.png")
+	dotenvInWs := filepath.Join(ws, ".env")
+	_ = os.MkdirAll(filepath.Dir(validImg), 0o755)
+	_ = os.MkdirAll(filepath.Dir(validVid), 0o755)
+	writeTinyTestPNG(validImg, 8, 8)
+	writeTinyTestPNG(outsideImg, 8, 8)
+	_ = os.WriteFile(validVid, []byte("MP4BYTES"), 0o600)
+	_ = os.WriteFile(dotenvInWs, []byte("API_KEY=secret"), 0o600)
+
+	assetRes := callMCPJSON(t, cs, "studio_asset_upsert", map[string]any{
+		"project_id": projID,
+		"kind":       "prop",
+		"name":       "Relic",
+		"code_tag":   "@Relic",
+	})
+	assetID := assetRes["asset"].(map[string]any)["id"].(string)
+
+	shotRes := callMCPJSON(t, cs, "studio_shot_upsert", map[string]any{
+		"episode_id":    epID,
+		"title":         "Shot 1",
+		"keyframe_path": validImg,
+		"video_path":    validVid,
+	})
+	shotID := shotRes["shot"].(map[string]any)["id"].(string)
+
+	// Seed a failed queue job to test studio_queue_control(retry) approval gate + post-restart execution
+	failedJob, err := studioRepo.CreateJob(ctx, domainstudio.Job{
+		ProjectID:      projID,
+		EpisodeID:      epID,
+		ShotID:         shotID,
+		JobKind:        domainstudio.JobImage,
+		IdempotencyKey: "idem-retry-1",
+		Status:         domainstudio.JobFailed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed a non-empty timeline (revision 1) so studio_timeline_auto_assemble triggers replacement approval
+	callMCPJSON(t, cs, "studio_timeline_apply_ops", map[string]any{
+		"episode_id":        epID,
+		"expected_revision": 0,
+		"ops": []map[string]any{
+			{"op": "add_clip", "track_id": "v1", "clip": map[string]any{"id": "c1", "file_path": validVid, "source_out_ms": 4000, "mute": true}},
+		},
+	})
+
+	// 2. studio_qc_review blocks outside paths AND .env inside workspace on both media_path & reference_paths
+	for _, badArgs := range []map[string]any{
+		{"project_id": projID, "target_id": shotID, "media_path": outsideImg, "skip_vision": true},
+		{"project_id": projID, "target_id": shotID, "media_path": dotenvInWs, "skip_vision": true},
+		{"project_id": projID, "target_id": shotID, "media_path": validImg, "reference_paths": []string{outsideImg}, "skip_vision": true},
+		{"project_id": projID, "target_id": shotID, "media_path": validImg, "reference_paths": []string{dotenvInWs}, "skip_vision": true},
+	} {
+		res, cerr := cs.CallTool(ctx, &mcp.CallToolParams{Name: "studio_qc_review", Arguments: badArgs})
+		if cerr != nil {
+			t.Fatal(cerr)
+		}
+		if !res.IsError {
+			t.Fatalf("expected studio_qc_review to block disallowed path in %+v", badArgs)
+		}
+	}
+
+	// studio_qc_review with skip_vision=true runs without approval even on gated project
+	qcTech := callMCPJSON(t, cs, "studio_qc_review", map[string]any{
+		"project_id":  projID,
+		"episode_id":  epID,
+		"target_kind": "keyframe",
+		"target_id":   shotID,
+		"media_path":  validImg,
+		"skip_vision": true,
+	})
+	if qcTech["verdict"] != "pass" {
+		t.Fatalf("expected skip_vision=true studio_qc_review to run directly, got %+v", qcTech)
+	}
+
+	// 3. Queue approvals for every gated Studio tool on svc1, then close svc1 and execute all of them
+	// via post-restart ResolveApproval (memItem.exec == nil) on a brand-new svc2!
+	queuedIDs := make([]string, 0, 9)
+	queueGate := func(tool string, args map[string]any) {
+		t.Helper()
+		out := callMCPJSON(t, cs, tool, args)
+		if out["status"] != "needs_approval" {
+			t.Fatalf("expected %s to return needs_approval, got %+v", tool, out)
+		}
+		id, _ := out["approval_id"].(string)
+		if id == "" {
+			t.Fatalf("expected approval_id for %s", tool)
+		}
+		queuedIDs = append(queuedIDs, id)
+	}
+
+	// Privilege escalation attempt: enabling auto_approve_batches MUST gate!
+	queueGate("studio_project_update", map[string]any{
+		"id":                   projID,
+		"title":                "Gated Film Approved",
+		"auto_approve_batches": true,
+	})
+	// Confirm project is STILL auto_approve_batches=false before approval!
+	beforeApproval, err := stSvc.GetProject(ctx, projID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if beforeApproval.Project.AutoApproveBatches {
+		t.Fatal("privilege escalation: auto_approve_batches flipped to true before user approval!")
+	}
+
+	queueGate("studio_asset_upsert", map[string]any{
+		"id":         assetID,
+		"project_id": projID,
+		"delete":     true,
+	})
+	queueGate("studio_pricing_upsert", map[string]any{
+		"provider_id":    "openai",
+		"model_id":       "gpt-image-1",
+		"capability":     "image",
+		"unit":           "image",
+		"unit_price_usd": 0.04,
+	})
+	queueGate("studio_queue_control", map[string]any{
+		"action": "retry",
+		"job_id": failedJob.ID,
+	})
+	queueGate("studio_qc_review", map[string]any{
+		"project_id":  projID,
+		"episode_id":  epID,
+		"target_kind": "keyframe",
+		"target_id":   shotID,
+		"media_path":  validImg,
+		"skip_vision": false,
+	})
+	expRev := 1
+	queueGate("studio_timeline_auto_assemble", map[string]any{
+		"episode_id":        epID,
+		"expected_revision": expRev,
+	})
+	queueGate("studio_timeline_render", map[string]any{
+		"episode_id": epID,
+		"filename":   "master.mp4",
+		"overwrite":  true,
+	})
+	queueGate("studio_timeline_export_nle", map[string]any{
+		"episode_id": epID,
+		"format":     "fcpxml",
+	})
+	queueGate("studio_project_delete", map[string]any{
+		"id":           projID,
+		"delete_files": true,
+	})
+
+	// Simulate app restart: close svc1 and instantiate a fresh svc2 with empty in-memory approvalStore!
+	_ = cs.Close()
+	_ = svc1.Close()
+
+	svc2 := newAgentSvc()
+	defer func() { _ = svc2.Close() }()
+
+	// Resolve every persisted approval in order via post-restart switch (memItem.exec == nil)
+	for i, appID := range queuedIDs {
+		if err := svc2.ResolveApproval(ctx, appID, true); err != nil {
+			t.Fatalf("post-restart ResolveApproval[%d] (%s): %v", i, appID, err)
+		}
+	}
+
+	// Project should be deleted cleanly at the end of the sequence, and folder removed
+	if _, err := stSvc.GetProject(ctx, projID); err == nil {
+		t.Fatal("expected project to be deleted by post-restart studio_project_delete approval")
+	}
+	if _, statErr := os.Stat(projRoot); !os.IsNotExist(statErr) {
+		t.Fatalf("expected deleted project directory %s to be removed, statErr=%v", projRoot, statErr)
+	}
+}

@@ -401,22 +401,10 @@ func (r *AgentRepository) SetRememberedConnection(ctx context.Context, id agent.
 	return nil
 }
 
-// AgentApproval records a persistent approval request for high-impact actions.
-type AgentApproval struct {
-	ID                string `json:"id"`
-	ConversationID    string `json:"conversation_id"`
-	ToolName          string `json:"tool_name"`
-	NodeType          string `json:"node_type"`
-	InputJSON         string `json:"input_json"`
-	InputHash         string `json:"input_hash"`
-	Status            string `json:"status"`
-	Decision          string `json:"decision"`
-	ResultJSON        string `json:"result_json"`
-	ErrorText         string `json:"error_text"`
-	ContinuationDepth int    `json:"continuation_depth"`
-	CreatedAt         int64  `json:"created_at"`
-	UpdatedAt         int64  `json:"updated_at"`
-}
+// AgentApproval aliases agent.ApprovalRecord for persistence in agent_approvals.
+type AgentApproval = agent.ApprovalRecord
+
+var _ agent.ApprovalRepository = (*AgentRepository)(nil)
 
 // InsertApproval persists an approval request record into agent_approvals table.
 func (r *AgentRepository) InsertApproval(ctx context.Context, app *AgentApproval) error {

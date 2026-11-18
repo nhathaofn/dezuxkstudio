@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	domainagent "app/internal/domain/agent"
 	"app/internal/domain/provider"
 )
 
@@ -479,14 +480,10 @@ func (r *ProviderRepository) SetCustomHealth(ctx context.Context, id string, h p
 	return affected(res, id)
 }
 
-// AgentProviderLink maps an agent provider to an API provider credential without storing raw secrets.
-type AgentProviderLink struct {
-	AgentProviderID string    `json:"agent_provider_id"`
-	ProviderID      string    `json:"provider_id"`
-	CredentialID    string    `json:"credential_id"`
-	AuthMethod      string    `json:"auth_method"`
-	UpdatedAt       time.Time `json:"updated_at"`
-}
+// AgentProviderLink aliases domainagent.ProviderLink for SQLite persistence.
+type AgentProviderLink = domainagent.ProviderLink
+
+var _ domainagent.ProviderLinkRepository = (*ProviderRepository)(nil)
 
 // GetProviderLink retrieves the opt-in provider link for agentProviderID.
 func (r *ProviderRepository) GetProviderLink(ctx context.Context, agentProviderID string) (AgentProviderLink, error) {

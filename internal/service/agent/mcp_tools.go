@@ -17,7 +17,6 @@ import (
 	domainprefs "app/internal/domain/preferences"
 	"app/internal/engine"
 	"app/internal/fsutil"
-	"app/internal/storage/sqlite"
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -127,7 +126,7 @@ func (s *Service) scrubSecretParams(ctx context.Context, spec engine.Spec, input
 		}
 		if v, _ := input[p.Name].(string); len(strings.TrimSpace(v)) >= minScrubbedSecret {
 			if err := s.repo.RedactChatMessages(ctx, strings.TrimSpace(v), "[secret saved]"); err != nil {
-				s.log.Warn("agent: scrub secret from chat history", "error", err)
+				s.log.WarnContext(ctx, "agent: scrub secret from chat history", "error", err)
 			}
 		}
 	}
@@ -284,7 +283,7 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 		})
 
 	addMCPTool(server, "workflow_run_node",
-		"Run one app feature like its screen does. Destructive settings wait for user approval.",
+		"Run one app feature like its screen does. Destructive settings and paid AI generation nodes wait for user approval unless auto-approved in trusted folders.",
 		func(ctx context.Context, in runNodeToolInput) (*mcp.CallToolResult, any, error) {
 			if s.workflow == nil {
 				return mcpError("workflow service is unavailable")
@@ -306,7 +305,7 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 				defer s.scrubSecretParams(context.WithoutCancel(execCtx), spec, prep.Input)
 				return s.workflow.RunNode(engine.WithFileGuard(execCtx, s.CheckTrustedFile), nodeType, raw)
 			}
-			if len(prep.Destructive) > 0 {
+			if len(prep.Destructive) > 0 || isPaidWorkflowNode(nodeType, prep.Input) {
 				if s.canAutoApproveNode(nodeType, prep) {
 					res, err := run(ctx)
 					if err != nil {
@@ -324,7 +323,7 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 		})
 
 	addMCPTool(server, "workflow_run_graph",
-		"Run several features as a workflow (DAG). Destructive settings wait for user approval.",
+		"Run several features as a workflow (DAG). Destructive settings and paid AI generation nodes wait for user approval unless auto-approved in trusted folders.",
 		func(ctx context.Context, in runGraphToolInput) (*mcp.CallToolResult, any, error) {
 			if s.workflow == nil {
 				return mcpError("workflow service is unavailable")
@@ -335,11 +334,11 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 				return mcpError(err.Error())
 			}
 			var parts []string
-			destructive := false
+			requiresApproval := false
 			for i, p := range prepared {
 				spec, _ := specByType(specs, g.Nodes[i].Type)
 				parts = append(parts, p.summary(spec))
-				destructive = destructive || len(p.Destructive) > 0
+				requiresApproval = requiresApproval || len(p.Destructive) > 0 || isPaidWorkflowNode(g.Nodes[i].Type, p.Input)
 			}
 			summary := fmt.Sprintf("Workflow (%d steps): %s", len(g.Nodes), strings.Join(parts, " → "))
 			run := func(execCtx context.Context) (any, error) {
@@ -354,13 +353,13 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 			canAutoApprove := s.skipTrustedApproval()
 			if canAutoApprove {
 				for i, p := range prepared {
-					if len(p.Destructive) > 0 && !s.canAutoApproveNode(g.Nodes[i].Type, p) {
+					if (len(p.Destructive) > 0 || isPaidWorkflowNode(g.Nodes[i].Type, p.Input)) && !s.canAutoApproveNode(g.Nodes[i].Type, p) {
 						canAutoApprove = false
 						break
 					}
 				}
 			}
-			if destructive {
+			if requiresApproval {
 				if canAutoApprove {
 					res, err := run(ctx)
 					if err != nil {
@@ -676,7 +675,7 @@ func (s *Service) buildCapabilitiesSnapshot(ctx context.Context) map[string]any 
 		appFeatures["providers"] = providers
 	}
 	if s.studio != nil {
-		if studioList, err := s.studio.ListProjects(ctx); err == nil {
+		if studioList, err := s.studio.ListProjects(engine.WithFileGuard(ctx, s.CheckTrustedFile)); err == nil {
 			appFeatures["studio"] = studioList
 		}
 	}
@@ -716,8 +715,49 @@ func (s *Service) toolNames() []string {
 	return names
 }
 
+func isPaidWorkflowNode(nodeType string, input map[string]any) bool {
+	switch strings.TrimSpace(nodeType) {
+	case contracts.NodeTypeImageGenerate,
+		contracts.NodeTypeVideoGenerate,
+		contracts.NodeTypeTTSGenerate,
+		contracts.NodeTypeLipSyncGenerate,
+		contracts.NodeTypeMaskEdit,
+		contracts.NodeTypeScriptNormalize,
+		contracts.NodeTypeExtractAssets,
+		contracts.NodeTypeAuthorShotPrompts:
+		return true
+	case contracts.NodeTypeTTSDubMux:
+		raw, ok := input["audio_path"]
+		if !ok || raw == nil {
+			return true
+		}
+		if str, ok := raw.(string); ok {
+			return strings.TrimSpace(str) == ""
+		}
+		return strings.TrimSpace(fmt.Sprint(raw)) == ""
+	case contracts.NodeTypeQCReview:
+		if skip, ok := input["skip_vision"].(bool); ok && skip {
+			return false
+		}
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Service) canAutoApproveNode(nodeType string, prep preparedNodeInput) bool {
-	return nodeType != "tool.provider_delete" && s.skipTrustedApproval() && allFileTargetsTrusted(s.policy, prep)
+	if nodeType == "tool.provider_delete" || !s.skipTrustedApproval() {
+		return false
+	}
+	if len(prep.Files)+len(prep.Folders)+len(prep.OutputDirs) == 0 {
+		for _, fallbackDir := range []string{s.getMediaDir(), s.getWorkspaceDir()} {
+			if strings.TrimSpace(fallbackDir) != "" {
+				prep.OutputDirs = []string{fallbackDir}
+				break
+			}
+		}
+	}
+	return allFileTargetsTrusted(s.policy, prep)
 }
 
 func (s *Service) queueApprovalRecord(ctx context.Context, tool, nodeType string, rawInput any, title, summary string, execFn func(context.Context) (any, error)) (domainagent.ApprovalRequest, error) {
@@ -745,7 +785,7 @@ func (s *Service) queueApprovalRecord(ctx context.Context, tool, nodeType string
 	}
 
 	if s.approvalRepo != nil {
-		record := &sqlite.AgentApproval{
+		record := &domainagent.ApprovalRecord{
 			ID:                appID,
 			ConversationID:    convID,
 			ToolName:          tool,

@@ -14,7 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"app/internal/buildinfo"
 	domainagent "app/internal/domain/agent"
+	"app/internal/paths"
 	"app/internal/safego"
 	"app/internal/secrets"
 )
@@ -177,7 +179,7 @@ func New(o Options) (*Service, error) {
 	}
 	version := strings.TrimSpace(o.AppVersion)
 	if version == "" {
-		version = "0.0.0-dev"
+		version = buildinfo.Version
 	}
 	limits := o.Limits.withDefaults()
 	secretStore := o.Secrets
@@ -186,7 +188,7 @@ func New(o Options) (*Service, error) {
 	}
 	allowedDirs, err := o.Repo.ListAllowedDirs(context.Background())
 	if err != nil {
-		o.Logger.Warn("agent: failed to load allowed dirs", "error", err)
+		o.Logger.WarnContext(context.Background(), "agent: failed to load allowed dirs", "error", err)
 	}
 	custDir := strings.TrimSpace(o.CustomizationsDir)
 	if custDir == "" && strings.TrimSpace(o.DataDir) != "" {
@@ -196,7 +198,7 @@ func New(o Options) (*Service, error) {
 	if custDir != "" {
 		custMgr = newCustomizationManager(custDir)
 		if syncErr := custMgr.EnsureSynced(); syncErr != nil {
-			o.Logger.Warn("agent: failed to sync customizations", "error", syncErr)
+			o.Logger.WarnContext(context.Background(), "agent: failed to sync customizations", "error", syncErr)
 		}
 	}
 	var appRepo ApprovalRepository
@@ -301,7 +303,7 @@ func New(o Options) (*Service, error) {
 	}
 	if s.approvalRepo != nil {
 		if recErr := s.approvalRepo.RecoverAmbiguousApprovals(context.Background()); recErr != nil {
-			s.log.Warn("agent: failed to recover ambiguous approvals", "error", recErr)
+			s.log.WarnContext(context.Background(), "agent: failed to recover ambiguous approvals", "error", recErr)
 		}
 	}
 	return s, nil
@@ -389,12 +391,8 @@ func (s *Service) Close() error {
 		s.driver(id).release()
 	}
 	s.mu.Lock()
-	tmp := s.tempWorkspace
 	s.tempWorkspace = ""
 	s.mu.Unlock()
-	if tmp != "" {
-		_ = os.RemoveAll(tmp)
-	}
 	return err
 }
 
@@ -406,7 +404,7 @@ func (s *Service) waitTurns() {
 	select {
 	case <-done:
 	case <-time.After(s.limits.MCPShutdownTimeout):
-		s.log.Warn("agent: turns still running at shutdown")
+		s.log.WarnContext(context.Background(), "agent: turns still running at shutdown")
 	}
 }
 
@@ -443,7 +441,6 @@ func (s *Service) ensureMCPServer() (*localMCPServer, error) {
 func (s *Service) ensureWorkspaceDir() (string, error) {
 	ws := s.getWorkspaceDir()
 	if ws == "" {
-		// Created once and reused for every turn (stable cwd for resumed sessions); removed on Close.
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if s.tempWorkspace != "" {
@@ -451,9 +448,17 @@ func (s *Service) ensureWorkspaceDir() (string, error) {
 				return s.tempWorkspace, nil
 			}
 		}
-		dir, err := os.MkdirTemp("", "dezuxk-agent-*")
-		if err != nil {
-			return "", fmt.Errorf("agent: create temp workspace: %w", err)
+		dataDir := strings.TrimSpace(s.dataDir)
+		if dataDir == "" {
+			resolved, err := paths.Resolve(buildinfo.AppID, paths.Overrides{})
+			if err != nil {
+				return "", fmt.Errorf("agent: resolve fallback data dir: %w", err)
+			}
+			dataDir = resolved.Data
+		}
+		dir := (paths.Paths{Data: dataDir}).AgentWorkspace()
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return "", fmt.Errorf("agent: create fallback agent workspace: %w", err)
 		}
 		s.tempWorkspace = dir
 		return dir, nil

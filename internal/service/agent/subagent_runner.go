@@ -189,7 +189,7 @@ func (s *Service) runSubagentTool(ctx context.Context, in subagentRunToolInput) 
 		})
 	}
 	if guard.blocked() {
-		s.log.Warn("agent: output guard blocked source code in subagent reply", "subagent", spec.Name, "provider", targetProvider, "run_id", runID)
+		s.log.WarnContext(ctx, "agent: output guard blocked source code in subagent reply", "subagent", spec.Name, "provider", targetProvider, "run_id", runID)
 	}
 
 	emitParent(domainagent.ChatEvent{
@@ -247,7 +247,7 @@ func (s *Service) resolveSubagentExecutionTarget(
 		}
 		if !ok {
 			fellBackFromOverride = true
-			s.log.Warn("agent: subagent override provider unavailable or unauthenticated; falling back to root provider",
+			s.log.WarnContext(ctx, "agent: subagent override provider unavailable or unauthenticated; falling back to root provider",
 				"subagent", spec.Name, "requested_provider", override, "fallback_provider", rootProvider)
 		}
 	}
@@ -267,7 +267,7 @@ func (s *Service) resolveSubagentExecutionTarget(
 		if modelMatchesProvider(targetProvider, requestedModel) {
 			sel = domainagent.ModelSelection{Model: requestedModel}
 		} else {
-			s.log.Warn("agent: subagent model override incompatible with provider; falling back to active model",
+			s.log.WarnContext(ctx, "agent: subagent model override incompatible with provider; falling back to active model",
 				"subagent", spec.Name, "provider", targetProvider, "requested_model", requestedModel)
 		}
 	}

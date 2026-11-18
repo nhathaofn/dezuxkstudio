@@ -87,7 +87,9 @@ type StudioPhase3Manager interface {
 // StudioExtendedManager exposes full UI-parity Studio operations (project updates, shot reorder,
 // pricing catalog updates, grid split, mask edit, continuity frame extraction, timeline assemble/peaks/render/NLE export).
 type StudioExtendedManager interface {
+	ProjectsDir() string
 	UpdateProject(ctx context.Context, p contracts.StudioProjectUpdatePayload) (contracts.StudioProjectDetailResult, error)
+	DeleteProject(ctx context.Context, p contracts.StudioProjectDeletePayload) error
 	ReorderShots(ctx context.Context, p contracts.StudioShotReorderPayload) (contracts.StudioShotListResult, error)
 	UpsertPricing(ctx context.Context, p contracts.StudioPricingUpsertPayload) (contracts.StudioPricingEntry, error)
 	SplitGrid(ctx context.Context, p contracts.StudioGridSplitPayload) (contracts.StudioGridSplitResult, error)
