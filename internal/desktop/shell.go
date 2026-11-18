@@ -46,9 +46,11 @@ type shell struct {
 	bridge *Bridge
 	ctx    atomic.Pointer[context.Context]
 
-	mu      sync.Mutex
-	core    *core.Core
-	closing bool
+	mu            sync.Mutex
+	core          *core.Core
+	closing       bool
+	startupCancel context.CancelFunc
+	startupWG     sync.WaitGroup
 }
 
 // Run blocks until the window is closed.
@@ -101,9 +103,24 @@ func (s *shell) startup(ctx context.Context) {
 		s.fatal(s.o.StartupError)
 		return
 	}
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return
+	}
+	startCtx, cancel := context.WithCancel(ctx)
+	s.startupCancel = cancel
+	s.startupWG.Add(1)
+	s.mu.Unlock()
+
 	// Opening the database and running migrations must not block the UI thread.
 	safego.Go("desktop.startup", func() {
-		if err := s.startCore(ctx); err != nil {
+		defer s.startupWG.Done()
+		defer cancel()
+		if err := s.startCore(startCtx); err != nil {
+			if startCtx.Err() != nil {
+				return
+			}
 			s.fatal(err)
 			return
 		}
@@ -168,6 +185,15 @@ func (s *shell) fatal(err error) {
 func (s *shell) shutdown(context.Context) {
 	s.mu.Lock()
 	s.closing = true
+	cancel := s.startupCancel
+	s.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	s.startupWG.Wait()
+
+	s.mu.Lock()
 	c := s.core
 	s.core = nil
 	s.mu.Unlock()

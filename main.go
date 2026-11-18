@@ -66,8 +66,10 @@ func run() (code int) {
 	cfg := config.Default(config.ModeDesktop)
 	if cfgErr == nil {
 		cfg = res.Config
-		if appPaths, pathErr = paths.Resolve(buildinfo.AppID, paths.Overrides{DataDir: cfg.Storage.DataDir, LogDir: cfg.Log.Dir}); pathErr != nil {
-			cfgErr = pathErr
+		if resolvedPaths, resolveErr := paths.Resolve(buildinfo.AppID, paths.Overrides{DataDir: cfg.Storage.DataDir, LogDir: cfg.Log.Dir}); resolveErr != nil {
+			cfgErr = resolveErr
+		} else {
+			appPaths = resolvedPaths
 		}
 	}
 	if err := appPaths.Ensure(); err != nil {

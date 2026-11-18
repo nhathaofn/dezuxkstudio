@@ -3,15 +3,19 @@ package desktop
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"reflect"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"app/internal/apperr"
+	"app/internal/buildinfo"
 	"app/internal/config"
 	"app/internal/contracts"
 	"app/internal/secrets"
@@ -105,8 +109,29 @@ func TestContentSecurityPolicy(t *testing.T) {
 	if !strings.Contains(desktop, "ws://127.0.0.1:*") || !strings.Contains(desktop, "http://127.0.0.1:*") || strings.Contains(desktop, "example.com") {
 		t.Errorf("desktop CSP: %s", desktop)
 	}
+	if !strings.Contains(desktop, "style-src 'self'; style-src-attr 'unsafe-inline'") {
+		t.Errorf("desktop style-src CSP must disallow inline <style> tags: %s", desktop)
+	}
+	if strings.Contains(desktop, "style-src 'self' 'unsafe-inline'") {
+		t.Errorf("desktop CSP must not allow unsafe-inline in style-src: %s", desktop)
+	}
 	if !strings.Contains(desktop, "object-src 'none'") || !strings.Contains(desktop, "img-src 'self' data: blob:") || !strings.Contains(desktop, "media-src 'self' data: blob:") {
 		t.Errorf("hardening directives missing: %s", desktop)
+	}
+
+	pinnedCfg := config.Default(config.ModeDesktop)
+	pinnedCfg.Server.Port = 43210
+	pinnedCSP := contentSecurityPolicy(pinnedCfg)
+	if !strings.Contains(pinnedCSP, "ws://127.0.0.1:43210") || !strings.Contains(pinnedCSP, "http://127.0.0.1:43210") {
+		t.Errorf("expected pinned port in desktop CSP: %s", pinnedCSP)
+	}
+
+	// CSP directive injection via malformed remote_url host must be rejected.
+	injectedCfg := config.Default(config.ModeClient)
+	injectedCfg.Client.RemoteURL = "wss://evil.com;script-src 'unsafe-inline'/ws"
+	injectedCSP := contentSecurityPolicy(injectedCfg)
+	if strings.Contains(injectedCSP, "evil.com") || (!buildinfo.IsDev() && strings.Contains(injectedCSP, "script-src 'self' 'unsafe-inline'")) {
+		t.Errorf("CSP injection leaked into policy: %s", injectedCSP)
 	}
 
 	for _, tc := range []struct {
@@ -239,5 +264,47 @@ func TestBridgePickerTitleAndFilters(t *testing.T) {
 		if !reflect.DeepEqual(gotFilters, wantNonWin) {
 			t.Errorf("pickerFilters() on %s = %+v, want %+v", runtime.GOOS, gotFilters, wantNonWin)
 		}
+	}
+}
+
+func TestShellShutdownWaitsForStartup(t *testing.T) {
+	cfg := config.Default(config.ModeDesktop)
+	s := &shell{
+		o:      Options{Config: cfg, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		bridge: newBridge(cfg, secrets.NewMemory()),
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var finished atomic.Bool
+
+	s.mu.Lock()
+	_, cancel := context.WithCancel(context.Background())
+	s.startupCancel = cancel
+	s.startupWG.Add(1)
+	s.mu.Unlock()
+
+	go func() {
+		defer s.startupWG.Done()
+		close(started)
+		<-release
+		finished.Store(true)
+	}()
+	<-started
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		s.shutdown(context.Background())
+		close(shutdownDone)
+	}()
+
+	select {
+	case <-shutdownDone:
+		t.Fatal("shutdown returned before startup goroutine exited")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+	<-shutdownDone
+	if !finished.Load() {
+		t.Fatal("expected startup goroutine to complete before shutdown returned")
 	}
 }

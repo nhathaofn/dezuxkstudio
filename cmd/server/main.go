@@ -68,9 +68,11 @@ func run() (code int) {
 		return 1
 	}
 
-	if appPaths, err = paths.Resolve(buildinfo.ServerAppID, paths.Overrides{DataDir: cfg.Storage.DataDir, LogDir: cfg.Log.Dir}); err != nil {
-		log.Error("cannot resolve application directories", "error", err)
+	if resolvedPaths, resolveErr := paths.Resolve(buildinfo.ServerAppID, paths.Overrides{DataDir: cfg.Storage.DataDir, LogDir: cfg.Log.Dir}); resolveErr != nil {
+		log.Error("cannot resolve application directories", "error", resolveErr)
 		return 1
+	} else {
+		appPaths = resolvedPaths
 	}
 	if err := appPaths.Ensure(); err != nil {
 		log.Error("cannot create application directories", "error", err)
