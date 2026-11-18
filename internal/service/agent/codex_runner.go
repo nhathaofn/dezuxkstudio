@@ -29,6 +29,24 @@ func prepareCodexProfile(profileRoot string) (map[string]string, error) {
 	}, nil
 }
 
+func prepareCodexSubProfile(parentRoot, subRoot string, useLinkedSecret bool) (map[string]string, func(), error) {
+	if parentRoot == "" || subRoot == "" {
+		return nil, func() {}, fmt.Errorf("agent: codex parent and subagent profile roots are required")
+	}
+	envMap, err := prepareCodexProfile(subRoot)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	cleanup := func() { _ = os.RemoveAll(subRoot) }
+	if !useLinkedSecret {
+		if err := copyFileIfRegular(filepath.Join(parentRoot, "auth.json"), filepath.Join(subRoot, "auth.json")); err != nil {
+			cleanup()
+			return nil, func() {}, fmt.Errorf("agent: copy codex auth.json: %w", err)
+		}
+	}
+	return envMap, cleanup, nil
+}
+
 func probeCodexAuth(ctx context.Context, executable, profileRoot string) (domainagent.AuthState, string) {
 	if executable == "" || profileRoot == "" {
 		return domainagent.AuthUnknown, ""
@@ -360,7 +378,7 @@ func (s *Service) runCodexExecTurn(ctx context.Context, executable, profileRoot,
 	if modelArgs := codexModelArgs(s.codexTurnSelection(s.effectiveSelection(domainagent.ProviderCodex))); len(modelArgs) > 0 {
 		args = append(args[:len(args)-1:len(args)-1], append(modelArgs, "-")...) // keep "-" (stdin prompt) last
 	}
-	env := providerEnv(domainagent.ProviderCodex, envMap)
+	env := envWithLinkedSecret(domainagent.ProviderCodex, envMap, s.activeLinkedSecret())
 	acc := &codexStreamAccumulator{
 		providerID: domainagent.ProviderCodex,
 		messageID:  messageID,

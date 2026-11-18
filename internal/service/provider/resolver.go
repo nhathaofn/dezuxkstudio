@@ -7,20 +7,15 @@ import (
 	"strings"
 
 	"app/internal/apperr"
+	domainagent "app/internal/domain/agent"
 	"app/internal/secrets"
-	"app/internal/storage/sqlite"
 )
 
-// AgentProviderLink re-exports sqlite.AgentProviderLink for service usage.
-type AgentProviderLink = sqlite.AgentProviderLink
+// AgentProviderLink re-exports domainagent.ProviderLink for service usage.
+type AgentProviderLink = domainagent.ProviderLink
 
 // ProviderLinkRepository defines the persistence operations for agent provider links.
-type ProviderLinkRepository interface {
-	GetProviderLink(ctx context.Context, agentProviderID string) (sqlite.AgentProviderLink, error)
-	ListProviderLinks(ctx context.Context) ([]sqlite.AgentProviderLink, error)
-	SetProviderLink(ctx context.Context, link sqlite.AgentProviderLink) error
-	DeleteProviderLink(ctx context.Context, agentProviderID string) error
-}
+type ProviderLinkRepository = domainagent.ProviderLinkRepository
 
 // CompatibilityRule defines an allowed combination of agent provider, runner driver,
 // target API provider, and authentication method.
@@ -164,12 +159,12 @@ func ResolveLinkedSecret(
 	aid := NormalizeAgentID(agentProviderID)
 	link, err := linkRepo.GetProviderLink(ctx, aid)
 	if err != nil {
-		// Not found is normal: no opt-in link set
+		// Not found is normal: no opt-in link set; any other repository error must fail closed (never auto-fallback).
 		var ae *apperr.Error
 		if errors.As(err, &ae) && ae.Code == apperr.CodeNotFound {
 			return nil, nil
 		}
-		return nil, nil
+		return nil, apperr.Wrap(apperr.CodeUnavailable, "failed to load agent provider link", err)
 	}
 	if link.AgentProviderID == "" || link.ProviderID == "" || link.CredentialID == "" {
 		return nil, nil

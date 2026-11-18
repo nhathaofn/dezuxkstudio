@@ -3,12 +3,12 @@ package agent
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	domainagent "app/internal/domain/agent"
+	providersvc "app/internal/service/provider"
 	"github.com/google/uuid"
 )
 
@@ -85,7 +85,7 @@ func (s *Service) runSubagentTool(ctx context.Context, in subagentRunToolInput) 
 		}
 	}
 
-	targetProvider, resolvedExe, modelSel, err := s.resolveSubagentExecutionTarget(subCtx, parentTurn, spec)
+	targetProvider, resolvedExe, modelSel, linkedSecret, err := s.resolveSubagentExecutionTarget(subCtx, parentTurn, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -144,6 +144,11 @@ func (s *Service) runSubagentTool(ctx context.Context, in subagentRunToolInput) 
 	})
 
 	subEmit := func(ev domainagent.ChatEvent) {
+		if linkedSecret != nil && linkedSecret.Secret != "" {
+			ev.Text = RedactSecret(ev.Text, linkedSecret.Secret)
+			ev.Tool = RedactSecret(ev.Tool, linkedSecret.Secret)
+			ev.Error = RedactSecret(ev.Error, linkedSecret.Secret)
+		}
 		switch ev.Type {
 		case domainagent.ChatEventDelta:
 			safe := guard.filterText(ev.Text)
@@ -172,13 +177,16 @@ func (s *Service) runSubagentTool(ctx context.Context, in subagentRunToolInput) 
 	var runErr error
 	switch targetProvider {
 	case domainagent.ProviderClaude:
-		runErr = s.runClaudeSubagent(subCtx, resolvedExe, workDir, mcpSrv.url, scopedToken, sysPrompt, userBrief, effectiveTools, modelSel, subEmit)
+		runErr = s.runClaudeSubagent(subCtx, runID, resolvedExe, workDir, mcpSrv.url, scopedToken, sysPrompt, userBrief, effectiveTools, modelSel, linkedSecret, subEmit)
 	case domainagent.ProviderCodex:
-		runErr = s.runCodexSubagent(subCtx, runID, resolvedExe, workDir, mcpSrv.url, scopedToken, sysPrompt, userBrief, modelSel, subEmit)
+		runErr = s.runCodexSubagent(subCtx, runID, resolvedExe, workDir, mcpSrv.url, scopedToken, sysPrompt, userBrief, modelSel, linkedSecret, subEmit)
 	case domainagent.ProviderAntigravity:
-		runErr = s.runAntigravitySubagent(subCtx, runID, resolvedExe, workDir, mcpSrv.url, scopedToken, sysPrompt, userBrief, effectiveTools, modelSel, subEmit)
+		runErr = s.runAntigravitySubagent(subCtx, runID, resolvedExe, workDir, mcpSrv.url, scopedToken, sysPrompt, userBrief, effectiveTools, modelSel, linkedSecret, subEmit)
 	default:
 		runErr = fmt.Errorf("subagent provider %q is unsupported", targetProvider)
+	}
+	if runErr != nil && linkedSecret != nil && linkedSecret.Secret != "" {
+		runErr = RedactError(runErr, linkedSecret.Secret)
 	}
 
 	tail, _ := guard.finalize()
@@ -210,11 +218,25 @@ func (s *Service) runSubagentTool(ctx context.Context, in subagentRunToolInput) 
 	}, nil
 }
 
+func (s *Service) resolveSubagentLinkedSecret(ctx context.Context, id domainagent.ProviderID) (*providersvc.ResolvedLink, error) {
+	if store := s.providerLinksStore(); store != nil {
+		drv := "cli"
+		if _, ok := s.driver(id).(sessionDriver); ok {
+			drv = "acp"
+		}
+		return providersvc.ResolveLinkedSecret(ctx, string(id), drv, store, s.secrets.store)
+	}
+	if active := s.activeLinkedSecret(); active != nil && (active.AgentProviderID == "" || active.AgentProviderID == string(id)) {
+		return active, nil
+	}
+	return nil, nil
+}
+
 func (s *Service) resolveSubagentExecutionTarget(
 	ctx context.Context,
 	parentTurn *turn,
 	spec domainagent.SubagentInfo,
-) (domainagent.ProviderID, string, domainagent.ModelSelection, error) {
+) (domainagent.ProviderID, string, domainagent.ModelSelection, *providersvc.ResolvedLink, error) {
 	s.mu.Lock()
 	rootProvider := s.activeID
 	s.mu.Unlock()
@@ -222,12 +244,13 @@ func (s *Service) resolveSubagentExecutionTarget(
 		rootProvider = parentTurn.providerID
 	}
 	if rootProvider == "" {
-		return "", "", domainagent.ModelSelection{}, fmt.Errorf("no active root provider available for subagent")
+		return "", "", domainagent.ModelSelection{}, nil, fmt.Errorf("no active root provider available for subagent")
 	}
 
 	targetProvider := rootProvider
 	fellBackFromOverride := false
 	var targetExe string
+	var linkedSecret *providersvc.ResolvedLink
 
 	if override := spec.Provider; override != "" && override != rootProvider {
 		ok := false
@@ -236,11 +259,19 @@ func (s *Service) resolveSubagentExecutionTarget(
 			if pSpec.Supported {
 				exe, _, _, resErr := s.resolveExecutable(ctx, pSpec)
 				if resErr == nil && exe != "" {
-					authState, _ := s.probeProviderAuth(ctx, override, pSpec, exe)
-					if authState == domainagent.AuthAuthenticated {
+					ovrLink, lErr := s.resolveSubagentLinkedSecret(ctx, override)
+					if lErr == nil && ovrLink != nil {
 						targetProvider = override
 						targetExe = exe
+						linkedSecret = ovrLink
 						ok = true
+					} else if lErr == nil {
+						authState, _ := s.probeProviderAuth(ctx, override, pSpec, exe)
+						if authState == domainagent.AuthAuthenticated {
+							targetProvider = override
+							targetExe = exe
+							ok = true
+						}
 					}
 				}
 			}
@@ -252,11 +283,19 @@ func (s *Service) resolveSubagentExecutionTarget(
 		}
 	}
 
+	if targetProvider == rootProvider {
+		var lErr error
+		linkedSecret, lErr = s.resolveSubagentLinkedSecret(ctx, targetProvider)
+		if lErr != nil {
+			return "", "", domainagent.ModelSelection{}, nil, lErr
+		}
+	}
+
 	if targetExe == "" {
 		pSpec := domainagent.Registry[targetProvider]
 		exe, _, _, resErr := s.resolveExecutable(ctx, pSpec)
 		if resErr != nil || exe == "" {
-			return "", "", domainagent.ModelSelection{}, fmt.Errorf("provider %s executable is not available for subagent: %v", targetProvider, resErr)
+			return "", "", domainagent.ModelSelection{}, nil, fmt.Errorf("provider %s executable is not available for subagent: %v", targetProvider, resErr)
 		}
 		targetExe = exe
 	}
@@ -271,7 +310,7 @@ func (s *Service) resolveSubagentExecutionTarget(
 				"subagent", spec.Name, "provider", targetProvider, "requested_model", requestedModel)
 		}
 	}
-	return targetProvider, targetExe, sel, nil
+	return targetProvider, targetExe, sel, linkedSecret, nil
 }
 
 func modelMatchesProvider(id domainagent.ProviderID, model string) bool {
@@ -342,25 +381,26 @@ func (s *Service) buildSubagentSystemPrompt(
 
 func (s *Service) runClaudeSubagent(
 	ctx context.Context,
-	executable, workDir, mcpURL, mcpToken, sysPrompt, userBrief string,
+	runID, executable, workDir, mcpURL, mcpToken, sysPrompt, userBrief string,
 	effectiveTools []string,
 	sel domainagent.ModelSelection,
+	linked *providersvc.ResolvedLink,
 	emit func(domainagent.ChatEvent),
 ) error {
 	profileRoot := s.profileDirFor(domainagent.ProviderClaude)
-	env, err := s.secrets.claudeIsolatedEnv(profileRoot)
+	subDir := filepath.Join(profileRoot, "subagents", runID)
+	envMap, cleanSubDir, err := s.secrets.prepareClaudeSubProfile(profileRoot, subDir, linked != nil)
 	if err != nil {
 		return err
 	}
-	subDir := filepath.Join(profileRoot, "subagents")
-	if err := os.MkdirAll(subDir, 0o700); err != nil {
-		return fmt.Errorf("claude: create subagent dir: %w", err)
-	}
-	mcpCfgPath, cleanup, err := writeClaudeMCPConfig(subDir, mcpURL, mcpToken)
+	defer cleanSubDir()
+
+	mcpCfgPath, cleanupMCP, err := writeClaudeMCPConfig(subDir, mcpURL, mcpToken)
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	defer cleanupMCP()
+	env := envWithLinkedSecret(domainagent.ProviderClaude, envMap, linked)
 	env = append(env, claudeMCPTimeoutEnv(s.limits.MCPToolTimeout)...)
 
 	args := buildClaudeExecArgsWithTools(mcpCfgPath, sysPrompt, effectiveTools)
@@ -389,26 +429,29 @@ func (s *Service) runCodexSubagent(
 	ctx context.Context,
 	runID, executable, workDir, mcpURL, mcpToken, sysPrompt, userBrief string,
 	sel domainagent.ModelSelection,
+	linked *providersvc.ResolvedLink,
 	emit func(domainagent.ChatEvent),
 ) error {
 	profileRoot := s.profileDirFor(domainagent.ProviderCodex)
-	envMap, err := prepareCodexProfile(profileRoot)
+	subRoot := filepath.Join(profileRoot, "subagents", runID)
+	envMap, cleanSubDir, err := prepareCodexSubProfile(profileRoot, subRoot, linked != nil)
 	if err != nil {
 		return err
 	}
+	defer cleanSubDir()
 	envMap[mcpTokenEnvVar] = mcpToken
 
-	instrFile, cleanup, err := writeCodexEphemeralInstructions(profileRoot, runID, sysPrompt)
+	instrFile, cleanupInstr, err := writeCodexEphemeralInstructions(subRoot, runID, sysPrompt)
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	defer cleanupInstr()
 
 	args := buildCodexExecArgsForSubagent(mcpURL, sysPrompt, instrFile, s.limits.MCPToolTimeout)
 	if modelArgs := codexModelArgs(s.codexTurnSelection(sel)); len(modelArgs) > 0 {
 		args = append(args[:len(args)-1:len(args)-1], append(modelArgs, "-")...)
 	}
-	env := providerEnv(domainagent.ProviderCodex, envMap)
+	env := envWithLinkedSecret(domainagent.ProviderCodex, envMap, linked)
 	acc := &codexStreamAccumulator{
 		providerID: domainagent.ProviderCodex,
 		messageID:  "",
@@ -432,18 +475,19 @@ func (s *Service) runAntigravitySubagent(
 	runID, executable, workDir, mcpURL, mcpToken, sysPrompt, userBrief string,
 	effectiveTools []string,
 	sel domainagent.ModelSelection,
+	linked *providersvc.ResolvedLink,
 	emit func(domainagent.ChatEvent),
 ) error {
 	parentRoot := s.profileDirFor(domainagent.ProviderAntigravity)
 	subRoot := filepath.Join(parentRoot, "subagents", runID)
-	agyEnvMap, cleanup, err := s.secrets.prepareAgySubProfile(parentRoot, subRoot, mcpURL, mcpToken)
+	agyEnvMap, cleanup, err := s.secrets.prepareAgySubProfileWithLink(parentRoot, subRoot, mcpURL, mcpToken, linked != nil)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 
 	spec := domainagent.Registry[domainagent.ProviderAntigravity]
-	procEnv := providerEnv(domainagent.ProviderAntigravity, agyEnvMap)
+	procEnv := envWithLinkedSecret(domainagent.ProviderAntigravity, agyEnvMap, linked)
 	var titlesMu sync.Mutex
 	acpTitles := make(map[string]string)
 

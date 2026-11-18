@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"maps"
 	"os"
 	"time"
@@ -8,6 +10,7 @@ import (
 	"app/internal/buildinfo"
 	"app/internal/config"
 	domainagent "app/internal/domain/agent"
+	providersvc "app/internal/service/provider"
 )
 
 // clientName is the ACP clientInfo name and the app name reported to agents.
@@ -111,6 +114,28 @@ func providerEnv(id domainagent.ProviderID, overrides map[string]string) []strin
 	}
 	maps.Copy(merged, overrides)
 	return isolatedEnv(os.Environ(), merged, strip...)
+}
+
+// envWithLinkedSecret injects link.EnvOverrides (when present and matching id) into overrides
+// without mutating caller maps, then builds the isolated environment via providerEnv.
+func envWithLinkedSecret(id domainagent.ProviderID, overrides map[string]string, link *providersvc.ResolvedLink) []string {
+	if link == nil || len(link.EnvOverrides) == 0 || (link.AgentProviderID != "" && link.AgentProviderID != string(id)) {
+		return providerEnv(id, overrides)
+	}
+	merged := maps.Clone(overrides)
+	if merged == nil {
+		merged = make(map[string]string, len(link.EnvOverrides))
+	}
+	maps.Copy(merged, link.EnvOverrides)
+	return providerEnv(id, merged)
+}
+
+func linkedSecretCacheKey(link *providersvc.ResolvedLink) string {
+	if link == nil {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(link.Secret))
+	return link.ProviderID + ":" + link.CredentialID + ":" + hex.EncodeToString(sum[:8])
 }
 
 // Tool result statuses sent in ChatEvent.Text/Error; the UI maps them to its own localized labels.

@@ -256,10 +256,14 @@ func (s *Service) runCLITurn(ctx context.Context, drv turnDriver, t *turn, promp
 // service goes idle. It runs once per turn; later calls (e.g. the turn goroutine after a process exit
 // already ended it) do nothing.
 func (s *Service) endTurn(t *turn, err error) {
+	s.endTurnAtSeq(t, err, t.connToken)
+}
+
+func (s *Service) endTurnAtSeq(t *turn, err error, expectedSeq int64) {
 	t.endOnce.Do(func() {
 		// A turn whose connection was replaced (disconnect, reconnect) only stores what it produced: its
 		// last text and done/error must not reach a UI that may already be waiting for the next turn.
-		current := s.connSeq.Load() == t.connToken
+		current := s.connSeq.Load() == expectedSeq
 		s.flushGuard(t, current)
 		// A user cancel ends the turn normally: the partial reply is kept and nothing is reported as an error.
 		if errors.Is(err, errTurnCancelled) {
@@ -272,7 +276,7 @@ func (s *Service) endTurn(t *turn, err error) {
 			s.turn = nil
 			s.continuationDepth = 0
 		}
-		current = current && s.connSeq.Load() == t.connToken // a disconnect may have happened while storing
+		current = current && s.connSeq.Load() == expectedSeq // a disconnect may have happened while storing
 		if err != nil && isAuthError(err) && current {
 			s.states[t.providerID] = domainagent.StateUnauthenticated
 			s.authStates[t.providerID] = domainagent.AuthUnauthenticated

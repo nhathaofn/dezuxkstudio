@@ -160,6 +160,13 @@ func (s *Service) Connect(ctx context.Context, id domainagent.ProviderID) (domai
 	eagerSessionID, sessErr := transport.NewSession(initCtx, workDir, initSysPrompt)
 	initPromptHash := ""
 	if sessErr != nil {
+		if !isTransportAlive(transport) || s.connSeq.Load() != connToken {
+			_ = transport.Close()
+			if isAuthError(sessErr) {
+				return s.failConnect(id, spec, resolved, source, customPath, domainagent.StateUnauthenticated, sessErr), apperr.New(apperr.CodeUnauthorized, sessErr.Error())
+			}
+			return s.failConnect(id, spec, resolved, source, customPath, domainagent.StateError, sessErr), apperr.Unavailable(sessErr.Error())
+		}
 		s.log.WarnContext(initCtx, "agent: eager session/new failed", "provider", id, "error", sessErr)
 		eagerSessionID = ""
 	} else {
@@ -168,7 +175,7 @@ func (s *Service) Connect(ctx context.Context, id domainagent.ProviderID) (domai
 	}
 
 	s.mu.Lock()
-	if s.connSeq.Load() != connToken || s.closing {
+	if s.connSeq.Load() != connToken || s.closing || !isTransportAlive(transport) {
 		s.mu.Unlock()
 		_ = transport.Close()
 		return domainagent.ProviderInfo{}, userError(apperr.CodeConflict, msgSuperseded, "connection attempt was superseded", nil)
@@ -432,6 +439,16 @@ func (s *Service) handleSessionUpdate(connToken int64, upd SessionUpdate) {
 	}
 }
 
+func isTransportAlive(t Transport) bool {
+	if t == nil {
+		return false
+	}
+	if alive, ok := t.(interface{ Alive() bool }); ok {
+		return alive.Alive()
+	}
+	return true
+}
+
 // handleProcessExit handles an ACP agent process that exited on its own: the connection is dropped and a
 // running turn ends right away with the exit as its (stored, translatable) error.
 func (s *Service) handleProcessExit(connToken int64, id domainagent.ProviderID, exitErr error) {
@@ -440,9 +457,10 @@ func (s *Service) handleProcessExit(connToken int64, id domainagent.ProviderID, 
 		s.mu.Unlock()
 		return
 	}
+	exitSeq := s.connSeq.Add(1)
 	t := s.turn
-	s.clearConnectionLocked()
 	activeSecret := s.activeLinkedSecret()
+	s.clearConnectionLocked()
 	var turnErr error
 	if exitErr != nil {
 		if activeSecret != nil && activeSecret.Secret != "" {
@@ -459,7 +477,7 @@ func (s *Service) handleProcessExit(connToken int64, id domainagent.ProviderID, 
 	s.mu.Unlock()
 
 	if t != nil {
-		s.endTurn(t, turnErr)
+		s.endTurnAtSeq(t, turnErr, exitSeq)
 		t.cancel()
 	}
 	if s.approvals.clearProvider(id) {

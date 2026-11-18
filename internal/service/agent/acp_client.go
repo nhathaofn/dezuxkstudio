@@ -332,6 +332,22 @@ func (c *ACPClient) Close() error {
 	return nil
 }
 
+// Alive reports whether the ACP transport and underlying process are still active.
+func (c *ACPClient) Alive() bool {
+	if c == nil {
+		return false
+	}
+	select {
+	case <-c.doneCh:
+		return false
+	default:
+		c.closeMu.Lock()
+		closed := c.closed
+		c.closeMu.Unlock()
+		return !closed
+	}
+}
+
 func (c *ACPClient) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	idNum := c.nextID.Add(1)
 	idRaw, _ := json.Marshal(idNum)
