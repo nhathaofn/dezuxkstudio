@@ -27,6 +27,7 @@ import (
 	domainagent "app/internal/domain/agent"
 	domainprefs "app/internal/domain/preferences"
 	domainprovider "app/internal/domain/provider"
+	domainstudio "app/internal/domain/studio"
 	"app/internal/engine"
 	"app/internal/httpclient"
 	"app/internal/paths"
@@ -465,7 +466,7 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		})
 	}
 
-	studioRepo := sqlite.NewStudioRepository(c.db)
+	studioRepo := sqlite.NewStudioRepository(c.db, sqlite.WithStudioConfig(cfg.Studio))
 	preflightAdapter := &studioPreflightAdapter{provSvc: provSvc, studioRepo: studioRepo}
 
 	wfSvc, err := workflow.New(workflow.Options{
@@ -706,11 +707,14 @@ func (a *studioPreflightAdapter) CheckCapability(ctx context.Context, capability
 
 func (a *studioPreflightAdapter) EstimateUnitPriceUSD(ctx context.Context, providerID, modelID, capability, unit string) (float64, bool, error) {
 	if a.studioRepo == nil {
-		return 0, true, nil
+		return domainstudio.PreflightSpecForCapability(capability).FallbackUnitPriceUSD, true, nil
 	}
 	entry, ok, err := a.studioRepo.ResolveUnitPrice(ctx, providerID, modelID, capability, unit)
-	if err != nil || !ok {
+	if err != nil {
 		return 0, true, err
+	}
+	if !ok {
+		return domainstudio.PreflightSpecForCapability(capability).FallbackUnitPriceUSD, true, nil
 	}
 	wildcard := entry.ProviderID == "*" || entry.ModelID == "*"
 	return entry.UnitPriceUSD, wildcard, nil

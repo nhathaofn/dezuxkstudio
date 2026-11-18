@@ -1792,6 +1792,7 @@ export interface StudioTimelineClip {
   source_out_ms: number;
   speed: number;
   volume: number;
+  mute?: boolean;
   transition_in: StudioTransitionType;
   transition_ms: number;
   ken_burns_preset?: StudioKenBurnsPreset;

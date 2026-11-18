@@ -12,16 +12,42 @@ import (
 	"github.com/google/uuid"
 
 	"app/internal/apperr"
+	"app/internal/config"
 	"app/internal/domain/studio"
 )
 
+// StudioRepoOption configures a StudioRepository.
+type StudioRepoOption func(*StudioRepository)
+
+// WithStudioConfig configures StudioRepository limits and timeline defaults from cfg.
+func WithStudioConfig(cfg config.StudioConfig) StudioRepoOption {
+	resolved := config.ResolveStudioConfig(cfg)
+	return func(r *StudioRepository) {
+		r.cfg = resolved
+	}
+}
+
 // StudioRepository implements studio.Repository on SQLite.
-type StudioRepository struct{ db *DB }
+type StudioRepository struct {
+	db  *DB
+	cfg config.StudioConfig
+}
 
 var _ studio.Repository = (*StudioRepository)(nil)
 
 // NewStudioRepository constructs a StudioRepository.
-func NewStudioRepository(db *DB) *StudioRepository { return &StudioRepository{db: db} }
+func NewStudioRepository(db *DB, opts ...StudioRepoOption) *StudioRepository {
+	r := &StudioRepository{
+		db:  db,
+		cfg: config.Default(config.ModeDesktop).Studio,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(r)
+		}
+	}
+	return r
+}
 
 const projectCols = `id, slug, title, genre, production_mode, aspect_ratio, style_prompt, root_dir,
 	auto_approve_batches, default_text_model, default_image_model, default_video_model, default_tts_model,
@@ -86,16 +112,92 @@ func scanShot(s rowScanner) (studio.Shot, error) {
 		return studio.Shot{}, err
 	}
 	if strings.TrimSpace(dlgJSON) != "" {
-		_ = json.Unmarshal([]byte(dlgJSON), &sh.Dialogues)
+		if err := json.Unmarshal([]byte(dlgJSON), &sh.Dialogues); err != nil {
+			return studio.Shot{}, apperr.Wrap(apperr.CodeIntegrity, "Corrupted shot dialogue JSON in database", err).
+				WithMsg("errors.studio.corrupt_data", nil)
+		}
 	}
 	if strings.TrimSpace(tagsJSON) != "" {
-		_ = json.Unmarshal([]byte(tagsJSON), &sh.RefAssetTags)
+		if err := json.Unmarshal([]byte(tagsJSON), &sh.RefAssetTags); err != nil {
+			return studio.Shot{}, apperr.Wrap(apperr.CodeIntegrity, "Corrupted shot asset tags JSON in database", err).
+				WithMsg("errors.studio.corrupt_data", nil)
+		}
 	}
 	return sh, nil
 }
 
-func isConstraintErr(err error) bool {
-	return err != nil && strings.Contains(strings.ToUpper(err.Error()), "CONSTRAINT")
+func isUniqueConstraintErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	upper := strings.ToUpper(err.Error())
+	return strings.Contains(upper, "UNIQUE CONSTRAINT") ||
+		strings.Contains(upper, "CONSTRAINT_UNIQUE") ||
+		strings.Contains(upper, "PRIMARY KEY MUST BE UNIQUE") ||
+		strings.Contains(upper, "CONSTRAINT_PRIMARYKEY")
+}
+
+func isForeignKeyErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	upper := strings.ToUpper(err.Error())
+	return strings.Contains(upper, "FOREIGN KEY CONSTRAINT") ||
+		strings.Contains(upper, "CONSTRAINT_FOREIGNKEY")
+}
+
+func isTransientIOErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	upper := strings.ToUpper(err.Error())
+	return strings.Contains(upper, "SQLITE_BUSY") ||
+		strings.Contains(upper, "DATABASE IS LOCKED") ||
+		strings.Contains(upper, "SQLITE_LOCKED") ||
+		strings.Contains(upper, "DATABASE TABLE IS LOCKED") ||
+		strings.Contains(upper, "SQLITE_FULL") ||
+		strings.Contains(upper, "DATABASE OR DISK IS FULL") ||
+		strings.Contains(upper, "SQLITE_IOERR") ||
+		strings.Contains(upper, "DISK I/O ERROR")
+}
+
+func wrapStudioWriteErr(err error, op string, onUnique func() error, onFK func() error) error {
+	if err == nil {
+		return nil
+	}
+	var ae *apperr.Error
+	if errors.As(err, &ae) {
+		return err
+	}
+	if isUniqueConstraintErr(err) && onUnique != nil {
+		return onUnique()
+	}
+	if isForeignKeyErr(err) {
+		if onFK != nil {
+			return onFK()
+		}
+		return apperr.Wrap(apperr.CodeNotFound, "Referenced studio record not found", err)
+	}
+	if isTransientIOErr(err) {
+		return apperr.Wrap(apperr.CodeUnavailable, "Studio database is temporarily busy or unavailable", err).
+			WithMsg("errors.studio.storage_unavailable", nil)
+	}
+	return fmt.Errorf("sqlite: %s: %w", op, err)
+}
+
+func wrapStudioReadErr(err error, op string) error {
+	if err == nil {
+		return nil
+	}
+	var ae *apperr.Error
+	if errors.As(err, &ae) {
+		return err
+	}
+	if isTransientIOErr(err) {
+		return apperr.Wrap(apperr.CodeUnavailable, "Studio database is temporarily busy or unavailable", err).
+			WithMsg("errors.studio.storage_unavailable", nil)
+	}
+	return fmt.Errorf("sqlite: %s: %w", op, err)
 }
 
 // ListProjects returns all studio projects ordered by most recently updated.
@@ -103,18 +205,18 @@ func (r *StudioRepository) ListProjects(ctx context.Context) ([]studio.Project, 
 	rows, err := r.db.read().QueryContext(ctx,
 		`SELECT `+projectCols+` FROM studio_projects ORDER BY updated_at DESC, created_at DESC, id ASC`)
 	if err != nil {
-		return nil, fmt.Errorf("sqlite: list studio projects: %w", err)
+		return nil, wrapStudioReadErr(err, "list studio projects")
 	}
 	defer rows.Close()
 	out := []studio.Project{}
 	for rows.Next() {
 		p, err := scanProject(rows)
 		if err != nil {
-			return nil, fmt.Errorf("sqlite: scan studio project: %w", err)
+			return nil, wrapStudioReadErr(err, "scan studio project")
 		}
 		out = append(out, p)
 	}
-	return out, rows.Err()
+	return out, wrapStudioReadErr(rows.Err(), "iterate studio projects")
 }
 
 // GetProject retrieves a project by ID or slug.
@@ -126,7 +228,7 @@ func (r *StudioRepository) GetProject(ctx context.Context, idOrSlug string) (stu
 		return studio.Project{}, studio.ErrProjectNotFound(idOrSlug)
 	}
 	if err != nil {
-		return studio.Project{}, fmt.Errorf("sqlite: get studio project: %w", err)
+		return studio.Project{}, wrapStudioReadErr(err, "get studio project")
 	}
 	return p, nil
 }
@@ -152,12 +254,11 @@ func (r *StudioRepository) CreateProject(ctx context.Context, p studio.Project) 
 		boolInt(p.AutoApproveBatches), p.DefaultTextModel, p.DefaultImageModel, p.DefaultVideoModel, p.DefaultTTSModel,
 		p.CreatedAt, p.UpdatedAt,
 	)
-	if isConstraintErr(err) {
-		return studio.Project{}, apperr.New(apperr.CodeConflict, fmt.Sprintf("Project slug %q already exists", p.Slug)).
-			WithMsg("errors.studio.duplicate_slug", map[string]any{"slug": p.Slug})
-	}
 	if err != nil {
-		return studio.Project{}, fmt.Errorf("sqlite: create studio project: %w", err)
+		return studio.Project{}, wrapStudioWriteErr(err, "create studio project", func() error {
+			return apperr.Wrap(apperr.CodeConflict, fmt.Sprintf("Project slug %q already exists", p.Slug), err).
+				WithMsg("errors.studio.duplicate_slug", map[string]any{"slug": p.Slug})
+		}, nil)
 	}
 	return p, nil
 }
@@ -178,12 +279,11 @@ func (r *StudioRepository) UpdateProject(ctx context.Context, p studio.Project) 
 		p.RootDir, boolInt(p.AutoApproveBatches), p.DefaultTextModel, p.DefaultImageModel,
 		p.DefaultVideoModel, p.DefaultTTSModel, p.UpdatedAt, p.ID,
 	)
-	if isConstraintErr(err) {
-		return studio.Project{}, apperr.New(apperr.CodeConflict, fmt.Sprintf("Project slug %q already exists", p.Slug)).
-			WithMsg("errors.studio.duplicate_slug", map[string]any{"slug": p.Slug})
-	}
 	if err != nil {
-		return studio.Project{}, fmt.Errorf("sqlite: update studio project: %w", err)
+		return studio.Project{}, wrapStudioWriteErr(err, "update studio project", func() error {
+			return apperr.Wrap(apperr.CodeConflict, fmt.Sprintf("Project slug %q already exists", p.Slug), err).
+				WithMsg("errors.studio.duplicate_slug", map[string]any{"slug": p.Slug})
+		}, nil)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
@@ -196,7 +296,7 @@ func (r *StudioRepository) UpdateProject(ctx context.Context, p studio.Project) 
 func (r *StudioRepository) DeleteProject(ctx context.Context, id string) error {
 	res, err := r.db.sql.ExecContext(ctx, `DELETE FROM studio_projects WHERE id = ?`, strings.TrimSpace(id))
 	if err != nil {
-		return fmt.Errorf("sqlite: delete studio project: %w", err)
+		return wrapStudioWriteErr(err, "delete studio project", nil, nil)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return studio.ErrProjectNotFound(id)
@@ -210,18 +310,18 @@ func (r *StudioRepository) ListEpisodes(ctx context.Context, projectID string) (
 		`SELECT `+episodeCols+` FROM studio_episodes WHERE project_id = ? ORDER BY created_at ASC, code ASC`,
 		strings.TrimSpace(projectID))
 	if err != nil {
-		return nil, fmt.Errorf("sqlite: list studio episodes: %w", err)
+		return nil, wrapStudioReadErr(err, "list studio episodes")
 	}
 	defer rows.Close()
 	out := []studio.Episode{}
 	for rows.Next() {
 		ep, err := scanEpisode(rows)
 		if err != nil {
-			return nil, fmt.Errorf("sqlite: scan studio episode: %w", err)
+			return nil, wrapStudioReadErr(err, "scan studio episode")
 		}
 		out = append(out, ep)
 	}
-	return out, rows.Err()
+	return out, wrapStudioReadErr(rows.Err(), "iterate studio episodes")
 }
 
 // GetEpisode fetches an episode by ID.
@@ -232,7 +332,7 @@ func (r *StudioRepository) GetEpisode(ctx context.Context, id string) (studio.Ep
 		return studio.Episode{}, studio.ErrEpisodeNotFound(id)
 	}
 	if err != nil {
-		return studio.Episode{}, fmt.Errorf("sqlite: get studio episode: %w", err)
+		return studio.Episode{}, wrapStudioReadErr(err, "get studio episode")
 	}
 	return ep, nil
 }
@@ -256,11 +356,13 @@ func (r *StudioRepository) CreateEpisode(ctx context.Context, ep studio.Episode)
 		ep.ID, ep.ProjectID, ep.Code, ep.Title, string(ep.Stage), ep.RawScriptPath, ep.ScriptJSONPath,
 		ep.AssetsJSONPath, ep.ShotsJSONPath, ep.TimelineJSONPath, ep.CreatedAt, ep.UpdatedAt,
 	)
-	if isConstraintErr(err) {
-		return studio.Episode{}, apperr.New(apperr.CodeConflict, fmt.Sprintf("Episode %q already exists in project", ep.Code))
-	}
 	if err != nil {
-		return studio.Episode{}, fmt.Errorf("sqlite: create studio episode: %w", err)
+		return studio.Episode{}, wrapStudioWriteErr(err, "create studio episode", func() error {
+			return apperr.Wrap(apperr.CodeConflict, fmt.Sprintf("Episode %q already exists in project", ep.Code), err).
+				WithMsg("errors.studio.duplicate_episode", map[string]any{"code": ep.Code})
+		}, func() error {
+			return studio.ErrProjectNotFound(ep.ProjectID)
+		})
 	}
 	return ep, nil
 }
@@ -280,7 +382,10 @@ func (r *StudioRepository) UpdateEpisode(ctx context.Context, ep studio.Episode)
 		ep.AssetsJSONPath, ep.ShotsJSONPath, ep.TimelineJSONPath, ep.UpdatedAt, ep.ID,
 	)
 	if err != nil {
-		return studio.Episode{}, fmt.Errorf("sqlite: update studio episode: %w", err)
+		return studio.Episode{}, wrapStudioWriteErr(err, "update studio episode", func() error {
+			return apperr.Wrap(apperr.CodeConflict, fmt.Sprintf("Episode %q already exists in project", ep.Code), err).
+				WithMsg("errors.studio.duplicate_episode", map[string]any{"code": ep.Code})
+		}, nil)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return studio.Episode{}, studio.ErrEpisodeNotFound(ep.ID)
@@ -294,18 +399,18 @@ func (r *StudioRepository) ListAssets(ctx context.Context, projectID string) ([]
 		`SELECT `+assetCols+` FROM studio_assets WHERE project_id = ? ORDER BY kind ASC, code_tag ASC`,
 		strings.TrimSpace(projectID))
 	if err != nil {
-		return nil, fmt.Errorf("sqlite: list studio assets: %w", err)
+		return nil, wrapStudioReadErr(err, "list studio assets")
 	}
 	defer rows.Close()
 	out := []studio.AssetEntry{}
 	for rows.Next() {
 		a, err := scanAsset(rows)
 		if err != nil {
-			return nil, fmt.Errorf("sqlite: scan studio asset: %w", err)
+			return nil, wrapStudioReadErr(err, "scan studio asset")
 		}
 		out = append(out, a)
 	}
-	return out, rows.Err()
+	return out, wrapStudioReadErr(rows.Err(), "iterate studio assets")
 }
 
 // GetAsset fetches one studio asset entry by ID.
@@ -316,7 +421,7 @@ func (r *StudioRepository) GetAsset(ctx context.Context, id string) (studio.Asse
 		return studio.AssetEntry{}, studio.ErrAssetNotFound(id)
 	}
 	if err != nil {
-		return studio.AssetEntry{}, fmt.Errorf("sqlite: get studio asset: %w", err)
+		return studio.AssetEntry{}, wrapStudioReadErr(err, "get studio asset")
 	}
 	return a, nil
 }
@@ -338,7 +443,7 @@ func (r *StudioRepository) UpsertAsset(ctx context.Context, a studio.AssetEntry)
 			err = tx.QueryRowContext(ctx, `SELECT id FROM studio_assets WHERE project_id = ? AND code_tag = ?`, a.ProjectID, a.CodeTag).Scan(&existingID)
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("sqlite: lookup studio asset: %w", err)
+			return err
 		}
 		if existingID != "" {
 			a.ID = existingID
@@ -350,10 +455,7 @@ func (r *StudioRepository) UpsertAsset(ctx context.Context, a studio.AssetEntry)
 				string(a.Kind), a.Name, a.CodeTag, a.Description, a.Prompt,
 				a.PrimaryAssetID, a.PrimaryPath, a.VoiceProvider, a.VoiceID, a.VoiceStyle, a.UpdatedAt, a.ID,
 			)
-			if err != nil {
-				return fmt.Errorf("sqlite: update studio asset: %w", err)
-			}
-			return nil
+			return err
 		}
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO studio_assets (`+assetCols+`)
@@ -361,16 +463,15 @@ func (r *StudioRepository) UpsertAsset(ctx context.Context, a studio.AssetEntry)
 			a.ID, a.ProjectID, string(a.Kind), a.Name, a.CodeTag, a.Description, a.Prompt,
 			a.PrimaryAssetID, a.PrimaryPath, a.VoiceProvider, a.VoiceID, a.VoiceStyle, a.UpdatedAt,
 		)
-		if err != nil {
-			return fmt.Errorf("sqlite: insert studio asset: %w", err)
-		}
-		return nil
+		return err
 	})
-	if isConstraintErr(err) {
-		return studio.AssetEntry{}, apperr.New(apperr.CodeConflict, fmt.Sprintf("Asset tag %q conflicts with an existing asset", a.CodeTag))
-	}
 	if err != nil {
-		return studio.AssetEntry{}, err
+		return studio.AssetEntry{}, wrapStudioWriteErr(err, "upsert studio asset", func() error {
+			return apperr.Wrap(apperr.CodeConflict, fmt.Sprintf("Asset tag %q conflicts with an existing asset", a.CodeTag), err).
+				WithMsg("errors.studio.duplicate_asset_tag", map[string]any{"tag": a.CodeTag})
+		}, func() error {
+			return studio.ErrProjectNotFound(a.ProjectID)
+		})
 	}
 	return a, nil
 }
@@ -394,7 +495,7 @@ func (r *StudioRepository) ReplaceAssets(ctx context.Context, projectID string, 
 
 	err := r.db.inTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM studio_assets WHERE project_id = ?`, pid); err != nil {
-			return fmt.Errorf("sqlite: clear studio assets: %w", err)
+			return err
 		}
 		for _, a := range normalized {
 			if _, err := tx.ExecContext(ctx, `
@@ -403,13 +504,18 @@ func (r *StudioRepository) ReplaceAssets(ctx context.Context, projectID string, 
 				a.ID, a.ProjectID, string(a.Kind), a.Name, a.CodeTag, a.Description, a.Prompt,
 				a.PrimaryAssetID, a.PrimaryPath, a.VoiceProvider, a.VoiceID, a.VoiceStyle, a.UpdatedAt,
 			); err != nil {
-				return fmt.Errorf("sqlite: insert studio asset: %w", err)
+				return err
 			}
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, wrapStudioWriteErr(err, "replace studio assets", func() error {
+			return apperr.Wrap(apperr.CodeConflict, "Duplicate asset code_tag in project", err).
+				WithMsg("errors.studio.duplicate_asset_tag", nil)
+		}, func() error {
+			return studio.ErrProjectNotFound(pid)
+		})
 	}
 	return r.ListAssets(ctx, pid)
 }
@@ -418,7 +524,7 @@ func (r *StudioRepository) ReplaceAssets(ctx context.Context, projectID string, 
 func (r *StudioRepository) DeleteAsset(ctx context.Context, id string) error {
 	res, err := r.db.sql.ExecContext(ctx, `DELETE FROM studio_assets WHERE id = ?`, strings.TrimSpace(id))
 	if err != nil {
-		return fmt.Errorf("sqlite: delete studio asset: %w", err)
+		return wrapStudioWriteErr(err, "delete studio asset", nil, nil)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return studio.ErrAssetNotFound(id)
@@ -432,18 +538,18 @@ func (r *StudioRepository) ListShots(ctx context.Context, episodeID string) ([]s
 		`SELECT `+shotCols+` FROM studio_shots WHERE episode_id = ? ORDER BY seq ASC, id ASC`,
 		strings.TrimSpace(episodeID))
 	if err != nil {
-		return nil, fmt.Errorf("sqlite: list studio shots: %w", err)
+		return nil, wrapStudioReadErr(err, "list studio shots")
 	}
 	defer rows.Close()
 	out := []studio.Shot{}
 	for rows.Next() {
 		sh, err := scanShot(rows)
 		if err != nil {
-			return nil, fmt.Errorf("sqlite: scan studio shot: %w", err)
+			return nil, wrapStudioReadErr(err, "scan studio shot")
 		}
 		out = append(out, sh)
 	}
-	return out, rows.Err()
+	return out, wrapStudioReadErr(rows.Err(), "iterate studio shots")
 }
 
 // GetShot fetches one shot by ID.
@@ -454,50 +560,53 @@ func (r *StudioRepository) GetShot(ctx context.Context, id string) (studio.Shot,
 		return studio.Shot{}, studio.ErrShotNotFound(id)
 	}
 	if err != nil {
-		return studio.Shot{}, fmt.Errorf("sqlite: get studio shot: %w", err)
+		return studio.Shot{}, wrapStudioReadErr(err, "get studio shot")
 	}
 	return sh, nil
 }
 
-func marshalShotJSONSlices(sh studio.Shot) (dlgJSON, tagsJSON string) {
+func marshalShotJSONSlices(sh studio.Shot) (dlgJSON, tagsJSON string, err error) {
+	dlgJSON = "[]"
 	if len(sh.Dialogues) > 0 {
-		if b, err := json.Marshal(sh.Dialogues); err == nil {
-			dlgJSON = string(b)
+		b, merr := json.Marshal(sh.Dialogues)
+		if merr != nil {
+			return "", "", fmt.Errorf("marshal shot dialogues: %w", merr)
 		}
+		dlgJSON = string(b)
 	}
-	if dlgJSON == "" {
-		dlgJSON = "[]"
-	}
+	tagsJSON = "[]"
 	if len(sh.RefAssetTags) > 0 {
-		if b, err := json.Marshal(sh.RefAssetTags); err == nil {
-			tagsJSON = string(b)
+		b, merr := json.Marshal(sh.RefAssetTags)
+		if merr != nil {
+			return "", "", fmt.Errorf("marshal shot ref_asset_tags: %w", merr)
 		}
+		tagsJSON = string(b)
 	}
-	if tagsJSON == "" {
-		tagsJSON = "[]"
-	}
-	return dlgJSON, tagsJSON
+	return dlgJSON, tagsJSON, nil
 }
 
 // UpsertShot inserts or updates a shot in an episode.
 func (r *StudioRepository) UpsertShot(ctx context.Context, s studio.Shot) (studio.Shot, error) {
-	if err := s.Validate(); err != nil {
+	if err := s.ValidateWithLimits(r.cfg.MaxShotDurationSec, r.cfg.DefaultShotDurationSec); err != nil {
 		return studio.Shot{}, err
 	}
 	if s.ID == "" {
 		s.ID = uuid.NewString()
 	}
 	s.UpdatedAt = time.Now().UnixMilli()
-	dlgJSON, tagsJSON := marshalShotJSONSlices(s)
+	dlgJSON, tagsJSON, err := marshalShotJSONSlices(s)
+	if err != nil {
+		return studio.Shot{}, fmt.Errorf("sqlite: %w", err)
+	}
 
-	err := r.db.inTx(ctx, func(tx *sql.Tx) error {
+	err = r.db.inTx(ctx, func(tx *sql.Tx) error {
 		var existing string
-		err := tx.QueryRowContext(ctx, `SELECT id FROM studio_shots WHERE id = ?`, s.ID).Scan(&existing)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("sqlite: lookup studio shot: %w", err)
+		qerr := tx.QueryRowContext(ctx, `SELECT id FROM studio_shots WHERE id = ?`, s.ID).Scan(&existing)
+		if qerr != nil && !errors.Is(qerr, sql.ErrNoRows) {
+			return qerr
 		}
 		if existing != "" {
-			_, err = tx.ExecContext(ctx, `
+			_, uerr := tx.ExecContext(ctx, `
 				UPDATE studio_shots SET
 					seq = ?, scene_code = ?, title = ?, shot_mode = ?, duration_sec = ?,
 					image_prompt = ?, video_prompt = ?, narration_text = ?, dialogue_json = ?, ref_asset_tags_json = ?,
@@ -509,17 +618,16 @@ func (r *StudioRepository) UpsertShot(ctx context.Context, s studio.Shot) (studi
 				s.KeyframeAssetID, s.KeyframePath, s.VideoAssetID, s.VideoPath,
 				s.AudioAssetID, s.AudioPath, string(s.Status), s.ErrorText, s.UpdatedAt, s.ID,
 			)
-			if err != nil {
-				return fmt.Errorf("sqlite: update studio shot: %w", err)
-			}
-			return nil
+			return uerr
 		}
 		if s.Seq == 0 {
 			var maxSeq int
-			_ = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM studio_shots WHERE episode_id = ?`, s.EpisodeID).Scan(&maxSeq)
+			if serr := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM studio_shots WHERE episode_id = ?`, s.EpisodeID).Scan(&maxSeq); serr != nil {
+				return serr
+			}
 			s.Seq = maxSeq + 1
 		}
-		_, err = tx.ExecContext(ctx, `
+		_, ierr := tx.ExecContext(ctx, `
 			INSERT INTO studio_shots (`+shotCols+`)
 			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			s.ID, s.EpisodeID, s.Seq, s.SceneCode, s.Title, string(s.ShotMode), s.DurationSec,
@@ -527,13 +635,14 @@ func (r *StudioRepository) UpsertShot(ctx context.Context, s studio.Shot) (studi
 			s.KeyframeAssetID, s.KeyframePath, s.VideoAssetID, s.VideoPath,
 			s.AudioAssetID, s.AudioPath, string(s.Status), s.ErrorText, s.UpdatedAt,
 		)
-		if err != nil {
-			return fmt.Errorf("sqlite: insert studio shot: %w", err)
-		}
-		return nil
+		return ierr
 	})
 	if err != nil {
-		return studio.Shot{}, err
+		return studio.Shot{}, wrapStudioWriteErr(err, "upsert studio shot", func() error {
+			return apperr.Wrap(apperr.CodeConflict, "Shot conflicts with an existing shot", err)
+		}, func() error {
+			return studio.ErrEpisodeNotFound(s.EpisodeID)
+		})
 	}
 	return s, nil
 }
@@ -548,7 +657,7 @@ func (r *StudioRepository) ReplaceShots(ctx context.Context, episodeID string, s
 		if sh.Seq <= 0 {
 			sh.Seq = i + 1
 		}
-		if err := sh.Validate(); err != nil {
+		if err := sh.ValidateWithLimits(r.cfg.MaxShotDurationSec, r.cfg.DefaultShotDurationSec); err != nil {
 			return nil, err
 		}
 		if sh.ID == "" {
@@ -560,10 +669,13 @@ func (r *StudioRepository) ReplaceShots(ctx context.Context, episodeID string, s
 
 	err := r.db.inTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM studio_shots WHERE episode_id = ?`, epID); err != nil {
-			return fmt.Errorf("sqlite: clear studio shots: %w", err)
+			return err
 		}
 		for _, sh := range normalized {
-			dlgJSON, tagsJSON := marshalShotJSONSlices(sh)
+			dlgJSON, tagsJSON, merr := marshalShotJSONSlices(sh)
+			if merr != nil {
+				return merr
+			}
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO studio_shots (`+shotCols+`)
 				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -572,38 +684,85 @@ func (r *StudioRepository) ReplaceShots(ctx context.Context, episodeID string, s
 				sh.KeyframeAssetID, sh.KeyframePath, sh.VideoAssetID, sh.VideoPath,
 				sh.AudioAssetID, sh.AudioPath, string(sh.Status), sh.ErrorText, sh.UpdatedAt,
 			); err != nil {
-				return fmt.Errorf("sqlite: insert studio shot: %w", err)
+				return err
 			}
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, wrapStudioWriteErr(err, "replace studio shots", func() error {
+			return apperr.Wrap(apperr.CodeConflict, "Duplicate shot ID in episode", err)
+		}, func() error {
+			return studio.ErrEpisodeNotFound(epID)
+		})
 	}
 	return r.ListShots(ctx, epID)
 }
 
-// ReorderShots updates shot sequence numbers in one transaction.
+// ReorderShots updates shot sequence numbers in one transaction, rejecting duplicate, unknown, or partial shotIDs.
 func (r *StudioRepository) ReorderShots(ctx context.Context, episodeID string, shotIDs []string) ([]studio.Shot, error) {
 	epID := strings.TrimSpace(episodeID)
+	if epID == "" {
+		return nil, apperr.Validation("episode_id is required")
+	}
+	if len(shotIDs) == 0 {
+		return nil, apperr.Validation("shot_ids is required")
+	}
+	cleaned := make([]string, 0, len(shotIDs))
+	seen := make(map[string]bool, len(shotIDs))
+	for _, raw := range shotIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" || seen[id] {
+			return nil, apperr.Validation("shot_ids must contain non-empty unique shot IDs").
+				WithMsg("errors.studio.invalid_shot_order", nil)
+		}
+		seen[id] = true
+		cleaned = append(cleaned, id)
+	}
+
 	now := time.Now().UnixMilli()
 	err := r.db.inTx(ctx, func(tx *sql.Tx) error {
-		for idx, id := range shotIDs {
-			res, err := tx.ExecContext(ctx,
-				`UPDATE studio_shots SET seq = ?, updated_at = ? WHERE id = ? AND episode_id = ?`,
-				idx+1, now, strings.TrimSpace(id), epID,
-			)
-			if err != nil {
-				return fmt.Errorf("sqlite: reorder studio shot: %w", err)
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM studio_shots WHERE episode_id = ?`, epID)
+		if err != nil {
+			return err
+		}
+		existing := make(map[string]bool)
+		for rows.Next() {
+			var id string
+			if serr := rows.Scan(&id); serr != nil {
+				_ = rows.Close()
+				return serr
 			}
-			if n, _ := res.RowsAffected(); n == 0 {
+			existing[id] = true
+		}
+		if rerr := rows.Err(); rerr != nil {
+			_ = rows.Close()
+			return rerr
+		}
+		_ = rows.Close()
+
+		for _, id := range cleaned {
+			if !existing[id] {
 				return studio.ErrShotNotFound(id)
+			}
+		}
+		if len(cleaned) != len(existing) {
+			return apperr.Validation(fmt.Sprintf("shot_ids must include all %d shots in episode", len(existing))).
+				WithMsg("errors.studio.invalid_shot_order", map[string]any{"expected": len(existing), "actual": len(cleaned)})
+		}
+
+		for idx, id := range cleaned {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE studio_shots SET seq = ?, updated_at = ? WHERE id = ? AND episode_id = ?`,
+				idx+1, now, id, epID,
+			); err != nil {
+				return err
 			}
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, wrapStudioWriteErr(err, "reorder studio shots", nil, nil)
 	}
 	return r.ListShots(ctx, epID)
 }

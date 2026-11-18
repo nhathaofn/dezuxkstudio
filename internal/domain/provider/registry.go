@@ -53,7 +53,8 @@ var registry = []Meta{
 	},
 	{
 		ID: IDGeminiVertex, DisplayName: "Google Vertex AI",
-		Capabilities: []Capability{llm, image, video, tts},
+		DefaultBaseURL: VertexAIBaseURL,
+		Capabilities:   []Capability{llm, image, video, tts},
 		Fields: []Field{
 			{Key: FieldCredentialsFile, Kind: FieldFile, Secret: true, Required: true},
 			{Key: FieldGCSBucket, Kind: FieldText},
@@ -63,11 +64,11 @@ var registry = []Meta{
 	},
 	{
 		ID: IDOpenAI, DisplayName: "OpenAI",
-		Capabilities:   []Capability{llm, image, video},
+		Capabilities:   []Capability{llm, image, video, tts},
 		Fields:         []Field{apiKey(), baseURL("https://api.openai.com/v1")},
 		DefaultBaseURL: "https://api.openai.com/v1",
 		DocsURL:        "https://platform.openai.com/api-keys",
-		Probe:          Probe{Kind: ProbeOpenAIModels, ModelFilter: `gpt|sora|dall|o1|o3|o4`},
+		Probe:          Probe{Kind: ProbeOpenAIModels, ModelFilter: `gpt|sora|dall|tts|o1|o3|o4`},
 	},
 	{
 		ID: IDAnthropic, DisplayName: "Anthropic",
@@ -152,6 +153,21 @@ var registry = []Meta{
 		Probe:          Probe{Kind: ProbeViduTasks},
 		Hosts:          []string{"api.vidu.com"},
 	},
+}
+
+// Protocol constants shared by built-in provider HTTP adapters.
+const (
+	VertexAIBaseURL     = "https://aiplatform.googleapis.com"
+	GCSObjectBaseURL    = "https://storage.googleapis.com"
+	AnthropicAPIVersion = "2023-06-01"
+)
+
+// DefaultBaseURLFor returns the canonical default base URL registered for a built-in provider ID.
+func DefaultBaseURLFor(id string) string {
+	if m, ok := Lookup(id); ok {
+		return m.DefaultBaseURL
+	}
+	return ""
 }
 
 // Registry returns the built-in providers in display order.

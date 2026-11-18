@@ -14,9 +14,14 @@ import (
 )
 
 const (
+	// maxVideoDurationSec is the baseline protocol ceiling for single-clip video generation when no StudioConfig bound is supplied.
 	maxVideoDurationSec = 60
-	minTTSSpeed         = 0.25
-	maxTTSSpeed         = 4.0
+	// minTTSSpeed and maxTTSSpeed match the widest provider speech synthesis rate envelope (OpenAI 0.25x..4.0x).
+	minTTSSpeed = 0.25
+	maxTTSSpeed = 4.0
+	// minPixelDimension and maxPixelDimension bound explicit WxH image/video dimensions against degenerate or OOM-inducing sizes.
+	minPixelDimension = 64
+	maxPixelDimension = 16384
 )
 
 func validationErr(key, msg string, params map[string]any) error {
@@ -66,6 +71,20 @@ func NormalizeImageRequest(req ImageRequest) (ImageRequest, error) {
 
 // NormalizeVideoRequest validates and applies defaults to a video generation request.
 func NormalizeVideoRequest(req VideoRequest) (VideoRequest, error) {
+	return NormalizeVideoRequestWithLimits(req, maxVideoDurationSec, DefaultVideoDurationSec)
+}
+
+// NormalizeVideoRequestWithLimits validates a video request using caller-configured max and default duration bounds.
+func NormalizeVideoRequestWithLimits(req VideoRequest, maxDurationSec, defaultDurationSec int) (VideoRequest, error) {
+	if maxDurationSec < 1 {
+		maxDurationSec = maxVideoDurationSec
+	}
+	if defaultDurationSec < 1 {
+		defaultDurationSec = DefaultVideoDurationSec
+	}
+	if defaultDurationSec > maxDurationSec {
+		defaultDurationSec = maxDurationSec
+	}
 	req.ModelRef = strings.TrimSpace(req.ModelRef)
 	req.Prompt = strings.TrimSpace(req.Prompt)
 	req.StartImage = strings.TrimSpace(req.StartImage)
@@ -91,9 +110,9 @@ func NormalizeVideoRequest(req VideoRequest) (VideoRequest, error) {
 	}
 
 	if req.DurationSec == 0 {
-		req.DurationSec = DefaultVideoDurationSec
-	} else if req.DurationSec < 1 || req.DurationSec > maxVideoDurationSec {
-		return req, validationErr("errors.mediagen.invalid_duration", fmt.Sprintf("Duration must be between 1 and %d seconds", maxVideoDurationSec), map[string]any{"max": maxVideoDurationSec})
+		req.DurationSec = defaultDurationSec
+	} else if req.DurationSec < 1 || req.DurationSec > maxDurationSec {
+		return req, validationErr("errors.mediagen.invalid_duration", fmt.Sprintf("Duration must be between 1 and %d seconds", maxDurationSec), map[string]any{"max": maxDurationSec})
 	}
 
 	if req.Seed != nil && *req.Seed < 0 {
@@ -178,6 +197,14 @@ func trimNonEmpty(items []string) []string {
 
 // ParseWxH parses pixel dimension strings such as "1024x1024" or "1280*720".
 func ParseWxH(s string) (w, h int, ok bool) {
+	return ParseWxHWithMax(s, maxPixelDimension)
+}
+
+// ParseWxHWithMax parses pixel dimension strings bounded by [minPixelDimension, maxDim].
+func ParseWxHWithMax(s string, maxDim int) (w, h int, ok bool) {
+	if maxDim < minPixelDimension {
+		maxDim = maxPixelDimension
+	}
 	s = strings.ToLower(strings.TrimSpace(s))
 	sep := "x"
 	if strings.Contains(s, "*") {
@@ -189,7 +216,7 @@ func ParseWxH(s string) (w, h int, ok bool) {
 	}
 	wi, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
 	hi, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
-	if err1 != nil || err2 != nil || wi < 64 || hi < 64 || wi > 16384 || hi > 16384 {
+	if err1 != nil || err2 != nil || wi < minPixelDimension || hi < minPixelDimension || wi > maxDim || hi > maxDim {
 		return 0, 0, false
 	}
 	return wi, hi, true

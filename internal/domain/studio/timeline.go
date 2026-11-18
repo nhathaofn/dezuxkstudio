@@ -2,7 +2,6 @@ package studio
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"slices"
@@ -198,6 +197,21 @@ type Track struct {
 	Clips  []TimelineClip `json:"clips"`
 }
 
+const (
+	// MaxTimelineFPS is the upper frame-rate bound supported by timeline export and FFmpeg assembly.
+	MaxTimelineFPS = 120
+	// MinTimelineDimPx and DefaultMaxTimelineDimPx bound timeline canvas dimensions when no StudioConfig override is supplied.
+	MinTimelineDimPx        = 64
+	DefaultMaxTimelineDimPx = 16384
+	// MaxTrackClipVolume bounds linear audio gain (0.0 = silent, 2.0 = +6 dB).
+	MaxTrackClipVolume = 2.0
+	// MinClipSpeed and MaxClipSpeed bound playback speed scaling on timeline clips.
+	MinClipSpeed = 0.25
+	MaxClipSpeed = 4.0
+	// MinSplitSegmentMs prevents splitting a clip into degenerate sub-frame fragments (< 100ms).
+	MinSplitSegmentMs = 100
+)
+
 // TimelineClip places a trimmed slice of a local media file or registered asset onto a Track.
 type TimelineClip struct {
 	ID              string         `json:"id"`
@@ -210,6 +224,7 @@ type TimelineClip struct {
 	SourceOutMs     int64          `json:"source_out_ms"`
 	Speed           float64        `json:"speed"`
 	Volume          float64        `json:"volume"`
+	Mute            bool           `json:"mute,omitempty"`
 	TransitionIn    TransitionType `json:"transition_in"`
 	TransitionMs    int64          `json:"transition_ms"`
 	KenBurnsPreset  KenBurnsPreset `json:"ken_burns_preset,omitempty"`
@@ -321,6 +336,7 @@ func DefaultEditTimelineWithBGM(width, height, fps int, bgmVolume float64) EditT
 			{ID: "a2", Name: "BGM", Kind: TrackAudioBGM, Volume: bgmVolume, Clips: []TimelineClip{}},
 		},
 		Subtitles: []SubtitleCue{},
+		Markers:   []TimelineMarker{},
 	}
 }
 
@@ -375,7 +391,7 @@ func (tl *EditTimeline) Normalize() {
 		if tr.Kind == "" {
 			tr.Kind = TrackVideo
 		}
-		if tr.Volume < 0 {
+		if !math.IsNaN(tr.Volume) && !math.IsInf(tr.Volume, 0) && tr.Volume < 0 {
 			tr.Volume = 0
 		}
 		if tr.Clips == nil {
@@ -391,10 +407,10 @@ func (tl *EditTimeline) Normalize() {
 			cl.AssetID = strings.TrimSpace(cl.AssetID)
 			cl.ShotID = strings.TrimSpace(cl.ShotID)
 			cl.Label = strings.TrimSpace(cl.Label)
-			if cl.Speed <= 0 {
+			if !math.IsNaN(cl.Speed) && !math.IsInf(cl.Speed, 0) && cl.Speed <= 0 {
 				cl.Speed = 1.0
 			}
-			if cl.Volume < 0 {
+			if !math.IsNaN(cl.Volume) && !math.IsInf(cl.Volume, 0) && cl.Volume < 0 {
 				cl.Volume = 0
 			}
 			if cl.TransitionIn == "" {
@@ -439,6 +455,9 @@ func (tl *EditTimeline) Normalize() {
 		}
 		return strings.Compare(a.ID, b.ID)
 	})
+	if tl.Markers == nil {
+		tl.Markers = []TimelineMarker{}
+	}
 	for mi := range tl.Markers {
 		m := &tl.Markers[mi]
 		m.ID = strings.TrimSpace(m.ID)
@@ -450,72 +469,103 @@ func (tl *EditTimeline) Normalize() {
 	}
 }
 
-// Validate normalizes and validates EditTimeline invariants.
+// Validate normalizes and validates EditTimeline invariants using default dimension bounds.
 func (tl *EditTimeline) Validate() error {
-	tl.Normalize()
-	if tl.FPS < 1 || tl.FPS > 120 {
-		return apperr.Validation("timeline fps must be between 1 and 120")
+	return tl.ValidateWithMaxDim(DefaultMaxTimelineDimPx)
+}
+
+// ValidateWithMaxDim normalizes and validates EditTimeline invariants bounded by [MinTimelineDimPx, maxDim].
+func (tl *EditTimeline) ValidateWithMaxDim(maxDim int) error {
+	if maxDim < MinTimelineDimPx {
+		maxDim = DefaultMaxTimelineDimPx
 	}
-	if tl.Width < 64 || tl.Width > 16384 || tl.Height < 64 || tl.Height > 16384 {
-		return apperr.Validation("timeline width and height must be between 64 and 16384")
+	tl.Normalize()
+	if tl.FPS < 1 || tl.FPS > MaxTimelineFPS {
+		return apperr.Validation(fmt.Sprintf("timeline fps must be between 1 and %d", MaxTimelineFPS)).
+			WithMsg("errors.studio.timeline_fps_invalid", map[string]any{"max": MaxTimelineFPS})
+	}
+	if tl.Width < MinTimelineDimPx || tl.Width > maxDim || tl.Height < MinTimelineDimPx || tl.Height > maxDim {
+		return apperr.Validation(fmt.Sprintf("timeline width and height must be between %d and %d", MinTimelineDimPx, maxDim)).
+			WithMsg("errors.studio.timeline_dimensions_invalid", map[string]any{"min": MinTimelineDimPx, "max": maxDim})
 	}
 	trackSeen := make(map[string]bool, len(tl.Tracks))
 	clipSeen := make(map[string]bool)
 	for _, tr := range tl.Tracks {
 		if !tr.Kind.Valid() {
-			return apperr.Validation(fmt.Sprintf("unsupported track kind %q", tr.Kind))
+			return apperr.Validation(fmt.Sprintf("unsupported track kind %q", tr.Kind)).
+				WithMsg("errors.studio.timeline_invalid_track_kind", map[string]any{"value": string(tr.Kind)})
 		}
 		if trackSeen[tr.ID] {
-			return apperr.Validation(fmt.Sprintf("duplicate track id %q", tr.ID))
+			return apperr.Validation(fmt.Sprintf("duplicate track id %q", tr.ID)).
+				WithMsg("errors.studio.timeline_duplicate_track", map[string]any{"id": tr.ID})
 		}
 		trackSeen[tr.ID] = true
-		if tr.Volume < 0 || tr.Volume > 2.0 {
-			return apperr.Validation(fmt.Sprintf("track %q volume must be between 0 and 2.0", tr.ID))
+		if math.IsNaN(tr.Volume) || math.IsInf(tr.Volume, 0) || tr.Volume < 0 || tr.Volume > MaxTrackClipVolume {
+			return apperr.Validation(fmt.Sprintf("track %q volume must be between 0 and %.1f", tr.ID, MaxTrackClipVolume)).
+				WithMsg("errors.studio.timeline_volume_invalid", map[string]any{"id": tr.ID})
 		}
 		for _, cl := range tr.Clips {
 			if clipSeen[cl.ID] {
-				return apperr.Validation(fmt.Sprintf("duplicate clip id %q", cl.ID))
+				return apperr.Validation(fmt.Sprintf("duplicate clip id %q", cl.ID)).
+					WithMsg("errors.studio.timeline_duplicate_clip", map[string]any{"id": cl.ID})
 			}
 			clipSeen[cl.ID] = true
 			if cl.FilePath == "" && cl.AssetID == "" {
-				return apperr.Validation(fmt.Sprintf("clip %q requires file_path or asset_id", cl.ID))
+				return apperr.Validation(fmt.Sprintf("clip %q requires file_path or asset_id", cl.ID)).
+					WithMsg("errors.studio.timeline_clip_source_required", map[string]any{"id": cl.ID})
 			}
 			if cl.TimelineStartMs < 0 {
-				return apperr.Validation(fmt.Sprintf("clip %q timeline_start_ms must be >= 0", cl.ID))
+				return apperr.Validation(fmt.Sprintf("clip %q timeline_start_ms must be >= 0", cl.ID)).
+					WithMsg("errors.studio.timeline_clip_bounds_invalid", map[string]any{"id": cl.ID})
 			}
 			if cl.SourceInMs < 0 || cl.SourceOutMs <= cl.SourceInMs {
-				return apperr.Validation(fmt.Sprintf("clip %q requires 0 <= source_in_ms < source_out_ms", cl.ID))
+				return apperr.Validation(fmt.Sprintf("clip %q requires 0 <= source_in_ms < source_out_ms", cl.ID)).
+					WithMsg("errors.studio.timeline_clip_bounds_invalid", map[string]any{"id": cl.ID})
 			}
-			if cl.Speed < 0.25 || cl.Speed > 4.0 {
-				return apperr.Validation(fmt.Sprintf("clip %q speed must be between 0.25 and 4.0", cl.ID))
+			if math.IsNaN(cl.Speed) || math.IsInf(cl.Speed, 0) || cl.Speed < MinClipSpeed || cl.Speed > MaxClipSpeed {
+				return apperr.Validation(fmt.Sprintf("clip %q speed must be between %.2f and %.1f", cl.ID, MinClipSpeed, MaxClipSpeed)).
+					WithMsg("errors.studio.timeline_clip_speed_invalid", map[string]any{"id": cl.ID})
 			}
-			if cl.Volume < 0 || cl.Volume > 2.0 {
-				return apperr.Validation(fmt.Sprintf("clip %q volume must be between 0 and 2.0", cl.ID))
+			if math.IsNaN(cl.Volume) || math.IsInf(cl.Volume, 0) || cl.Volume < 0 || cl.Volume > MaxTrackClipVolume {
+				return apperr.Validation(fmt.Sprintf("clip %q volume must be between 0 and %.1f", cl.ID, MaxTrackClipVolume)).
+					WithMsg("errors.studio.timeline_volume_invalid", map[string]any{"id": cl.ID})
+			}
+			for _, pk := range cl.Peaks {
+				if math.IsNaN(pk) || math.IsInf(pk, 0) {
+					return apperr.Validation(fmt.Sprintf("clip %q peaks contain non-finite float", cl.ID)).
+						WithMsg("errors.studio.timeline_peaks_invalid", map[string]any{"id": cl.ID})
+				}
 			}
 			if !cl.TransitionIn.Valid() {
-				return apperr.Validation(fmt.Sprintf("clip %q has invalid transition_in %q", cl.ID, cl.TransitionIn))
+				return apperr.Validation(fmt.Sprintf("clip %q has invalid transition_in %q", cl.ID, cl.TransitionIn)).
+					WithMsg("errors.studio.timeline_transition_invalid", map[string]any{"value": string(cl.TransitionIn)})
 			}
 			if !cl.KenBurnsPreset.Valid() {
-				return apperr.Validation(fmt.Sprintf("clip %q has invalid ken_burns_preset %q", cl.ID, cl.KenBurnsPreset))
+				return apperr.Validation(fmt.Sprintf("clip %q has invalid ken_burns_preset %q", cl.ID, cl.KenBurnsPreset)).
+					WithMsg("errors.studio.timeline_ken_burns_invalid", map[string]any{"value": string(cl.KenBurnsPreset)})
 			}
 		}
 	}
 	subSeen := make(map[string]bool, len(tl.Subtitles))
 	for _, sub := range tl.Subtitles {
 		if subSeen[sub.ID] {
-			return apperr.Validation(fmt.Sprintf("duplicate subtitle id %q", sub.ID))
+			return apperr.Validation(fmt.Sprintf("duplicate subtitle id %q", sub.ID)).
+				WithMsg("errors.studio.timeline_duplicate_subtitle", map[string]any{"id": sub.ID})
 		}
 		subSeen[sub.ID] = true
 		if sub.StartMs < 0 || sub.EndMs <= sub.StartMs {
-			return apperr.Validation(fmt.Sprintf("subtitle %q requires 0 <= start_ms < end_ms", sub.ID))
+			return apperr.Validation(fmt.Sprintf("subtitle %q requires 0 <= start_ms < end_ms", sub.ID)).
+				WithMsg("errors.studio.timeline_subtitle_bounds_invalid", map[string]any{"id": sub.ID})
 		}
 		if sub.Text == "" {
-			return apperr.Validation(fmt.Sprintf("subtitle %q text cannot be empty", sub.ID))
+			return apperr.Validation(fmt.Sprintf("subtitle %q text cannot be empty", sub.ID)).
+				WithMsg("errors.studio.timeline_subtitle_empty", map[string]any{"id": sub.ID})
 		}
 	}
 	for _, mk := range tl.Markers {
 		if mk.TimeMs < 0 {
-			return apperr.Validation(fmt.Sprintf("marker %q time_ms must be >= 0", mk.ID))
+			return apperr.Validation(fmt.Sprintf("marker %q time_ms must be >= 0", mk.ID)).
+				WithMsg("errors.studio.timeline_marker_bounds_invalid", map[string]any{"id": mk.ID})
 		}
 	}
 	return nil
@@ -539,18 +589,50 @@ func (tl EditTimeline) DurationMs() int64 {
 	return maxEnd
 }
 
-// Clone returns a deep copy of EditTimeline safe for mutation.
+// Clone returns a deep copy of EditTimeline safe for mutation (preserving non-JSON floats such as NaN/Inf for validation).
 func (tl EditTimeline) Clone() EditTimeline {
-	b, _ := json.Marshal(tl)
-	var copyTL EditTimeline
-	_ = json.Unmarshal(b, &copyTL)
+	copyTL := EditTimeline{
+		Version: tl.Version,
+		FPS:     tl.FPS,
+		Width:   tl.Width,
+		Height:  tl.Height,
+	}
+	if tl.Tracks != nil {
+		copyTL.Tracks = make([]Track, len(tl.Tracks))
+		for i, tr := range tl.Tracks {
+			copyTr := tr
+			if tr.Clips != nil {
+				copyTr.Clips = make([]TimelineClip, len(tr.Clips))
+				for j, cl := range tr.Clips {
+					copyCl := cl
+					if cl.Peaks != nil {
+						copyCl.Peaks = append([]float64(nil), cl.Peaks...)
+					}
+					copyTr.Clips[j] = copyCl
+				}
+			}
+			copyTL.Tracks[i] = copyTr
+		}
+	}
+	if tl.Subtitles != nil {
+		copyTL.Subtitles = append([]SubtitleCue(nil), tl.Subtitles...)
+	}
+	if tl.Markers != nil {
+		copyTL.Markers = append([]TimelineMarker(nil), tl.Markers...)
+	}
 	return copyTL
 }
 
 // ApplyTimelineOps applies a sequence of atomic TimelineOp edits to tl and validates the resulting timeline.
 func ApplyTimelineOps(tl EditTimeline, ops []TimelineOp) (EditTimeline, error) {
+	return ApplyTimelineOpsWithMaxDim(tl, ops, DefaultMaxTimelineDimPx)
+}
+
+// ApplyTimelineOpsWithMaxDim applies atomic TimelineOp edits to tl and validates dimensions against maxDim.
+func ApplyTimelineOpsWithMaxDim(tl EditTimeline, ops []TimelineOp, maxDim int) (EditTimeline, error) {
 	if len(ops) == 0 {
-		return EditTimeline{}, apperr.Validation("at least one timeline operation is required")
+		return EditTimeline{}, apperr.Validation("at least one timeline operation is required").
+			WithMsg("errors.studio.timeline_ops_required", nil)
 	}
 	cur := tl.Clone()
 	cur.Normalize()
@@ -635,7 +717,8 @@ func ApplyTimelineOps(tl EditTimeline, ops []TimelineOp) (EditTimeline, error) {
 		case "update_track":
 			ti := findTrack(strings.TrimSpace(op.TrackID))
 			if ti < 0 {
-				return EditTimeline{}, apperr.NotFound(fmt.Sprintf("track %q not found", op.TrackID))
+				return EditTimeline{}, apperr.NotFound(fmt.Sprintf("track %q not found", op.TrackID)).
+					WithMsg("errors.studio.timeline_track_not_found", map[string]any{"id": op.TrackID})
 			}
 			tr := &cur.Tracks[ti]
 			if op.TrackName != nil {
@@ -657,32 +740,42 @@ func ApplyTimelineOps(tl EditTimeline, ops []TimelineOp) (EditTimeline, error) {
 		case "remove_track":
 			ti := findTrack(strings.TrimSpace(op.TrackID))
 			if ti < 0 {
-				return EditTimeline{}, apperr.NotFound(fmt.Sprintf("track %q not found", op.TrackID))
+				return EditTimeline{}, apperr.NotFound(fmt.Sprintf("track %q not found", op.TrackID)).
+					WithMsg("errors.studio.timeline_track_not_found", map[string]any{"id": op.TrackID})
 			}
 			if cur.Tracks[ti].Locked {
-				return EditTimeline{}, apperr.Validation(fmt.Sprintf("track %q is locked", op.TrackID))
+				return EditTimeline{}, apperr.Validation(fmt.Sprintf("track %q is locked", op.TrackID)).
+					WithMsg("errors.studio.timeline_track_locked", map[string]any{"id": op.TrackID})
 			}
 			cur.Tracks = append(cur.Tracks[:ti], cur.Tracks[ti+1:]...)
 
 		case "add_clip":
 			if op.Clip == nil {
-				return EditTimeline{}, apperr.Validation(fmt.Sprintf("op[%d] add_clip requires clip", idx))
+				return EditTimeline{}, apperr.Validation(fmt.Sprintf("op[%d] add_clip requires clip", idx)).
+					WithMsg("errors.studio.timeline_clip_required", nil)
 			}
 			ti := findTrack(strings.TrimSpace(op.TrackID))
 			if ti < 0 {
-				return EditTimeline{}, apperr.NotFound(fmt.Sprintf("track %q not found", op.TrackID))
+				return EditTimeline{}, apperr.NotFound(fmt.Sprintf("track %q not found", op.TrackID)).
+					WithMsg("errors.studio.timeline_track_not_found", map[string]any{"id": op.TrackID})
 			}
 			if cur.Tracks[ti].Locked {
-				return EditTimeline{}, apperr.Validation(fmt.Sprintf("track %q is locked", cur.Tracks[ti].ID))
+				return EditTimeline{}, apperr.Validation(fmt.Sprintf("track %q is locked", cur.Tracks[ti].ID)).
+					WithMsg("errors.studio.timeline_track_locked", map[string]any{"id": cur.Tracks[ti].ID})
 			}
 			cl := *op.Clip
 			if strings.TrimSpace(cl.ID) == "" {
 				cl.ID = "clip-" + uuid.NewString()[:8]
 			}
-			if cl.Speed <= 0 {
+			if !math.IsNaN(cl.Speed) && !math.IsInf(cl.Speed, 0) && cl.Speed <= 0 {
 				cl.Speed = 1.0
 			}
-			if cl.Volume == 0 {
+			if op.Muted != nil {
+				cl.Mute = *op.Muted
+			}
+			if op.Volume != nil {
+				cl.Volume = *op.Volume
+			} else if cl.Volume == 0 && !cl.Mute {
 				cl.Volume = 1.0
 			}
 			cur.Tracks[ti].Clips = append(cur.Tracks[ti].Clips, cl)
@@ -690,10 +783,12 @@ func ApplyTimelineOps(tl EditTimeline, ops []TimelineOp) (EditTimeline, error) {
 		case "update_clip":
 			ti, ci := findClip(strings.TrimSpace(op.TrackID), strings.TrimSpace(op.ClipID))
 			if ti < 0 {
-				return EditTimeline{}, apperr.NotFound(fmt.Sprintf("clip %q not found", op.ClipID))
+				return EditTimeline{}, apperr.NotFound(fmt.Sprintf("clip %q not found", op.ClipID)).
+					WithMsg("errors.studio.timeline_clip_not_found", map[string]any{"id": op.ClipID})
 			}
 			if cur.Tracks[ti].Locked {
-				return EditTimeline{}, apperr.Validation(fmt.Sprintf("track %q is locked", cur.Tracks[ti].ID))
+				return EditTimeline{}, apperr.Validation(fmt.Sprintf("track %q is locked", cur.Tracks[ti].ID)).
+					WithMsg("errors.studio.timeline_track_locked", map[string]any{"id": cur.Tracks[ti].ID})
 			}
 			cl := &cur.Tracks[ti].Clips[ci]
 			if op.Clip != nil {
@@ -712,6 +807,9 @@ func ApplyTimelineOps(tl EditTimeline, ops []TimelineOp) (EditTimeline, error) {
 			}
 			if op.Speed != nil {
 				cl.Speed = *op.Speed
+			}
+			if op.Muted != nil {
+				cl.Mute = *op.Muted
 			}
 			if op.Volume != nil {
 				cl.Volume = *op.Volume
@@ -732,10 +830,12 @@ func ApplyTimelineOps(tl EditTimeline, ops []TimelineOp) (EditTimeline, error) {
 		case "move_clip":
 			ti, ci := findClip(strings.TrimSpace(op.TrackID), strings.TrimSpace(op.ClipID))
 			if ti < 0 {
-				return EditTimeline{}, apperr.NotFound(fmt.Sprintf("clip %q not found", op.ClipID))
+				return EditTimeline{}, apperr.NotFound(fmt.Sprintf("clip %q not found", op.ClipID)).
+					WithMsg("errors.studio.timeline_clip_not_found", map[string]any{"id": op.ClipID})
 			}
 			if cur.Tracks[ti].Locked {
-				return EditTimeline{}, apperr.Validation(fmt.Sprintf("track %q is locked", cur.Tracks[ti].ID))
+				return EditTimeline{}, apperr.Validation(fmt.Sprintf("track %q is locked", cur.Tracks[ti].ID)).
+					WithMsg("errors.studio.timeline_track_locked", map[string]any{"id": cur.Tracks[ti].ID})
 			}
 			cl := cur.Tracks[ti].Clips[ci]
 			if op.TimelineStartMs != nil {
@@ -745,10 +845,12 @@ func ApplyTimelineOps(tl EditTimeline, ops []TimelineOp) (EditTimeline, error) {
 			if targetTrackID != "" && targetTrackID != cur.Tracks[ti].ID {
 				targetIdx := findTrack(targetTrackID)
 				if targetIdx < 0 {
-					return EditTimeline{}, apperr.NotFound(fmt.Sprintf("target_track_id %q not found", targetTrackID))
+					return EditTimeline{}, apperr.NotFound(fmt.Sprintf("target_track_id %q not found", targetTrackID)).
+						WithMsg("errors.studio.timeline_track_not_found", map[string]any{"id": targetTrackID})
 				}
 				if cur.Tracks[targetIdx].Locked {
-					return EditTimeline{}, apperr.Validation(fmt.Sprintf("target track %q is locked", targetTrackID))
+					return EditTimeline{}, apperr.Validation(fmt.Sprintf("target track %q is locked", targetTrackID)).
+						WithMsg("errors.studio.timeline_track_locked", map[string]any{"id": targetTrackID})
 				}
 				cur.Tracks[ti].Clips = append(cur.Tracks[ti].Clips[:ci], cur.Tracks[ti].Clips[ci+1:]...)
 				cur.Tracks[targetIdx].Clips = append(cur.Tracks[targetIdx].Clips, cl)
@@ -759,27 +861,31 @@ func ApplyTimelineOps(tl EditTimeline, ops []TimelineOp) (EditTimeline, error) {
 		case "remove_clip":
 			ti, ci := findClip(strings.TrimSpace(op.TrackID), strings.TrimSpace(op.ClipID))
 			if ti < 0 {
-				return EditTimeline{}, apperr.NotFound(fmt.Sprintf("clip %q not found", op.ClipID))
+				return EditTimeline{}, apperr.NotFound(fmt.Sprintf("clip %q not found", op.ClipID)).
+					WithMsg("errors.studio.timeline_clip_not_found", map[string]any{"id": op.ClipID})
 			}
 			if cur.Tracks[ti].Locked {
-				return EditTimeline{}, apperr.Validation(fmt.Sprintf("track %q is locked", cur.Tracks[ti].ID))
+				return EditTimeline{}, apperr.Validation(fmt.Sprintf("track %q is locked", cur.Tracks[ti].ID)).
+					WithMsg("errors.studio.timeline_track_locked", map[string]any{"id": cur.Tracks[ti].ID})
 			}
 			cur.Tracks[ti].Clips = append(cur.Tracks[ti].Clips[:ci], cur.Tracks[ti].Clips[ci+1:]...)
 
 		case "split_clip":
 			ti, ci := findClip(strings.TrimSpace(op.TrackID), strings.TrimSpace(op.ClipID))
 			if ti < 0 {
-				return EditTimeline{}, apperr.NotFound(fmt.Sprintf("clip %q not found", op.ClipID))
+				return EditTimeline{}, apperr.NotFound(fmt.Sprintf("clip %q not found", op.ClipID)).
+					WithMsg("errors.studio.timeline_clip_not_found", map[string]any{"id": op.ClipID})
 			}
 			if cur.Tracks[ti].Locked {
-				return EditTimeline{}, apperr.Validation(fmt.Sprintf("track %q is locked", cur.Tracks[ti].ID))
+				return EditTimeline{}, apperr.Validation(fmt.Sprintf("track %q is locked", cur.Tracks[ti].ID)).
+					WithMsg("errors.studio.timeline_track_locked", map[string]any{"id": cur.Tracks[ti].ID})
 			}
 			orig := cur.Tracks[ti].Clips[ci]
 			spanMs := orig.TimelineSpanMs()
 			deltaTimelineMs := op.SplitAtMs - orig.TimelineStartMs
-			const minSplitSegmentMs = 100
-			if deltaTimelineMs < minSplitSegmentMs || spanMs-deltaTimelineMs < minSplitSegmentMs {
-				return EditTimeline{}, apperr.Validation(fmt.Sprintf("split_at_ms (%d) must leave at least %dms on both halves", op.SplitAtMs, minSplitSegmentMs))
+			if deltaTimelineMs < MinSplitSegmentMs || spanMs-deltaTimelineMs < MinSplitSegmentMs {
+				return EditTimeline{}, apperr.Validation(fmt.Sprintf("split_at_ms (%d) must leave at least %dms on both halves", op.SplitAtMs, MinSplitSegmentMs)).
+					WithMsg("errors.studio.timeline_split_bounds_invalid", map[string]any{"min_ms": MinSplitSegmentMs})
 			}
 			spd := orig.Speed
 			if spd <= 0 {
@@ -879,11 +985,12 @@ func ApplyTimelineOps(tl EditTimeline, ops []TimelineOp) (EditTimeline, error) {
 			cur.Markers = append(cur.Markers[:found], cur.Markers[found+1:]...)
 
 		default:
-			return EditTimeline{}, apperr.Validation(fmt.Sprintf("unsupported timeline op %q", op.Op))
+			return EditTimeline{}, apperr.Validation(fmt.Sprintf("unsupported timeline op %q", op.Op)).
+				WithMsg("errors.studio.timeline_unsupported_op", map[string]any{"op": op.Op})
 		}
 	}
 
-	if err := cur.Validate(); err != nil {
+	if err := cur.ValidateWithMaxDim(maxDim); err != nil {
 		return EditTimeline{}, err
 	}
 	return cur, nil
@@ -899,4 +1006,5 @@ type Phase3Repository interface {
 	UndoTimeline(ctx context.Context, episodeID string, expectedRevision int) (TimelineRecord, error)
 	RedoTimeline(ctx context.Context, episodeID string, expectedRevision int) (TimelineRecord, error)
 	ListTimelineRevisions(ctx context.Context, episodeID string, limit int) ([]TimelineRevision, error)
+	UpdateTimelineClipCache(ctx context.Context, episodeID, clipID string, peaks []float64, spritePath, spriteAssetID string) (*TimelineRecord, error)
 }

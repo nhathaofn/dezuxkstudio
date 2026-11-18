@@ -2,6 +2,7 @@ package contracts
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 
@@ -291,28 +292,22 @@ type StudioProjectCreatePayload struct {
 	InitialEpisodeTitle string                      `json:"initial_episode_title,omitempty"`
 }
 
-// Validate checks StudioProjectCreatePayload invariants.
-func (p *StudioProjectCreatePayload) Validate() error {
-	p.Title = strings.TrimSpace(p.Title)
-	if p.Title == "" {
+// Validate checks StudioProjectCreatePayload invariants without mutating the payload.
+func (p StudioProjectCreatePayload) Validate() error {
+	if strings.TrimSpace(p.Title) == "" {
 		return apperr.Validation("project title is required").WithMsg("errors.studio.project_title_required", nil)
 	}
-	if p.Genre == "" {
-		p.Genre = domainstudio.GenreDrama
+	if p.Genre != "" {
+		if err := domainstudio.ValidateGenre(p.Genre); err != nil {
+			return err
+		}
 	}
-	if err := domainstudio.ValidateGenre(p.Genre); err != nil {
-		return err
+	if p.ProductionMode != "" {
+		if err := domainstudio.ValidateProductionMode(p.ProductionMode); err != nil {
+			return err
+		}
 	}
-	if p.ProductionMode == "" {
-		p.ProductionMode = domainstudio.ModeStoryboardI2V
-	}
-	if err := domainstudio.ValidateProductionMode(p.ProductionMode); err != nil {
-		return err
-	}
-	if strings.TrimSpace(p.AspectRatio) == "" {
-		p.AspectRatio = domainmedia.DefaultVideoAspectRatio
-	}
-	if !slices.Contains(domainmedia.VideoAspectRatios(), p.AspectRatio) {
+	if ar := strings.TrimSpace(p.AspectRatio); ar != "" && !slices.Contains(domainmedia.VideoAspectRatios(), ar) {
 		return apperr.Validation(fmt.Sprintf("unsupported aspect ratio %q", p.AspectRatio)).
 			WithMsg("errors.mediagen.invalid_aspect_ratio", map[string]any{"value": p.AspectRatio})
 	}
@@ -503,6 +498,10 @@ func (p StudioShotUpsertPayload) Validate() error {
 	if strings.TrimSpace(p.EpisodeID) == "" {
 		return apperr.Validation("episode_id is required")
 	}
+	if p.Seq != nil && *p.Seq < 0 {
+		return apperr.Validation("shot seq must be >= 0").
+			WithMsg("errors.studio.shot_seq_invalid", nil)
+	}
 	if p.DurationSec != nil && *p.DurationSec < domainstudio.MinShotDurationSec {
 		return apperr.Validation("shot duration_sec must be at least 1 second").
 			WithMsg("errors.studio.shot_duration_invalid", map[string]any{"min": domainstudio.MinShotDurationSec})
@@ -540,6 +539,15 @@ func (p StudioShotReorderPayload) Validate() error {
 	if len(p.ShotIDs) == 0 {
 		return apperr.Validation("shot_ids is required")
 	}
+	seen := make(map[string]bool, len(p.ShotIDs))
+	for _, raw := range p.ShotIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" || seen[id] {
+			return apperr.Validation("shot_ids must contain non-empty unique shot IDs").
+				WithMsg("errors.studio.invalid_shot_order", nil)
+		}
+		seen[id] = true
+	}
 	return nil
 }
 
@@ -570,6 +578,9 @@ func (p StudioEpisodeRunStagePayload) Validate() error {
 	}
 	if !slices.Contains(StudioRunStageActions(), p.Stage) {
 		return apperr.Validation(fmt.Sprintf("unsupported studio run stage %q", p.Stage))
+	}
+	if p.FPS < 0 {
+		return apperr.Validation("fps must be >= 0")
 	}
 	return nil
 }
@@ -651,13 +662,28 @@ type StudioQueueEnqueuePayload struct {
 	Approved  bool     `json:"approved,omitempty"`
 }
 
+// StudioQueueStageActions returns the supported stage names for studio:queue_enqueue.
+func StudioQueueStageActions() []string {
+	return []string{
+		string(StudioStageGenerateAssets),
+		string(StudioStageGenerateKeyframes),
+		string(StudioStageGenerateVideos),
+		string(StudioStageGenerateTTS),
+		"lipsync",
+	}
+}
+
 // Validate checks StudioQueueEnqueuePayload fields.
 func (p StudioQueueEnqueuePayload) Validate() error {
 	if strings.TrimSpace(p.EpisodeID) == "" {
 		return apperr.Validation("episode_id is required")
 	}
-	if strings.TrimSpace(p.Stage) == "" {
+	stage := strings.ToLower(strings.TrimSpace(p.Stage))
+	if stage == "" {
 		return apperr.Validation("stage is required")
+	}
+	if !slices.Contains(StudioQueueStageActions(), stage) {
+		return apperr.Validation(fmt.Sprintf("unsupported studio queue stage %q", p.Stage))
 	}
 	return nil
 }
@@ -676,6 +702,17 @@ type StudioQueueListPayload struct {
 	EpisodeID string `json:"episode_id,omitempty"`
 	Status    string `json:"status,omitempty"`
 	Limit     int    `json:"limit,omitempty"`
+}
+
+// Validate checks StudioQueueListPayload.
+func (p StudioQueueListPayload) Validate() error {
+	if st := strings.TrimSpace(p.Status); st != "" && !domainstudio.JobStatus(st).Valid() {
+		return apperr.Validation(fmt.Sprintf("invalid job status %q", p.Status))
+	}
+	if p.Limit < 0 {
+		return apperr.Validation("limit must be >= 0")
+	}
+	return nil
 }
 
 // StudioQueueListResult returns matching studio jobs.
@@ -751,6 +788,9 @@ func (p StudioCostSummaryPayload) Validate() error {
 	if strings.TrimSpace(p.ProjectID) == "" {
 		return apperr.Validation("project_id is required")
 	}
+	if p.Limit < 0 {
+		return apperr.Validation("limit must be >= 0")
+	}
 	return nil
 }
 
@@ -782,7 +822,7 @@ func (p StudioPricingUpsertPayload) Validate() error {
 	if strings.TrimSpace(p.ProviderID) == "" || strings.TrimSpace(p.ModelID) == "" || strings.TrimSpace(p.Capability) == "" || strings.TrimSpace(p.Unit) == "" {
 		return apperr.Validation("provider_id, model_id, capability, and unit are required")
 	}
-	if p.UnitPriceUSD < 0 {
+	if math.IsNaN(p.UnitPriceUSD) || math.IsInf(p.UnitPriceUSD, 0) || p.UnitPriceUSD < 0 {
 		return apperr.Validation("unit_price_usd must be >= 0")
 	}
 	return nil
@@ -867,6 +907,12 @@ func (p StudioGridSplitPayload) Validate() error {
 	if strings.TrimSpace(p.ProjectID) == "" || strings.TrimSpace(p.ImagePath) == "" {
 		return apperr.Validation("project_id and image_path are required")
 	}
+	if tk := strings.TrimSpace(p.TargetKind); tk != "" && !domainstudio.MediaTargetKind(tk).Valid() {
+		return apperr.Validation(fmt.Sprintf("invalid target_kind %q", p.TargetKind))
+	}
+	if p.Rows < 0 || p.Cols < 0 || p.MarginPx < 0 || p.GutterPx < 0 {
+		return apperr.Validation("rows, cols, margin_px, and gutter_px must be >= 0")
+	}
 	return nil
 }
 
@@ -896,6 +942,9 @@ func (p StudioMaskEditPayload) Validate() error {
 	}
 	if strings.TrimSpace(p.MaskPath) == "" && strings.TrimSpace(p.MaskDataBase64) == "" {
 		return apperr.Validation("mask_path or mask_data_base64 is required")
+	}
+	if tk := strings.TrimSpace(p.TargetKind); tk != "" && !domainstudio.MediaTargetKind(tk).Valid() {
+		return apperr.Validation(fmt.Sprintf("invalid target_kind %q", p.TargetKind))
 	}
 	return nil
 }
@@ -951,6 +1000,12 @@ func (p StudioQCReviewPayload) Validate() error {
 	if strings.TrimSpace(p.ProjectID) == "" || strings.TrimSpace(p.MediaPath) == "" {
 		return apperr.Validation("project_id and media_path are required")
 	}
+	if tk := strings.TrimSpace(p.TargetKind); tk != "" && !domainstudio.MediaTargetKind(tk).Valid() {
+		return apperr.Validation(fmt.Sprintf("invalid target_kind %q", p.TargetKind))
+	}
+	if p.SampleCount < 0 {
+		return apperr.Validation("sample_count must be >= 0")
+	}
 	return nil
 }
 
@@ -986,6 +1041,9 @@ func (p StudioBatchPreflightPayload) Validate() error {
 	if strings.TrimSpace(p.ProjectID) == "" || strings.TrimSpace(p.Stage) == "" {
 		return apperr.Validation("project_id and stage are required")
 	}
+	if p.ItemCount < 0 {
+		return apperr.Validation("item_count must be >= 0")
+	}
 	return nil
 }
 
@@ -1018,6 +1076,7 @@ type StudioTimelineClip struct {
 	SourceOutMs     int64                       `json:"source_out_ms"`
 	Speed           float64                     `json:"speed"`
 	Volume          float64                     `json:"volume"`
+	Mute            bool                        `json:"mute,omitempty"`
 	TransitionIn    domainstudio.TransitionType `json:"transition_in"`
 	TransitionMs    int64                       `json:"transition_ms"`
 	KenBurnsPreset  domainstudio.KenBurnsPreset `json:"ken_burns_preset,omitempty"`
@@ -1180,6 +1239,18 @@ func (p StudioTimelineAutoAssemblePayload) Validate() error {
 	if strings.TrimSpace(p.EpisodeID) == "" {
 		return apperr.Validation("episode_id is required")
 	}
+	if p.ExpectedRevision != nil && *p.ExpectedRevision < 0 {
+		return apperr.Validation("expected_revision must be >= 0")
+	}
+	if p.FPS < 0 {
+		return apperr.Validation("fps must be >= 0")
+	}
+	if p.TransitionMs < 0 {
+		return apperr.Validation("transition_ms must be >= 0")
+	}
+	if math.IsNaN(p.BGMVolume) || math.IsInf(p.BGMVolume, 0) || p.BGMVolume < 0 {
+		return apperr.Validation("bgm_volume must be >= 0")
+	}
 	if p.TransitionDefault != "" && !p.TransitionDefault.Valid() {
 		return apperr.Validation(fmt.Sprintf("unsupported transition_default %q", p.TransitionDefault))
 	}
@@ -1203,6 +1274,12 @@ func (p StudioMediaPeaksThumbsPayload) Validate() error {
 	if strings.TrimSpace(p.MediaPath) == "" {
 		return apperr.Validation("media_path is required")
 	}
+	if math.IsNaN(p.ThumbIntervalSec) || math.IsInf(p.ThumbIntervalSec, 0) || p.ThumbIntervalSec < 0 {
+		return apperr.Validation("thumb_interval_sec must be >= 0")
+	}
+	if p.PeakBins < 0 {
+		return apperr.Validation("peak_bins must be >= 0")
+	}
 	return nil
 }
 
@@ -1221,6 +1298,12 @@ type StudioTimelineRenderPayload struct {
 func (p StudioTimelineRenderPayload) Validate() error {
 	if strings.TrimSpace(p.EpisodeID) == "" {
 		return apperr.Validation("episode_id is required")
+	}
+	if p.SubtitleFontSize < 0 {
+		return apperr.Validation("subtitle_font_size must be >= 0")
+	}
+	if math.IsNaN(p.LoudnormLUFS) || math.IsInf(p.LoudnormLUFS, 0) || (p.LoudnormLUFS != 0 && (p.LoudnormLUFS < -70 || p.LoudnormLUFS > -5)) {
+		return apperr.Validation("loudnorm_lufs must be 0 or between -70 and -5")
 	}
 	if p.CRF != nil && (*p.CRF < 0 || *p.CRF > 51) {
 		return apperr.Validation("crf must be between 0 and 51")

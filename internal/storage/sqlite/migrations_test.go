@@ -72,6 +72,24 @@ func TestMigrations(t *testing.T) {
 				t.Errorf("expected core table %s to exist, exists=%d, err=%v", tbl, exists, err)
 			}
 		}
+
+		// Verify 022 Gemini Veo pricing catalog rows exist and foreign keys are clean.
+		for _, provID := range []string{"gemini-aistudio", "gemini-vertex"} {
+			var rate float64
+			if err := db.sql.QueryRow(
+				"SELECT unit_price_usd FROM studio_pricing_catalog WHERE provider_id = ? AND capability = 'video'", provID,
+			).Scan(&rate); err != nil || rate != 0.150 {
+				t.Errorf("expected %s video pricing 0.150, got %v err=%v", provID, rate, err)
+			}
+		}
+		fkRows, err := db.sql.Query("PRAGMA foreign_key_check")
+		if err != nil {
+			t.Fatalf("PRAGMA foreign_key_check failed: %v", err)
+		}
+		defer fkRows.Close()
+		if fkRows.Next() {
+			t.Fatal("expected PRAGMA foreign_key_check to return zero rows on fresh database")
+		}
 	})
 
 	t.Run("UpgradeFromV1", func(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"app/internal/apperr"
 	domainprovider "app/internal/domain/provider"
 )
 
@@ -106,22 +107,37 @@ type Job struct {
 	FinishedAt      int64
 }
 
+// DefaultJobMaxAttempts is the baseline retry budget for a durable studio job when unset.
+const DefaultJobMaxAttempts = 3
+
 // Validate checks invariants and fills default status/attempts on a Job.
 func (j *Job) Validate() error {
+	return j.ValidateWithMaxAttempts(DefaultJobMaxAttempts)
+}
+
+// ValidateWithMaxAttempts checks invariants and applies defaultMaxAttempts when j.MaxAttempts <= 0.
+func (j *Job) ValidateWithMaxAttempts(defaultMaxAttempts int) error {
+	if defaultMaxAttempts <= 0 {
+		defaultMaxAttempts = DefaultJobMaxAttempts
+	}
 	if strings.TrimSpace(j.ProjectID) == "" {
-		return fmt.Errorf("studio job project_id is required")
+		return apperr.Validation("studio job project_id is required").
+			WithMsg("errors.studio.job_project_required", nil)
 	}
 	if !j.JobKind.Valid() {
-		return fmt.Errorf("invalid studio job_kind %q", j.JobKind)
+		return apperr.Validation(fmt.Sprintf("invalid studio job_kind %q", j.JobKind)).
+			WithMsg("errors.studio.invalid_job_kind", map[string]any{"value": string(j.JobKind)})
 	}
 	if j.Status == "" {
 		j.Status = JobQueued
 	}
 	if !j.Status.Valid() {
-		return fmt.Errorf("invalid studio job status %q", j.Status)
+		return apperr.Validation(fmt.Sprintf("invalid studio job status %q", j.Status)).
+			WithMsg("errors.studio.invalid_job_status", map[string]any{"value": string(j.Status)})
 	}
 	if strings.TrimSpace(j.IdempotencyKey) == "" {
-		return fmt.Errorf("studio job idempotency_key is required")
+		return apperr.Validation("studio job idempotency_key is required").
+			WithMsg("errors.studio.job_idempotency_required", nil)
 	}
 	if j.RequestJSON == "" {
 		j.RequestJSON = "{}"
@@ -130,7 +146,7 @@ func (j *Job) Validate() error {
 		j.OutputJSON = "{}"
 	}
 	if j.MaxAttempts <= 0 {
-		j.MaxAttempts = 3
+		j.MaxAttempts = defaultMaxAttempts
 	}
 	return nil
 }
@@ -168,11 +184,14 @@ type CapabilityPricingSpec struct {
 }
 
 const (
+	// DefaultCatalogCurrency is the canonical currency code for studio billing and pricing entries.
+	DefaultCatalogCurrency = "USD"
+
 	defaultFallbackUnit       = "request"
 	defaultFallbackUnitsPer   = 1.0
 	defaultFallbackSecPerItem = 10
 	defaultFallbackPriceUSD   = 0.01
-	defaultCatalogCurrency    = "USD"
+	defaultCatalogCurrency    = DefaultCatalogCurrency
 	defaultPricingSeedUpdated = int64(1763337600000)
 )
 
@@ -231,9 +250,19 @@ func PreflightSpecForCapability(capName string) CapabilityPricingSpec {
 	}
 }
 
-// DefaultPricingCatalog returns the canonical baseline pricing catalog entries shared across preflight, billing, and storage seeding.
+// PreflightSpecForCapabilityWithDuration returns the capability pricing spec overriding video/lipsync default shot seconds when > 0.
+func PreflightSpecForCapabilityWithDuration(capName string, defaultShotDurationSec int) CapabilityPricingSpec {
+	spec := PreflightSpecForCapability(capName)
+	if defaultShotDurationSec > 0 && (spec.Capability == domainprovider.CapabilityVideo || spec.Capability == domainprovider.CapabilityLipSync) {
+		spec.DefaultUnitsPerItem = float64(defaultShotDurationSec)
+	}
+	return spec
+}
+
+// DefaultPricingCatalog returns the canonical baseline pricing catalog entries shared across preflight, billing, and storage seeding
+// (kept aligned with 019_studio_queue_billing.sql and 022_studio_pricing_fixes.sql).
 func DefaultPricingCatalog() []PricingEntry {
-	out := make([]PricingEntry, 0, len(capabilityPricingCatalog))
+	out := make([]PricingEntry, 0, len(capabilityPricingCatalog)+12)
 	for _, spec := range capabilityPricingCatalog {
 		out = append(out, PricingEntry{
 			ID:           "price_default_" + string(spec.Capability),
@@ -245,6 +274,25 @@ func DefaultPricingCatalog() []PricingEntry {
 			Currency:     defaultCatalogCurrency,
 			UpdatedAt:    defaultPricingSeedUpdated,
 		})
+	}
+	providerSeeds := []PricingEntry{
+		{ID: "price_openai_gpt_image", ProviderID: domainprovider.IDOpenAI, ModelID: "gpt-image-1", Capability: string(domainprovider.CapabilityImage), Unit: "image", UnitPriceUSD: 0.040},
+		{ID: "price_openai_sora2", ProviderID: domainprovider.IDOpenAI, ModelID: "sora-2", Capability: string(domainprovider.CapabilityVideo), Unit: "second", UnitPriceUSD: 0.100},
+		{ID: "price_openai_tts1", ProviderID: domainprovider.IDOpenAI, ModelID: "tts-1", Capability: string(domainprovider.CapabilityTTS), Unit: "1k_chars", UnitPriceUSD: 0.015},
+		{ID: "price_gemini_aistudio_veo", ProviderID: domainprovider.IDGeminiAIStudio, ModelID: "*", Capability: string(domainprovider.CapabilityVideo), Unit: "second", UnitPriceUSD: 0.150},
+		{ID: "price_gemini_vertex_veo", ProviderID: domainprovider.IDGeminiVertex, ModelID: "*", Capability: string(domainprovider.CapabilityVideo), Unit: "second", UnitPriceUSD: 0.150},
+		{ID: "price_kling_video", ProviderID: domainprovider.IDKling, ModelID: "*", Capability: string(domainprovider.CapabilityVideo), Unit: "second", UnitPriceUSD: 0.070},
+		{ID: "price_kling_lipsync", ProviderID: domainprovider.IDKling, ModelID: "*", Capability: string(domainprovider.CapabilityLipSync), Unit: "second", UnitPriceUSD: 0.100},
+		{ID: "price_minimax_video", ProviderID: domainprovider.IDMiniMax, ModelID: "*", Capability: string(domainprovider.CapabilityVideo), Unit: "second", UnitPriceUSD: 0.060},
+		{ID: "price_minimax_lipsync", ProviderID: domainprovider.IDMiniMax, ModelID: "*", Capability: string(domainprovider.CapabilityLipSync), Unit: "second", UnitPriceUSD: 0.090},
+		{ID: "price_vidu_video", ProviderID: domainprovider.IDVidu, ModelID: "*", Capability: string(domainprovider.CapabilityVideo), Unit: "second", UnitPriceUSD: 0.060},
+		{ID: "price_ark_video", ProviderID: domainprovider.IDArk, ModelID: "*", Capability: string(domainprovider.CapabilityVideo), Unit: "second", UnitPriceUSD: 0.055},
+		{ID: "price_dashscope_video", ProviderID: domainprovider.IDDashScope, ModelID: "*", Capability: string(domainprovider.CapabilityVideo), Unit: "second", UnitPriceUSD: 0.055},
+	}
+	for _, p := range providerSeeds {
+		p.Currency = defaultCatalogCurrency
+		p.UpdatedAt = defaultPricingSeedUpdated
+		out = append(out, p)
 	}
 	return out
 }

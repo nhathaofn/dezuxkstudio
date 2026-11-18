@@ -5,6 +5,7 @@ package studio
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,27 +24,54 @@ const (
 	BaselineVideoWidth  = 1920
 	BaselineVideoHeight = 1080
 	BaselineVideoFPS    = 24
-	DefaultBGMVolume    = 0.3
+	DefaultBGMVolume    = 0.22
+
+	// MaxSlugLength bounds filesystem-safe project and episode directory slugs.
+	MaxSlugLength = 64
 )
 
-var aspectRatioResolutionMap = map[string]string{
-	"9:16": "1080x1920",
-	"1:1":  "1080x1080",
-	"4:3":  "1440x1080",
-	"3:4":  "1080x1440",
-	"16:9": "1920x1080",
+func evenDim(v int) int {
+	if v < 2 {
+		return 2
+	}
+	if v%2 != 0 {
+		return v + 1
+	}
+	return v
 }
 
-// ResolutionForAspectRatio maps a studio aspect ratio token (e.g. "9:16") to its standard WxH export resolution, falling back to fallback (or 1920x1080 if empty).
+// ResolutionForAspectRatio computes an even-rounded WxH pixel resolution for aspect scaled relative to fallback
+// (defaulting to BaselineVideoWidth x BaselineVideoHeight when fallback is empty or invalid).
 func ResolutionForAspectRatio(aspect, fallback string) string {
+	baseW, baseH := ParseResolutionDims(fallback, BaselineVideoWidth, BaselineVideoHeight)
+	shortEdge := min(baseW, baseH)
+	longEdge := max(baseW, baseH)
+
 	key := strings.ToLower(strings.TrimSpace(aspect))
-	if res, ok := aspectRatioResolutionMap[key]; ok {
-		return res
+	if parts := strings.Split(key, ":"); len(parts) == 2 {
+		aw, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+		ah, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err1 == nil && err2 == nil && aw > 0 && ah > 0 {
+			if baseW*ah == baseH*aw {
+				return fmt.Sprintf("%dx%d", evenDim(baseW), evenDim(baseH))
+			}
+			// Ultrawide aspect ratios wider than 16:9 preserve the base long edge as width.
+			if aw*9 > ah*16 {
+				h := evenDim(int(math.Round(float64(longEdge) * float64(ah) / float64(aw))))
+				return fmt.Sprintf("%dx%d", evenDim(longEdge), h)
+			}
+			if aw >= ah {
+				w := evenDim(int(math.Round(float64(shortEdge) * float64(aw) / float64(ah))))
+				return fmt.Sprintf("%dx%d", w, evenDim(shortEdge))
+			}
+			h := evenDim(int(math.Round(float64(shortEdge) * float64(ah) / float64(aw))))
+			return fmt.Sprintf("%dx%d", evenDim(shortEdge), h)
+		}
 	}
-	if strings.TrimSpace(fallback) != "" {
-		return strings.TrimSpace(fallback)
+	if ew, eh, ok := domainmedia.ParseWxH(key); ok {
+		return fmt.Sprintf("%dx%d", evenDim(ew), evenDim(eh))
 	}
-	return fmt.Sprintf("%dx%d", BaselineVideoWidth, BaselineVideoHeight)
+	return fmt.Sprintf("%dx%d", evenDim(baseW), evenDim(baseH))
 }
 
 // ParseResolutionDims parses "WxH" pixels, falling back to fallbackWidth/fallbackHeight (or BaselineVideoWidth x BaselineVideoHeight).
@@ -479,6 +507,14 @@ func (a *AssetEntry) Validate() error {
 
 // Normalize trims fields and applies defaults for a Shot.
 func (s *Shot) Normalize() {
+	s.NormalizeWithDefaultDuration(domainmedia.DefaultVideoDurationSec)
+}
+
+// NormalizeWithDefaultDuration trims fields and populates unset shot fields using defaultDurationSec.
+func (s *Shot) NormalizeWithDefaultDuration(defaultDurationSec int) {
+	if defaultDurationSec < MinShotDurationSec {
+		defaultDurationSec = domainmedia.DefaultVideoDurationSec
+	}
 	s.ID = strings.TrimSpace(s.ID)
 	s.EpisodeID = strings.TrimSpace(s.EpisodeID)
 	s.SceneCode = strings.TrimSpace(s.SceneCode)
@@ -487,7 +523,7 @@ func (s *Shot) Normalize() {
 		s.ShotMode = ShotModeSingle
 	}
 	if s.DurationSec <= 0 {
-		s.DurationSec = domainmedia.DefaultVideoDurationSec
+		s.DurationSec = defaultDurationSec
 	}
 	if s.Status == "" {
 		s.Status = ShotPending
@@ -507,23 +543,37 @@ func (s *Shot) Normalize() {
 
 // Validate normalizes and verifies Shot invariants using default domain duration limits.
 func (s *Shot) Validate() error {
-	return s.ValidateWithMaxDuration(MaxShotDurationSec)
+	return s.ValidateWithLimits(MaxShotDurationSec, domainmedia.DefaultVideoDurationSec)
 }
 
 // ValidateWithMaxDuration normalizes and verifies Shot invariants with a configurable maxDurationSec bound.
 func (s *Shot) ValidateWithMaxDuration(maxDurationSec int) error {
+	return s.ValidateWithLimits(maxDurationSec, domainmedia.DefaultVideoDurationSec)
+}
+
+// ValidateWithLimits normalizes and verifies Shot invariants using configurable max and default duration bounds.
+func (s *Shot) ValidateWithLimits(maxDurationSec, defaultDurationSec int) error {
 	if maxDurationSec < MinShotDurationSec {
 		maxDurationSec = MaxShotDurationSec
 	}
-	s.Normalize()
+	if defaultDurationSec < MinShotDurationSec {
+		defaultDurationSec = domainmedia.DefaultVideoDurationSec
+	}
+	if defaultDurationSec > maxDurationSec {
+		defaultDurationSec = maxDurationSec
+	}
+	s.NormalizeWithDefaultDuration(defaultDurationSec)
 	if s.EpisodeID == "" {
-		return apperr.Validation("episode_id is required")
+		return apperr.Validation("episode_id is required").
+			WithMsg("errors.studio.episode_id_required", nil)
 	}
 	if s.Seq < 0 {
-		return apperr.Validation("shot seq must be >= 0")
+		return apperr.Validation("shot seq must be >= 0").
+			WithMsg("errors.studio.shot_seq_invalid", nil)
 	}
 	if s.DurationSec < MinShotDurationSec || s.DurationSec > maxDurationSec {
-		return apperr.Validation(fmt.Sprintf("shot duration_sec must be between %d and %d", MinShotDurationSec, maxDurationSec))
+		return apperr.Validation(fmt.Sprintf("shot duration_sec must be between %d and %d", MinShotDurationSec, maxDurationSec)).
+			WithMsg("errors.studio.shot_duration_invalid", map[string]any{"min": MinShotDurationSec, "max": maxDurationSec})
 	}
 	if err := ValidateShotMode(s.ShotMode); err != nil {
 		return err
@@ -595,8 +645,8 @@ func Slugify(title string) string {
 	if slug == "" {
 		return "project"
 	}
-	if len(slug) > 64 {
-		slug = strings.TrimRight(slug[:64], "-")
+	if len(slug) > MaxSlugLength {
+		slug = strings.TrimRight(slug[:MaxSlugLength], "-")
 	}
 	if slug == "" {
 		return "project"

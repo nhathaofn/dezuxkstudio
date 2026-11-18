@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"app/internal/apperr"
+	"app/internal/config"
 	"app/internal/domain/studio"
 )
 
@@ -52,8 +54,13 @@ func TestStudioRepositoryCRUDAndCascade(t *testing.T) {
 	}
 
 	// Duplicate slug fails with conflict
-	if _, err := repo.CreateProject(ctx, studio.Project{Title: "Cánh Đồng Mây"}); err == nil {
-		t.Fatal("expected duplicate slug error")
+	if _, err := repo.CreateProject(ctx, studio.Project{Title: "Cánh Đồng Mây"}); !apperr.IsCode(err, apperr.CodeConflict) {
+		t.Fatalf("expected duplicate slug CodeConflict, got %v", err)
+	}
+
+	// Foreign key violation maps to CodeNotFound (never CodeConflict)
+	if _, err := repo.CreateEpisode(ctx, studio.Episode{ProjectID: "missing-proj", Code: "ep01"}); !apperr.IsCode(err, apperr.CodeNotFound) {
+		t.Fatalf("expected missing project FK CodeNotFound, got %v", err)
 	}
 
 	ep, err := repo.CreateEpisode(ctx, studio.Episode{
@@ -63,6 +70,9 @@ func TestStudioRepositoryCRUDAndCascade(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("CreateEpisode: %v", err)
+	}
+	if _, err := repo.CreateEpisode(ctx, studio.Episode{ProjectID: proj.ID, Code: "ep01"}); !apperr.IsCode(err, apperr.CodeConflict) {
+		t.Fatalf("expected duplicate episode CodeConflict, got %v", err)
 	}
 
 	asset, err := repo.UpsertAsset(ctx, studio.AssetEntry{
@@ -114,12 +124,31 @@ func TestStudioRepositoryCRUDAndCascade(t *testing.T) {
 		t.Fatalf("unexpected shots after ReplaceShots: %+v", shots)
 	}
 
+	// ReorderShots rejects duplicate and partial IDs
+	if _, err := repo.ReorderShots(ctx, ep.ID, []string{shots[0].ID, shots[0].ID}); !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected duplicate shotIDs CodeValidation, got %v", err)
+	}
+	if _, err := repo.ReorderShots(ctx, ep.ID, []string{shots[0].ID}); !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected partial shotIDs CodeValidation, got %v", err)
+	}
+	if _, err := repo.ReorderShots(ctx, ep.ID, []string{shots[0].ID, "missing"}); !apperr.IsCode(err, apperr.CodeNotFound) {
+		t.Fatalf("expected unknown shotID CodeNotFound, got %v", err)
+	}
+
 	reordered, err := repo.ReorderShots(ctx, ep.ID, []string{shots[1].ID, shots[0].ID})
 	if err != nil {
 		t.Fatalf("ReorderShots: %v", err)
 	}
 	if reordered[0].ID != shots[1].ID || reordered[0].Seq != 1 || reordered[1].Seq != 2 {
 		t.Fatalf("unexpected shot order: %+v", reordered)
+	}
+
+	// Corrupt JSON in studio_shots surfaces CodeIntegrity instead of silent empty slice
+	if _, err := db.sql.ExecContext(ctx, `UPDATE studio_shots SET dialogue_json = '{corrupt' WHERE id = ?`, shots[0].ID); err != nil {
+		t.Fatalf("inject corrupt shot json: %v", err)
+	}
+	if _, err := repo.GetShot(ctx, shots[0].ID); !apperr.IsCode(err, apperr.CodeIntegrity) {
+		t.Fatalf("expected CodeIntegrity on corrupt shot dialogue_json, got %v", err)
 	}
 
 	// Cascade delete removes episodes, assets, and shots
@@ -140,11 +169,13 @@ func TestStudioRepositoryCRUDAndCascade(t *testing.T) {
 func TestStudioPhase2JobsBillingVersionsQC(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStudioDB(t)
-	repo := NewStudioRepository(db)
+	customCfg := config.Default(config.ModeDesktop).Studio
+	customCfg.MaxShotDurationSec = 120
+	repo := NewStudioRepository(db, WithStudioConfig(customCfg))
 
 	var schemaVer int
-	if err := db.sql.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM _schema_migrations`).Scan(&schemaVer); err != nil || schemaVer < 20 {
-		t.Fatalf("schema version = %d, err = %v, want >= 20", schemaVer, err)
+	if err := db.sql.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM _schema_migrations`).Scan(&schemaVer); err != nil || schemaVer < 22 {
+		t.Fatalf("schema version = %d, err = %v, want >= 22", schemaVer, err)
 	}
 
 	proj, err := repo.CreateProject(ctx, studio.Project{Title: "Phase2 Film"})
@@ -154,6 +185,20 @@ func TestStudioPhase2JobsBillingVersionsQC(t *testing.T) {
 	ep, err := repo.CreateEpisode(ctx, studio.Episode{ProjectID: proj.ID, Code: "ep01"})
 	if err != nil {
 		t.Fatalf("CreateEpisode: %v", err)
+	}
+
+	// Custom MaxShotDurationSec=120 respected by UpsertShot
+	if _, err := repo.UpsertShot(ctx, studio.Shot{EpisodeID: ep.ID, Title: "Long Take", DurationSec: 95}); err != nil {
+		t.Fatalf("UpsertShot 95s with MaxShotDurationSec=120 failed: %v", err)
+	}
+
+	// FK violation on CreateJob maps to CodeNotFound
+	if _, err := repo.CreateJob(ctx, studio.Job{
+		ProjectID:      "missing-project",
+		JobKind:        studio.JobVideo,
+		IdempotencyKey: "fk-fail",
+	}); !apperr.IsCode(err, apperr.CodeNotFound) {
+		t.Fatalf("expected CreateJob missing project CodeNotFound, got %v", err)
 	}
 
 	// Queue lifecycle + idempotency + crash recovery lookup + pause/resume preserving provider_job_id
@@ -174,15 +219,14 @@ func TestStudioPhase2JobsBillingVersionsQC(t *testing.T) {
 		ProjectID:      proj.ID,
 		JobKind:        studio.JobVideo,
 		IdempotencyKey: "ep01-shot1-v1",
-	}); err == nil {
-		t.Fatal("expected duplicate idempotency_key conflict")
+	}); !apperr.IsCode(err, apperr.CodeConflict) {
+		t.Fatalf("expected duplicate idempotency_key CodeConflict, got %v", err)
 	}
 
 	claimed, ok, err := repo.ClaimNextQueuedJob(ctx, 1000)
 	if err != nil || !ok || claimed.ID != j1.ID || claimed.Status != studio.JobSubmitted || claimed.Attempts != 1 {
 		t.Fatalf("ClaimNextQueuedJob = %+v ok=%v err=%v", claimed, ok, err)
 	}
-	// Second claim sees nothing queued
 	if _, ok2, _ := repo.ClaimNextQueuedJob(ctx, 1001); ok2 {
 		t.Fatal("expected no second claim for already claimed job")
 	}
@@ -208,12 +252,57 @@ func TestStudioPhase2JobsBillingVersionsQC(t *testing.T) {
 		t.Fatalf("resumed job with provider_job_id must return to polling without losing handle: %+v", afterResume)
 	}
 
-	pollClaim, ok, err := repo.ClaimNextPollJob(ctx, afterResume.NextPollAt+1, 30_000)
+	pollClaim, ok, err := repo.ClaimNextPollJob(ctx, afterResume.NextPollAt+1, 0)
 	if err != nil || !ok || pollClaim.ID != j1.ID {
 		t.Fatalf("ClaimNextPollJob = %+v ok=%v err=%v", pollClaim, ok, err)
 	}
 
-	// Pricing lookup specificity & Cost ledger
+	// CancelJob preserves already-succeeded jobs atomically without clobbering OutputPath
+	jDone := pollClaim
+	jDone.Status = studio.JobSucceeded
+	jDone.OutputPath = "/tmp/final.mp4"
+	if _, err := repo.UpdateJob(ctx, jDone); err != nil {
+		t.Fatalf("UpdateJob succeeded: %v", err)
+	}
+	afterCancel, err := repo.CancelJob(ctx, j1.ID)
+	if err != nil || afterCancel.Status != studio.JobSucceeded || afterCancel.OutputPath != "/tmp/final.mp4" {
+		t.Fatalf("CancelJob on succeeded job must preserve output: %+v err=%v", afterCancel, err)
+	}
+
+	// Pricing lookup specificity, Gemini 022 seeds, UpsertPricing case normalization + persisted ID + $0.00 rate
+	for _, geminiID := range []string{"gemini-aistudio", "gemini-vertex"} {
+		gp, gok, gerr := repo.ResolveUnitPrice(ctx, geminiID, "veo-2.0", "video", "second")
+		if gerr != nil || !gok || gp.UnitPriceUSD != 0.15 {
+			t.Fatalf("ResolveUnitPrice(%s) = %+v ok=%v err=%v", geminiID, gp, gok, gerr)
+		}
+	}
+	pInserted, err := repo.UpsertPricing(ctx, studio.PricingEntry{
+		ID:           "custom-price-id-1",
+		ProviderID:   "  OpenAI ",
+		ModelID:      " free-preview ",
+		Capability:   " IMAGE ",
+		Unit:         " IMAGE ",
+		UnitPriceUSD: 0.02,
+	})
+	if err != nil || pInserted.ProviderID != "openai" || pInserted.Capability != "image" {
+		t.Fatalf("UpsertPricing initial: %+v err=%v", pInserted, err)
+	}
+	pUpdated, err := repo.UpsertPricing(ctx, studio.PricingEntry{
+		ID:           "different-caller-id",
+		ProviderID:   "openai",
+		ModelID:      "free-preview",
+		Capability:   "image",
+		Unit:         "image",
+		UnitPriceUSD: 0.0,
+	})
+	if err != nil || pUpdated.ID != "custom-price-id-1" || pUpdated.UnitPriceUSD != 0.0 {
+		t.Fatalf("UpsertPricing conflict must return persisted ID and allow $0.00: %+v err=%v", pUpdated, err)
+	}
+	freeLookup, fok, ferr := repo.ResolveUnitPrice(ctx, "openai", "free-preview", "image", "image")
+	if ferr != nil || !fok || freeLookup.UnitPriceUSD != 0.0 {
+		t.Fatalf("ResolveUnitPrice($0) = %+v ok=%v err=%v", freeLookup, fok, ferr)
+	}
+
 	price, ok, err := repo.ResolveUnitPrice(ctx, "openai", "sora-2", "video", "second")
 	if err != nil || !ok || price.UnitPriceUSD != 0.10 {
 		t.Fatalf("ResolveUnitPrice exact = %+v ok=%v err=%v", price, ok, err)
@@ -259,6 +348,14 @@ func TestStudioPhase2JobsBillingVersionsQC(t *testing.T) {
 		t.Fatalf("expected v2 selected exclusively, got %+v", vers)
 	}
 
+	// CreateQCReport with missing MediaVersionID rolls back atomically with CodeNotFound
+	if _, err := repo.CreateQCReport(ctx, studio.QCReport{
+		ProjectID: proj.ID, EpisodeID: ep.ID, TargetKind: studio.TargetKeyframe, TargetID: "shot-1",
+		MediaVersionID: "missing-version", MediaPath: "/tmp/k2.png", Verdict: studio.QCPass,
+	}); !apperr.IsCode(err, apperr.CodeNotFound) {
+		t.Fatalf("expected missing MediaVersionID CodeNotFound, got %v", err)
+	}
+
 	rep, err := repo.CreateQCReport(ctx, studio.QCReport{
 		ProjectID: proj.ID, EpisodeID: ep.ID, TargetKind: studio.TargetKeyframe, TargetID: "shot-1",
 		MediaVersionID: v2.ID, MediaPath: "/tmp/k2.png", Verdict: studio.QCPass, OverallScore: 9.2,
@@ -271,5 +368,13 @@ func TestStudioPhase2JobsBillingVersionsQC(t *testing.T) {
 	v2After, _ := repo.GetMediaVersion(ctx, v2.ID)
 	if v2After.QCStatus != studio.QCPass {
 		t.Fatalf("expected version qc_status updated to pass, got %q", v2After.QCStatus)
+	}
+
+	// Corrupt QC JSON surfaces CodeIntegrity
+	if _, err := db.sql.ExecContext(ctx, `UPDATE studio_qc_reports SET issues_json = '{bad' WHERE id = ?`, rep.ID); err != nil {
+		t.Fatalf("inject corrupt qc json: %v", err)
+	}
+	if _, err := repo.GetLatestQCReport(ctx, studio.TargetKeyframe, "shot-1"); !apperr.IsCode(err, apperr.CodeIntegrity) {
+		t.Fatalf("expected CodeIntegrity on corrupt qc report JSON, got %v", err)
 	}
 }

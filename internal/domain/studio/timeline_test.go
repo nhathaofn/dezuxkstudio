@@ -1,16 +1,25 @@
 package studio
 
 import (
+	"math"
 	"testing"
+
+	"app/internal/apperr"
 )
 
-func TestEditTimelineValidateAndApplyOps(t *testing.T) {
+func TestEditTimelineValidateAndApplyAllOps(t *testing.T) {
 	tl := DefaultEditTimeline(1920, 1080, 24)
 	if err := tl.Validate(); err != nil {
 		t.Fatalf("default timeline validate: %v", err)
 	}
+	if tl.Tracks[2].Volume != DefaultBGMVolume {
+		t.Fatalf("default BGM track volume = %v, want %v", tl.Tracks[2].Volume, DefaultBGMVolume)
+	}
+	if tl.Markers == nil {
+		t.Fatal("expected Markers slice initialized non-nil")
+	}
 
-	// Add video clip + audio clip + Vietnamese subtitle + split + trim + mute/solo
+	// 1. add_clip (normal omitted volume -> 1.0, muted volume 0 -> preserved 0), add_subtitle, split_clip, update_track
 	clip1 := TimelineClip{
 		ID:              "c1",
 		ShotID:          "s1",
@@ -21,20 +30,19 @@ func TestEditTimelineValidateAndApplyOps(t *testing.T) {
 		SourceInMs:      0,
 		SourceOutMs:     6000,
 		Speed:           1.0,
-		Volume:          1.0,
 		TransitionIn:    TransitionNone,
-		TransitionMs:    0,
 	}
-	aud1 := TimelineClip{
-		ID:              "a1-clip",
+	mutedClip := TimelineClip{
+		ID:              "a1-muted",
 		AssetID:         "asset-a1",
-		Label:           "Voice 1",
+		Label:           "Muted Voice",
 		FilePath:        "D:/proj/ep01/media/tts/shot1.wav",
 		TimelineStartMs: 200,
 		SourceInMs:      0,
 		SourceOutMs:     4000,
 		Speed:           1.0,
-		Volume:          1.0,
+		Volume:          0,
+		Mute:            true,
 	}
 	sub1 := SubtitleCue{
 		ID:      "sub1",
@@ -43,21 +51,44 @@ func TestEditTimelineValidateAndApplyOps(t *testing.T) {
 		Speaker: "Minh",
 		Text:    "Đêm nay trời mưa rất to ở Sài Gòn.",
 	}
+	mk1 := TimelineMarker{
+		ID:     "mk1",
+		TimeMs: 1500,
+		Label:  "Beat 1",
+		Color:  "#ffaa00",
+	}
 
 	mutedTrue := true
 	soloTrue := true
 	newVol := 0.85
+	fps30 := 30
+	w1280 := 1280
+	h720 := 720
+	sfxName := "SFX"
+
 	next, err := ApplyTimelineOps(tl, []TimelineOp{
-		{Op: "add_clip", TrackID: "v1", Clip: &clip1},
-		{Op: "add_clip", TrackID: "a1", Clip: &aud1},
-		{Op: "add_subtitle", Subtitle: &sub1},
-		{Op: "split_clip", TrackID: "v1", ClipID: "c1", NewClipID: "c2", SplitAtMs: 2500},
-		{Op: "update_track", TrackID: "a2", Muted: &mutedTrue, Solo: &soloTrue, Volume: &newVol},
+		{Op: string(OpSetFormat), FPS: &fps30, Width: &w1280, Height: &h720},
+		{Op: string(OpAddTrack), TrackID: "sfx-1", TrackKind: TrackAudioSFX, TrackName: &sfxName},
+		{Op: string(OpAddClip), TrackID: "v1", Clip: &clip1},
+		{Op: string(OpAddClip), TrackID: "a1", Clip: &mutedClip},
+		{Op: string(OpAddSubtitle), Subtitle: &sub1},
+		{Op: string(OpAddMarker), Marker: &mk1},
+		{Op: string(OpSplitClip), TrackID: "v1", ClipID: "c1", NewClipID: "c2", SplitAtMs: 2500},
+		{Op: string(OpUpdateTrack), TrackID: "a2", Muted: &mutedTrue, Solo: &soloTrue, Volume: &newVol},
 	})
 	if err != nil {
-		t.Fatalf("ApplyTimelineOps: %v", err)
+		t.Fatalf("ApplyTimelineOps initial batch: %v", err)
 	}
 
+	if next.FPS != 30 || next.Width != 1280 || next.Height != 720 {
+		t.Fatalf("set_format not applied: %dx%d@%d", next.Width, next.Height, next.FPS)
+	}
+	if next.Tracks[0].Clips[0].Volume != 1.0 {
+		t.Fatalf("expected unmuted clip volume default 1.0, got %v", next.Tracks[0].Clips[0].Volume)
+	}
+	if next.Tracks[1].Clips[0].Volume != 0 || !next.Tracks[1].Clips[0].Mute {
+		t.Fatalf("expected muted clip volume 0 preserved, got %+v", next.Tracks[1].Clips[0])
+	}
 	if len(next.Tracks[0].Clips) != 2 {
 		t.Fatalf("expected 2 clips after split, got %d", len(next.Tracks[0].Clips))
 	}
@@ -76,17 +107,106 @@ func TestEditTimelineValidateAndApplyOps(t *testing.T) {
 		t.Fatalf("DurationMs = %d, want 6000", next.DurationMs())
 	}
 
-	// Locking a track prevents subsequent clip mutations on it
+	// 2. update_clip, move_clip, update_subtitle, remove_subtitle, remove_marker, remove_track, replace_timeline
+	spd := 1.5
+	lbl := "Trimmed"
+	moveStart := int64(500)
+	updatedSub := SubtitleCue{ID: "sub1", StartMs: 300, EndMs: 3500, Text: "Đã chỉnh sửa"}
+	sfxClip := TimelineClip{ID: "sfx-c1", FilePath: "D:/proj/sfx.wav", SourceInMs: 0, SourceOutMs: 1000}
+
+	next2, err := ApplyTimelineOps(next, []TimelineOp{
+		{Op: string(OpAddClip), TrackID: "sfx-1", Clip: &sfxClip},
+		{Op: string(OpMoveClip), TrackID: "sfx-1", ClipID: "sfx-c1", TargetTrackID: "a1", TimelineStartMs: &moveStart},
+		{Op: string(OpUpdateClip), TrackID: "v1", ClipID: "c2", Speed: &spd, Label: &lbl},
+		{Op: string(OpUpdateSubtitle), SubtitleID: "sub1", Subtitle: &updatedSub},
+		{Op: string(OpRemoveTrack), TrackID: "sfx-1"},
+		{Op: string(OpRemoveSubtitle), SubtitleID: "sub1"},
+		{Op: string(OpRemoveMarker), MarkerID: "mk1"},
+	})
+	if err != nil {
+		t.Fatalf("ApplyTimelineOps second batch: %v", err)
+	}
+	if len(next2.Tracks) != 3 || len(next2.Subtitles) != 0 || len(next2.Markers) != 0 {
+		t.Fatalf("expected sfx track, subtitle, and marker removed: tracks=%d subs=%d markers=%d", len(next2.Tracks), len(next2.Subtitles), len(next2.Markers))
+	}
+	if len(next2.Tracks[1].Clips) != 2 {
+		t.Fatalf("expected moved clip on track a1, got %d clips", len(next2.Tracks[1].Clips))
+	}
+
+	fresh := DefaultEditTimeline(1920, 1080, 24)
+	replaced, err := ApplyTimelineOps(next2, []TimelineOp{
+		{Op: string(OpReplaceTimeline), Timeline: &fresh},
+	})
+	if err != nil || replaced.Width != 1920 || len(replaced.Tracks[0].Clips) != 0 {
+		t.Fatalf("replace_timeline failed: %+v err=%v", replaced, err)
+	}
+
+	// 3. Locking a track prevents clip mutations and track removal
 	lockedTrue := true
 	lockedTL, err := ApplyTimelineOps(next, []TimelineOp{
-		{Op: "update_track", TrackID: "v1", Locked: &lockedTrue},
+		{Op: string(OpUpdateTrack), TrackID: "v1", Locked: &lockedTrue},
 	})
 	if err != nil {
 		t.Fatalf("lock track: %v", err)
 	}
-	if _, err := ApplyTimelineOps(lockedTL, []TimelineOp{
-		{Op: "remove_clip", TrackID: "v1", ClipID: "c2"},
-	}); err == nil {
-		t.Fatal("expected error modifying clip on locked track")
+	for _, blockedOp := range []TimelineOp{
+		{Op: string(OpRemoveClip), TrackID: "v1", ClipID: "c2"},
+		{Op: string(OpRemoveTrack), TrackID: "v1"},
+	} {
+		if _, err := ApplyTimelineOps(lockedTL, []TimelineOp{blockedOp}); !apperr.IsCode(err, apperr.CodeValidation) {
+			t.Fatalf("expected CodeValidation on locked track op %s, got %v", blockedOp.Op, err)
+		}
+	}
+}
+
+func TestEditTimelineCloneAndNonFiniteRejections(t *testing.T) {
+	tl := DefaultEditTimeline(1920, 1080, 24)
+	tl.Tracks[0].Clips = []TimelineClip{{
+		ID:          "c1",
+		FilePath:    "D:/v.mp4",
+		SourceInMs:  0,
+		SourceOutMs: 2000,
+		Speed:       1.0,
+		Volume:      1.0,
+		Peaks:       []float64{0.1, 0.5, 0.9},
+	}}
+	tl.Subtitles = []SubtitleCue{{ID: "s1", StartMs: 0, EndMs: 1000, Text: "Hi"}}
+	tl.Markers = []TimelineMarker{{ID: "m1", TimeMs: 500, Label: "M"}}
+
+	cloned := tl.Clone()
+	cloned.Tracks[0].Clips[0].Peaks[0] = 99
+	cloned.Subtitles[0].Text = "Changed"
+	cloned.Markers[0].Label = "Changed"
+	if tl.Tracks[0].Clips[0].Peaks[0] != 0.1 || tl.Subtitles[0].Text != "Hi" || tl.Markers[0].Label != "M" {
+		t.Fatal("Clone() must deep-copy Peaks, Subtitles, and Markers slices")
+	}
+
+	nanVal := math.NaN()
+	infVal := math.Inf(1)
+
+	// Reject NaN/Inf via ApplyTimelineOps and Validate
+	if _, err := ApplyTimelineOps(tl, []TimelineOp{
+		{Op: string(OpUpdateTrack), TrackID: "v1", Volume: &nanVal},
+	}); !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected NaN track volume rejected, got %v", err)
+	}
+	if _, err := ApplyTimelineOps(tl, []TimelineOp{
+		{Op: string(OpUpdateClip), TrackID: "v1", ClipID: "c1", Speed: &infVal},
+	}); !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected +Inf clip speed rejected, got %v", err)
+	}
+
+	badPeaks := tl.Clone()
+	badPeaks.Tracks[0].Clips[0].Peaks[1] = math.NaN()
+	if err := badPeaks.Validate(); !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected NaN clip peak rejected, got %v", err)
+	}
+
+	tall := DefaultEditTimeline(7680, 4320, 24)
+	if err := tall.ValidateWithMaxDim(4096); !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected 8K rejected when maxDim=4096, got %v", err)
+	}
+	if err := tall.ValidateWithMaxDim(8192); err != nil {
+		t.Fatalf("expected 8K accepted when maxDim=8192, got %v", err)
 	}
 }
