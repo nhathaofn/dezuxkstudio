@@ -99,11 +99,14 @@ func startCodexAppServer(key, executable string, args, env []string, workDir str
 	if err != nil {
 		return nil, err
 	}
-	if err := cmd.Start(); err != nil {
+	if err := proc.Start(cmd); err != nil {
 		return nil, err
 	}
 	c := newCodexAppServerConn(key, stdin, stdout, stderr, func() { proc.KillTree(cmd) })
-	safego.Go("agent.codex.appserver.wait", func() { c.markExited(waitErr(cmd)) })
+	safego.Go("agent.codex.appserver.wait", func() {
+		defer proc.Release(cmd)
+		c.markExited(waitErr(cmd))
+	})
 	return c, nil
 }
 

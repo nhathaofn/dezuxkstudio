@@ -132,6 +132,55 @@ func RedactError(err error, secrets ...string) error {
 	return errors.New(scrubbed)
 }
 
+func (s *Service) redactTurnError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var extra []string
+	if active := s.activeLinkedSecret(); active != nil && active.Secret != "" {
+		extra = append(extra, active.Secret)
+	}
+	scrub := func(in string) string {
+		if in == "" {
+			return ""
+		}
+		out := redactSecrets(in)
+		if len(extra) > 0 {
+			out = RedactSecrets(out, extra...)
+		}
+		return out
+	}
+	var le *localizedError
+	if errors.As(err, &le) && le != nil {
+		origMsg := le.Error()
+		cleanMsg := scrub(origMsg)
+		var cleanParams map[string]string
+		paramsChanged := false
+		if len(le.params) > 0 {
+			cleanParams = make(map[string]string, len(le.params))
+			for k, v := range le.params {
+				cv := scrub(v)
+				if cv != v {
+					paramsChanged = true
+				}
+				cleanParams[k] = cv
+			}
+		} else {
+			cleanParams = le.params
+		}
+		if cleanMsg != origMsg || paramsChanged {
+			return localize(errors.New(cleanMsg), le.key, cleanParams)
+		}
+		return err
+	}
+	origMsg := err.Error()
+	cleanMsg := scrub(origMsg)
+	if cleanMsg == origMsg {
+		return err
+	}
+	return errors.New(cleanMsg)
+}
+
 // API keys the user enters for an isolated provider profile (Anthropic, Gemini) are kept in the OS
 // credential store, following internal/secrets' rule that secrets never sit in files. Each secret is
 // addressed by the profile file path it used to live at, so profiles of different installs never collide.

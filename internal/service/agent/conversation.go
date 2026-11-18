@@ -207,7 +207,11 @@ func (s *Service) setCLISession(id domainagent.ProviderID, sessionID string) {
 	s.mu.Unlock()
 
 	if convID != "" && s.repo != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		timeout := s.limits.CLISessionPersistTimeout
+		if timeout <= 0 {
+			timeout = 3 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		if err := s.repo.SetConversationSession(ctx, convID, id, sessionID); err != nil && s.log != nil {
 			s.log.Warn("agent: failed to persist conversation session", "conversation_id", convID, "provider", id, "error", err)

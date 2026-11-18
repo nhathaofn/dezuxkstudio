@@ -306,6 +306,7 @@ func New(o Options) (*Service, error) {
 			s.log.WarnContext(context.Background(), "agent: failed to recover ambiguous approvals", "error", recErr)
 		}
 	}
+	cleanupStaleAgentArtifacts(s.profilesDir)
 	return s, nil
 }
 
@@ -390,10 +391,32 @@ func (s *Service) Close() error {
 	for _, id := range domainagent.AllProviderIDs() {
 		s.driver(id).release()
 	}
+	cleanupStaleAgentArtifacts(s.profilesDir)
 	s.mu.Lock()
 	s.tempWorkspace = ""
 	s.mu.Unlock()
 	return err
+}
+
+func cleanupStaleAgentArtifacts(profilesDir string) {
+	profilesDir = strings.TrimSpace(profilesDir)
+	if profilesDir == "" {
+		return
+	}
+	for _, pid := range domainagent.AllProviderIDs() {
+		pRoot := filepath.Join(profilesDir, string(pid))
+		_ = os.RemoveAll(filepath.Join(pRoot, "subagents"))
+		if pid == domainagent.ProviderClaude {
+			if matches, err := filepath.Glob(filepath.Join(pRoot, "claude-mcp-*.json")); err == nil {
+				for _, m := range matches {
+					_ = os.Remove(m)
+				}
+			}
+		}
+		if pid == domainagent.ProviderAntigravity {
+			cleanupAgyProfileToken(pRoot)
+		}
+	}
 }
 
 // waitTurns waits (bounded by the shutdown timeout) for cancelled turns to store what they produced, so

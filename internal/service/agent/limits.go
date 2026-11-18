@@ -37,6 +37,7 @@ type Limits struct {
 	InterruptWait            time.Duration // how long a cancelled Codex turn waits for turn/completed
 	StatusCacheTTL           time.Duration
 	ApprovalTTL              time.Duration
+	CLISessionPersistTimeout time.Duration
 	MaxApprovalContinuations int
 	MaxPendingApprovals      int
 	HistoryLimit             int
@@ -60,6 +61,7 @@ func LimitsFrom(c *config.Config) Limits {
 		InterruptWait:            a.InterruptWait,
 		StatusCacheTTL:           a.StatusCacheTTL,
 		ApprovalTTL:              a.ApprovalTTL,
+		CLISessionPersistTimeout: a.CLISessionPersistTimeout,
 		MaxApprovalContinuations: a.MaxApprovalContinuations,
 		MaxPendingApprovals:      a.MaxPendingApprovals,
 		HistoryLimit:             a.HistoryLimit,
@@ -84,6 +86,7 @@ func (l Limits) withDefaults() Limits {
 		{&l.InterruptWait, &d.InterruptWait},
 		{&l.StatusCacheTTL, &d.StatusCacheTTL},
 		{&l.ApprovalTTL, &d.ApprovalTTL},
+		{&l.CLISessionPersistTimeout, &d.CLISessionPersistTimeout},
 	}
 	for _, f := range durations {
 		if *f.v <= 0 {

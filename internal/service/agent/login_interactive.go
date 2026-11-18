@@ -86,9 +86,10 @@ func (s *Service) interactiveLogin(ctx context.Context, id domainagent.ProviderI
 		}
 		sess.stdin = stdin
 	}
-	if err := cmd.Start(); err != nil {
+	if err := proc.Start(cmd); err != nil {
 		return fmt.Errorf("%s sign-in could not start: %w", id, err)
 	}
+	defer proc.Release(cmd)
 
 	var tail strings.Builder
 	read := make(chan struct{})

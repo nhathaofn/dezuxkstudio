@@ -435,9 +435,10 @@ func runStreamJSONCommand(
 	if err != nil {
 		return fmt.Errorf("%s: stderr pipe: %w", label, err)
 	}
-	if err := cmd.Start(); err != nil {
+	if err := proc.Start(cmd); err != nil {
 		return fmt.Errorf("%s: start: %w", label, err)
 	}
+	defer proc.Release(cmd)
 
 	var stderrBuf strings.Builder
 	stderrDone := make(chan struct{})
