@@ -9,15 +9,17 @@ import (
 )
 
 const (
-	monitorDefaultToPrimary = 1
-	mdtEffectiveDPI         = 0
-	dpiAwarenessUnaware     = 0
+	monitorDefaultToPrimary     = 1
+	mdtEffectiveDPI             = 0
+	dpiAwarenessUnaware         = 0
+	dpiAwarenessSystemAware     = 1
+	dpiAwarenessPerMonitorAware = 2
 )
 
 var (
 	user32DLL                    = windows.NewLazySystemDLL("user32.dll")
 	shcoreDLL                    = windows.NewLazySystemDLL("shcore.dll")
-	procMonitorFromPoint         = user32DLL.NewProc("MonitorFromPoint")
+	procMonitorFromWindow        = user32DLL.NewProc("MonitorFromWindow")
 	procGetMonitorInfoW          = user32DLL.NewProc("GetMonitorInfoW")
 	procIsProcessDPIAware        = user32DLL.NewProc("IsProcessDPIAware")
 	procGetThreadDpiAwarenessCtx = user32DLL.NewProc("GetThreadDpiAwarenessContext")
@@ -38,9 +40,8 @@ type winMONITORINFO struct {
 
 // PrimaryScreenSize returns the primary display dimensions in logical 96-DPI pixels.
 func PrimaryScreenSize() (width, height int, ok bool) {
-	// On x64 Windows, POINT (two int32 values) packs into a single uintptr (low32=X, high32=Y);
-	// passing 0 selects origin (0, 0), which belongs to the primary monitor.
-	hMonitor, _, _ := procMonitorFromPoint.Call(0, monitorDefaultToPrimary)
+	// MonitorFromWindow(0, MONITOR_DEFAULTTOPRIMARY) avoids 32-bit/64-bit POINT struct packing differences.
+	hMonitor, _, _ := procMonitorFromWindow.Call(0, monitorDefaultToPrimary)
 	if hMonitor == 0 {
 		return 0, 0, false
 	}
@@ -74,7 +75,13 @@ func isCurrentProcessDPIAware() bool {
 		ctx, _, _ := procGetThreadDpiAwarenessCtx.Call()
 		if ctx != 0 {
 			awareness, _, _ := procGetAwarenessFromDpiCtx.Call(ctx)
-			return int32(awareness) != dpiAwarenessUnaware
+			a := int32(awareness)
+			if a == dpiAwarenessSystemAware || a == dpiAwarenessPerMonitorAware {
+				return true
+			}
+			if a == dpiAwarenessUnaware {
+				return false
+			}
 		}
 	}
 	if procIsProcessDPIAware.Find() == nil {

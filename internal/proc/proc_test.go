@@ -63,3 +63,30 @@ func TestKillTreeStopsDescendants(t *testing.T) {
 	}
 	KillTree(nil) // safe on nil
 }
+
+func TestCommandEscapesMetacharsAndStartRelease(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows batch metacharacter test")
+	}
+	marker := filepath.Join(t.TempDir(), "pwned.txt")
+	exe := script(t, "echoarg", "@echo off\r\necho arg=%1\r\n", "")
+	malicious := `safe&echo pwned>"` + marker + `"`
+	cmd := Command(context.Background(), exe, malicious)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Command failed: %v\n%s", err, out)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("shell metacharacter injection created %s; output=%s", marker, out)
+	}
+
+	// Verify Start + Release with Job Object succeeds cleanly.
+	cmd2 := Command(context.Background(), exe, "ok")
+	if err := Start(cmd2); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if err := cmd2.Wait(); err != nil {
+		t.Fatalf("Wait failed: %v", err)
+	}
+	Release(cmd2)
+}

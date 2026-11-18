@@ -615,6 +615,7 @@ func parsePDFObjects(data []byte) map[int]pdfObject {
 	objs := make(map[int]pdfObject)
 	n := len(data)
 	pos := 0
+	remainingBudget := int64(maxDocumentUncompressedBytes)
 	for pos < n {
 		loc := pdfObjHeaderRe.FindSubmatchIndex(data[pos:])
 		if loc == nil {
@@ -636,7 +637,7 @@ func parsePDFObjects(data []byte) map[int]pdfObject {
 			}
 			rawEnd := findPDFStreamEnd(data, rawStart, dictText)
 			raw := data[rawStart:rawEnd]
-			decoded := decodePDFStream(dictText, raw)
+			decoded := decodePDFStream(dictText, raw, &remainingBudget)
 			objs[id] = pdfObject{id: id, dict: dictText, stream: decoded}
 
 			if nextEnd := bytes.Index(data[rawEnd:], []byte("endobj")); nextEnd >= 0 {
@@ -698,19 +699,32 @@ func findPDFStreamEnd(data []byte, rawStart int, dictText string) int {
 	return end
 }
 
-func decodePDFStream(dict string, raw []byte) []byte {
+func decodePDFStream(dict string, raw []byte, remainingBudget *int64) []byte {
 	if strings.Contains(dict, "/DCTDecode") || strings.Contains(dict, "/JPXDecode") || strings.Contains(dict, "/CCITTFaxDecode") {
 		return nil
 	}
 	if strings.Contains(dict, "/FlateDecode") {
+		if remainingBudget != nil && *remainingBudget <= 0 {
+			return nil
+		}
+		limit := int64(maxDocumentUncompressedBytes)
+		if remainingBudget != nil && *remainingBudget < limit {
+			limit = *remainingBudget
+		}
 		zr, err := zlib.NewReader(bytes.NewReader(raw))
 		if err != nil {
 			return nil
 		}
 		defer zr.Close()
-		out, err := io.ReadAll(io.LimitReader(zr, maxDocumentUncompressedBytes+1))
-		if err != nil || int64(len(out)) > maxDocumentUncompressedBytes {
+		out, err := io.ReadAll(io.LimitReader(zr, limit+1))
+		if err != nil || int64(len(out)) > limit {
+			if remainingBudget != nil {
+				*remainingBudget = 0
+			}
 			return nil
+		}
+		if remainingBudget != nil {
+			*remainingBudget -= int64(len(out))
 		}
 		return out
 	}
@@ -745,7 +759,7 @@ func expandPDFObjStm(obj pdfObject) map[int]pdfObject {
 	for i := 0; i < count; i++ {
 		id, errID := strconv.Atoi(fields[i*2])
 		off, errOff := strconv.Atoi(fields[i*2+1])
-		if errID != nil || errOff != nil || first+off > len(obj.stream) {
+		if errID != nil || errOff != nil || off < 0 || first+off > len(obj.stream) {
 			continue
 		}
 		entries = append(entries, entry{id: id, off: off})
@@ -757,7 +771,7 @@ func expandPDFObjStm(obj pdfObject) map[int]pdfObject {
 		if i+1 < len(entries) && entries[i+1].off > e.off {
 			end = entries[i+1].off
 		}
-		if e.off < end && end <= len(body) {
+		if e.off >= 0 && e.off < end && end <= len(body) {
 			out[e.id] = pdfObject{id: e.id, dict: string(body[e.off:end])}
 		}
 	}

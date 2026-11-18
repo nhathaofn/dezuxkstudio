@@ -2,6 +2,7 @@ package logger
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -99,5 +100,55 @@ func TestCrashDump(t *testing.T) {
 	}
 	if !strings.HasPrefix(filepath.Base(path), CrashFilePrefix) || !strings.Contains(string(data), "boom") || !strings.Contains(string(data), "stack-trace") {
 		t.Fatalf("unexpected dump %s:\n%s", path, data)
+	}
+}
+
+func TestRedactStringAndCrashDump(t *testing.T) {
+	dir := t.TempDir()
+	l, err := New(Options{Level: "debug", Format: "text", Dir: dir, MaxSizeBytes: 1 << 20, MaxBackups: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Error("request failed",
+		"detail", `{"api_key":"sk-ant-1234567890abcdef"}`,
+		"url", "https://generativelanguage.googleapis.com/v1?key=AIzaSyDummyKeyValue1234567890123",
+		"error", errors.New("http 401 Bearer secret-token-xyz ticket?ticket=abc123"),
+	)
+	_ = l.Close()
+
+	data, err := os.ReadFile(filepath.Join(dir, LogFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	for _, leak := range []string{"sk-ant-1234567890abcdef", "AIzaSyDummyKeyValue1234567890123", "secret-token-xyz", "abc123"} {
+		if strings.Contains(s, leak) {
+			t.Fatalf("secret %q leaked into log: %s", leak, s)
+		}
+	}
+
+	crashPath, err := WriteCrashDump(dir, "panic", "failed with AIzaSyDummyKeyValue1234567890123", []byte("sk-proj-secretkey987654321"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	crashBytes, err := os.ReadFile(crashPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := string(crashBytes)
+	if strings.Contains(cs, "AIzaSyDummyKeyValue1234567890123") || strings.Contains(cs, "sk-proj-secretkey987654321") {
+		t.Fatalf("secret leaked into crash dump: %s", cs)
+	}
+}
+
+func TestRotatingWriterNilFileDoesNotPanic(t *testing.T) {
+	dir := t.TempDir()
+	w := &RotatingWriter{
+		path:       filepath.Join(dir, "missing-dir", "app.log"),
+		maxBytes:   10,
+		maxBackups: 1,
+	}
+	if _, err := w.Write([]byte("hello")); err == nil {
+		t.Fatal("expected error when log file cannot be opened")
 	}
 }

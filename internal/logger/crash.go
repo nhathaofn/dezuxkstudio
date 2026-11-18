@@ -30,7 +30,7 @@ func WriteCrashDump(dir, source string, value any, stack []byte) (string, error)
 	fmt.Fprintf(&b, "Source:  %s\n", source)
 	fmt.Fprintf(&b, "Product: %s %s (%s, built %s)\n", info.ProductName, info.Version, info.Commit, info.BuildDate)
 	fmt.Fprintf(&b, "Runtime: %s %s/%s\n", info.GoVersion, info.OS, info.Arch)
-	fmt.Fprintf(&b, "Panic:   %v\n\n=== STACK ===\n%s\n", value, stack)
+	fmt.Fprintf(&b, "Panic:   %s\n\n=== STACK ===\n%s\n", RedactString(fmt.Sprintf("%v", value)), RedactString(string(stack)))
 
 	if err := fsutil.WriteFileAtomic(path, []byte(b.String()), filePerm); err != nil {
 		return "", err
