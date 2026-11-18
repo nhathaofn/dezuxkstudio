@@ -260,4 +260,47 @@ describe("SignedMediaSession & useSignedMediaURL logic", () => {
     );
     expect(html).toContain("div");
   });
+
+  it("caps consecutive handleMediaError retries and cleans up pending loadedmetadata listeners on dispose", async () => {
+    const expSec = Math.floor(Date.now() / 1000) + 600;
+    let callIdx = 0;
+    signMediaURLSpy.mockImplementation(async () => {
+      callIdx += 1;
+      return {
+        asset_id: "asset-corrupt",
+        url: `http://127.0.0.1:8080/api/media/download?asset_id=asset-corrupt&ticket=tok-${callIdx}`,
+        ticket: `tok-${callIdx}`,
+        expires_at: expSec + callIdx,
+        purpose: "preview",
+      };
+    });
+
+    const addListener = vi.fn();
+    const removeListener = vi.fn();
+    const mockMedia = {
+      currentTime: 12.5,
+      paused: false,
+      ended: false,
+      readyState: 0, // metadata not loaded yet -> attaches loadedmetadata listener
+      addEventListener: addListener,
+      removeEventListener: removeListener,
+    } as unknown as HTMLMediaElement;
+
+    const session = new SignedMediaSession();
+    session.configure("asset-corrupt");
+    await flush();
+    expect(signMediaURLSpy).toHaveBeenCalledTimes(1);
+
+    // Repeated media errors must stop at maxMediaErrorRetries instead of looping forever
+    for (let i = 0; i < 6; i++) {
+      session.handleMediaError(mockMedia);
+      await flush();
+    }
+    expect(signMediaURLSpy).toHaveBeenCalledTimes(1 + appConfig.media.maxMediaErrorRetries);
+    expect(addListener).toHaveBeenCalledWith("loadedmetadata", expect.any(Function));
+
+    // Disposing removes any pending loadedmetadata listener
+    session.dispose();
+    expect(removeListener).toHaveBeenCalledWith("loadedmetadata", expect.any(Function));
+  });
 });

@@ -9,12 +9,17 @@ import {
   type StudioEpisodeDetailResult,
   type StudioProject,
 } from "../../contracts/generated";
-import { rtClient } from "../../lib/rtClient";
+import { ActionError, rtClient } from "../../lib/rtClient";
 import { usePreferencesStore } from "../preferences/usePreferencesStore";
 import { useNodeSpecsStore } from "../workflow/useNodeSpecs";
 import { StudioView } from "./StudioView";
-import { ExportStagePanel } from "./StudioStages";
-import { useStudioStore } from "./useStudioStore";
+import {
+  CreateProjectDialog,
+  ExportStagePanel,
+  ScriptStagePanel,
+  VideoShotsStagePanel,
+} from "./StudioStages";
+import { targetVersionKey, useStudioStore } from "./useStudioStore";
 
 vi.mock("react-router-dom", async (importOriginal) => {
   const mod = await importOriginal<typeof import("react-router-dom")>();
@@ -465,5 +470,258 @@ describe("/studio feature MVP", () => {
     expect(synced.shots[0].ref_asset_tags).toEqual([]);
     expect(synced.normalized_script?.characters).toEqual([]);
     expect(synced.normalized_script?.scenes[0].beats[0].dialogues).toEqual([]);
+  });
+
+  it("reads CreateProjectDialog and VideoShotsStagePanel defaults strictly from workflow:specs", () => {
+    usePreferencesStore.setState({ prefs: { theme: "light", language: "en" } });
+    useNodeSpecsStore.setState({ specs: [] });
+
+    const emptyDialogHtml = renderToStaticMarkup(
+      React.createElement(CreateProjectDialog, { onClose: () => {} })
+    );
+    expect(emptyDialogHtml).not.toContain('value="drama"');
+    expect(emptyDialogHtml).not.toContain('value="storyboard_i2v"');
+
+    const emptyVideoHtml = renderToStaticMarkup(
+      React.createElement(VideoShotsStagePanel, {
+        detail: sampleEpisodeDetail,
+        videoModel: "",
+        ttsModel: "",
+      })
+    );
+    expect(emptyVideoHtml).not.toContain("720p");
+
+    useNodeSpecsStore.setState({
+      specs: [
+        {
+          type: NodeTypes.SCRIPT_NORMALIZE,
+          provider: "studio",
+          label: "Script",
+          description: "Normalize",
+          inputs: [],
+          outputs: [],
+          params: [
+            {
+              name: "genre",
+              label: "Genre",
+              kind: "select",
+              options: ["narration", "drama"],
+              default: "narration",
+            },
+            {
+              name: "aspect_ratio",
+              label: "Aspect Ratio",
+              kind: "select",
+              options: ["9:16", "16:9"],
+              default: "9:16",
+            },
+          ],
+        },
+        {
+          type: NodeTypes.AUTHOR_SHOT_PROMPTS,
+          provider: "studio",
+          label: "Shots",
+          description: "Shots",
+          inputs: [],
+          outputs: [],
+          params: [
+            {
+              name: "production_mode",
+              label: "Mode",
+              kind: "select",
+              options: ["r2v", "storyboard_i2v"],
+              default: "r2v",
+            },
+          ],
+        },
+        {
+          type: NodeTypes.VIDEO_GENERATE,
+          provider: "mediagen",
+          label: "Video",
+          description: "Video",
+          inputs: [],
+          outputs: [],
+          params: [
+            {
+              name: "resolution",
+              label: "Resolution",
+              kind: "select",
+              options: ["1080p", "720p"],
+              default: "1080p",
+            },
+          ],
+        },
+      ],
+    });
+
+    const specDialogHtml = renderToStaticMarkup(
+      React.createElement(CreateProjectDialog, { onClose: () => {} })
+    );
+    expect(specDialogHtml).toContain('value="narration" selected=""');
+    expect(specDialogHtml).toContain('value="r2v" selected=""');
+    expect(specDialogHtml).toContain('value="9:16" selected=""');
+
+    const specVideoHtml = renderToStaticMarkup(
+      React.createElement(VideoShotsStagePanel, {
+        detail: sampleEpisodeDetail,
+        videoModel: "",
+        ttsModel: "",
+      })
+    );
+    expect(specVideoHtml).toContain('value="1080p" selected=""');
+  });
+
+  it("handles cold-boot ERR_NOT_CONNECTED recovery, preserveEpisode events, cross-episode reset, and deleted episode resync", async () => {
+    // 1. Cold-boot before WS connection sets needsInitialConnectSync
+    const reqSpy = vi
+      .spyOn(rtClient, "request")
+      .mockRejectedValueOnce(new ActionError("ERR_NOT_CONNECTED", "offline"));
+    await useStudioStore.getState().fetchProjects();
+    expect(useStudioStore.getState().needsInitialConnectSync).toBe(true);
+    expect(useStudioStore.getState().error?.code).toBe("ERR_NOT_CONNECTED");
+
+    // First connect triggers fetchProjects() -> clears needsInitialConnectSync & error
+    const ep2 = { ...sampleEpisodeDetail.episode, id: "ep-2", code: "ep02", title: "Episode 2" };
+    reqSpy.mockImplementation((async (action: string, payload: Record<string, unknown>) => {
+      if (action === Actions.STUDIO_PROJECT_LIST) {
+        return { projects: [sampleProject], projects_dir: "C:/workspace/projects" };
+      }
+      if (action === Actions.STUDIO_PROJECT_GET) {
+        return {
+          project: sampleProject,
+          episodes: [sampleEpisodeDetail.episode, ep2],
+          assets: sampleEpisodeDetail.assets,
+          active_episode: sampleEpisodeDetail,
+        };
+      }
+      if (action === Actions.STUDIO_EPISODE_GET) {
+        const id = String(payload.id);
+        return {
+          ...sampleEpisodeDetail,
+          episode: id === "ep-2" ? ep2 : sampleEpisodeDetail.episode,
+          raw_script: id === "ep-2" ? "Episode 2 remote script" : sampleEpisodeDetail.raw_script,
+        };
+      }
+      if (action === Actions.STUDIO_TIMELINE_GET) {
+        return {
+          project_id: "proj-1",
+          episode_id: String(payload.id),
+          revision: 5,
+          can_undo: true,
+          can_redo: false,
+          duration_ms: 4000,
+          timeline: {
+            version: 1,
+            fps: 24,
+            width: 1920,
+            height: 1080,
+            tracks: [],
+            subtitles: [],
+            markers: [],
+          },
+          revisions: undefined,
+          updated_at: 10,
+        };
+      }
+      if (action === Actions.STUDIO_VERSIONS_LIST) {
+        return {
+          versions: [
+            {
+              id: "v-sync",
+              project_id: "proj-1",
+              target_kind: "keyframe",
+              target_id: "shot-1",
+              version_num: 1,
+              media_path: "kf.png",
+              cost_usd: 0,
+              qc_status: "pass",
+              is_selected: true,
+              created_at: 1,
+            },
+          ],
+        };
+      }
+      return {};
+    }) as typeof rtClient.request);
+
+    await useStudioStore.getState().fetchProjects();
+    expect(useStudioStore.getState().needsInitialConnectSync).toBe(false);
+    expect(useStudioStore.getState().error).toBeNull();
+
+    // 2. Switch to ep-2 on storyboard stage with cached export state -> cross-episode state resets
+    useStudioStore.setState({
+      lastRenderResult: {
+        output_path: "old.mp4",
+        duration_sec: 4,
+        episode: sampleEpisodeDetail,
+      },
+      lastNLEExport: {
+        export_path: "old.zip",
+        format: "capcut",
+        file_count: 1,
+        total_bytes: 10,
+      },
+      probeMap: { "shot-1": { probe_json: "{}" } as ProbeMediaOutput },
+    });
+    await useStudioStore.getState().selectEpisode("ep-2");
+    useStudioStore.getState().setActiveStage("storyboard");
+    expect(useStudioStore.getState().lastRenderResult).toBeNull();
+    expect(useStudioStore.getState().lastNLEExport).toBeNull();
+    expect(useStudioStore.getState().probeMap).toEqual({});
+
+    // 3. receiveProjectChanged (including workspace sync) preserves activeEpisodeId & activeStage
+    useStudioStore.getState().receiveProjectChanged({ project_id: "", action: "synced" });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(useStudioStore.getState().activeEpisodeId).toBe("ep-2");
+    expect(useStudioStore.getState().activeStage).toBe("storyboard");
+
+    // 4. ScriptStagePanel reflects updated server raw_script when no unsaved local edit exists
+    const scriptHtml = renderToStaticMarkup(
+      React.createElement(ScriptStagePanel, {
+        detail: useStudioStore.getState().episodeDetail!,
+        modelOverride: "",
+      })
+    );
+    expect(scriptHtml).toContain("Episode 2 remote script");
+
+    // 5. resyncAfterReconnect refreshes Stage 5 timeline + open versionDrawerTarget, and handles deleted episode
+    useStudioStore.setState({
+      activeStage: "export",
+      timelineResult: null,
+      versionDrawerTarget: {
+        projectId: "proj-1",
+        episodeId: "ep-2",
+        targetKind: "keyframe",
+        targetId: "shot-1",
+        label: "Shot 1",
+        mediaPath: "kf.png",
+      },
+    });
+    await useStudioStore.getState().resyncAfterReconnect();
+    expect(useStudioStore.getState().timelineResult?.revision).toBe(5);
+    expect(useStudioStore.getState().timelineResult?.revisions).toEqual([]);
+    expect(
+      useStudioStore.getState().versionsByTarget[targetVersionKey("keyframe", "shot-1")]
+    ).toHaveLength(1);
+
+    // Simulate ep-2 deleted while disconnected -> falls back to remaining episode ep-1
+    reqSpy.mockImplementation((async (action: string) => {
+      if (action === Actions.STUDIO_PROJECT_LIST) {
+        return { projects: [sampleProject], projects_dir: "C:/workspace/projects" };
+      }
+      if (action === Actions.STUDIO_PROJECT_GET) {
+        return {
+          project: sampleProject,
+          episodes: [sampleEpisodeDetail.episode],
+          assets: sampleEpisodeDetail.assets,
+          active_episode: sampleEpisodeDetail,
+        };
+      }
+      return {};
+    }) as typeof rtClient.request);
+    await useStudioStore.getState().resyncAfterReconnect();
+    expect(useStudioStore.getState().activeEpisodeId).toBe("ep-1");
   });
 });

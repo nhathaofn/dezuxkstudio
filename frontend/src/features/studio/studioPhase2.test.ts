@@ -16,7 +16,12 @@ import { rtClient } from "../../lib/rtClient";
 import { useAgentStore } from "../agent/useAgentStore";
 import { usePreferencesStore } from "../preferences/usePreferencesStore";
 import { useNodeSpecsStore } from "../workflow/useNodeSpecs";
-import { buildMaskDataURLFromStrokes, computeGridDividerPercents } from "./phase2Helpers";
+import {
+  buildMaskDataURLFromStrokes,
+  computeGridDividerPercents,
+  MASK_DOT_EPSILON,
+  strokeMaskPaths,
+} from "./phase2Helpers";
 import {
   StudioGridSplitterModal,
   StudioMaskEditorModal,
@@ -408,13 +413,13 @@ describe("Studio Phase 2 ArcReel helpers, store & modals", () => {
     ) => {
       switch (action) {
         case Actions.STUDIO_QUEUE_CONTROL:
-          return { jobs: [{ ...sampleJob, status: "paused" }], updated: 1 };
+          return { updated_count: 1 };
         case Actions.STUDIO_QUEUE_LIST:
           return { jobs: [{ ...sampleJob, status: "paused" }] };
         case Actions.STUDIO_COST_SUMMARY:
           return sampleCostSummary;
         case Actions.STUDIO_VERSIONS_LIST:
-          return { versions: [version1], qc_reports: [qcReport] };
+          return { versions: [version1], latest_qc: qcReport };
         case Actions.STUDIO_VERSION_SELECT:
           return { version: { ...version1, is_selected: true }, episode: makeEpisodeDetail(false) };
         case Actions.STUDIO_GRID_SPLIT:
@@ -742,5 +747,158 @@ describe("Studio Phase 2 ArcReel helpers, store & modals", () => {
     const viQueueHtml = renderToStaticMarkup(React.createElement(StudioQueueCostDrawer));
     expect(viQueueHtml).toContain("Giọng đọc TTS");
     expect(viQueueHtml).toContain("$0.4000");
+  });
+
+  it("normalizes nullable DTO slices/maps, filters heartbeat progress frames, translates preflight blocker_items, and strokes single-point dots", async () => {
+    // 1. strokeMaskPaths renders single-point click dots using MASK_DOT_EPSILON
+    const pathOps: string[] = [];
+    strokeMaskPaths(
+      {
+        lineCap: "butt",
+        lineJoin: "miter",
+        lineWidth: 1,
+        beginPath: () => pathOps.push("begin"),
+        moveTo: (x, y) => pathOps.push(`M(${x},${y})`),
+        lineTo: (x, y) => pathOps.push(`L(${x},${y})`),
+        stroke: () => pathOps.push("stroke"),
+      },
+      [{ size: 10, points: [{ x: 5, y: 7 }] }]
+    );
+    expect(pathOps).toEqual([
+      "begin",
+      "M(5,7)",
+      `L(${5 + MASK_DOT_EPSILON},${7 + MASK_DOT_EPSILON})`,
+      "stroke",
+    ]);
+
+    // 2. Nullable DTO responses & heartbeat progress filtering
+    const autoDetail = makeEpisodeDetail(true);
+    useStudioStore.setState({
+      projectDetail: {
+        project: autoDetail.project,
+        episodes: [autoDetail.episode],
+        assets: autoDetail.assets,
+        active_episode: autoDetail,
+      },
+      episodeDetail: autoDetail,
+    });
+
+    const observedProgress: number[] = [];
+    const unsub = useStudioStore.subscribe((s) => {
+      if (s.actionProgress) observedProgress.push(s.actionProgress.percent);
+    });
+
+    vi.spyOn(rtClient, "request").mockImplementation((async (
+      action: string,
+      _payload: unknown,
+      opts?: { onProgress?: (p: { percent: number; message: string; heartbeat?: boolean }) => void }
+    ) => {
+      if (action === Actions.STUDIO_QUEUE_ENQUEUE) {
+        return { jobs: undefined, skipped: 0, estimated_usd: 0, summary: "" };
+      }
+      if (action === Actions.STUDIO_COST_SUMMARY) {
+        return {
+          project_id: "proj-p2",
+          currency: "",
+          estimated_total_usd: 0,
+          actual_total_usd: 0,
+          entry_count: 0,
+          by_capability: undefined,
+          by_provider: undefined,
+          entries: undefined,
+          pricing: undefined,
+        };
+      }
+      if (action === Actions.STUDIO_MASK_EDIT) {
+        opts?.onProgress?.({ percent: 0, message: "", heartbeat: true });
+        opts?.onProgress?.({ percent: 65, message: "Editing mask..." });
+        return {
+          path: "D:/studio/kf/masked.png",
+          episode: { ...autoDetail, assets: undefined, shots: undefined },
+        };
+      }
+      if (action === Actions.STUDIO_QC_REVIEW) {
+        opts?.onProgress?.({ percent: 0, message: "", heartbeat: true });
+        opts?.onProgress?.({ percent: 80, message: "Vision QC..." });
+        return {
+          id: "qc-null",
+          project_id: "proj-p2",
+          target_kind: "keyframe",
+          target_id: "shot-1",
+          media_path: "D:/studio/kf/shot1.png",
+          verdict: "warn",
+          overall_score: 7.0,
+          issues: undefined,
+          vision_summary: "",
+          sample_frames: undefined,
+          created_at: 1,
+        };
+      }
+      return {};
+    }) as typeof rtClient.request);
+
+    const enqOk = await useStudioStore.getState().enqueueBatch({ stage: "generate_videos" });
+    expect(enqOk).toBe(true);
+    expect(useStudioStore.getState().jobs).toEqual([]);
+
+    await useStudioStore.getState().fetchCostSummary("proj-p2", "ep-1");
+    expect(useStudioStore.getState().costSummary?.by_capability).toEqual({});
+    expect(useStudioStore.getState().costSummary?.pricing).toEqual([]);
+    expect(useStudioStore.getState().costSummary?.currency).toBe("USD");
+
+    await useStudioStore.getState().applyMaskEdit({
+      project_id: "proj-p2",
+      episode_id: "ep-1",
+      target_kind: "keyframe",
+      target_id: "shot-1",
+      image_path: "D:/studio/kf/shot1.png",
+      mask_data_base64: "data:image/png;base64,X",
+      prompt: "clean visor",
+    });
+    expect(useStudioStore.getState().episodeDetail?.assets).toEqual([]);
+    expect(useStudioStore.getState().episodeDetail?.shots).toEqual([]);
+    expect(useStudioStore.getState().actionProgress).toBeNull();
+
+    const qc = await useStudioStore.getState().runQCReview({
+      project_id: "proj-p2",
+      target_kind: "keyframe",
+      target_id: "shot-1",
+      media_path: "D:/studio/kf/shot1.png",
+    });
+    unsub();
+
+    expect(qc?.issues).toEqual([]);
+    expect(qc?.sample_frames).toEqual([]);
+    // Heartbeats (0%) were ignored; only real progress (65%, 80%) updated actionProgress
+    expect(observedProgress).toEqual([65, 80]);
+
+    // 3. Explicit manual fetchCostSummary({ quiet: false }) surfaces errors
+    vi.spyOn(rtClient, "request").mockRejectedValueOnce(new Error("ledger offline"));
+    await useStudioStore.getState().fetchCostSummary("proj-p2", "ep-1", { quiet: false });
+    expect(useStudioStore.getState().error?.message).toContain("ledger offline");
+
+    // 4. StudioPreflightDialog localizes blocker_items via translateServerMessage
+    usePreferencesStore.setState({ prefs: { theme: "light", language: "vi" } });
+    useStudioStore.setState({
+      pendingPreflight: {
+        mode: "stage",
+        stage: "generate_videos",
+        opts: {},
+        preflight: {
+          ...samplePreflight,
+          ready: false,
+          blocker_items: [
+            {
+              message: "No active video provider or model is ready",
+              msg_key: "studio.preflight.block.provider_unavailable",
+              msg_params: { capability: "video" },
+            },
+          ],
+        },
+      },
+    });
+    const blockerHtml = renderToStaticMarkup(React.createElement(StudioPreflightDialog));
+    expect(blockerHtml).toContain("Chưa có provider hoặc model sẵn sàng cho chặng sản xuất này.");
+    expect(blockerHtml).not.toContain("No active video provider");
   });
 });

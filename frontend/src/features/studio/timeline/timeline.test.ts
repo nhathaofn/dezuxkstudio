@@ -1,6 +1,7 @@
 import React, { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { appConfig } from "../../../config/appConfig";
 import {
   Actions,
   NodeTypes,
@@ -20,7 +21,12 @@ import {
   formatTimecodeMs,
   resolvePreviewStateAtTime,
 } from "./timelineHelpers";
-import { RenderTimelineDialog, TimelineWorkspace } from "./TimelineWorkspace";
+import {
+  ClipInspectorForm,
+  ExportNLEDraftDialog,
+  RenderTimelineDialog,
+  TimelineWorkspace,
+} from "./TimelineWorkspace";
 
 function makeSampleTimeline(): StudioEditTimeline {
   return {
@@ -226,6 +232,17 @@ describe("timelineHelpers", () => {
     const atFast = resolvePreviewStateAtTime(tl, 4500);
     expect(atFast.videoClip?.id).toBe("vc2");
     expect(atFast.videoSourceSec).toBeCloseTo(2.0);
+
+    // Clip-level mute silences individual video and audio clips, and volume clamps to maxVolume
+    const tlMute = makeSampleTimeline();
+    tlMute.tracks[0].clips[0].mute = true;
+    tlMute.tracks[1].clips[0].mute = true;
+    tlMute.tracks[2].volume = 2;
+    tlMute.tracks[2].clips[0].volume = 2;
+    const mutedState = resolvePreviewStateAtTime(tlMute, 1000);
+    expect(mutedState.videoTrackMuted).toBe(true);
+    expect(mutedState.audioCues.map((c) => c.trackId)).toEqual(["a2"]);
+    expect(mutedState.audioCues[0].effectiveVolume).toBe(appConfig.studio.timeline.maxVolume);
   });
 
   it("builds clamped clip trim ops and collects unique media/sprite asset ids", () => {
@@ -509,5 +526,164 @@ describe("useStudioStore Phase 3 timeline & export flows", () => {
     );
     expect(safePreview.videoClip).toBeNull();
     expect(safePreview.activeSubtitles).toEqual([]);
+  });
+
+  it("reads burn_subtitles, ExportNLEDraftDialog, and ClipInspectorForm bounds strictly from workflow:specs", () => {
+    useNodeSpecsStore.setState({ specs: [] });
+    const sampleClip = makeSampleTimeline().tracks[0].clips[0];
+
+    // Empty specs: burn_subtitles is false, NLE has no hardcoded capcut, ClipInspectorForm has no max="3000"
+    const emptyRenderHtml = renderToStaticMarkup(
+      createElement(RenderTimelineDialog, { defaultFilename: "out.mp4", onClose: () => {} })
+    );
+    expect(emptyRenderHtml).toContain('aria-checked="false"');
+
+    const emptyNleHtml = renderToStaticMarkup(
+      createElement(ExportNLEDraftDialog, { defaultProjectName: "proj", onClose: () => {} })
+    );
+    expect(emptyNleHtml).not.toContain('value="capcut"');
+
+    const emptyInspectorHtml = renderToStaticMarkup(
+      createElement(ClipInspectorForm, {
+        clip: sampleClip,
+        locked: false,
+        busy: false,
+        canSplit: false,
+        playheadMs: 0,
+        loadingPeaks: false,
+        onApplyOps: async () => true,
+        onComputePeaks: async () => null,
+        onDeleted: () => {},
+      })
+    );
+    expect(emptyInspectorHtml).not.toContain('max="3000"');
+
+    // Loaded specs populate burn_subtitles, NLE format/include_media_copy, and transition_ms max
+    useNodeSpecsStore.setState({
+      specs: [
+        {
+          type: NodeTypes.RENDER_TIMELINE,
+          provider: "studio",
+          label: "Render",
+          description: "Render",
+          inputs: [],
+          outputs: [],
+          params: [
+            { name: "burn_subtitles", label: "Burn", kind: "toggle", default: "false" },
+            { name: "overwrite", label: "Overwrite", kind: "toggle", default: "true" },
+          ],
+        },
+        {
+          type: NodeTypes.EXPORT_NLE_DRAFT,
+          provider: "studio",
+          label: "Export NLE",
+          description: "Export",
+          inputs: [],
+          outputs: [],
+          params: [
+            {
+              name: "format",
+              label: "Format",
+              kind: "select",
+              options: ["otio", "fcpxml", "capcut"],
+              default: "otio",
+            },
+            { name: "include_media_copy", label: "Copy", kind: "toggle", default: "false" },
+          ],
+        },
+        {
+          type: NodeTypes.TIMELINE_AUTO_ASSEMBLE,
+          provider: "studio",
+          label: "Assemble",
+          description: "Assemble",
+          inputs: [],
+          outputs: [],
+          params: [
+            {
+              name: "transition_ms",
+              label: "Transition",
+              kind: "integer",
+              min: 0,
+              max: 2400,
+              default: "500",
+            },
+          ],
+        },
+      ],
+    });
+
+    const specNleHtml = renderToStaticMarkup(
+      createElement(ExportNLEDraftDialog, { defaultProjectName: "proj", onClose: () => {} })
+    );
+    expect(specNleHtml).toContain('value="otio" selected=""');
+
+    const specInspectorHtml = renderToStaticMarkup(
+      createElement(ClipInspectorForm, {
+        clip: sampleClip,
+        locked: false,
+        busy: false,
+        canSplit: false,
+        playheadMs: 0,
+        loadingPeaks: false,
+        onApplyOps: async () => true,
+        onComputePeaks: async () => null,
+        onDeleted: () => {},
+      })
+    );
+    expect(specInspectorHtml).toContain('max="2400"');
+  });
+
+  it("recovers via fetchTimeline on ERR_CONFLICT in undo, redo, and autoAssemble, and guards receiveTimelineChanged", async () => {
+    const syncedRes: StudioTimelineResult = {
+      project_id: "proj-1",
+      episode_id: "ep-1",
+      revision: 12,
+      can_undo: true,
+      can_redo: false,
+      duration_ms: 7000,
+      timeline: makeSampleTimeline(),
+      revisions: [],
+      updated_at: 500,
+    };
+
+    useStudioStore.setState({
+      activeProjectId: "proj-1",
+      activeEpisodeId: "ep-1",
+      timelineResult: { ...syncedRes, revision: 10 },
+    });
+
+    const spy = vi.spyOn(rtClient, "request");
+    for (const runConflictAction of [
+      () => useStudioStore.getState().undoTimeline(),
+      () => useStudioStore.getState().redoTimeline(),
+      () => useStudioStore.getState().autoAssembleTimeline(),
+    ]) {
+      useStudioStore.setState({ timelineResult: { ...syncedRes, revision: 10 }, error: null });
+      spy
+        .mockRejectedValueOnce({ code: "ERR_CONFLICT", message: "stale" } as never)
+        .mockResolvedValueOnce(syncedRes as never);
+
+      const ok = await runConflictAction();
+      expect(ok).toBe(false);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(useStudioStore.getState().error?.code).toBe("ERR_CONFLICT");
+      expect(useStudioStore.getState().timelineResult?.revision).toBe(12);
+    }
+
+    // When activeEpisodeId is null, receiveTimelineChanged must ignore stray events
+    useStudioStore.setState({ activeEpisodeId: null, timelineResult: null });
+    useStudioStore.getState().receiveTimelineChanged({
+      project_id: "proj-1",
+      episode_id: "ep-other",
+      revision: 99,
+      can_undo: false,
+      can_redo: false,
+      duration_ms: 1000,
+      actor: "agent",
+      summary: "stray",
+      timeline: makeSampleTimeline(),
+    });
+    expect(useStudioStore.getState().timelineResult).toBeNull();
   });
 });
