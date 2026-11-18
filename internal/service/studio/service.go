@@ -954,6 +954,24 @@ func (s *Service) SyncWorkspace(ctx context.Context, projectID string) (*contrac
 	return firstSynced, nil
 }
 
+// SyncAndListWorkspace reconciles disk projects/episodes with SQLite and returns the
+// optionally refreshed project alongside the full project listing.
+func (s *Service) SyncAndListWorkspace(ctx context.Context, projectID string) (contracts.StudioSyncWorkspaceResult, error) {
+	proj, err := s.SyncWorkspace(ctx, projectID)
+	if err != nil {
+		return contracts.StudioSyncWorkspaceResult{}, err
+	}
+	list, err := s.ListProjects(ctx)
+	if err != nil {
+		return contracts.StudioSyncWorkspaceResult{}, err
+	}
+	return contracts.StudioSyncWorkspaceResult{
+		Project:     proj,
+		Projects:    list.Projects,
+		ProjectsDir: list.ProjectsDir,
+	}, nil
+}
+
 func sanitizeDiskProjectEnums(dp *domainstudio.Project) {
 	if dp == nil {
 		return

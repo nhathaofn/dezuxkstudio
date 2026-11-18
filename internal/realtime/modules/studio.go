@@ -106,6 +106,9 @@ func (s Studio) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionStudioPricingUpsert,
 		func(ctx context.Context, _ *realtime.Request, p contracts.StudioPricingUpsertPayload) (contracts.StudioPricingEntry, error) {
+			if s.LockHostAdmin {
+				return contracts.StudioPricingEntry{}, hostAdminLockedError()
+			}
 			return s.Service.UpsertPricing(ctx, p)
 		})
 
@@ -194,19 +197,6 @@ func (s Studio) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionStudioSyncWorkspace,
 		func(ctx context.Context, _ *realtime.Request, p contracts.StudioSyncWorkspacePayload) (contracts.StudioSyncWorkspaceResult, error) {
-			guardedCtx := engine.WithFileGuard(ctx, s.FileGuard)
-			proj, err := s.Service.SyncWorkspace(guardedCtx, p.ProjectID)
-			if err != nil {
-				return contracts.StudioSyncWorkspaceResult{}, err
-			}
-			list, err := s.Service.ListProjects(guardedCtx)
-			if err != nil {
-				return contracts.StudioSyncWorkspaceResult{}, err
-			}
-			return contracts.StudioSyncWorkspaceResult{
-				Project:     proj,
-				Projects:    list.Projects,
-				ProjectsDir: list.ProjectsDir,
-			}, nil
+			return s.Service.SyncAndListWorkspace(engine.WithFileGuard(ctx, s.FileGuard), p.ProjectID)
 		})
 }

@@ -361,6 +361,7 @@ export interface AgentUIContextPayload {
   screen?: string;
   feature?: string;
   selected_files?: string[];
+  selected_asset_ids?: string[];
   settings?: Record<string, string>;
   last_result?: string;
 }
@@ -2282,8 +2283,6 @@ export const Actions = {
   /** Registers an existing local media file as an asset. */
   MEDIA_REGISTER_INPUT: "media:register_input",
   /** Sets the opt-in provider credential link for an agent provider. */
-  AGENT_SET_PROVIDER_LINK: "agent:set_provider_link",
-  /** Sets the opt-in provider credential link for an agent provider. */
   AGENT_LINK_PROVIDER: "agent:link_provider",
   /** Removes the opt-in provider link for an agent provider. */
   AGENT_UNLINK_PROVIDER: "agent:unlink_provider",
@@ -2447,7 +2446,6 @@ export interface ActionMap {
   "media:delete": { payload: MediaDeletePayload; result: Empty };
   "media:sign_url": { payload: MediaSignURLPayload; result: MediaSignedURLResult };
   "media:register_input": { payload: MediaRegisterInputPayload; result: MediaAssetItem };
-  "agent:set_provider_link": { payload: AgentLinkProviderPayload; result: Empty };
   "agent:link_provider": { payload: AgentLinkProviderPayload; result: Empty };
   "agent:unlink_provider": { payload: AgentProviderIDPayload; result: Empty };
   "agent:list_provider_links": { payload: Empty; result: AgentProviderLinksResult };

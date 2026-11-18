@@ -39,6 +39,7 @@ type harness struct {
 	core  *core.Core
 	token string
 	cfg   *config.Config
+	paths paths.Paths
 }
 
 func startCore(t *testing.T, mutate func(*config.Config)) *harness {
@@ -81,7 +82,7 @@ func startCore(t *testing.T, mutate func(*config.Config)) *harness {
 			t.Errorf("close: %v", err)
 		}
 	})
-	return &harness{t: t, core: c, token: token, cfg: cfg}
+	return &harness{t: t, core: c, token: token, cfg: cfg, paths: p}
 }
 
 func (h *harness) httpURL(path string) string {

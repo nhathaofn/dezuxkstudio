@@ -350,34 +350,35 @@ func (p AgentSetModelPayload) Validate() error {
 // NewAgentProviderInfo converts a domain agent.ProviderInfo to the wire DTO.
 func NewAgentProviderInfo(in agent.ProviderInfo) AgentProviderInfo {
 	return AgentProviderInfo{
-		ID:                 in.ID,
-		Name:               in.Name,
-		Executable:         in.Executable,
-		ResolvedPath:       in.ResolvedPath,
-		CustomPath:         in.CustomPath,
-		Source:             in.Source,
-		Version:            in.Version,
-		State:              in.State,
-		Supported:          in.Supported,
-		UnsupportedReason:  in.UnsupportedReason,
-		AuthState:          in.AuthState,
-		AccountInfo:        in.AccountInfo,
-		IsolatedProfileDir: in.IsolatedProfileDir,
-		ProtocolVersion:    in.ProtocolVersion,
-		AgentName:          in.AgentName,
-		AgentVersion:       in.AgentVersion,
-		LastError:          in.LastError,
-		LastErrorKey:       in.LastErrorKey,
-		LastErrorParams:    in.LastErrorParams,
-		Active:             in.Active,
-		Busy:               in.Busy,
-		Models:             in.Models,
-		CurrentModel:       in.CurrentModel,
-		SelectedModel:      in.SelectedModel,
-		SelectedEffort:     in.SelectedEffort,
-		Revision:           in.Revision,
-		Installing:         in.Installing,
-		InstallPercent:     in.InstallPercent,
+		ID:                  in.ID,
+		Name:                in.Name,
+		Executable:          in.Executable,
+		ResolvedPath:        in.ResolvedPath,
+		CustomPath:          in.CustomPath,
+		Source:              in.Source,
+		Version:             in.Version,
+		State:               in.State,
+		Supported:           in.Supported,
+		UnsupportedReason:   in.UnsupportedReason,
+		AuthState:           in.AuthState,
+		AccountInfo:         in.AccountInfo,
+		IsolatedProfileDir:  in.IsolatedProfileDir,
+		ProtocolVersion:     in.ProtocolVersion,
+		AgentName:           in.AgentName,
+		AgentVersion:        in.AgentVersion,
+		LastError:           in.LastError,
+		LastErrorKey:        in.LastErrorKey,
+		LastErrorParams:     in.LastErrorParams,
+		Active:              in.Active,
+		Busy:                in.Busy,
+		Models:              in.Models,
+		CurrentModel:        in.CurrentModel,
+		SelectedModel:       in.SelectedModel,
+		SelectedEffort:      in.SelectedEffort,
+		CompatibleProviders: in.CompatibleProviders,
+		Revision:            in.Revision,
+		Installing:          in.Installing,
+		InstallPercent:      in.InstallPercent,
 	}
 }
 
@@ -595,13 +596,14 @@ func (p AgentResolveApprovalPayload) Validate() error {
 
 // AgentUIContextPayload updates the active screen context visible to the agent.
 type AgentUIContextPayload struct {
-	Route         string            `json:"route"`
-	Note          string            `json:"note"`
-	Screen        string            `json:"screen,omitempty"`
-	Feature       string            `json:"feature,omitempty"`
-	SelectedFiles []string          `json:"selected_files,omitempty"`
-	Settings      map[string]string `json:"settings,omitempty"`
-	LastResult    string            `json:"last_result,omitempty"`
+	Route            string            `json:"route"`
+	Note             string            `json:"note"`
+	Screen           string            `json:"screen,omitempty"`
+	Feature          string            `json:"feature,omitempty"`
+	SelectedFiles    []string          `json:"selected_files,omitempty"`
+	SelectedAssetIDs []string          `json:"selected_asset_ids,omitempty"`
+	Settings         map[string]string `json:"settings,omitempty"`
+	LastResult       string            `json:"last_result,omitempty"`
 }
 
 // AgentAllowedDirsResult returns the authorized workspace folder list.

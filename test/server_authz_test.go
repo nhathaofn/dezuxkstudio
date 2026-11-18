@@ -66,7 +66,7 @@ func assertValidationFrame(t *testing.T, action string, resp frame) {
 	}
 }
 
-func assertProvidersAccessible(t *testing.T, ws *wsClient) {
+func assertProvidersReadOnly(t *testing.T, ws *wsClient) contracts.ProvidersListResult {
 	t.Helper()
 
 	listRes, _ := ws.call(contracts.ActionProvidersList, contracts.Empty{})
@@ -85,6 +85,12 @@ func assertProvidersAccessible(t *testing.T, ws *wsClient) {
 	if !defRes.Success {
 		t.Fatalf("providers:defaults failed: %+v", defRes.Error)
 	}
+	return list
+}
+
+func assertProvidersAccessible(t *testing.T, ws *wsClient) {
+	t.Helper()
+	list := assertProvidersReadOnly(t, ws)
 
 	updRes, _ := ws.call(contracts.ActionProvidersUpdateSettings, contracts.UpdateSettingsPayload{
 		OwnerID:  list.Builtins[0].ID,
@@ -204,6 +210,9 @@ func TestServerModeAuthz_DefaultLocked(t *testing.T) {
 	if sysInfo.Mode != config.ModeServer {
 		t.Fatalf("expected mode %q, got %q", config.ModeServer, sysInfo.Mode)
 	}
+	if sysInfo.Paths != (contracts.PathsInfo{}) {
+		t.Fatalf("expected system:info host paths hidden in locked server mode, got %+v", sysInfo.Paths)
+	}
 
 	for _, readAction := range []string{
 		contracts.ActionBinariesList,
@@ -216,7 +225,45 @@ func TestServerModeAuthz_DefaultLocked(t *testing.T) {
 		}
 	}
 
-	assertProvidersAccessible(t, ws)
+	list := assertProvidersReadOnly(t, ws)
+
+	lockedHostAdmin := []struct {
+		action  string
+		payload any
+	}{
+		{contracts.ActionBinariesDownload, contracts.BinaryIDPayload{ID: "ffmpeg"}},
+		{contracts.ActionDiagnosticsExport, contracts.Empty{}},
+		{contracts.ActionSystemCheckUpdate, contracts.Empty{}},
+		{contracts.ActionStudioPricingUpsert, contracts.StudioPricingUpsertPayload{
+			ProviderID: "openai", ModelID: "gpt-4o", Capability: "text", Unit: "1k_tokens", UnitPriceUSD: 0.01,
+		}},
+		{contracts.ActionProvidersCreateCredential, contracts.CreateCredentialPayload{ProviderID: list.Builtins[0].ID}},
+		{contracts.ActionProvidersUpdateCredential, contracts.UpdateCredentialPayload{ID: "c1"}},
+		{contracts.ActionProvidersDeleteCredential, contracts.ProviderIDPayload{ID: "c1"}},
+		{contracts.ActionProvidersActivate, contracts.ProviderIDPayload{ID: "c1"}},
+		{contracts.ActionProvidersTestCredential, contracts.ProviderIDPayload{ID: "c1"}},
+		{contracts.ActionProvidersCreateCustom, contracts.CustomProviderInput{Name: "x"}},
+		{contracts.ActionProvidersUpdateCustom, contracts.UpdateCustomPayload{ID: "x"}},
+		{contracts.ActionProvidersDeleteCustom, contracts.ProviderIDPayload{ID: "x"}},
+		{contracts.ActionProvidersTestCustom, contracts.ProviderIDPayload{ID: "x"}},
+		{contracts.ActionProvidersDiscoverModels, contracts.DiscoverModelsPayload{CustomID: "x"}},
+		{contracts.ActionProvidersDiscoverBuiltin, contracts.ProviderIDPayload{ID: list.Builtins[0].ID}},
+		{contracts.ActionProvidersSetModels, contracts.SetModelsPayload{OwnerID: list.Builtins[0].ID}},
+		{contracts.ActionProvidersUpdateSettings, contracts.UpdateSettingsPayload{OwnerID: list.Builtins[0].ID, Settings: map[string]string{"request_gap_ms": "100"}}},
+		{contracts.ActionProvidersSetDefault, contracts.SetDefaultPayload{Purpose: "text", Model: "openai/gpt-4o"}},
+		{contracts.ActionAgentLogin, contracts.AgentLoginPayload{ID: "claude"}},
+		{contracts.ActionAgentLoginCode, contracts.AgentLoginCodePayload{ID: "codex", Code: "123"}},
+		{contracts.ActionAgentLogout, contracts.AgentProviderIDPayload{ID: "claude"}},
+		{contracts.ActionAgentConnect, contracts.AgentProviderIDPayload{ID: "claude"}},
+		{contracts.ActionAgentSetModel, contracts.AgentSetModelPayload{ID: "claude", Model: "sonnet"}},
+		{contracts.ActionAgentLinkProvider, contracts.AgentLinkProviderPayload{AgentProviderID: "claude", ProviderID: "anthropic", CredentialID: "c1"}},
+		{contracts.ActionAgentUnlinkProvider, contracts.AgentProviderIDPayload{ID: "claude"}},
+		{contracts.ActionAgentReloadCustomizations, contracts.Empty{}},
+	}
+	for _, tc := range lockedHostAdmin {
+		r, _ := ws.call(tc.action, tc.payload)
+		assertUnavailableFrame(t, tc.action, r, errHostAdminLocked)
+	}
 }
 
 func TestServerModeAuthz_AllowHostAdminEnabled(t *testing.T) {
@@ -738,7 +785,8 @@ func TestServerModeAuthz_StudioAndMediaFileGuards(t *testing.T) {
 	}
 
 	// Positive control: registering & downloading a legitimate image inside MediaDir succeeds in --mode server.
-	trustedMediaPNG := filepath.Join(sysInfo.Paths.MediaDir, "images", "trusted_frame.png")
+	tree := h.core.WorkspaceTree()
+	trustedMediaPNG := filepath.Join(tree.MediaDir, "images", "trusted_frame.png")
 	createSizedPNG(t, trustedMediaPNG, 4, 4, color.RGBA{R: 20, G: 180, B: 90, A: 255})
 	regTrustedResp, _ := ws.call(contracts.ActionMediaRegisterInput, contracts.MediaRegisterInputPayload{
 		FilePath:   trustedMediaPNG,
@@ -753,14 +801,14 @@ func TestServerModeAuthz_StudioAndMediaFileGuards(t *testing.T) {
 	}
 
 	// 2. GET /api/media/download?path=<workspace>/.env and internal app.db MUST return 403 Forbidden.
-	wsEnvPath := filepath.Join(sysInfo.Paths.AgentWorkspace, ".env")
+	wsEnvPath := filepath.Join(tree.WorkspaceDir, ".env")
 	if err := os.WriteFile(wsEnvPath, []byte("OPENAI_API_KEY=sk-secret\n"), 0o600); err != nil {
 		t.Fatalf("write workspace .env: %v", err)
 	}
 	if code := downloadByPath(wsEnvPath); code != http.StatusForbidden {
 		t.Fatalf("security violation: GET /api/media/download?path=<workspace>/.env returned %d (expected 403)", code)
 	}
-	appDBPath := filepath.Join(sysInfo.Paths.Data, "app.db")
+	appDBPath := filepath.Join(h.paths.Data, "app.db")
 	if code := downloadByPath(appDBPath); code != http.StatusForbidden {
 		t.Fatalf("security violation: GET /api/media/download?path=<DataDir>/app.db returned %d (expected 403)", code)
 	}
@@ -912,7 +960,7 @@ func TestServerModeAuthz_StudioAndMediaFileGuards(t *testing.T) {
 		if err := json.Unmarshal(travProjResp.Data, &travDetail); err != nil {
 			t.Fatalf("unmarshal traversal project: %v", err)
 		}
-		projectsRoot := filepath.Join(sysInfo.Paths.AgentWorkspace, "projects")
+		projectsRoot := filepath.Join(tree.WorkspaceDir, "projects")
 		rel, rerr := filepath.Rel(projectsRoot, travDetail.Project.RootDir)
 		if rerr != nil || strings.HasPrefix(rel, "..") {
 			t.Fatalf("security violation: project RootDir %q escaped ProjectsDir %q", travDetail.Project.RootDir, projectsRoot)

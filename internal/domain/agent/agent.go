@@ -262,31 +262,32 @@ type ModelSelection struct {
 
 // ProviderInfo describes the live inspection, isolated auth, and connection status of an agent provider.
 type ProviderInfo struct {
-	ID                 ProviderID        `json:"id"`
-	Name               string            `json:"name"`
-	Executable         string            `json:"executable"`
-	ResolvedPath       string            `json:"resolved_path"`
-	CustomPath         string            `json:"custom_path"`
-	Source             Source            `json:"source"`
-	Version            string            `json:"version"`
-	State              ConnectionState   `json:"state"`
-	Supported          bool              `json:"supported"`
-	UnsupportedReason  string            `json:"unsupported_reason"`
-	AuthState          AuthState         `json:"auth_state"`
-	AccountInfo        string            `json:"account_info"`
-	IsolatedProfileDir string            `json:"isolated_profile_dir"`
-	ProtocolVersion    int               `json:"protocol_version"`
-	AgentName          string            `json:"agent_name"`
-	AgentVersion       string            `json:"agent_version"`
-	LastError          string            `json:"last_error"`
-	LastErrorKey       string            `json:"last_error_key,omitempty"`    // frontend i18n key for LastError
-	LastErrorParams    map[string]string `json:"last_error_params,omitempty"` // values for the key's placeholders
-	Active             bool              `json:"active"`
-	Busy               bool              `json:"busy"`
-	Models             []ModelOption     `json:"models"`
-	CurrentModel       string            `json:"current_model"`
-	SelectedModel      string            `json:"selected_model"`
-	SelectedEffort     string            `json:"selected_effort"`
+	ID                  ProviderID        `json:"id"`
+	Name                string            `json:"name"`
+	Executable          string            `json:"executable"`
+	ResolvedPath        string            `json:"resolved_path"`
+	CustomPath          string            `json:"custom_path"`
+	Source              Source            `json:"source"`
+	Version             string            `json:"version"`
+	State               ConnectionState   `json:"state"`
+	Supported           bool              `json:"supported"`
+	UnsupportedReason   string            `json:"unsupported_reason"`
+	AuthState           AuthState         `json:"auth_state"`
+	AccountInfo         string            `json:"account_info"`
+	IsolatedProfileDir  string            `json:"isolated_profile_dir"`
+	ProtocolVersion     int               `json:"protocol_version"`
+	AgentName           string            `json:"agent_name"`
+	AgentVersion        string            `json:"agent_version"`
+	LastError           string            `json:"last_error"`
+	LastErrorKey        string            `json:"last_error_key,omitempty"`    // frontend i18n key for LastError
+	LastErrorParams     map[string]string `json:"last_error_params,omitempty"` // values for the key's placeholders
+	Active              bool              `json:"active"`
+	Busy                bool              `json:"busy"`
+	Models              []ModelOption     `json:"models"`
+	CurrentModel        string            `json:"current_model"`
+	SelectedModel       string            `json:"selected_model"`
+	SelectedEffort      string            `json:"selected_effort"`
+	CompatibleProviders []string          `json:"compatible_providers,omitempty"`
 	// Revision grows with every status snapshot the service builds. A snapshot that reaches the UI
 	// late (a slow agent:list) must never replace a newer one (e.g. "connected, with models").
 	Revision int64 `json:"revision"`

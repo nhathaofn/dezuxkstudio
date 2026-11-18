@@ -85,6 +85,7 @@ type Core struct {
 	mediaGenSvc   *mediagensvc.Service
 	studioSvc     *studiosvc.Service
 	prefSvc       *preferences.Service
+	chatCoalescer *chatEventCoalescer
 	workspaceTree atomic.Pointer[paths.WorkspaceTree]
 	// background work tied to the core lifetime (e.g. the start-up provider key check)
 	bgCtx     context.Context
@@ -521,6 +522,10 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		Dir: o.Paths.AgentCLIs(), Client: o.HTTPClient, Logger: o.Logger, UserAgent: buildinfo.ProductName + "/" + buildinfo.Version,
 	})
 
+	c.chatCoalescer = newChatEventCoalescer(35*time.Millisecond, func(evt domainagent.ChatEvent) {
+		c.hub.Publish(contracts.EventAgentChatEvent, contracts.NewAgentChatEvent(evt))
+	})
+
 	agentSvc, err = agentsvc.New(agentsvc.Options{
 		Repo:                agentRepo,
 		DataDir:             o.Paths.Data,
@@ -549,9 +554,7 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		OnStatusChanged: func(info domainagent.ProviderInfo) {
 			c.hub.Publish(contracts.EventAgentStatusChanged, contracts.NewAgentProviderInfo(info))
 		},
-		OnChatEvent: func(evt domainagent.ChatEvent) {
-			c.hub.Publish(contracts.EventAgentChatEvent, contracts.NewAgentChatEvent(evt))
-		},
+		OnChatEvent: c.chatCoalescer.Emit,
 		OnLoginPrompt: func(p domainagent.LoginPrompt) {
 			c.hub.Publish(contracts.EventAgentLoginPrompt, contracts.NewAgentLoginPrompt(p))
 		},
@@ -587,7 +590,7 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 			Service:            prefSvc,
 			LockTrustedFolders: cfg.Mode == config.ModeServer,
 		},
-		modules.Diagnostics{Service: diagSvc},
+		modules.Diagnostics{Service: diagSvc, LockHostAdmin: lockRemoteHost},
 		modules.Binaries{Service: binSvc, LockHostAdmin: lockRemoteHost},
 		modules.Workflow{Service: wfSvc, FileGuard: workflowFileGuard(cfg.Mode, agentSvc)},
 		modules.Agent{
@@ -596,7 +599,7 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 			LockHostAdmin:      lockRemoteHost,
 			LockCustomizations: lockRemoteHost,
 		},
-		modules.Providers{Service: provSvc},
+		modules.Providers{Service: provSvc, LockHostAdmin: lockRemoteHost},
 		modules.Media{Service: mediaSvc, FileGuard: workflowFileGuard(cfg.Mode, agentSvc)},
 		modules.Studio{Service: studioSvc, FileGuard: workflowFileGuard(cfg.Mode, agentSvc), LockHostAdmin: lockRemoteHost},
 	}, nil
@@ -639,6 +642,9 @@ func (c *Core) Errors() <-chan error { return c.srv.Errors() }
 func (c *Core) Close() error {
 	if c.bgCancel != nil {
 		c.bgCancel()
+	}
+	if c.chatCoalescer != nil {
+		c.chatCoalescer.Close()
 	}
 
 	var hubErr error
@@ -756,4 +762,100 @@ func (a *studioPreflightAdapter) EstimateUnitPriceUSD(ctx context.Context, provi
 	}
 	wildcard := entry.ProviderID == "*" || entry.ModelID == "*"
 	return entry.UnitPriceUSD, wildcard, nil
+}
+
+const chatCoalesceMaxBytes = 4096
+
+type chatEventCoalescer struct {
+	window time.Duration
+	emit   func(domainagent.ChatEvent)
+
+	mu      sync.Mutex
+	closed  bool
+	hasPend bool
+	pending domainagent.ChatEvent
+	timer   *time.Timer
+}
+
+func newChatEventCoalescer(window time.Duration, emit func(domainagent.ChatEvent)) *chatEventCoalescer {
+	return &chatEventCoalescer{window: window, emit: emit}
+}
+
+func isCoalescibleChatEvent(t domainagent.ChatEventType) bool {
+	return t == domainagent.ChatEventDelta ||
+		t == domainagent.ChatEventThought ||
+		t == domainagent.ChatEventSubagentDelta
+}
+
+func sameCoalesceBucket(a, b domainagent.ChatEvent) bool {
+	return a.Type == b.Type &&
+		a.ProviderID == b.ProviderID &&
+		a.MessageID == b.MessageID &&
+		a.SubagentID == b.SubagentID &&
+		a.SubagentName == b.SubagentName &&
+		a.SubagentProvider == b.SubagentProvider
+}
+
+func (c *chatEventCoalescer) Emit(evt domainagent.ChatEvent) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	if !isCoalescibleChatEvent(evt.Type) {
+		c.flushLocked()
+		c.emit(evt)
+		return
+	}
+	if c.hasPend {
+		if sameCoalesceBucket(c.pending, evt) {
+			c.pending.Text += evt.Text
+			if len(c.pending.Text) >= chatCoalesceMaxBytes {
+				c.flushLocked()
+			}
+			return
+		}
+		c.flushLocked()
+	}
+	c.pending = evt
+	c.hasPend = true
+	if c.timer == nil {
+		c.timer = time.AfterFunc(c.window, c.flushTimer)
+	} else {
+		c.timer.Reset(c.window)
+	}
+}
+
+func (c *chatEventCoalescer) flushTimer() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.closed {
+		c.flushLocked()
+	}
+}
+
+func (c *chatEventCoalescer) flushLocked() {
+	if c.timer != nil {
+		c.timer.Stop()
+	}
+	if !c.hasPend {
+		return
+	}
+	evt := c.pending
+	c.pending = domainagent.ChatEvent{}
+	c.hasPend = false
+	c.emit(evt)
+}
+
+func (c *chatEventCoalescer) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	c.flushLocked()
+	c.closed = true
+	if c.timer != nil {
+		c.timer.Stop()
+	}
 }

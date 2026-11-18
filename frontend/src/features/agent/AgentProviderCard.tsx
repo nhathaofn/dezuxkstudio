@@ -14,11 +14,11 @@ import {
   Search,
   XCircle,
 } from "lucide-react";
-import type {
-  ActionName,
-  AgentAuthState,
-  AgentConnectionState,
-  AgentProviderInfo,
+import {
+  Actions,
+  type AgentAuthState,
+  type AgentConnectionState,
+  type AgentProviderInfo,
 } from "../../contracts/generated";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -265,7 +265,7 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
     const [targetProviderId, credId] = val.split(":");
     if (targetProviderId && credId) {
       void rtClient
-        .request("agent:set_provider_link" as ActionName, {
+        .request(Actions.AGENT_LINK_PROVIDER, {
           agent_provider_id: provider.id,
           provider_id: targetProviderId,
           credential_id: credId,

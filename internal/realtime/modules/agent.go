@@ -12,7 +12,6 @@ import (
 
 // Realtime actions for agent provider link synergy.
 const (
-	ActionAgentSetProviderLink     = contracts.ActionAgentSetProviderLink
 	ActionAgentLinkProvider        = contracts.ActionAgentLinkProvider
 	ActionAgentUnlinkProvider      = contracts.ActionAgentUnlinkProvider
 	ActionAgentListProviderLinks   = contracts.ActionAgentListProviderLinks
@@ -51,17 +50,11 @@ func (Agent) Name() string { return "agent" }
 
 func (m Agent) Register(r *realtime.Registry) {
 	// Provider linking actions.
-	realtime.Handle(r, ActionAgentSetProviderLink,
-		func(ctx context.Context, _ *realtime.Request, p contracts.AgentLinkProviderPayload) (contracts.Empty, error) {
-			if err := p.Validate(); err != nil {
-				return contracts.Empty{}, err
-			}
-			err := m.Service.SetProviderLink(ctx, domainagent.ProviderID(p.AgentProviderID), p.ProviderID, p.CredentialID)
-			return contracts.Empty{}, err
-		})
-
 	realtime.Handle(r, ActionAgentLinkProvider,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentLinkProviderPayload) (contracts.Empty, error) {
+			if m.LockHostAdmin {
+				return contracts.Empty{}, hostAdminLockedError()
+			}
 			if err := p.Validate(); err != nil {
 				return contracts.Empty{}, err
 			}
@@ -71,6 +64,9 @@ func (m Agent) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, ActionAgentUnlinkProvider,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentProviderIDPayload) (contracts.Empty, error) {
+			if m.LockHostAdmin {
+				return contracts.Empty{}, hostAdminLockedError()
+			}
 			err := m.Service.DeleteProviderLink(ctx, p.ID)
 			return contracts.Empty{}, err
 		})
@@ -127,6 +123,9 @@ func (m Agent) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionAgentLogin,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentLoginPayload) (contracts.AgentProviderInfo, error) {
+			if m.LockHostAdmin {
+				return contracts.AgentProviderInfo{}, hostAdminLockedError()
+			}
 			info, err := m.Service.Login(ctx, p.ID, p.APIKey)
 			if err != nil {
 				return m.toContractInfo(info), err
@@ -136,6 +135,9 @@ func (m Agent) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionAgentLoginCode,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentLoginCodePayload) (contracts.Empty, error) {
+			if m.LockHostAdmin {
+				return contracts.Empty{}, hostAdminLockedError()
+			}
 			return contracts.Empty{}, m.Service.SubmitLoginCode(ctx, p.ID, p.Code)
 		})
 
@@ -147,6 +149,9 @@ func (m Agent) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionAgentLogout,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentProviderIDPayload) (contracts.AgentProviderInfo, error) {
+			if m.LockHostAdmin {
+				return contracts.AgentProviderInfo{}, hostAdminLockedError()
+			}
 			info, err := m.Service.Logout(ctx, p.ID)
 			if err != nil {
 				return m.toContractInfo(info), err
@@ -156,6 +161,9 @@ func (m Agent) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionAgentSetModel,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentSetModelPayload) (contracts.AgentProviderInfo, error) {
+			if m.LockHostAdmin {
+				return contracts.AgentProviderInfo{}, hostAdminLockedError()
+			}
 			info, err := m.Service.SetModel(ctx, p.ID, p.Model, p.Effort)
 			if err != nil {
 				return contracts.AgentProviderInfo{}, err
@@ -165,6 +173,9 @@ func (m Agent) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionAgentConnect,
 		func(ctx context.Context, _ *realtime.Request, p contracts.AgentProviderIDPayload) (contracts.AgentProviderInfo, error) {
+			if m.LockHostAdmin {
+				return contracts.AgentProviderInfo{}, hostAdminLockedError()
+			}
 			info, err := m.Service.Connect(ctx, p.ID)
 			if err != nil {
 				return m.toContractInfo(info), err
@@ -253,7 +264,8 @@ func (m Agent) Register(r *realtime.Registry) {
 		func(_ context.Context, _ *realtime.Request, p contracts.AgentUIContextPayload) (contracts.Empty, error) {
 			m.Service.SetUIContext(agentsvc.UIContext{
 				Route: p.Route, Note: p.Note, Screen: p.Screen, Feature: p.Feature,
-				SelectedFiles: p.SelectedFiles, Settings: p.Settings, LastResult: p.LastResult,
+				SelectedFiles: p.SelectedFiles, SelectedAssetIDs: p.SelectedAssetIDs,
+				Settings: p.Settings, LastResult: p.LastResult,
 			})
 			return contracts.Empty{}, nil
 		})
@@ -302,6 +314,9 @@ func (m Agent) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionAgentReloadCustomizations,
 		func(ctx context.Context, _ *realtime.Request, _ contracts.Empty) (contracts.AgentCustomizationsResult, error) {
+			if m.LockHostAdmin {
+				return contracts.AgentCustomizationsResult{}, hostAdminLockedError()
+			}
 			snap, err := m.Service.ReloadCustomizations(ctx)
 			if err != nil {
 				return contracts.AgentCustomizationsResult{}, err
@@ -408,11 +423,7 @@ func historyResult(id string, msgs []domainagent.ChatMessage) contracts.AgentHis
 }
 
 func (m Agent) toContractInfo(it domainagent.ProviderInfo) contracts.AgentProviderInfo {
-	info := contracts.NewAgentProviderInfo(it)
-	if m.Service != nil {
-		info.CompatibleProviders = m.Service.CompatibleProviders(it.ID)
-	}
-	return info
+	return contracts.NewAgentProviderInfo(it)
 }
 
 func (m Agent) toContractAgentList(in []domainagent.ProviderInfo, developerMode bool) contracts.AgentListResult {

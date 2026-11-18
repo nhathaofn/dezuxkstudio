@@ -67,11 +67,17 @@ func (m *testModule) Register(r *Registry) {
 	Handle(r, contracts.ActionBinariesDownload, func(ctx context.Context, req *Request, _ contracts.Empty) (contracts.Empty, error) {
 		return contracts.Empty{}, nil
 	})
+	Handle(r, "t:burst", func(ctx context.Context, req *Request, _ contracts.Empty) (contracts.Empty, error) {
+		for i := 0; i < 100; i++ {
+			progress.Report(ctx, progress.Update{Percent: float64(i), Message: "tick"})
+		}
+		return contracts.Empty{}, nil
+	})
 }
 
 var testActions = []string{
 	"t:echo", "t:slow", "t:panic", "t:fail", "t:notfound",
-	"t:validation", "t:heartbeat", contracts.ActionBinariesDownload,
+	"t:validation", "t:heartbeat", "t:burst", contracts.ActionBinariesDownload,
 }
 
 func newTestHub(t *testing.T, mutate func(*Options)) (*Hub, *httptest.Server, *testModule) {
@@ -589,5 +595,22 @@ func TestCancelUnblockedWhileQueueFull(t *testing.T) {
 	fA, _ := c.response("a")
 	if fA.Error == nil || fA.Error.Code != apperr.CodeCancelled {
 		t.Fatalf("expected running action a to cancel, got %+v", fA.Error)
+	}
+}
+
+func TestProgressBurstDoesNotDisconnectSlowClient(t *testing.T) {
+	_, srv, _ := newTestHub(t, func(o *Options) {
+		o.ClientBufferSize = 2
+	})
+	c := mustDial(t, srv)
+	c.action("burst-1", "t:burst", nil)
+	f, _ := c.response("burst-1")
+	if !f.Success {
+		t.Fatalf("expected burst action to succeed without disconnecting slow client, got %+v", f.Error)
+	}
+	c.action("echo-after", "t:echo", echoPayload{Text: "still-alive"})
+	f2, _ := c.response("echo-after")
+	if !f2.Success {
+		t.Fatalf("expected connection to remain open after progress burst, got %+v", f2.Error)
 	}
 }

@@ -137,6 +137,26 @@ func (s *session) enqueueBytes(data []byte) {
 	}
 }
 
+// enqueueCoalescible queues best-effort streaming frames (such as action:progress)
+// without disconnecting the client if the outbound buffer is momentarily full.
+func (s *session) enqueueCoalescible(v any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		s.hub.log.Error("realtime: marshal outbound message", "client_id", s.id, "error", err)
+		return
+	}
+	s.sendMu.RLock()
+	defer s.sendMu.RUnlock()
+	if s.closed {
+		return
+	}
+	select {
+	case s.send <- data:
+	default:
+		s.hub.log.Debug("realtime: dropped coalescible frame for slow client", "client_id", s.id)
+	}
+}
+
 func (s *session) respond(id string, data any) {
 	s.enqueue(contracts.ResponseMessage{Type: contracts.MessageResponse, ID: id, Success: true, Data: data})
 }
@@ -145,8 +165,8 @@ func (s *session) respondError(id string, err error) {
 	s.enqueue(contracts.ResponseMessage{Type: contracts.MessageResponse, ID: id, Error: contracts.NewErrorBody(err)})
 }
 
-func (s *session) emit(event, refID string, data any) {
-	s.enqueue(contracts.EventMessage{
+func (s *session) emitCoalescible(event, refID string, data any) {
+	s.enqueueCoalescible(contracts.EventMessage{
 		Type: contracts.MessageEvent, Event: event, RefID: refID, Data: data, Timestamp: time.Now().UnixMilli(),
 	})
 }
@@ -195,10 +215,26 @@ func (s *session) handleAction(msg contracts.ClientMessage) {
 
 		req := &Request{ID: msg.ID, Action: msg.Action, ClientID: s.id}
 		// The single progress path: any report or beat re-arms the idle timeout here and, through the
-		// action:progress frame, on the client too.
+		// action:progress frame, on the client too. Non-heartbeat progress frames are throttled to ~20fps
+		// and queued via emitCoalescible so bursts never drop the WebSocket session.
+		const progressMinInterval = 50 * time.Millisecond
+		var progressMu sync.Mutex
+		var lastProgressAt time.Time
 		send := func(p contracts.ActionProgress) {
 			resetTimeout()
-			s.emit(contracts.EventActionProgress, msg.ID, p)
+			if !p.Heartbeat && p.Percent < 100 {
+				now := time.Now()
+				progressMu.Lock()
+				tooSoon := !lastProgressAt.IsZero() && now.Sub(lastProgressAt) < progressMinInterval
+				if !tooSoon {
+					lastProgressAt = now
+				}
+				progressMu.Unlock()
+				if tooSoon {
+					return
+				}
+			}
+			s.emitCoalescible(contracts.EventActionProgress, msg.ID, p)
 		}
 		actionCtx := progress.With(ctx, progress.Sink{
 			Report: func(u progress.Update) {
