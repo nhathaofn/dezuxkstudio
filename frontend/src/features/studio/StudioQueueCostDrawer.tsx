@@ -4,8 +4,9 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { Switch } from "../../components/ui/Switch";
+import { appConfig } from "../../config/appConfig";
 import { StudioJobKindValues } from "../../contracts/generated";
-import { useT } from "../../lib/i18n";
+import { isMessageKey, useT } from "../../lib/i18n";
 import { useAgentStore } from "../agent/useAgentStore";
 import { formatUSD } from "./studioFormatters";
 import { useStudioStore } from "./useStudioStore";
@@ -28,12 +29,14 @@ export const StudioQueueCostDrawer: React.FC = () => {
 
   const approvals = useAgentStore((s) => s.approvals);
   const resolveApproval = useAgentStore((s) => s.resolveApproval);
-  const studioApprovals = approvals.filter((a) => a.tool.startsWith("studio_"));
+  const studioApprovals = (approvals ?? []).filter((a) => a.tool.startsWith("studio_"));
 
   const [priceEdits, setPriceEdits] = useState<Record<string, string>>({});
 
   if (!open || !projDetail) return null;
   const proj = projDetail.project;
+  const currency = costSummary?.currency || "USD";
+  const usdDigits = appConfig.studio.ui.detailUsdDigits;
 
   return (
     <Dialog title={t("studio.queue.title")} size="lg" onClose={() => openQueueDrawer(false)}>
@@ -136,7 +139,7 @@ export const StudioQueueCostDrawer: React.FC = () => {
             variant="secondary"
             onClick={() => {
               void fetchQueue(proj.id, activeEpId ?? undefined);
-              void fetchCostSummary(proj.id, activeEpId ?? undefined);
+              void fetchCostSummary(proj.id, activeEpId ?? undefined, { quiet: false });
             }}
           >
             <RefreshCw size={13} />
@@ -169,7 +172,9 @@ export const StudioQueueCostDrawer: React.FC = () => {
                       {t(`studio.queue.status.${job.status}` as never)}
                     </Badge>
                     <span>{job.progress}%</span>
-                    <span>{formatUSD(job.actual_usd || job.estimated_usd, 4)}</span>
+                    <span>
+                      {formatUSD(job.actual_usd || job.estimated_usd, usdDigits, currency)}
+                    </span>
                   </div>
                   {job.provider_job_id && (
                     <div className="studio-field-hint">
@@ -233,38 +238,51 @@ export const StudioQueueCostDrawer: React.FC = () => {
             <div className="studio-phase2-stack">
               <div className="studio-phase2-meta-grid">
                 <Badge className="studio-badge--info">
-                  {t("studio.cost.actualTotal")}: {formatUSD(costSummary.actual_total_usd, 4)}
+                  {t("studio.cost.actualTotal")}:{" "}
+                  {formatUSD(costSummary.actual_total_usd, usdDigits, currency)}
                 </Badge>
                 <Badge>
-                  {t("studio.cost.estimatedTotal")}: {formatUSD(costSummary.estimated_total_usd, 4)}
+                  {t("studio.cost.estimatedTotal")}:{" "}
+                  {formatUSD(costSummary.estimated_total_usd, usdDigits, currency)}
                 </Badge>
                 <Badge>{t("studio.cost.entriesCount", { count: costSummary.entry_count })}</Badge>
               </div>
               {Object.keys(costSummary.by_capability ?? {}).length > 0 && (
                 <div className="studio-phase2-meta-grid">
-                  {Object.entries(costSummary.by_capability ?? {}).map(([cap, usd]) => (
-                    <Badge key={cap}>
-                      {cap}: {formatUSD(usd, 4)}
-                    </Badge>
-                  ))}
+                  {Object.entries(costSummary.by_capability ?? {}).map(([cap, usd]) => {
+                    const capKey = `providers.capability.${cap}`;
+                    const capLabel = isMessageKey(capKey) ? t(capKey) : cap;
+                    return (
+                      <Badge key={cap}>
+                        {capLabel}: {formatUSD(usd, usdDigits, currency)}
+                      </Badge>
+                    );
+                  })}
                 </div>
               )}
               {(costSummary.pricing ?? []).length > 0 && (
                 <details className="studio-pricing-details">
-                  <summary>{t("studio.cost.pricingCatalog")}</summary>
+                  <summary>{t("studio.cost.pricingCatalog", { currency })}</summary>
                   <div className="studio-pricing-list">
-                    {costSummary.pricing.map((pr) => {
+                    {(costSummary.pricing ?? []).map((pr) => {
                       const val = priceEdits[pr.id] ?? String(pr.unit_price_usd);
+                      const capKey = `providers.capability.${pr.capability}`;
+                      const capLabel = isMessageKey(capKey) ? t(capKey) : pr.capability;
+                      const unitKey = `studio.cost.unit.${pr.unit}`;
+                      const unitLabel = isMessageKey(unitKey) ? t(unitKey) : pr.unit;
                       return (
                         <div key={pr.id} className="studio-pricing-row">
                           <span>
-                            {pr.capability} · {pr.provider_id}/{pr.model_id} ({pr.unit})
+                            {capLabel} · {pr.provider_id}/{pr.model_id} ({unitLabel})
                           </span>
                           <div className="studio-phase2-meta-grid">
                             <input
                               type="number"
-                              step="0.001"
+                              step={appConfig.studio.ui.pricingStepUsd}
                               min={0}
+                              aria-label={t("studio.cost.unitPriceAria", {
+                                model: `${pr.provider_id}/${pr.model_id}`,
+                              })}
                               className="studio-price-input"
                               value={val}
                               onChange={(e) =>

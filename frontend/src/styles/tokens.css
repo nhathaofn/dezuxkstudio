@@ -9,7 +9,9 @@
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
 
+  --text-2xs: 10px;
   --text-xs: 11px;
+  --text-caption: 12px;
   --text-sm: 13px;
   --text-base: 14px;
   --text-lg: 16px;
@@ -26,8 +28,11 @@
 
   /* 2. Global Spacing (4px grid) */
   --space-1: 4px;
+  --space-1-5: 6px;
   --space-2: 8px;
+  --space-2-5: 10px;
   --space-3: 12px;
+  --space-3-5: 14px;
   --space-4: 16px;
   --space-5: 20px;
   --space-6: 24px;
@@ -133,6 +138,17 @@
   --action-settings-border: rgba(100, 116, 139, 0.25);
 
   /* Timeline Workspace Tokens (Light) */
+  --timeline-track-header-width: 210px;
+  --timeline-lane-min-height: 62px;
+  --timeline-ruler-height: 28px;
+  --timeline-playhead-width: 2px;
+  --timeline-waveform-height: 20px;
+  --timeline-player-max-height: 360px;
+  --timeline-inspector-max-height: 440px;
+  --timeline-inspector-min-col: 280px;
+  --timeline-export-min-col: 220px;
+  --studio-grid-preview-max-height: 320px;
+  --studio-mask-max-height: 360px;
   --timeline-track-video-bg: rgba(37, 99, 235, 0.14);
   --timeline-track-video-border: rgba(37, 99, 235, 0.45);
   --timeline-track-audio-bg: rgba(16, 185, 129, 0.14);
@@ -147,7 +163,7 @@
   --timeline-player-bg: #0b0f19;
   --timeline-subtitle-scrim: rgba(9, 11, 16, 0.72);
   --timeline-subtitle-text: #ffffff;
-  --studio-mask-brush-stroke: rgba(255, 255, 255, 0.85);
+  --studio-mask-brush-stroke: rgba(2, 132, 199, 0.88);
 
   /* 5. Custom Select & Dropdown Tokens */
   --select-arrow-offset: 13px;
@@ -271,7 +287,7 @@ html[data-theme="light"],
   --timeline-player-bg: #05070b;
   --timeline-subtitle-scrim: rgba(5, 7, 11, 0.8);
   --timeline-subtitle-text: #ffffff;
-  --studio-mask-brush-stroke: rgba(255, 255, 255, 0.85);
+  --studio-mask-brush-stroke: rgba(56, 189, 248, 0.88);
 
   --select-chevron-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23cbd5e1' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 

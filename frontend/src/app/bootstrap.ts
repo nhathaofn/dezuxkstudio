@@ -5,6 +5,7 @@ import { useBinariesStore } from "../features/binaries/useBinariesStore";
 import { useProvidersStore } from "../features/providers/useProvidersStore";
 import { useConnectionStore } from "../features/connection/useConnectionStore";
 import { uiLog } from "../features/logs/useLogStore";
+import { useMediaLibraryStore } from "../features/media/useMediaLibraryStore";
 import { usePreferencesStore } from "../features/preferences/usePreferencesStore";
 import { useSystemStore } from "../features/system/useSystemStore";
 import { useStudioStore } from "../features/studio/useStudioStore";
@@ -51,6 +52,9 @@ export function bootstrap(): void {
   rtClient.on(Events.STUDIO_TIMELINE_CHANGED, (p) =>
     useStudioStore.getState().receiveTimelineChanged(p)
   );
+  rtClient.on(Events.MEDIA_ASSETS_CHANGED, () =>
+    useMediaLibraryStore.getState().receiveAssetsChanged()
+  );
   rtClient.on(Events.ACTION_PROGRESS, (p) => {
     // Heartbeats only keep a request alive; logging them would flood the live log buffer.
     if (!p.heartbeat) uiLog.info(`progress ${Math.round(p.percent)}% ${p.message}`);
@@ -77,6 +81,8 @@ export function bootstrap(): void {
     void useAgentCustomizationsStore.getState().fetchCustomizations();
     if (!firstConnect) {
       void useStudioStore.getState().resyncAfterReconnect();
+    } else if (useStudioStore.getState().needsInitialConnectSync) {
+      void useStudioStore.getState().fetchProjects();
     }
     if (firstConnect && useConnectionStore.getState().endpoint?.checkUpdatesOnStartup) {
       void useSystemStore.getState().checkUpdate();

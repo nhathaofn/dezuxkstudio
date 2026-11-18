@@ -7,7 +7,7 @@ export const SignedStudioImage: React.FC<{
   alt: string;
   placeholder: string;
 }> = ({ assetId, alt, placeholder }) => {
-  const { url, loading } = useSignedMediaURL(assetId || null, "preview");
+  const { url, loading, handleMediaError } = useSignedMediaURL(assetId || null, "preview");
 
   if (!assetId) {
     return <div className="studio-media-empty">{placeholder}</div>;
@@ -22,7 +22,15 @@ export const SignedStudioImage: React.FC<{
   if (!url) {
     return <div className="studio-media-empty">{placeholder}</div>;
   }
-  return <img className="studio-media-img" src={url} alt={alt} loading="lazy" />;
+  return (
+    <img
+      className="studio-media-img"
+      src={url}
+      alt={alt}
+      loading="lazy"
+      onError={handleMediaError}
+    />
+  );
 };
 
 export const SignedStudioVideo: React.FC<{

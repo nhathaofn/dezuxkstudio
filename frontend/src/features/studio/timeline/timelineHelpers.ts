@@ -1,8 +1,10 @@
+import { appConfig } from "../../../config/appConfig";
 import type {
   StudioEditTimeline,
   StudioSubtitleCue,
   StudioTimelineClip,
   StudioTimelineOp,
+  StudioTimelineOpKind,
   StudioTimelineTrack,
   StudioTrackKind,
   StudioTransitionType,
@@ -120,7 +122,7 @@ export function resolvePreviewStateAtTime(
         );
         if (hit) {
           videoClip = hit;
-          videoTrackMuted = !audible;
+          videoTrackMuted = !audible || Boolean(hit.mute);
           const spd = hit.speed > 0 ? hit.speed : 1;
           const offsetMs = Math.max(0, playheadMs - hit.timeline_start_ms);
           videoSourceSec = (hit.source_in_ms + offsetMs * spd) / 1000;
@@ -139,6 +141,7 @@ export function resolvePreviewStateAtTime(
 
     if (isAudioTrackKind(tr.kind) && audible) {
       for (const cl of tr.clips ?? []) {
+        if (cl.mute) continue;
         if (playheadMs >= cl.timeline_start_ms && playheadMs < clipEndMs(cl)) {
           const spd = cl.speed > 0 ? cl.speed : 1;
           const offsetMs = Math.max(0, playheadMs - cl.timeline_start_ms);
@@ -146,7 +149,10 @@ export function resolvePreviewStateAtTime(
             trackId: tr.id,
             clip: cl,
             sourceSec: (cl.source_in_ms + offsetMs * spd) / 1000,
-            effectiveVolume: Math.max(0, Math.min(2, tr.volume * cl.volume)),
+            effectiveVolume: Math.max(
+              0,
+              Math.min(appConfig.studio.timeline.maxVolume, tr.volume * cl.volume)
+            ),
           });
         }
       }
@@ -168,33 +174,32 @@ export function resolvePreviewStateAtTime(
   };
 }
 
-const MIN_TRIM_SPAN_MS = 250;
-
 export function buildClipTrimOp(
   clip: StudioTimelineClip,
   edge: "in" | "out",
   deltaSrcMs: number
 ): StudioTimelineOp | null {
+  const minSpanMs = appConfig.studio.timeline.minTrimSpanMs;
   const spd = clip.speed > 0 ? clip.speed : 1;
   if (edge === "in") {
     const nextIn = Math.max(
       0,
-      Math.min(clip.source_out_ms - MIN_TRIM_SPAN_MS, clip.source_in_ms + deltaSrcMs)
+      Math.min(clip.source_out_ms - minSpanMs, clip.source_in_ms + deltaSrcMs)
     );
     const appliedDeltaSrc = nextIn - clip.source_in_ms;
     if (appliedDeltaSrc === 0) return null;
     const nextStart = Math.max(0, clip.timeline_start_ms + Math.round(appliedDeltaSrc / spd));
     return {
-      op: "update_clip",
+      op: "update_clip" satisfies StudioTimelineOpKind,
       clip_id: clip.id,
       timeline_start_ms: nextStart,
       source_in_ms: nextIn,
     };
   }
-  const nextOut = Math.max(clip.source_in_ms + MIN_TRIM_SPAN_MS, clip.source_out_ms + deltaSrcMs);
+  const nextOut = Math.max(clip.source_in_ms + minSpanMs, clip.source_out_ms + deltaSrcMs);
   if (nextOut === clip.source_out_ms) return null;
   return {
-    op: "update_clip",
+    op: "update_clip" satisfies StudioTimelineOpKind,
     clip_id: clip.id,
     source_out_ms: nextOut,
   };

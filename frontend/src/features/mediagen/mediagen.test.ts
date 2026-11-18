@@ -335,11 +335,11 @@ describe("MediaGen navigation & UI", () => {
         percent: 60,
         message: "Polling...",
         msg_key: "mediagen.progress.polling_video",
-        msg_params: { attempt: "3" },
+        msg_params: { provider: "Google", attempt: "3" },
       },
     });
     const htmlPolling = renderView(VideoGenView);
-    expect(htmlPolling).toContain("Rendering video (poll 3)...");
+    expect(htmlPolling).toContain("Rendering video with Google (poll 3)...");
     expect(htmlPolling).toContain("width:60%");
 
     useVideoGenStore.setState({

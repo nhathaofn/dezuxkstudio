@@ -15,6 +15,7 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { ErrorText } from "../../components/ui/ErrorText";
 import { LoadingSkeleton } from "../../components/ui/LoadingSkeleton";
+import { appConfig } from "../../config/appConfig";
 import {
   NodeTypes,
   StudioEpisodeStageValues,
@@ -66,7 +67,7 @@ function stageNodeType(stage: StudioEpisodeStage): string {
   }
 }
 
-function stageModelPurpose(stage: StudioEpisodeStage): ProviderPurpose {
+function stageModelPurpose(stage: StudioEpisodeStage): ProviderPurpose | null {
   switch (stage) {
     case "script":
       return "text";
@@ -76,44 +77,42 @@ function stageModelPurpose(stage: StudioEpisodeStage): ProviderPurpose {
     case "video":
       return "video";
     case "export":
-      return "tts";
+      return null;
   }
 }
 
 export const StudioView: React.FC = () => {
   const t = useT();
-  const {
-    projects,
-    projectDetail,
-    episodeDetail,
-    activeProjectId,
-    activeEpisodeId,
-    activeStage,
-    selectedAssetIds,
-    loadingProjects,
-    loadingEpisode,
-    saving,
-    runningStage,
-    actionProgress,
-    batchProgress,
-    error,
-    lastSummary,
-    setActiveStage,
-    jobs,
-    costSummary,
-    openQueueDrawer,
-    fetchProjects,
-    selectProject,
-    updateProject,
-    selectEpisode,
-    createEpisode,
-    clearError,
-  } = useStudioStore();
+  const projects = useStudioStore((s) => s.projects);
+  const projectDetail = useStudioStore((s) => s.projectDetail);
+  const episodeDetail = useStudioStore((s) => s.episodeDetail);
+  const activeProjectId = useStudioStore((s) => s.activeProjectId);
+  const activeEpisodeId = useStudioStore((s) => s.activeEpisodeId);
+  const activeStage = useStudioStore((s) => s.activeStage);
+  const selectedAssetIds = useStudioStore((s) => s.selectedAssetIds);
+  const loadingProjects = useStudioStore((s) => s.loadingProjects);
+  const loadingEpisode = useStudioStore((s) => s.loadingEpisode);
+  const saving = useStudioStore((s) => s.saving);
+  const runningStage = useStudioStore((s) => s.runningStage);
+  const actionProgress = useStudioStore((s) => s.actionProgress);
+  const batchProgress = useStudioStore((s) => s.batchProgress);
+  const error = useStudioStore((s) => s.error);
+  const lastSummary = useStudioStore((s) => s.lastSummary);
+  const setActiveStage = useStudioStore((s) => s.setActiveStage);
+  const jobs = useStudioStore((s) => s.jobs);
+  const costSummary = useStudioStore((s) => s.costSummary);
+  const openQueueDrawer = useStudioStore((s) => s.openQueueDrawer);
+  const fetchProjects = useStudioStore((s) => s.fetchProjects);
+  const selectProject = useStudioStore((s) => s.selectProject);
+  const updateProject = useStudioStore((s) => s.updateProject);
+  const selectEpisode = useStudioStore((s) => s.selectEpisode);
+  const createEpisode = useStudioStore((s) => s.createEpisode);
+  const clearError = useStudioStore((s) => s.clearError);
 
   const approvals = useAgentStore((s) => s.approvals);
   const resolveApproval = useAgentStore((s) => s.resolveApproval);
-  const studioApprovals = approvals.filter((a) => a.tool.startsWith("studio_"));
-  const activeJobsCount = jobs.filter(
+  const studioApprovals = (approvals ?? []).filter((a) => a.tool.startsWith("studio_"));
+  const activeJobsCount = (jobs ?? []).filter(
     (j) => j.status === "queued" || j.status === "submitted" || j.status === "polling"
   ).length;
 
@@ -176,7 +175,7 @@ export const StudioView: React.FC = () => {
           : ttsModel;
 
   const setCurrentModelVal = (val: string) => {
-    if (!activeProj) return;
+    if (!activeProj || !modelPurpose) return;
     if (modelPurpose === "text") {
       void updateProject({ id: activeProj.id, default_text_model: val });
     } else if (modelPurpose === "image") {
@@ -188,7 +187,10 @@ export const StudioView: React.FC = () => {
     }
   };
 
-  const progressPct = batchProgress?.percent ?? actionProgress?.percent ?? (runningStage ? 15 : 0);
+  const progressPct =
+    batchProgress?.percent ??
+    actionProgress?.percent ??
+    (runningStage ? appConfig.studio.ui.initialStageProgressPct : 0);
 
   const translatedActionMsg = actionProgress
     ? (translateServerMessage(t, actionProgress.msg_key, actionProgress.msg_params) ??
@@ -379,7 +381,7 @@ export const StudioView: React.FC = () => {
           </div>
 
           <div className="studio-topbar-actions">
-            {activeProj && (
+            {activeProj && modelPurpose && (
               <MediaModelSelect
                 purpose={modelPurpose}
                 value={currentModelVal}
@@ -408,7 +410,11 @@ export const StudioView: React.FC = () => {
                   ) : (
                     <ShieldAlert size={11} />
                   )}
-                  {formatUSD(costSummary?.actual_total_usd ?? 0, 2)}
+                  {formatUSD(
+                    costSummary?.actual_total_usd ?? 0,
+                    appConfig.studio.ui.summaryUsdDigits,
+                    costSummary?.currency
+                  )}
                 </Badge>
               </>
             )}
@@ -471,7 +477,9 @@ export const StudioView: React.FC = () => {
             <div className="studio-progress-track">
               <div
                 className="studio-progress-fill"
-                style={{ width: `${Math.max(4, Math.min(100, progressPct))}%` }}
+                style={{
+                  width: `${Math.max(appConfig.studio.ui.minProgressFillPct, Math.min(100, progressPct))}%`,
+                }}
               />
             </div>
           </div>

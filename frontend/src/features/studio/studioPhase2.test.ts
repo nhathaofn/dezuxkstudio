@@ -524,11 +524,15 @@ describe("Studio Phase 2 ArcReel helpers, store & modals", () => {
       target_shot_id: "shot-2",
     });
     expect(frameOk).toBe(true);
-    expect(spy).toHaveBeenCalledWith(Actions.STUDIO_EXTRACT_LAST_FRAME, {
-      episode_id: "ep-1",
-      source_shot_id: "shot-1",
-      target_shot_id: "shot-2",
-    });
+    expect(spy).toHaveBeenCalledWith(
+      Actions.STUDIO_EXTRACT_LAST_FRAME,
+      {
+        episode_id: "ep-1",
+        source_shot_id: "shot-1",
+        target_shot_id: "shot-2",
+      },
+      expect.objectContaining({ onProgress: expect.any(Function) })
+    );
 
     // QC Review
     const report = await store.runQCReview({

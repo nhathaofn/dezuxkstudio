@@ -138,12 +138,12 @@ export async function saveMediaToDevice(
   const objectUrl = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = objectUrl;
-  link.download = preferredName || filename || "image.png";
+  link.download = preferredName?.trim() || filename?.trim() || mediaBasename(path) || "download";
   link.rel = "noopener";
   document.body.appendChild(link);
   link.click();
   link.remove();
-  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  setTimeout(() => URL.revokeObjectURL(objectUrl), appConfig.media.objectUrlRevokeDelayMs);
 }
 
 function parseDispositionFilename(header: string | null): string | null {

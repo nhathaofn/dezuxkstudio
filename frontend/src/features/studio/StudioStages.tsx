@@ -29,11 +29,10 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Dialog } from "../../components/ui/Dialog";
 import { Switch } from "../../components/ui/Switch";
+import { appConfig } from "../../config/appConfig";
 import {
   NodeTypes,
   StudioAssetKindValues,
-  StudioGenreValues,
-  StudioProductionModeValues,
   StudioShotModeValues,
   type ProbeMediaOutput,
   type StudioAsset,
@@ -45,7 +44,7 @@ import {
   type StudioShot,
   type StudioShotMode,
 } from "../../contracts/generated";
-import { useT } from "../../lib/i18n";
+import { isMessageKey, useT } from "../../lib/i18n";
 import { mediaBasename, saveMediaToDevice } from "../../lib/rtClient";
 import { askAgentAboutMediaAsset } from "../agent/screenContext";
 import { useSystemStore } from "../system/useSystemStore";
@@ -58,18 +57,28 @@ export const CreateProjectDialog: React.FC<{
 }> = ({ onClose }) => {
   const t = useT();
   const scriptSpec = useNodeSpec(NodeTypes.SCRIPT_NORMALIZE);
+  const shotSpec = useNodeSpec(NodeTypes.AUTHOR_SHOT_PROMPTS);
+  const genreParam = findParam(scriptSpec, "genre");
+  const genreOptions = (genreParam?.options ?? []) as StudioGenre[];
+  const modeParam = findParam(shotSpec, "production_mode");
+  const modeOptions = (modeParam?.options ?? []) as StudioProductionMode[];
   const aspectParam = findParam(scriptSpec, "aspect_ratio");
   const aspectOptions = aspectParam?.options ?? [];
   const createProject = useStudioStore((s) => s.createProject);
   const saving = useStudioStore((s) => s.saving);
 
   const [title, setTitle] = useState("");
-  const [genre, setGenre] = useState<StudioGenre>("drama");
-  const [productionMode, setProductionMode] = useState<StudioProductionMode>("storyboard_i2v");
+  const [genre, setGenre] = useState("");
+  const [productionMode, setProductionMode] = useState("");
   const [aspectRatio, setAspectRatio] = useState("");
   const [stylePrompt, setStylePrompt] = useState("");
   const [autoApproveBatches, setAutoApproveBatches] = useState(false);
 
+  const effectiveGenre = (genre || genreParam?.default || genreOptions[0] || "") as StudioGenre;
+  const effectiveProductionMode = (productionMode ||
+    modeParam?.default ||
+    modeOptions[0] ||
+    "") as StudioProductionMode;
   const effectiveAspectRatio = aspectRatio || aspectParam?.default || aspectOptions[0] || "";
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -77,9 +86,9 @@ export const CreateProjectDialog: React.FC<{
     if (!title.trim()) return;
     const ok = await createProject({
       title: title.trim(),
-      genre,
-      production_mode: productionMode,
-      aspect_ratio: effectiveAspectRatio,
+      ...(effectiveGenre ? { genre: effectiveGenre } : {}),
+      ...(effectiveProductionMode ? { production_mode: effectiveProductionMode } : {}),
+      ...(effectiveAspectRatio ? { aspect_ratio: effectiveAspectRatio } : {}),
       style_prompt: stylePrompt.trim(),
       auto_approve_batches: autoApproveBatches,
     });
@@ -131,14 +140,17 @@ export const CreateProjectDialog: React.FC<{
             <select
               id="studio-new-genre"
               className="input-control"
-              value={genre}
-              onChange={(e) => setGenre(e.target.value as StudioGenre)}
+              value={effectiveGenre}
+              onChange={(e) => setGenre(e.target.value)}
             >
-              {StudioGenreValues.map((g) => (
-                <option key={g} value={g}>
-                  {t(`studio.modal.genre.${g}`)}
-                </option>
-              ))}
+              {genreOptions.map((g) => {
+                const key = `studio.modal.genre.${g}`;
+                return (
+                  <option key={g} value={g}>
+                    {isMessageKey(key) ? t(key) : g}
+                  </option>
+                );
+              })}
             </select>
           </div>
 
@@ -149,14 +161,17 @@ export const CreateProjectDialog: React.FC<{
             <select
               id="studio-new-mode"
               className="input-control"
-              value={productionMode}
-              onChange={(e) => setProductionMode(e.target.value as StudioProductionMode)}
+              value={effectiveProductionMode}
+              onChange={(e) => setProductionMode(e.target.value)}
             >
-              {StudioProductionModeValues.map((m) => (
-                <option key={m} value={m}>
-                  {t(`studio.modal.mode.${m}`)}
-                </option>
-              ))}
+              {modeOptions.map((m) => {
+                const key = `studio.modal.mode.${m}`;
+                return (
+                  <option key={m} value={m}>
+                    {isMessageKey(key) ? t(key) : m}
+                  </option>
+                );
+              })}
             </select>
           </div>
 
@@ -194,7 +209,11 @@ export const CreateProjectDialog: React.FC<{
 
         <div className="studio-switch-row">
           <span className="field-label">{t("studio.modal.autoApprove")}</span>
-          <Switch checked={autoApproveBatches} onCheckedChange={setAutoApproveBatches} />
+          <Switch
+            checked={autoApproveBatches}
+            onCheckedChange={setAutoApproveBatches}
+            aria-label={t("studio.modal.autoApprove")}
+          />
         </div>
       </form>
     </Dialog>
@@ -237,7 +256,11 @@ export const DeleteProjectDialog: React.FC<{
         <p>{t("studio.sidebar.deleteConfirm", { title: project.title })}</p>
         <label className="studio-switch-row">
           <span className="field-label">{t("studio.sidebar.deleteWithFiles")}</span>
-          <Switch checked={deleteFiles} onCheckedChange={setDeleteFiles} />
+          <Switch
+            checked={deleteFiles}
+            onCheckedChange={setDeleteFiles}
+            aria-label={t("studio.sidebar.deleteWithFiles")}
+          />
         </label>
       </div>
     </Dialog>
@@ -256,7 +279,9 @@ export const ScriptStagePanel: React.FC<{
   const saving = useStudioStore((s) => s.saving);
   const runningStage = useStudioStore((s) => s.runningStage);
 
-  const [draft, setDraft] = useState(detail.raw_script ?? "");
+  const serverRaw = detail.raw_script ?? "";
+  const [localDraft, setLocalDraft] = useState<string | null>(null);
+  const draft = localDraft ?? serverRaw;
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const busy = saving || runningStage !== null;
@@ -269,14 +294,21 @@ export const ScriptStagePanel: React.FC<{
     e.target.value = "";
     if (!file) return;
     const text = await file.text();
-    setDraft(text);
-    await saveScript(text);
+    setLocalDraft(text);
+    const ok = await saveScript(text);
+    if (ok) setLocalDraft(null);
+  };
+
+  const handleSaveScript = async () => {
+    const ok = await saveScript(draft);
+    if (ok) setLocalDraft(null);
   };
 
   const handleNormalize = async () => {
-    if (draft !== (detail.raw_script ?? "")) {
+    if (draft !== serverRaw) {
       const ok = await saveScript(draft);
       if (!ok) return;
+      setLocalDraft(null);
     }
     await runStage("script_normalize", modelOverride ? { model: modelOverride } : {});
   };
@@ -310,8 +342,9 @@ export const ScriptStagePanel: React.FC<{
         <textarea
           className="studio-textarea"
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => setLocalDraft(e.target.value)}
           placeholder={t("studio.script.placeholder")}
+          aria-label={t("studio.script.rawTitle")}
           disabled={busy}
         />
 
@@ -319,8 +352,8 @@ export const ScriptStagePanel: React.FC<{
           <Button
             variant="secondary"
             size="sm"
-            onClick={() => void saveScript(draft)}
-            disabled={busy || draft === (detail.raw_script ?? "")}
+            onClick={() => void handleSaveScript()}
+            disabled={busy || draft === serverRaw}
           >
             <Save size={13} />
             {saving ? t("studio.common.saving") : t("studio.script.saveScript")}
@@ -349,7 +382,7 @@ export const ScriptStagePanel: React.FC<{
           <div className="studio-toolbar">
             {parsed && (
               <Badge>
-                {t("studio.script.sceneCount", { scenes: parsed.scenes.length, beats: beatTotal })}
+                {t("studio.script.sceneCount", { scenes: scenes.length, beats: beatTotal })}
               </Badge>
             )}
             {parsed && (
@@ -365,7 +398,7 @@ export const ScriptStagePanel: React.FC<{
           <div className="studio-media-empty">{t("studio.script.parsedEmpty")}</div>
         ) : (
           <div className="studio-scene-list">
-            {parsed.scenes.map((sc) => (
+            {scenes.map((sc) => (
               <div key={sc.code} className="studio-scene-box">
                 <div className="studio-item-head">
                   <strong>
@@ -373,11 +406,12 @@ export const ScriptStagePanel: React.FC<{
                   </strong>
                   {sc.location && <Badge>{sc.location}</Badge>}
                 </div>
-                {sc.beats.map((bt) => (
+                {(sc.beats ?? []).map((bt) => (
                   <div key={bt.code} className="studio-beat-row">
                     <div className="studio-item-head">
                       <span>
-                        <strong>{bt.code}</strong> · {bt.duration_sec}s
+                        <strong>{bt.code}</strong> ·{" "}
+                        {t("studio.common.secondsShort", { sec: bt.duration_sec })}
                       </span>
                       {bt.asset_tags && bt.asset_tags.length > 0 && (
                         <span>{bt.asset_tags.join(" ")}</span>
@@ -489,6 +523,7 @@ const AssetBibleCard: React.FC<{
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder={t("studio.assets.name")}
+          aria-label={t("studio.assets.name")}
           disabled={busy}
         />
         <input
@@ -496,12 +531,14 @@ const AssetBibleCard: React.FC<{
           value={codeTag}
           onChange={(e) => setCodeTag(e.target.value)}
           placeholder={t("studio.assets.codeTag")}
+          aria-label={t("studio.assets.codeTag")}
           disabled={busy}
         />
         <select
           className="input-control"
           value={kind}
           onChange={(e) => setKind(e.target.value as StudioAssetKind)}
+          aria-label={t("studio.assets.kind")}
           disabled={busy}
         >
           {StudioAssetKindValues.map((k) => (
@@ -517,6 +554,7 @@ const AssetBibleCard: React.FC<{
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
         placeholder={t("studio.assets.prompt")}
+        aria-label={t("studio.assets.prompt")}
         disabled={busy}
       />
 
@@ -525,6 +563,7 @@ const AssetBibleCard: React.FC<{
         value={description}
         onChange={(e) => setDescription(e.target.value)}
         placeholder={t("studio.assets.description")}
+        aria-label={t("studio.assets.description")}
         disabled={busy}
       />
 
@@ -817,7 +856,7 @@ const StoryboardShotCard: React.FC<{
         <div className="studio-item-head-left">
           <Badge>#{shot.seq}</Badge>
           {shot.scene_code && <Badge>{shot.scene_code}</Badge>}
-          <Badge>{shot.status}</Badge>
+          <Badge>{t(`studio.shotStatus.${shot.status}`)}</Badge>
         </div>
         <div className="studio-toolbar">
           <Button
@@ -826,6 +865,7 @@ const StoryboardShotCard: React.FC<{
             onClick={() => onMove(-1)}
             disabled={busy || index === 0}
             title={t("studio.storyboard.moveUp")}
+            aria-label={t("studio.storyboard.moveUp")}
           >
             <ArrowUp size={13} />
           </Button>
@@ -835,6 +875,7 @@ const StoryboardShotCard: React.FC<{
             onClick={() => onMove(1)}
             disabled={busy || index === total - 1}
             title={t("studio.storyboard.moveDown")}
+            aria-label={t("studio.storyboard.moveDown")}
           >
             <ArrowDown size={13} />
           </Button>
@@ -855,19 +896,24 @@ const StoryboardShotCard: React.FC<{
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder={t("studio.storyboard.shotTitle")}
+          aria-label={t("studio.storyboard.shotTitle")}
           disabled={busy}
         />
         <select
           className="input-control"
           value={shotMode}
           onChange={(e) => setShotMode(e.target.value as StudioShotMode)}
+          aria-label={t("studio.storyboard.shotMode")}
           disabled={busy}
         >
-          {shotModeOptions.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
+          {shotModeOptions.map((m) => {
+            const modeKey = `studio.shotMode.${m}`;
+            return (
+              <option key={m} value={m}>
+                {isMessageKey(modeKey) ? t(modeKey) : m}
+              </option>
+            );
+          })}
         </select>
         <input
           type="number"
@@ -875,6 +921,7 @@ const StoryboardShotCard: React.FC<{
           max={durMax}
           className="input-control"
           value={durationSec}
+          aria-label={t("studio.storyboard.durationSec")}
           onChange={(e) => {
             const raw = Number(e.target.value);
             const floor = durMin ?? 1;
@@ -893,6 +940,7 @@ const StoryboardShotCard: React.FC<{
         value={tagsText}
         onChange={(e) => setTagsText(e.target.value)}
         placeholder={t("studio.storyboard.tags")}
+        aria-label={t("studio.storyboard.tags")}
         disabled={busy}
       />
 
@@ -901,6 +949,7 @@ const StoryboardShotCard: React.FC<{
         value={imagePrompt}
         onChange={(e) => setImagePrompt(e.target.value)}
         placeholder={t("studio.storyboard.imagePrompt")}
+        aria-label={t("studio.storyboard.imagePrompt")}
         disabled={busy}
       />
 
@@ -909,6 +958,7 @@ const StoryboardShotCard: React.FC<{
         value={videoPrompt}
         onChange={(e) => setVideoPrompt(e.target.value)}
         placeholder={t("studio.storyboard.videoPrompt")}
+        aria-label={t("studio.storyboard.videoPrompt")}
         disabled={busy}
       />
 
@@ -917,6 +967,7 @@ const StoryboardShotCard: React.FC<{
         value={narrationText}
         onChange={(e) => setNarrationText(e.target.value)}
         placeholder={t("studio.storyboard.narrationText")}
+        aria-label={t("studio.storyboard.narrationText")}
         disabled={busy}
       />
 
@@ -1039,7 +1090,17 @@ export const StoryboardStagePanel: React.FC<{
 }> = ({ detail, textModel, imageModel }) => {
   const t = useT();
   const shotSpec = useNodeSpec(NodeTypes.AUTHOR_SHOT_PROMPTS);
-  const shotModes = findParam(shotSpec, "shot_mode_default")?.options ?? [...StudioShotModeValues];
+  const shotModeParam = findParam(shotSpec, "shot_mode_default");
+  const shotModes = shotModeParam?.options ?? [...StudioShotModeValues];
+  const defaultShotMode = (
+    detail.project.production_mode === "r2v"
+      ? "r2v"
+      : shotModeParam?.default || shotModes[0] || "single"
+  ) as StudioShotMode;
+  const defaultSceneCode =
+    detail.normalized_script?.scenes?.[0]?.code ??
+    detail.shots[detail.shots.length - 1]?.scene_code ??
+    "";
   const durParam = findParam(shotSpec, "default_duration_sec");
   const durMin = durParam?.min;
   const durMax = durParam?.max;
@@ -1101,9 +1162,10 @@ export const StoryboardStagePanel: React.FC<{
             onClick={() =>
               void upsertShot({
                 episode_id: detail.episode.id,
-                scene_code: "S01",
+                ...(defaultSceneCode ? { scene_code: defaultSceneCode } : {}),
                 title: t("studio.storyboard.defaultShotTitle", { num: detail.shots.length + 1 }),
-                shot_mode: detail.project.production_mode === "r2v" ? "r2v" : "single",
+                shot_mode: defaultShotMode,
+                ...(durDefault !== undefined ? { duration_sec: durDefault } : {}),
               })
             }
             disabled={busy}
@@ -1152,7 +1214,7 @@ export const VideoShotsStagePanel: React.FC<{
   const resParam = findParam(videoSpec, "resolution");
   const resOptions = resParam?.options ?? [];
   const [resolution, setResolution] = useState("");
-  const effectiveResolution = resolution || resParam?.default || resOptions[0] || "720p";
+  const effectiveResolution = resolution || resParam?.default || resOptions[0] || "";
 
   const runStage = useStudioStore((s) => s.runStage);
   const enqueueBatch = useStudioStore((s) => s.enqueueBatch);
@@ -1162,7 +1224,8 @@ export const VideoShotsStagePanel: React.FC<{
   const probeShot = useStudioStore((s) => s.probeShot);
   const probeMap = useStudioStore((s) => s.probeMap);
   const runningStage = useStudioStore((s) => s.runningStage);
-  const busy = runningStage !== null;
+  const saving = useStudioStore((s) => s.saving);
+  const busy = saving || runningStage !== null;
 
   const renderProbeBadge = (probe?: ProbeMediaOutput) => {
     if (!probe) return null;
@@ -1171,7 +1234,7 @@ export const VideoShotsStagePanel: React.FC<{
     const height = probe.height ?? 0;
     const fps = probe.fps ?? 0;
     const silentRatio = probe.silent_ratio ?? 0;
-    const isSilent = !probe.has_audio || silentRatio > 0.9;
+    const isSilent = !probe.has_audio || silentRatio > appConfig.studio.ui.probeSilenceWarnRatio;
     return (
       <div className="studio-toolbar">
         <Badge>
@@ -1183,11 +1246,11 @@ export const VideoShotsStagePanel: React.FC<{
           })}
         </Badge>
         {isSilent ? (
-          <Badge className="studio-warn-badge">
+          <Badge className="studio-badge--warn">
             {t("studio.video.silentWarn", { ratio: Math.round(silentRatio * 100) })}
           </Badge>
         ) : (
-          <Badge className="studio-ok-badge">{t("studio.video.hasAudio")}</Badge>
+          <Badge className="studio-badge--ok">{t("studio.video.hasAudio")}</Badge>
         )}
       </div>
     );
@@ -1308,7 +1371,7 @@ export const VideoShotsStagePanel: React.FC<{
                         {t(`studio.qc.verdict.${latestQC.verdict}` as never)}
                       </Badge>
                     )}
-                    <Badge>{shot.status}</Badge>
+                    <Badge>{t(`studio.shotStatus.${shot.status}`)}</Badge>
                   </div>
                 </div>
 
@@ -1546,7 +1609,9 @@ export const ExportStagePanel: React.FC<{
                 onClick={() =>
                   void saveMediaToDevice(
                     detail.final_video_path!,
-                    mediaBasename(detail.final_video_path!)
+                    mediaBasename(detail.final_video_path!),
+                    undefined,
+                    detail.final_video_asset_id
                   )
                 }
               >

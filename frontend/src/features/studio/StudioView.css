@@ -347,20 +347,17 @@
   border-radius: var(--radius-lg);
 }
 
-.studio-warn-badge {
-  background: var(--status-connecting-bg);
-  color: var(--status-connecting);
-  border: var(--border-width) solid var(--status-connecting);
-}
-
-.studio-ok-badge {
-  background: var(--status-connected-bg);
-  color: var(--status-connected);
-  border: var(--border-width) solid var(--status-connected);
-}
-
 .studio-hidden-input {
   display: none;
+}
+
+.studio-inline-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  cursor: pointer;
 }
 
 .studio-form-stack {
@@ -562,7 +559,7 @@
 .studio-grid-preview-frame {
   position: relative;
   width: 100%;
-  max-height: 320px;
+  max-height: var(--studio-grid-preview-max-height);
   border-radius: var(--radius-md);
   border: var(--border-width) solid var(--border-default);
   background: var(--bg-surface-elevated);
@@ -572,11 +569,19 @@
   justify-content: center;
 }
 
+.studio-media-overlay-stage {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  line-height: 0;
+}
+
 .studio-grid-preview-img {
   display: block;
+  width: auto;
+  height: auto;
   max-width: 100%;
-  max-height: 320px;
-  object-fit: contain;
+  max-height: var(--studio-grid-preview-max-height);
 }
 
 .studio-grid-line {
@@ -606,7 +611,7 @@
 .studio-mask-canvas-wrap {
   position: relative;
   width: 100%;
-  max-height: 360px;
+  max-height: var(--studio-mask-max-height);
   border-radius: var(--radius-md);
   border: var(--border-width) solid var(--border-default);
   background: var(--bg-surface-elevated);
@@ -618,9 +623,10 @@
 
 .studio-mask-base-img {
   display: block;
-  width: 100%;
-  max-height: 360px;
-  object-fit: contain;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: var(--studio-mask-max-height);
   user-select: none;
   pointer-events: none;
 }
@@ -632,6 +638,15 @@
   height: 100%;
   cursor: crosshair;
   touch-action: none;
+}
+
+.studio-mask-canvas--standalone {
+  position: relative;
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: var(--studio-mask-max-height);
 }
 
 .studio-approval-bar {

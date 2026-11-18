@@ -96,24 +96,12 @@ export const appConfig = {
   mediaUploadPath: "/api/media/upload",
   /** Authenticated HTTP media download endpoint (browser and remote client modes). */
   mediaDownloadPath: "/api/media/download",
-  /** Media tuning knobs (ticket auto-renewal, lifetime, and staging). */
+  /** Media client tuning knobs (scoped ticket auto-renewal, error retry cap, and blob cleanup). */
   media: {
     ticketRenewSkewMs: 120_000,
-    ticketTtlMs: 900_000,
-    stagingTtlMs: 24 * 60 * 60 * 1000,
-    stagingGcIntervalMs: 60 * 60 * 1000,
-  },
-  /** External tool binaries download and retry policies. */
-  binaries: {
-    downloadResume: true,
-    downloadRetryMax: 3,
-    downloadRetryDelayMs: 1_000,
-  },
-  /** Watermark detection and processing engine defaults. */
-  watermark: {
-    maxWorkers: 4,
-    maxImagePixels: 100_000_000,
-    decodeConcurrency: 2,
+    minTicketRenewDelayMs: 1_000,
+    maxMediaErrorRetries: 2,
+    objectUrlRevokeDelayMs: 1_000,
   },
   /** Virtual list and high-performance UI rendering tuning knobs. */
   virtualization: {
@@ -122,6 +110,14 @@ export const appConfig = {
   },
   /** AI Film Studio client UI geometry, canvas editor, and timeline interaction bounds. */
   studio: {
+    ui: {
+      initialStageProgressPct: 15,
+      minProgressFillPct: 4,
+      probeSilenceWarnRatio: 0.9,
+      pricingStepUsd: 0.0001,
+      summaryUsdDigits: 2,
+      detailUsdDigits: 4,
+    },
     timeline: {
       defaultPxPerSec: 64,
       minPxPerSec: 24,
@@ -138,6 +134,7 @@ export const appConfig = {
       rulerStepMediumSec: 2,
       rulerStepFineSec: 1,
       trimStepMs: 200,
+      minTrimSpanMs: 250,
       splitGuardEdgeMs: 250,
       subtitleDefaultDurMs: 3000,
       playSeekToleranceSec: 0.25,
@@ -151,6 +148,10 @@ export const appConfig = {
       minSpeed: 0.25,
       maxSpeed: 4,
       maxVolume: 2,
+      loudnormStepLufs: 0.5,
+      speedStep: 0.1,
+      volumeStep: 0.1,
+      transitionStepMs: 50,
     },
     maskEditor: {
       defaultWidthPx: 512,
@@ -160,8 +161,6 @@ export const appConfig = {
       maxBrushPx: 96,
     },
     gridSplitter: {
-      defaultRows: 2,
-      defaultCols: 2,
       minWeightPct: 10,
       maxWeightPct: 90,
       weightTotalPct: 100,

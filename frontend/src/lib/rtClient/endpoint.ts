@@ -29,6 +29,7 @@ interface ServerTimeouts {
   action_timeout_ms?: number;
   long_action_timeout_ms?: number;
   ping_interval_ms?: number;
+  check_updates_on_startup?: boolean;
 }
 
 const browserEndpoint = (
@@ -42,7 +43,7 @@ const browserEndpoint = (
   actionTimeoutMs: timeouts.action_timeout_ms ?? appConfig.fallback.actionTimeoutMs,
   longActionTimeoutMs: timeouts.long_action_timeout_ms ?? appConfig.fallback.longActionTimeoutMs,
   pingIntervalMs: timeouts.ping_interval_ms ?? appConfig.fallback.pingIntervalMs,
-  checkUpdatesOnStartup: false,
+  checkUpdatesOnStartup: timeouts.check_updates_on_startup ?? false,
   source,
 });
 

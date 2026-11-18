@@ -10,7 +10,8 @@ import {
   type StudioQCStatus,
 } from "../../contracts/generated";
 import { useSignedMediaURL } from "../../lib/hooks/useSignedMediaURL";
-import { translateServerMessage, useT } from "../../lib/i18n";
+import { isMessageKey, translateServerMessage, useT } from "../../lib/i18n";
+import { usePreferencesStore } from "../preferences/usePreferencesStore";
 import { findParam, useNodeSpec } from "../workflow/useNodeSpecs";
 import { formatUSD } from "./studioFormatters";
 import {
@@ -22,6 +23,7 @@ import {
 import {
   buildMaskDataURLFromStrokes,
   computeGridDividerPercents,
+  strokeMaskPaths,
   type MaskStroke,
 } from "./phase2Helpers";
 
@@ -33,6 +35,12 @@ export const StudioPreflightDialog: React.FC = () => {
   if (!pending) return null;
 
   const { preflight } = pending;
+  const stageKey = `studio.batchStage.${pending.stage}`;
+  const stageLabel = isMessageKey(stageKey) ? t(stageKey) : pending.stage;
+  const unitKey = `studio.cost.unit.${preflight.unit}`;
+  const unitLabel = isMessageKey(unitKey) ? t(unitKey) : preflight.unit;
+  const usdDigits = appConfig.studio.ui.detailUsdDigits;
+
   return (
     <Dialog
       title={t("studio.approval.preflightTitle")}
@@ -52,17 +60,22 @@ export const StudioPreflightDialog: React.FC = () => {
     >
       <div className="studio-phase2-stack">
         <div className="studio-phase2-meta-grid">
-          <Badge>{pending.stage}</Badge>
+          <Badge>{stageLabel}</Badge>
           <Badge>{t("studio.approval.preflightItems", { count: preflight.item_count })}</Badge>
           <Badge>
-            {t("studio.approval.preflightEst", { usd: formatUSD(preflight.estimated_usd, 4) })}
+            {t("studio.approval.preflightEst", {
+              usd: formatUSD(preflight.estimated_usd, usdDigits),
+            })}
           </Badge>
           <Badge>{t("studio.approval.preflightSec", { sec: preflight.estimated_sec })}</Badge>
         </div>
         {preflight.model_id && (
           <div className="studio-field-hint">
-            {preflight.provider_id}/{preflight.model_id} · {preflight.unit} (
-            {formatUSD(preflight.unit_price_usd, 4)}/u)
+            {preflight.provider_id}/{preflight.model_id} ·{" "}
+            {t("studio.cost.perUnit", {
+              price: formatUSD(preflight.unit_price_usd, usdDigits),
+              unit: unitLabel,
+            })}
           </div>
         )}
         {preflight.warning_items && preflight.warning_items.length > 0
@@ -76,11 +89,17 @@ export const StudioPreflightDialog: React.FC = () => {
                 {w}
               </div>
             ))}
-        {preflight.blockers?.map((b, idx) => (
-          <div key={idx} className="studio-notice studio-notice--error">
-            {b}
-          </div>
-        ))}
+        {preflight.blocker_items && preflight.blocker_items.length > 0
+          ? preflight.blocker_items.map((b, idx) => (
+              <div key={idx} className="studio-notice studio-notice--error">
+                {translateServerMessage(t, b.msg_key, b.msg_params) ?? b.message}
+              </div>
+            ))
+          : (preflight.blockers ?? []).map((b, idx) => (
+              <div key={idx} className="studio-notice studio-notice--error">
+                {b}
+              </div>
+            ))}
         {!preflight.ready && (
           <div className="studio-notice studio-notice--error">{t("studio.approval.blocked")}</div>
         )}
@@ -164,14 +183,20 @@ export const StudioVersionDrawer: React.FC = () => {
             )}
             {(latestQC.issues ?? []).length > 0 && (
               <ul className="studio-qc-issues">
-                {(latestQC.issues ?? []).map((iss, idx) => (
-                  <li key={idx}>
-                    <strong>
-                      [{iss.severity}/{iss.category}]
-                    </strong>{" "}
-                    {translateServerMessage(t, iss.msg_key, iss.msg_params) ?? iss.message}
-                  </li>
-                ))}
+                {(latestQC.issues ?? []).map((iss, idx) => {
+                  const sevKey = `studio.qc.severity.${iss.severity}`;
+                  const catKey = `studio.qc.category.${iss.category}`;
+                  const sevLabel = isMessageKey(sevKey) ? t(sevKey) : iss.severity;
+                  const catLabel = isMessageKey(catKey) ? t(catKey) : iss.category;
+                  return (
+                    <li key={idx}>
+                      <strong>
+                        {t("studio.qc.issueTag", { severity: sevLabel, category: catLabel })}
+                      </strong>{" "}
+                      {translateServerMessage(t, iss.msg_key, iss.msg_params) ?? iss.message}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
@@ -198,7 +223,8 @@ export const StudioVersionDrawer: React.FC = () => {
                   </div>
                 </div>
                 <div className="studio-field-hint">
-                  {v.model_ref || v.source_node} · {formatUSD(v.cost_usd, 4)}
+                  {v.model_ref || v.source_node} ·{" "}
+                  {formatUSD(v.cost_usd, appConfig.studio.ui.detailUsdDigits)}
                 </div>
                 {v.prompt_used && <p className="studio-version-prompt">{v.prompt_used}</p>}
                 <div className="studio-field-hint studio-path-truncate">{v.media_path}</div>
@@ -244,14 +270,14 @@ export const StudioGridSplitterModal: React.FC = () => {
   const marginParam = findParam(gridSpec, "margin_px");
   const gutterParam = findParam(gridSpec, "gutter_px");
 
-  const defaultRows = rowsParam?.default
-    ? Number(rowsParam.default)
-    : appConfig.studio.gridSplitter.defaultRows;
-  const defaultCols = colsParam?.default
-    ? Number(colsParam.default)
-    : appConfig.studio.gridSplitter.defaultCols;
-  const defaultMargin = marginParam?.default ? Number(marginParam.default) : 0;
-  const defaultGutter = gutterParam?.default ? Number(gutterParam.default) : 0;
+  const defaultRows = rowsParam?.default ? Number(rowsParam.default) : (rowsParam?.min ?? 1);
+  const defaultCols = colsParam?.default ? Number(colsParam.default) : (colsParam?.min ?? 1);
+  const defaultMargin = marginParam?.default
+    ? Number(marginParam.default)
+    : (marginParam?.min ?? 0);
+  const defaultGutter = gutterParam?.default
+    ? Number(gutterParam.default)
+    : (gutterParam?.min ?? 0);
 
   return (
     <StudioGridSplitterBody
@@ -317,7 +343,7 @@ const StudioGridSplitterBody: React.FC<StudioGridSplitterBodyProps> = ({
   const [gutterPx, setGutterPx] = useState<number>(defaultGutter);
   const [rowWeights, setRowWeights] = useState<number[]>(() => equalGridWeights(defaultRows));
   const [colWeights, setColWeights] = useState<number[]>(() => equalGridWeights(defaultCols));
-  const { url } = useSignedMediaURL(target.assetId || null, "preview");
+  const { url, handleMediaError } = useSignedMediaURL(target.assetId || null, "preview");
 
   const handleRowsChange = (nextRows: number) => {
     const clamped = clampGridBound(nextRows, rowsMin ?? 1, rowsMax);
@@ -425,28 +451,47 @@ const StudioGridSplitterBody: React.FC<StudioGridSplitterBodyProps> = ({
 
         <div className="studio-grid-preview-frame">
           {url ? (
-            <img
-              src={url}
-              alt={t("studio.gridSplit.previewAlt")}
-              className="studio-grid-preview-img"
-            />
+            <div className="studio-media-overlay-stage">
+              <img
+                src={url}
+                alt={t("studio.gridSplit.previewAlt")}
+                className="studio-grid-preview-img"
+                onError={handleMediaError}
+              />
+              {hCuts.map((pct, i) => (
+                <div
+                  key={`h-${i}`}
+                  className="studio-grid-line studio-grid-line--h"
+                  style={{ top: `${pct}%` }}
+                />
+              ))}
+              {vCuts.map((pct, i) => (
+                <div
+                  key={`v-${i}`}
+                  className="studio-grid-line studio-grid-line--v"
+                  style={{ left: `${pct}%` }}
+                />
+              ))}
+            </div>
           ) : (
-            <div className="studio-field-hint">{target.imagePath}</div>
+            <>
+              <div className="studio-field-hint">{target.imagePath}</div>
+              {hCuts.map((pct, i) => (
+                <div
+                  key={`h-${i}`}
+                  className="studio-grid-line studio-grid-line--h"
+                  style={{ top: `${pct}%` }}
+                />
+              ))}
+              {vCuts.map((pct, i) => (
+                <div
+                  key={`v-${i}`}
+                  className="studio-grid-line studio-grid-line--v"
+                  style={{ left: `${pct}%` }}
+                />
+              ))}
+            </>
           )}
-          {hCuts.map((pct, i) => (
-            <div
-              key={`h-${i}`}
-              className="studio-grid-line studio-grid-line--h"
-              style={{ top: `${pct}%` }}
-            />
-          ))}
-          {vCuts.map((pct, i) => (
-            <div
-              key={`v-${i}`}
-              className="studio-grid-line studio-grid-line--v"
-              style={{ left: `${pct}%` }}
-            />
-          ))}
         </div>
 
         <div className="studio-grid-weights">
@@ -517,6 +562,7 @@ export const StudioMaskEditorModal: React.FC = () => {
 
 const StudioMaskEditorBody: React.FC<{ target: StudioMaskModalTarget }> = ({ target }) => {
   const t = useT();
+  const theme = usePreferencesStore((s) => s.prefs.theme);
   const openMaskModal = useStudioStore((s) => s.openMaskModal);
   const applyMaskEdit = useStudioStore((s) => s.applyMaskEdit);
   const saving = useStudioStore((s) => s.saving);
@@ -526,11 +572,12 @@ const StudioMaskEditorBody: React.FC<{ target: StudioMaskModalTarget }> = ({ tar
     w: appConfig.studio.maskEditor.defaultWidthPx,
     h: appConfig.studio.maskEditor.defaultHeightPx,
   });
+  const [imgLoaded, setImgLoaded] = useState(!target.assetId);
   const [brushSize, setBrushSize] = useState<number>(appConfig.studio.maskEditor.defaultBrushPx);
   const [strokes, setStrokes] = useState<MaskStroke[]>([]);
   const [drawing, setDrawing] = useState(false);
   const [prompt, setPrompt] = useState(() => target.defaultPrompt ?? "");
-  const { url } = useSignedMediaURL(target.assetId || null, "preview");
+  const { url, handleMediaError } = useSignedMediaURL(target.assetId || null, "preview");
 
   useEffect(() => {
     const cvs = canvasRef.current;
@@ -543,24 +590,12 @@ const StudioMaskEditorBody: React.FC<{ target: StudioMaskModalTarget }> = ({ tar
         ? getComputedStyle(cvs).getPropertyValue("--studio-mask-brush-stroke").trim()
         : "";
     ctx.strokeStyle =
-      tokenColor || getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    for (const s of strokes) {
-      if (s.points.length === 0) continue;
-      ctx.lineWidth = s.size;
-      ctx.beginPath();
-      ctx.moveTo(s.points[0].x, s.points[0].y);
-      if (s.points.length === 1) {
-        ctx.lineTo(s.points[0].x + 0.01, s.points[0].y + 0.01);
-      } else {
-        for (let i = 1; i < s.points.length; i++) {
-          ctx.lineTo(s.points[i].x, s.points[i].y);
-        }
-      }
-      ctx.stroke();
-    }
-  }, [strokes, imgSize]);
+      tokenColor ||
+      (typeof document !== "undefined"
+        ? getComputedStyle(document.documentElement).getPropertyValue("--accent").trim()
+        : "");
+    strokeMaskPaths(ctx, strokes);
+  }, [strokes, imgSize, theme]);
 
   const pointFromEvent = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const cvs = canvasRef.current!;
@@ -593,14 +628,13 @@ const StudioMaskEditorBody: React.FC<{ target: StudioMaskModalTarget }> = ({ tar
         <p className="studio-field-hint">{t("studio.maskEdit.hint")}</p>
         <div className="studio-grid-controls">
           <label className="studio-field-inline">
-            <span>
-              {t("studio.maskEdit.brushSize")} ({brushSize}px)
-            </span>
+            <span>{t("studio.maskEdit.brushSizePx", { size: brushSize })}</span>
             <input
               type="range"
               min={appConfig.studio.maskEditor.minBrushPx}
               max={appConfig.studio.maskEditor.maxBrushPx}
               value={brushSize}
+              aria-label={t("studio.maskEdit.brushSize")}
               onChange={(e) => setBrushSize(Number(e.target.value))}
             />
           </label>
@@ -625,43 +659,80 @@ const StudioMaskEditorBody: React.FC<{ target: StudioMaskModalTarget }> = ({ tar
         </div>
 
         <div className="studio-mask-canvas-wrap">
-          {url && (
-            <img
-              src={url}
-              alt={t("studio.maskEdit.baseImageAlt")}
-              className="studio-mask-base-img"
-              onLoad={(e) => {
-                const el = e.currentTarget;
-                if (el.naturalWidth > 0 && el.naturalHeight > 0) {
-                  setImgSize({ w: el.naturalWidth, h: el.naturalHeight });
-                }
+          {url ? (
+            <div className="studio-media-overlay-stage">
+              <img
+                src={url}
+                alt={t("studio.maskEdit.baseImageAlt")}
+                className="studio-mask-base-img"
+                onError={(e) => {
+                  setImgLoaded(true);
+                  handleMediaError(e);
+                }}
+                onLoad={(e) => {
+                  const el = e.currentTarget;
+                  if (el.naturalWidth > 0 && el.naturalHeight > 0) {
+                    setImgSize({ w: el.naturalWidth, h: el.naturalHeight });
+                  }
+                  setImgLoaded(true);
+                }}
+              />
+              <canvas
+                ref={canvasRef}
+                width={imgSize.w}
+                height={imgSize.h}
+                className="studio-mask-canvas"
+                onPointerDown={(e) => {
+                  if (!imgLoaded) return;
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                  setDrawing(true);
+                  const pt = pointFromEvent(e);
+                  setStrokes((prev) => [...prev, { size: brushSize, points: [pt] }]);
+                }}
+                onPointerMove={(e) => {
+                  if (!drawing || !imgLoaded) return;
+                  const pt = pointFromEvent(e);
+                  setStrokes((prev) => {
+                    if (prev.length === 0) return prev;
+                    const next = [...prev];
+                    const last = next[next.length - 1];
+                    next[next.length - 1] = { ...last, points: [...last.points, pt] };
+                    return next;
+                  });
+                }}
+                onPointerUp={() => setDrawing(false)}
+                onPointerCancel={() => setDrawing(false)}
+                onLostPointerCapture={() => setDrawing(false)}
+              />
+            </div>
+          ) : (
+            <canvas
+              ref={canvasRef}
+              width={imgSize.w}
+              height={imgSize.h}
+              className="studio-mask-canvas studio-mask-canvas--standalone"
+              onPointerDown={(e) => {
+                e.currentTarget.setPointerCapture(e.pointerId);
+                setDrawing(true);
+                const pt = pointFromEvent(e);
+                setStrokes((prev) => [...prev, { size: brushSize, points: [pt] }]);
               }}
+              onPointerMove={(e) => {
+                if (!drawing) return;
+                const pt = pointFromEvent(e);
+                setStrokes((prev) => {
+                  if (prev.length === 0) return prev;
+                  const next = [...prev];
+                  const last = next[next.length - 1];
+                  next[next.length - 1] = { ...last, points: [...last.points, pt] };
+                  return next;
+                });
+              }}
+              onPointerUp={() => setDrawing(false)}
+              onPointerCancel={() => setDrawing(false)}
+              onLostPointerCapture={() => setDrawing(false)}
             />
           )}
-          <canvas
-            ref={canvasRef}
-            width={imgSize.w}
-            height={imgSize.h}
-            className="studio-mask-canvas"
-            onPointerDown={(e) => {
-              e.currentTarget.setPointerCapture(e.pointerId);
-              setDrawing(true);
-              const pt = pointFromEvent(e);
-              setStrokes((prev) => [...prev, { size: brushSize, points: [pt] }]);
-            }}
-            onPointerMove={(e) => {
-              if (!drawing) return;
-              const pt = pointFromEvent(e);
-              setStrokes((prev) => {
-                if (prev.length === 0) return prev;
-                const next = [...prev];
-                const last = next[next.length - 1];
-                next[next.length - 1] = { ...last, points: [...last.points, pt] };
-                return next;
-              });
-            }}
-            onPointerUp={() => setDrawing(false)}
-          />
         </div>
 
         <label className="studio-field-col">
