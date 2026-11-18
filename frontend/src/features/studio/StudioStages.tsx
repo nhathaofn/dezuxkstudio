@@ -880,7 +880,9 @@ const StoryboardShotCard: React.FC<{
             const floor = durMin ?? 1;
             const ceil = durMax;
             const next = Number.isFinite(raw) && raw > 0 ? raw : (durDefault ?? floor);
-            setDurationSec(ceil !== undefined ? Math.min(ceil, Math.max(floor, next)) : Math.max(floor, next));
+            setDurationSec(
+              ceil !== undefined ? Math.min(ceil, Math.max(floor, next)) : Math.max(floor, next)
+            );
           }}
           disabled={busy}
         />

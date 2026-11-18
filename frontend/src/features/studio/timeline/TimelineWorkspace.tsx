@@ -828,7 +828,8 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
   const canSplitSelected = Boolean(
     selectedEntry &&
     !selectedEntry.track.locked &&
-    playheadMs > selectedEntry.clip.timeline_start_ms + appConfig.studio.timeline.splitGuardEdgeMs &&
+    playheadMs >
+      selectedEntry.clip.timeline_start_ms + appConfig.studio.timeline.splitGuardEdgeMs &&
     playheadMs < clipEndMs(selectedEntry.clip) - appConfig.studio.timeline.splitGuardEdgeMs
   );
 
@@ -966,7 +967,9 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
             size="sm"
             onClick={() => setShowNLEDialog(true)}
             disabled={
-              busy || !timeline || (timeline.tracks ?? []).every((tr) => (tr.clips ?? []).length === 0)
+              busy ||
+              !timeline ||
+              (timeline.tracks ?? []).every((tr) => (tr.clips ?? []).length === 0)
             }
           >
             <FileArchive size={14} />
@@ -977,7 +980,9 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
             size="sm"
             onClick={() => setShowRenderDialog(true)}
             disabled={
-              busy || !timeline || (timeline.tracks ?? []).every((tr) => (tr.clips ?? []).length === 0)
+              busy ||
+              !timeline ||
+              (timeline.tracks ?? []).every((tr) => (tr.clips ?? []).length === 0)
             }
           >
             <Clapperboard size={14} />

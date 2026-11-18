@@ -956,13 +956,17 @@ export const vi: Record<MessageKey, string> = {
   "studio.qc.issue.no_visual_stream": "Tệp media không có luồng hình ảnh hoặc kích thước hợp lệ",
   "studio.qc.issue.zero_duration": "Thời lượng video bằng 0 hoặc không đọc được",
   "studio.qc.issue.audio_silent": "Rãnh âm thanh bị im lặng {percent}%",
-  "studio.qc.issue.frame_sample_failed": "Không thể lấy mẫu khung hình để kiểm tra Vision QC: {detail}",
+  "studio.qc.issue.frame_sample_failed":
+    "Không thể lấy mẫu khung hình để kiểm tra Vision QC: {detail}",
   "studio.qc.issue.vision_skipped": "Đã bỏ qua đánh giá Vision LLM; chỉ kiểm tra kỹ thuật",
   "studio.qc.issue.vision_unavailable": "Vision QC không khả dụng: {detail}",
 
-  "studio.preflight.warn.checker_unavailable": "Dịch vụ kiểm tra provider không khả dụng; bỏ qua bước xác minh key",
-  "studio.preflight.warn.fallback_rate": "Đang dùng biểu giá dự phòng trong danh mục để ước tính chi phí",
-  "studio.preflight.warn.large_batch": "Lô xử lý lớn ({count} mục): hãy rà kỹ chi phí trước khi chạy",
+  "studio.preflight.warn.checker_unavailable":
+    "Dịch vụ kiểm tra provider không khả dụng; bỏ qua bước xác minh key",
+  "studio.preflight.warn.fallback_rate":
+    "Đang dùng biểu giá dự phòng trong danh mục để ước tính chi phí",
+  "studio.preflight.warn.large_batch":
+    "Lô xử lý lớn ({count} mục): hãy rà kỹ chi phí trước khi chạy",
 
   "studio.batch.generate_assets.running": "Đang tạo ảnh tham chiếu tài sản ({current}/{total})…",
   "studio.batch.generate_assets.completed": "Đã xong lô tạo ảnh tài sản ({current}/{total}).",

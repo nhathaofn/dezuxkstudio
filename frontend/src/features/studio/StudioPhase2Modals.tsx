@@ -4,12 +4,21 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { appConfig } from "../../config/appConfig";
-import { NodeTypes, type StudioMediaTargetKind, type StudioQCStatus } from "../../contracts/generated";
+import {
+  NodeTypes,
+  type StudioMediaTargetKind,
+  type StudioQCStatus,
+} from "../../contracts/generated";
 import { useSignedMediaURL } from "../../lib/hooks/useSignedMediaURL";
 import { translateServerMessage, useT } from "../../lib/i18n";
 import { findParam, useNodeSpec } from "../workflow/useNodeSpecs";
 import { formatUSD } from "./studioFormatters";
-import { targetVersionKey, useStudioStore, type StudioGridModalTarget, type StudioMaskModalTarget } from "./useStudioStore";
+import {
+  targetVersionKey,
+  useStudioStore,
+  type StudioGridModalTarget,
+  type StudioMaskModalTarget,
+} from "./useStudioStore";
 import {
   buildMaskDataURLFromStrokes,
   computeGridDividerPercents,
@@ -56,7 +65,7 @@ export const StudioPreflightDialog: React.FC = () => {
             {formatUSD(preflight.unit_price_usd, 4)}/u)
           </div>
         )}
-        {(preflight.warning_items && preflight.warning_items.length > 0
+        {preflight.warning_items && preflight.warning_items.length > 0
           ? preflight.warning_items.map((w, idx) => (
               <div key={idx} className="studio-notice studio-notice--warn">
                 {translateServerMessage(t, w.msg_key, w.msg_params) ?? w.message}
@@ -66,7 +75,7 @@ export const StudioPreflightDialog: React.FC = () => {
               <div key={idx} className="studio-notice studio-notice--warn">
                 {w}
               </div>
-            )))}
+            ))}
         {preflight.blockers?.map((b, idx) => (
           <div key={idx} className="studio-notice studio-notice--error">
             {b}
@@ -533,7 +542,8 @@ const StudioMaskEditorBody: React.FC<{ target: StudioMaskModalTarget }> = ({ tar
       typeof window !== "undefined"
         ? getComputedStyle(cvs).getPropertyValue("--studio-mask-brush-stroke").trim()
         : "";
-    ctx.strokeStyle = tokenColor || getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
+    ctx.strokeStyle =
+      tokenColor || getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     for (const s of strokes) {

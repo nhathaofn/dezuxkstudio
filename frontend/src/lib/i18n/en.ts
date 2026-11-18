@@ -954,13 +954,16 @@ export const en = {
   "studio.qc.issue.no_visual_stream": "Media contains no valid visual stream dimensions",
   "studio.qc.issue.zero_duration": "Video duration is zero or unreadable",
   "studio.qc.issue.audio_silent": "Audio track is {percent}% silent",
-  "studio.qc.issue.frame_sample_failed": "Could not sample video frames for vision review: {detail}",
+  "studio.qc.issue.frame_sample_failed":
+    "Could not sample video frames for vision review: {detail}",
   "studio.qc.issue.vision_skipped": "Vision LLM critique skipped; technical validation only",
   "studio.qc.issue.vision_unavailable": "Vision QC unavailable: {detail}",
 
-  "studio.preflight.warn.checker_unavailable": "Provider checker unavailable; skipping credential verification",
+  "studio.preflight.warn.checker_unavailable":
+    "Provider checker unavailable; skipping credential verification",
   "studio.preflight.warn.fallback_rate": "Using fallback catalog rate for preflight estimate",
-  "studio.preflight.warn.large_batch": "Large batch ({count} items): review cost carefully before running",
+  "studio.preflight.warn.large_batch":
+    "Large batch ({count} items): review cost carefully before running",
 
   "studio.batch.generate_assets.running": "Generating asset sheets ({current}/{total})…",
   "studio.batch.generate_assets.completed": "Asset sheets batch finished ({current}/{total}).",
