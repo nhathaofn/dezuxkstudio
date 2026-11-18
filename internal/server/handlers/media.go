@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 	"unicode"
@@ -130,24 +129,18 @@ var downloadMimeByExt = map[string]string{
 	".zip":    "application/zip",
 	".fcpxml": "application/xml; charset=utf-8",
 	".otio":   "application/json; charset=utf-8",
-	".json":   "application/json; charset=utf-8",
 	".srt":    "text/plain; charset=utf-8",
 	".vtt":    "text/vtt; charset=utf-8",
 	".ass":    "text/plain; charset=utf-8",
 }
 
-var restrictedDownloadFilenames = map[string]bool{
-	"credentials.json":     true,
-	"client_secret.json":   true,
-	"service-account.json": true,
-	"auth.json":            true,
-	"token.json":           true,
-	"secrets.json":         true,
-	"package.json":         true,
-	"package-lock.json":    true,
-	"tsconfig.json":        true,
-	"jsconfig.json":        true,
-	"wails.json":           true,
+// allowedStudioJSONFilenames restricts downloadable .json files to non-secret studio project metadata.
+var allowedStudioJSONFilenames = map[string]bool{
+	"asset_bible.json":       true,
+	"shots.json":             true,
+	"timeline.json":          true,
+	"normalized_script.json": true,
+	"project.json":           true,
 }
 
 type mediaUploadResponse struct {
@@ -307,17 +300,21 @@ func MediaDownload(mediaDir string, opts ...MediaDownloadOption) http.Handler {
 					writeError(w, http.StatusBadRequest, apperr.Validation("invalid purpose; must be 'preview' or 'download'"))
 					return
 				}
-				claims, err = cfg.ticketSigner.VerifyTicket(ticketStr, assetID, purposeParam)
+				claims, err = cfg.ticketSigner.VerifyAndConsumeTicket(ticketStr, assetID, purposeParam)
 			} else {
-				claims, err = cfg.ticketSigner.VerifyTicket(ticketStr, assetID, security.PurposePreview)
+				claims, err = cfg.ticketSigner.VerifyAndConsumeTicket(ticketStr, assetID, security.PurposePreview)
 				if errors.Is(err, security.ErrPurposeMismatch) {
-					claims, err = cfg.ticketSigner.VerifyTicket(ticketStr, assetID, security.PurposeDownload)
+					claims, err = cfg.ticketSigner.VerifyAndConsumeTicket(ticketStr, assetID, security.PurposeDownload)
 				}
 			}
 
 			if err != nil {
 				if errors.Is(err, security.ErrExpiredTicket) {
 					writeError(w, http.StatusUnauthorized, apperr.New(apperr.CodeUnauthorized, "ticket expired"))
+					return
+				}
+				if errors.Is(err, security.ErrTicketReplayed) {
+					writeError(w, http.StatusForbidden, apperr.New(apperr.CodeUnauthorized, "download ticket already used"))
 					return
 				}
 				if errors.Is(err, security.ErrInvalidSignature) {
@@ -383,18 +380,34 @@ func MediaDownload(mediaDir string, opts ...MediaDownloadOption) http.Handler {
 			targetRoot = currentMediaDir
 		}
 
-		realRoot, _ := resolveExistingDir(targetRoot)
-		if realRoot == "" && !filepath.IsAbs(targetPath) {
+		if targetRoot == "" && !filepath.IsAbs(targetPath) {
 			writeError(w, http.StatusNotFound, apperr.NotFound("media folder not found"))
 			return
 		}
 
 		candidate := targetPath
 		if !filepath.IsAbs(candidate) {
-			candidate = filepath.Join(realRoot, filepath.FromSlash(candidate))
+			candidate = filepath.Join(targetRoot, filepath.FromSlash(candidate))
 		}
 		candidate = filepath.Clean(candidate)
 
+		isAuthorized := func(root, p string) bool {
+			if root != "" && fsutil.IsSubpath(root, p, true) {
+				return true
+			}
+			if auth, ok := cfg.assetResolver.(interface{ IsPathAuthorized(string) bool }); ok {
+				return auth.IsPathAuthorized(p)
+			}
+			return false
+		}
+
+		// Lexical check BEFORE EvalSymlinks/os.Stat prevents 404/403 existence oracle outside allowed roots.
+		if !isAuthorized(targetRoot, candidate) {
+			writeError(w, http.StatusForbidden, apperr.New(apperr.CodeUnauthorized, "access denied outside media folder"))
+			return
+		}
+
+		realRoot, _ := resolveExistingDir(targetRoot)
 		realTarget, err := filepath.EvalSymlinks(candidate)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -405,15 +418,10 @@ func MediaDownload(mediaDir string, opts ...MediaDownloadOption) http.Handler {
 			return
 		}
 
-		if realRoot == "" || !isStrictSubPath(realRoot, realTarget) {
-			authorized := false
-			if auth, ok := cfg.assetResolver.(interface{ IsPathAuthorized(string) bool }); ok {
-				authorized = auth.IsPathAuthorized(realTarget)
-			}
-			if !authorized {
-				writeError(w, http.StatusForbidden, apperr.New(apperr.CodeUnauthorized, "access denied outside media folder"))
-				return
-			}
+		// Re-verify AFTER EvalSymlinks to block symlink/junction escapes outside authorized roots.
+		if !isAuthorized(realRoot, realTarget) {
+			writeError(w, http.StatusForbidden, apperr.New(apperr.CodeUnauthorized, "access denied outside media folder"))
+			return
 		}
 
 		if cfg.fileGuard != nil {
@@ -440,7 +448,10 @@ func MediaDownload(mediaDir string, opts ...MediaDownloadOption) http.Handler {
 		lowerBase := strings.ToLower(filepath.Base(realTarget))
 		ext := strings.ToLower(filepath.Ext(lowerBase))
 		contentType := downloadMimeByExt[ext]
-		if contentType == "" || strings.HasPrefix(lowerBase, ".") || restrictedDownloadFilenames[lowerBase] {
+		if ext == ".json" && allowedStudioJSONFilenames[lowerBase] {
+			contentType = "application/json; charset=utf-8"
+		}
+		if contentType == "" || strings.HasPrefix(lowerBase, ".") {
 			writeError(w, http.StatusForbidden, apperr.New(apperr.CodeUnauthorized, "unsupported or restricted media file type"))
 			return
 		}
@@ -466,6 +477,8 @@ func MediaDownload(mediaDir string, opts ...MediaDownloadOption) http.Handler {
 			"filename": filepath.Base(realTarget),
 		}))
 
+		// Extend write deadline when streaming large media files so http.Server.WriteTimeout does not truncate them.
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 		http.ServeContent(w, r, filepath.Base(realTarget), info.ModTime(), f)
 	})
 }
@@ -617,7 +630,7 @@ func allocateStagingPath(dir, safeName string) (string, string, error) {
 		return "", "", err
 	}
 	destPath := filepath.Clean(filepath.Join(destDir, safeName))
-	if !isStrictSubPath(stagingRoot, destPath) {
+	if !fsutil.IsSubpath(stagingRoot, destPath, true) {
 		_ = os.RemoveAll(destDir)
 		return "", "", errors.New("staging path escapes staging directory")
 	}
@@ -666,24 +679,4 @@ func resolveExistingDir(dir string) (string, error) {
 		return "", err
 	}
 	return filepath.EvalSymlinks(filepath.Clean(abs))
-}
-
-func isStrictSubPath(root, target string) bool {
-	if root == "" || target == "" {
-		return false
-	}
-	cleanRoot := filepath.Clean(root)
-	cleanTarget := filepath.Clean(target)
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
-		cleanRoot = strings.ToLower(cleanRoot)
-		cleanTarget = strings.ToLower(cleanTarget)
-	}
-	if cleanRoot == cleanTarget {
-		return false
-	}
-	rel, err := filepath.Rel(cleanRoot, cleanTarget)
-	if err != nil {
-		return false
-	}
-	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

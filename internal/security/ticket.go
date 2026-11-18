@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,7 +23,10 @@ var (
 	ErrAssetMismatch    = errors.New("security: ticket asset mismatch")
 	ErrPurposeMismatch  = errors.New("security: ticket purpose mismatch")
 	ErrInvalidSecret    = errors.New("security: ticket signing secret cannot be empty")
+	ErrTicketReplayed   = errors.New("security: download ticket already used")
 )
+
+const maxTrackedDownloadNonces = 10000
 
 // Allowed purposes for signed media tickets.
 const (
@@ -40,14 +44,19 @@ type TicketClaims struct {
 
 // TicketSigner generates and verifies HMAC-SHA256 signed tickets for media streaming/download.
 type TicketSigner struct {
-	secret []byte
+	secret     []byte
+	nonceMu    sync.Mutex
+	usedNonces map[string]int64
 }
 
 // NewTicketSigner constructs a TicketSigner using the provided secret key.
 func NewTicketSigner(secret []byte) *TicketSigner {
 	s := make([]byte, len(secret))
 	copy(s, secret)
-	return &TicketSigner{secret: s}
+	return &TicketSigner{
+		secret:     s,
+		usedNonces: make(map[string]int64),
+	}
 }
 
 // SignTicket issues an HMAC-SHA256 signed ticket string for the given assetID, purpose, and TTL.
@@ -139,4 +148,40 @@ func (s *TicketSigner) VerifyTicket(ticketStr, expectedAssetID, expectedPurpose 
 	}
 
 	return &claims, nil
+}
+
+// VerifyAndConsumeTicket verifies the ticket like VerifyTicket and enforces
+// single-use nonce consumption for purpose="download" tickets.
+// Purpose="preview" tickets remain reusable within their TTL to support HTTP Range streaming.
+func (s *TicketSigner) VerifyAndConsumeTicket(ticketStr, expectedAssetID, expectedPurpose string) (*TicketClaims, error) {
+	claims, err := s.VerifyTicket(ticketStr, expectedAssetID, expectedPurpose)
+	if err != nil {
+		return nil, err
+	}
+	if claims.Purpose == PurposeDownload {
+		if claims.Nonce == "" {
+			return nil, ErrInvalidTicket
+		}
+		now := time.Now().Unix()
+		s.nonceMu.Lock()
+		defer s.nonceMu.Unlock()
+		if s.usedNonces == nil {
+			s.usedNonces = make(map[string]int64)
+		}
+		if len(s.usedNonces) >= 1024 {
+			for k, exp := range s.usedNonces {
+				if exp < now {
+					delete(s.usedNonces, k)
+				}
+			}
+			if len(s.usedNonces) >= maxTrackedDownloadNonces {
+				s.usedNonces = make(map[string]int64)
+			}
+		}
+		if _, used := s.usedNonces[claims.Nonce]; used {
+			return nil, ErrTicketReplayed
+		}
+		s.usedNonces[claims.Nonce] = claims.ExpiresAt
+	}
+	return claims, nil
 }

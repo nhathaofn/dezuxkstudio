@@ -78,6 +78,10 @@ func Broadcast(pub Publisher, declared []string, maxBody int64) http.Handler {
 			writeError(w, http.StatusBadRequest, apperr.Validation("event is not declared in contracts"))
 			return
 		}
+		if len(in.Data) > 0 && !json.Valid(in.Data) {
+			writeError(w, http.StatusBadRequest, apperr.Validation("event data must be valid JSON"))
+			return
+		}
 		pub.Publish(in.Event, in.Data)
 		writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
 	})

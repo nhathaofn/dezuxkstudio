@@ -182,6 +182,8 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 		Host:              cfg.Server.Host,
 		Port:              cfg.Server.Port,
 		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout,
+		ReadTimeout:       cfg.Server.ReadTimeout,
+		WriteTimeout:      cfg.Server.WriteTimeout,
 		IdleTimeout:       cfg.Server.IdleTimeout,
 		Logger:            o.Logger,
 		Handler: server.NewRouter(server.RouterOptions{

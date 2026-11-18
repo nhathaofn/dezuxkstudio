@@ -55,7 +55,7 @@ func NewRouter(o RouterOptions) http.Handler {
 	mux.Handle("GET "+PathHealth, handlers.Health(o.Version, o.StartedAt, o.Hub.ClientCount))
 	mux.Handle(PathRuntimeConfig, cors(handlers.RuntimeConfig(o.Mode, o.Version, o.Timeouts, o.WSURL)))
 
-	if o.EnableBroadcast {
+	if o.EnableBroadcast && o.AuthToken != "" {
 		mux.Handle(PathBroadcast, cors(
 			middleware.RequireToken(o.AuthToken)(
 				middleware.RequireJSON(
@@ -73,8 +73,9 @@ func NewRouter(o RouterOptions) http.Handler {
 	}
 
 	if stagingDir != "" {
+		uploadLimiter := rateLimitMiddleware(newIPRateLimiter(5, 20))
 		auth := middleware.RequireAuth(o.AuthToken, o.AllowAnonymous)
-		mux.Handle(PathMediaUpload, cors(auth(handlers.MediaUpload(stagingDir, o.MaxUploadBytes))))
+		mux.Handle(PathMediaUpload, cors(uploadLimiter(auth(handlers.MediaUpload(stagingDir, o.MaxUploadBytes)))))
 	}
 	if mediaDirGetter != nil || o.MediaDir != "" {
 		opts := []handlers.MediaDownloadOption{
