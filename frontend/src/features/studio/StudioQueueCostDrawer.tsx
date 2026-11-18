@@ -4,6 +4,7 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { Switch } from "../../components/ui/Switch";
+import { StudioJobKindValues } from "../../contracts/generated";
 import { useT } from "../../lib/i18n";
 import { useAgentStore } from "../agent/useAgentStore";
 import { formatUSD } from "./studioFormatters";
@@ -151,7 +152,11 @@ export const StudioQueueCostDrawer: React.FC = () => {
               <div key={job.id} className="studio-queue-item">
                 <div className="studio-queue-item__main">
                   <div className="studio-phase2-meta-grid">
-                    <strong>{job.job_kind}</strong>
+                    <strong>
+                      {(StudioJobKindValues as readonly string[]).includes(job.job_kind)
+                        ? t(`studio.queue.kind.${job.job_kind}` as never)
+                        : job.job_kind}
+                    </strong>
                     <Badge
                       className={
                         job.status === "succeeded"
@@ -164,7 +169,7 @@ export const StudioQueueCostDrawer: React.FC = () => {
                       {t(`studio.queue.status.${job.status}` as never)}
                     </Badge>
                     <span>{job.progress}%</span>
-                    <span>${(job.actual_usd || job.estimated_usd).toFixed(4)}</span>
+                    <span>{formatUSD(job.actual_usd || job.estimated_usd, 4)}</span>
                   </div>
                   {job.provider_job_id && (
                     <div className="studio-field-hint">
