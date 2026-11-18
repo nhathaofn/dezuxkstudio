@@ -94,24 +94,24 @@ func (s *Service) GenerateLipSync(ctx context.Context, req domainmedia.LipSyncRe
 		Key:     "mediagen.progress.lipsync",
 	})
 
-	var data []byte
-	var mimeType string
+	var out mediaOutput
 
 	switch target.protocol {
 	case "kling-lipsync":
-		data, mimeType, err = s.genKlingLipSync(callCtx, target, norm, vidRaw, audRaw)
+		out, err = s.genKlingLipSync(callCtx, target, norm, vidRaw, audRaw)
 	case "minimax-lipsync":
-		data, mimeType, err = s.genMiniMaxLipSync(callCtx, target, norm, vidRaw, audRaw)
+		out, err = s.genMiniMaxLipSync(callCtx, target, norm, vidRaw, audRaw)
 	case "openai-lipsync":
-		data, mimeType, err = s.genOpenAILipSync(callCtx, target, norm, vidRaw, vidMime, audRaw, audMime)
+		out, err = s.genOpenAILipSync(callCtx, target, norm, vidRaw, vidMime, audRaw, audMime)
 	default:
 		return domainmedia.Result{}, apperr.Validation("Unsupported lip-sync protocol: " + target.protocol)
 	}
 	if err != nil {
+		out.cleanup()
 		return domainmedia.Result{}, err
 	}
 
-	res, err := s.saveOutput(ctx, domainmedia.KindVideo, norm.OutputDir, "lipsync", mimeType, ".mp4", data, target)
+	res, err := s.saveMediaOutput(ctx, domainmedia.KindVideo, norm.OutputDir, "lipsync", ".mp4", out, target)
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
@@ -131,10 +131,10 @@ func (s *Service) GenerateLipSync(ctx context.Context, req domainmedia.LipSyncRe
 	return res, nil
 }
 
-func (s *Service) genKlingLipSync(ctx context.Context, t targetSpec, req domainmedia.LipSyncRequest, vidRaw, audRaw []byte) ([]byte, string, error) {
+func (s *Service) genKlingLipSync(ctx context.Context, t targetSpec, req domainmedia.LipSyncRequest, vidRaw, audRaw []byte) (mediaOutput, error) {
 	bearer, err := s.klingBearer(t)
 	if err != nil {
-		return nil, "", err
+		return mediaOutput{}, err
 	}
 	root := ensureRootStrippingSuffixes(t.baseURL, "/v1")
 	headers := map[string]string{"Authorization": "Bearer " + bearer}
@@ -163,13 +163,13 @@ func (s *Service) genKlingLipSync(ctx context.Context, t targetSpec, req domainm
 		} `json:"data"`
 	}
 	if err := s.doJSON(ctx, "POST", root+"/v1/videos/lip-sync", headers, payload, &submitResp); err != nil {
-		return nil, "", err
+		return mediaOutput{}, err
 	}
 	if submitResp.Code != 0 && submitResp.Data.TaskID == "" {
-		return nil, "", providerUnavailableErr("Kling lip-sync error", submitResp.Message)
+		return mediaOutput{}, providerUnavailableErr("Kling lip-sync error", submitResp.Message)
 	}
 	if submitResp.Data.TaskID == "" {
-		return nil, "", apperr.Unavailable("Kling lip-sync returned empty task_id")
+		return mediaOutput{}, apperr.Unavailable("Kling lip-sync returned empty task_id")
 	}
 
 	var outURL string
@@ -202,12 +202,12 @@ func (s *Service) genKlingLipSync(ctx context.Context, t targetSpec, req domainm
 		}
 	})
 	if err != nil {
-		return nil, "", err
+		return mediaOutput{}, err
 	}
-	return s.downloadURL(ctx, outURL, nil)
+	return s.downloadURLToFile(ctx, outURL, nil)
 }
 
-func (s *Service) genMiniMaxLipSync(ctx context.Context, t targetSpec, req domainmedia.LipSyncRequest, vidRaw, audRaw []byte) ([]byte, string, error) {
+func (s *Service) genMiniMaxLipSync(ctx context.Context, t targetSpec, req domainmedia.LipSyncRequest, vidRaw, audRaw []byte) (mediaOutput, error) {
 	root := ensureRootStrippingSuffixes(t.baseURL, "/v2", "/v1")
 	headers := map[string]string{"Authorization": "Bearer " + t.apiKey}
 
@@ -226,13 +226,13 @@ func (s *Service) genMiniMaxLipSync(ctx context.Context, t targetSpec, req domai
 		} `json:"base_resp"`
 	}
 	if err := s.doJSON(ctx, "POST", root+"/v1/video_generation", headers, payload, &submitResp); err != nil {
-		return nil, "", err
+		return mediaOutput{}, err
 	}
 	if submitResp.BaseResp.StatusCode != 0 {
-		return nil, "", providerUnavailableErr(fmt.Sprintf("MiniMax lip-sync (%d)", submitResp.BaseResp.StatusCode), submitResp.BaseResp.StatusMsg)
+		return mediaOutput{}, providerUnavailableErr(fmt.Sprintf("MiniMax lip-sync (%d)", submitResp.BaseResp.StatusCode), submitResp.BaseResp.StatusMsg)
 	}
 	if submitResp.TaskID == "" {
-		return nil, "", apperr.Unavailable("MiniMax lip-sync returned empty task_id")
+		return mediaOutput{}, apperr.Unavailable("MiniMax lip-sync returned empty task_id")
 	}
 
 	var fileID string
@@ -259,7 +259,7 @@ func (s *Service) genMiniMaxLipSync(ctx context.Context, t targetSpec, req domai
 		}
 	})
 	if err != nil {
-		return nil, "", err
+		return mediaOutput{}, err
 	}
 	var ret struct {
 		File struct {
@@ -267,15 +267,15 @@ func (s *Service) genMiniMaxLipSync(ctx context.Context, t targetSpec, req domai
 		} `json:"file"`
 	}
 	if err := s.doJSON(ctx, "GET", root+"/v1/files/retrieve?file_id="+url.QueryEscape(fileID), headers, nil, &ret); err != nil {
-		return nil, "", err
+		return mediaOutput{}, err
 	}
 	if ret.File.DownloadURL == "" {
-		return nil, "", apperr.Unavailable("MiniMax lip-sync retrieve returned empty download_url")
+		return mediaOutput{}, apperr.Unavailable("MiniMax lip-sync retrieve returned empty download_url")
 	}
-	return s.downloadURL(ctx, ret.File.DownloadURL, nil)
+	return s.downloadURLToFile(ctx, ret.File.DownloadURL, nil)
 }
 
-func (s *Service) genOpenAILipSync(ctx context.Context, t targetSpec, req domainmedia.LipSyncRequest, vidRaw []byte, vidMime string, audRaw []byte, audMime string) ([]byte, string, error) {
+func (s *Service) genOpenAILipSync(ctx context.Context, t targetSpec, req domainmedia.LipSyncRequest, vidRaw []byte, vidMime string, audRaw []byte, audMime string) (mediaOutput, error) {
 	base := domainprovider.EnsureOpenAIBase(t.baseURL)
 	headers := map[string]string{"Authorization": "Bearer " + t.apiKey}
 
@@ -316,14 +316,14 @@ func (s *Service) genOpenAILipSync(ctx context.Context, t targetSpec, req domain
 		return writePart("audio", "audio"+domainmedia.ExtForMime(audMime, ".mp3"), audMime, audRaw)
 	}, &resp)
 	if err != nil {
-		return nil, "", err
+		return mediaOutput{}, err
 	}
 
 	if resp.URL != "" || resp.B64JSON != "" {
-		return s.decodeDataOrDownload(ctx, resp.B64JSON, resp.URL, ".mp4", headers)
+		return s.decodeMediaOrDownload(ctx, resp.B64JSON, resp.URL, ".mp4", headers, base)
 	}
 	if resp.ID == "" {
-		return nil, "", apperr.Unavailable("Lip-sync endpoint returned empty id and url")
+		return mediaOutput{}, apperr.Unavailable("Lip-sync endpoint returned empty id and url")
 	}
 
 	var outURL string
@@ -347,10 +347,10 @@ func (s *Service) genOpenAILipSync(ctx context.Context, t targetSpec, req domain
 		}
 	})
 	if err != nil {
-		return nil, "", err
+		return mediaOutput{}, err
 	}
 	if outURL != "" {
-		return s.downloadURL(ctx, outURL, headers)
+		return s.downloadURLToFile(ctx, outURL, headers, base)
 	}
-	return s.doBinary(ctx, "GET", base+"/videos/"+url.PathEscape(resp.ID)+"/content", headers, nil)
+	return s.doBinaryToFile(ctx, "GET", base+"/videos/"+url.PathEscape(resp.ID)+"/content", headers, nil)
 }

@@ -32,8 +32,10 @@ import (
 	"app/internal/contracts"
 	domainmedia "app/internal/domain/mediagen"
 	domainprovider "app/internal/domain/provider"
+	"app/internal/engine"
 	"app/internal/fsutil"
 	"app/internal/httpclient"
+	"app/internal/logger"
 	"app/internal/progress"
 	"app/internal/service/media"
 )
@@ -50,7 +52,7 @@ const (
 
 var (
 	errStageTooLarge   = errors.New("staged media payload exceeded size limit")
-	secretTokenPattern = regexp.MustCompile(`(?i)(bearer\s+[A-Za-z0-9._\-~+/=]+|sk-[A-Za-z0-9_\-]{8,}|(?:api[_-]?key|token|secret|signature|sig)=[^&\s"']+)`)
+	secretTokenPattern = regexp.MustCompile(`(?i)(bearer\s+[A-Za-z0-9._\-~+/=]+|sk-[A-Za-z0-9_\-]{8,}|(?:api[_-]?key|token|ticket|secret|signature|sig)=[^&\s"']+)`)
 	embeddedURLPattern = regexp.MustCompile(`https?://[^\s"'<>]+`)
 )
 
@@ -642,27 +644,68 @@ func (s *Service) doMultipart(ctx context.Context, targetURL string, headers map
 	return nil
 }
 
-func (s *Service) doBinary(ctx context.Context, method, targetURL string, headers map[string]string, reqBody any) ([]byte, string, error) {
+type mediaOutput struct {
+	data     []byte
+	filePath string
+	mimeType string
+}
+
+func (m *mediaOutput) cleanup() {
+	if m != nil && m.filePath != "" {
+		_ = os.Remove(m.filePath)
+		m.filePath = ""
+	}
+}
+
+func filterTrustedHeaders(rawURL string, headers map[string]string, trustedURLs ...string) map[string]string {
+	if len(headers) == 0 || len(trustedURLs) == 0 {
+		return nil
+	}
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Host == "" {
+		return nil
+	}
+	for _, tuRaw := range trustedURLs {
+		tu, err := url.Parse(strings.TrimSpace(tuRaw))
+		if err != nil || tu.Host == "" {
+			continue
+		}
+		if strings.EqualFold(u.Scheme, tu.Scheme) && strings.EqualFold(u.Host, tu.Host) {
+			return headers
+		}
+	}
+	return nil
+}
+
+func newBinaryRequest(ctx context.Context, method, targetURL string, headers map[string]string, reqBody any) (*http.Request, error) {
 	if err := domainprovider.ValidateOutboundURL(targetURL); err != nil {
-		return nil, "", apperr.Wrap(apperr.CodeValidation, "Invalid provider URL", err)
+		return nil, apperr.Wrap(apperr.CodeValidation, "Invalid provider URL", err)
 	}
 	var bodyReader io.Reader
 	if reqBody != nil {
 		raw, err := json.Marshal(reqBody)
 		if err != nil {
-			return nil, "", apperr.Internal(err)
+			return nil, apperr.Internal(err)
 		}
 		bodyReader = bytes.NewReader(raw)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, targetURL, bodyReader)
 	if err != nil {
-		return nil, "", apperr.Internal(err)
+		return nil, apperr.Internal(err)
 	}
 	if reqBody != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
+	}
+	return req, nil
+}
+
+func (s *Service) doBinary(ctx context.Context, method, targetURL string, headers map[string]string, reqBody any) ([]byte, string, error) {
+	req, err := newBinaryRequest(ctx, method, targetURL, headers, reqBody)
+	if err != nil {
+		return nil, "", err
 	}
 	raw, ct, status, err := s.execHTTP(req, s.cfg.MaxOutputBytes)
 	if err != nil {
@@ -677,16 +720,45 @@ func (s *Service) doBinary(ctx context.Context, method, targetURL string, header
 	return raw, ct, nil
 }
 
-func (s *Service) downloadURL(ctx context.Context, rawURL string, headers map[string]string) ([]byte, string, error) {
+func (s *Service) doBinaryToFile(ctx context.Context, method, targetURL string, headers map[string]string, reqBody any) (mediaOutput, error) {
+	req, err := newBinaryRequest(ctx, method, targetURL, headers, reqBody)
+	if err != nil {
+		return mediaOutput{}, err
+	}
+	tmpPath, ct, status, size, errBody, err := s.execHTTPToFile(req, s.cfg.MaxOutputBytes)
+	if err != nil {
+		return mediaOutput{}, err
+	}
+	if status < 200 || status >= 300 {
+		return mediaOutput{}, mapAPIError(status, errBody)
+	}
+	if size == 0 {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+		return mediaOutput{}, apperr.Unavailable("Provider returned empty media body")
+	}
+	return mediaOutput{filePath: tmpPath, mimeType: ct}, nil
+}
+
+func newDownloadRequest(ctx context.Context, rawURL string, headers map[string]string, trustedURLs ...string) (*http.Request, error) {
 	if err := domainprovider.ValidateOutboundURL(rawURL); err != nil {
-		return nil, "", apperr.Wrap(apperr.CodeUnavailable, "Blocked unsafe remote media URL", err)
+		return nil, apperr.Wrap(apperr.CodeUnavailable, "Blocked unsafe remote media URL", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, "", apperr.Internal(err)
+		return nil, apperr.Internal(err)
 	}
-	for k, v := range headers {
+	for k, v := range filterTrustedHeaders(rawURL, headers, trustedURLs...) {
 		req.Header.Set(k, v)
+	}
+	return req, nil
+}
+
+func (s *Service) downloadURL(ctx context.Context, rawURL string, headers map[string]string, trustedURLs ...string) ([]byte, string, error) {
+	req, err := newDownloadRequest(ctx, rawURL, headers, trustedURLs...)
+	if err != nil {
+		return nil, "", err
 	}
 	raw, ct, status, err := s.execHTTP(req, s.cfg.MaxOutputBytes)
 	if err != nil {
@@ -699,6 +771,27 @@ func (s *Service) downloadURL(ctx context.Context, rawURL string, headers map[st
 		return nil, "", apperr.Unavailable("Downloaded media file was empty")
 	}
 	return raw, ct, nil
+}
+
+func (s *Service) downloadURLToFile(ctx context.Context, rawURL string, headers map[string]string, trustedURLs ...string) (mediaOutput, error) {
+	req, err := newDownloadRequest(ctx, rawURL, headers, trustedURLs...)
+	if err != nil {
+		return mediaOutput{}, err
+	}
+	tmpPath, ct, status, size, errBody, err := s.execHTTPToFile(req, s.cfg.MaxOutputBytes)
+	if err != nil {
+		return mediaOutput{}, err
+	}
+	if status < 200 || status >= 300 {
+		return mediaOutput{}, mapAPIError(status, errBody)
+	}
+	if size == 0 {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+		return mediaOutput{}, apperr.Unavailable("Downloaded media file was empty")
+	}
+	return mediaOutput{filePath: tmpPath, mimeType: ct}, nil
 }
 
 // RetryConfig tunes transient HTTP retry behavior.
@@ -852,7 +945,7 @@ func ExecHTTPWithRetry(ctx context.Context, client *http.Client, req *http.Reque
 	return execHTTPWithRetryObserver(ctx, client, req, maxBytes, cfg, nil)
 }
 
-func execHTTPWithRetryObserver(ctx context.Context, client *http.Client, req *http.Request, maxBytes int64, cfg RetryConfig, onRateLimit func(time.Duration)) ([]byte, string, int, error) {
+func normalizeHTTPClientAndRetry(client *http.Client, cfg RetryConfig) (*http.Client, RetryConfig) {
 	if client == nil {
 		client = httpclient.WithRedirectGuard(
 			httpclient.New(config.Default(config.ModeDesktop).Network),
@@ -872,99 +965,186 @@ func execHTTPWithRetryObserver(ctx context.Context, client *http.Client, req *ht
 	if cfg.BackoffFactor <= 0 {
 		cfg.BackoffFactor = defCfg.BackoffFactor
 	}
+	return client, cfg
+}
 
+func waitRetryDelay(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return apperr.From(ctx.Err())
+	case <-timer.C:
+		return nil
+	}
+}
+
+func execHTTPAttemptLoop(
+	ctx context.Context,
+	client *http.Client,
+	req *http.Request,
+	cfg RetryConfig,
+	onRateLimit func(time.Duration),
+	consume func(resp *http.Response, canRetry bool) (retryAfter string, retry bool, err error),
+) error {
+	client, cfg = normalizeHTTPClientAndRetry(client, cfg)
 	var lastErr error
-	var lastStatus int
-	var lastRaw []byte
-	var lastCT string
-
 	for attempt := 0; attempt <= cfg.MaxRetries; attempt++ {
-		if attempt > 0 {
-			if req.GetBody != nil {
-				rc, err := req.GetBody()
-				if err != nil {
-					return nil, "", 0, apperr.Internal(err)
-				}
-				req.Body = rc
+		if attempt > 0 && req.GetBody != nil {
+			rc, err := req.GetBody()
+			if err != nil {
+				return apperr.Internal(err)
 			}
+			req.Body = rc
 		}
-
 		if ctx.Err() != nil {
-			return nil, "", 0, apperr.From(ctx.Err())
+			return apperr.From(ctx.Err())
 		}
 
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
-			lastStatus = 0
 			if ctx.Err() != nil {
-				return nil, "", 0, apperr.From(ctx.Err())
+				return apperr.From(ctx.Err())
 			}
 			if attempt < cfg.MaxRetries && IsTransientNetErr(err) {
-				delay := computeDelay(attempt, cfg, "")
-				select {
-				case <-ctx.Done():
-					return nil, "", 0, apperr.From(ctx.Err())
-				case <-time.After(delay):
-					continue
+				if wErr := waitRetryDelay(ctx, computeDelay(attempt, cfg, "")); wErr != nil {
+					return wErr
 				}
+				continue
 			}
-			return nil, "", 0, apperr.Wrap(apperr.CodeUnavailable, "Provider HTTP request failed", err).
+			return apperr.Wrap(apperr.CodeUnavailable, "Provider HTTP request failed", err).
 				WithMsg("errors.mediagen.request_failed", nil)
 		}
 
-		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
-		_ = resp.Body.Close()
-		lastStatus = resp.StatusCode
-		lastRaw = raw
-		lastCT = resp.Header.Get("Content-Type")
-		retryAfterHeader := resp.Header.Get("Retry-After")
-
 		if resp.StatusCode == http.StatusTooManyRequests && onRateLimit != nil {
-			bo, ok := parseRetryAfter(retryAfterHeader)
+			bo, ok := parseRetryAfter(resp.Header.Get("Retry-After"))
 			if !ok || bo <= 0 {
 				bo = computeDelay(attempt, cfg, "")
 			}
 			onRateLimit(bo)
 		}
 
-		if readErr != nil {
-			lastErr = readErr
-			if attempt < cfg.MaxRetries && (IsRetryableStatus(resp.StatusCode) || IsTransientNetErr(readErr)) {
-				delay := computeDelay(attempt, cfg, retryAfterHeader)
-				select {
-				case <-ctx.Done():
-					return nil, "", 0, apperr.From(ctx.Err())
-				case <-time.After(delay):
-					continue
-				}
-			}
-			return nil, "", resp.StatusCode, apperr.Wrap(apperr.CodeUnavailable, "Failed reading provider response", readErr)
+		retryAfter, retry, cErr := consume(resp, attempt < cfg.MaxRetries)
+		_ = resp.Body.Close()
+		if !retry {
+			return cErr
 		}
-
-		if int64(len(raw)) > maxBytes {
-			return nil, "", resp.StatusCode, apperr.New(apperr.CodeUnavailable, "Provider response exceeded size limit").
-				WithMsg("errors.mediagen.output_too_large", nil)
+		if cErr != nil {
+			lastErr = cErr
 		}
-
-		if attempt < cfg.MaxRetries && IsRetryableStatus(resp.StatusCode) {
-			delay := computeDelay(attempt, cfg, retryAfterHeader)
-			select {
-			case <-ctx.Done():
-				return nil, "", 0, apperr.From(ctx.Err())
-			case <-time.After(delay):
-				continue
-			}
+		if wErr := waitRetryDelay(ctx, computeDelay(attempt, cfg, retryAfter)); wErr != nil {
+			return wErr
 		}
-
-		return raw, lastCT, resp.StatusCode, nil
 	}
-
 	if lastErr != nil {
-		return nil, "", lastStatus, apperr.Wrap(apperr.CodeUnavailable, "Provider HTTP request failed after retries", lastErr).
+		return apperr.Wrap(apperr.CodeUnavailable, "Provider HTTP request failed after retries", lastErr).
 			WithMsg("errors.mediagen.request_failed", nil)
 	}
+	return nil
+}
+
+func execHTTPWithRetryObserver(ctx context.Context, client *http.Client, req *http.Request, maxBytes int64, cfg RetryConfig, onRateLimit func(time.Duration)) ([]byte, string, int, error) {
+	var lastStatus int
+	var lastRaw []byte
+	var lastCT string
+
+	err := execHTTPAttemptLoop(ctx, client, req, cfg, onRateLimit, func(resp *http.Response, canRetry bool) (string, bool, error) {
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+		lastStatus = resp.StatusCode
+		lastRaw = raw
+		lastCT = resp.Header.Get("Content-Type")
+		retryAfterHeader := resp.Header.Get("Retry-After")
+
+		if readErr != nil {
+			if canRetry && (IsRetryableStatus(resp.StatusCode) || IsTransientNetErr(readErr)) {
+				return retryAfterHeader, true, readErr
+			}
+			return "", false, apperr.Wrap(apperr.CodeUnavailable, "Failed reading provider response", readErr)
+		}
+		if int64(len(raw)) > maxBytes {
+			return "", false, apperr.New(apperr.CodeUnavailable, "Provider response exceeded size limit").
+				WithMsg("errors.mediagen.output_too_large", nil)
+		}
+		if canRetry && IsRetryableStatus(resp.StatusCode) {
+			return retryAfterHeader, true, nil
+		}
+		return "", false, nil
+	})
+	if err != nil {
+		return nil, "", lastStatus, err
+	}
 	return lastRaw, lastCT, lastStatus, nil
+}
+
+func execHTTPToFileWithRetryObserver(ctx context.Context, client *http.Client, req *http.Request, maxBytes int64, cfg RetryConfig, onRateLimit func(time.Duration)) (string, string, int, int64, []byte, error) {
+	const maxErrBodyBytes = 64 * 1024
+	var lastStatus int
+	var lastCT string
+	var lastTmpPath string
+	var lastSize int64
+	var lastErrBody []byte
+
+	err := execHTTPAttemptLoop(ctx, client, req, cfg, onRateLimit, func(resp *http.Response, canRetry bool) (string, bool, error) {
+		lastStatus = resp.StatusCode
+		lastCT = resp.Header.Get("Content-Type")
+		retryAfterHeader := resp.Header.Get("Retry-After")
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			errCap := maxErrBodyBytes
+			if maxBytes > 0 && maxBytes < int64(errCap) {
+				errCap = int(maxBytes)
+			}
+			raw, readErr := io.ReadAll(io.LimitReader(resp.Body, int64(errCap)+1))
+			lastErrBody = raw
+			if readErr != nil {
+				if canRetry && (IsRetryableStatus(resp.StatusCode) || IsTransientNetErr(readErr)) {
+					return retryAfterHeader, true, readErr
+				}
+				return "", false, apperr.Wrap(apperr.CodeUnavailable, "Failed reading provider response", readErr)
+			}
+			if canRetry && IsRetryableStatus(resp.StatusCode) {
+				return retryAfterHeader, true, nil
+			}
+			return "", false, nil
+		}
+
+		f, err := os.CreateTemp("", "mediagen-dl-*")
+		if err != nil {
+			return "", false, apperr.Wrap(apperr.CodeUnavailable, "Failed creating temporary download file", err)
+		}
+		tmpName := f.Name()
+		n, copyErr := io.Copy(f, io.LimitReader(resp.Body, maxBytes+1))
+		closeErr := f.Close()
+		if copyErr != nil || closeErr != nil {
+			_ = os.Remove(tmpName)
+			opErr := copyErr
+			if opErr == nil {
+				opErr = closeErr
+			}
+			if canRetry && IsTransientNetErr(opErr) {
+				return retryAfterHeader, true, opErr
+			}
+			return "", false, apperr.Wrap(apperr.CodeUnavailable, "Failed downloading provider response", opErr)
+		}
+		if n > maxBytes {
+			_ = os.Remove(tmpName)
+			return "", false, apperr.New(apperr.CodeUnavailable, "Provider response exceeded size limit").
+				WithMsg("errors.mediagen.output_too_large", nil)
+		}
+		lastTmpPath = tmpName
+		lastSize = n
+		lastErrBody = nil
+		return "", false, nil
+	})
+	if err != nil {
+		if lastTmpPath != "" {
+			_ = os.Remove(lastTmpPath)
+			lastTmpPath = ""
+		}
+		return "", "", lastStatus, 0, lastErrBody, err
+	}
+	return lastTmpPath, lastCT, lastStatus, lastSize, lastErrBody, nil
 }
 
 func (s *Service) retryConfig() RetryConfig {
@@ -992,6 +1172,10 @@ func (s *Service) execHTTP(req *http.Request, maxBytes int64) ([]byte, string, i
 
 func (s *Service) execHTTPWithRetry(req *http.Request, maxBytes int64, cfg RetryConfig) ([]byte, string, int, error) {
 	return execHTTPWithRetryObserver(req.Context(), s.httpClient, req, maxBytes, cfg, s.rateLimitObserver(req.Context()))
+}
+
+func (s *Service) execHTTPToFile(req *http.Request, maxBytes int64) (string, string, int, int64, []byte, error) {
+	return execHTTPToFileWithRetryObserver(req.Context(), s.httpClient, req, maxBytes, s.retryConfig(), s.rateLimitObserver(req.Context()))
 }
 
 func mapAPIError(status int, body []byte) error {
@@ -1049,6 +1233,7 @@ func sanitizeProviderSnippet(raw string) string {
 		}
 		return "[redacted-url]"
 	})
+	cleaned = logger.RedactString(cleaned)
 	cleaned = secretTokenPattern.ReplaceAllString(cleaned, "[redacted]")
 	return clipText(cleaned, maxErrorSnippetBytes)
 }
@@ -1125,13 +1310,13 @@ func (s *Service) readReferenceImage(path string) (localImageData, error) {
 	}, nil
 }
 
-func (s *Service) decodeDataOrDownload(ctx context.Context, rawDataURIOrB64, remoteURL, fallbackExt string, headers map[string]string) ([]byte, string, error) {
+func (s *Service) decodeDataOrDownload(ctx context.Context, rawDataURIOrB64, remoteURL, fallbackExt string, headers map[string]string, trustedURLs ...string) ([]byte, string, error) {
 	if rawDataURIOrB64 != "" {
 		if strings.HasPrefix(rawDataURIOrB64, "data:") {
 			return parseDataURI(rawDataURIOrB64)
 		}
 		if strings.HasPrefix(rawDataURIOrB64, "http://") || strings.HasPrefix(rawDataURIOrB64, "https://") {
-			return s.downloadURL(ctx, rawDataURIOrB64, headers)
+			return s.downloadURL(ctx, rawDataURIOrB64, headers, trustedURLs...)
 		}
 		dec, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rawDataURIOrB64))
 		if err != nil {
@@ -1143,9 +1328,34 @@ func (s *Service) decodeDataOrDownload(ctx context.Context, rawDataURIOrB64, rem
 		if strings.HasPrefix(remoteURL, "data:") {
 			return parseDataURI(remoteURL)
 		}
-		return s.downloadURL(ctx, remoteURL, headers)
+		return s.downloadURL(ctx, remoteURL, headers, trustedURLs...)
 	}
 	return nil, "", apperr.Unavailable("Provider returned neither media data nor download URL")
+}
+
+func (s *Service) decodeMediaOrDownload(ctx context.Context, rawDataURIOrB64, remoteURL, fallbackExt string, headers map[string]string, trustedURLs ...string) (mediaOutput, error) {
+	if rawDataURIOrB64 != "" {
+		if strings.HasPrefix(rawDataURIOrB64, "data:") {
+			raw, ct, err := parseDataURI(rawDataURIOrB64)
+			return mediaOutput{data: raw, mimeType: ct}, err
+		}
+		if strings.HasPrefix(rawDataURIOrB64, "http://") || strings.HasPrefix(rawDataURIOrB64, "https://") {
+			return s.downloadURLToFile(ctx, rawDataURIOrB64, headers, trustedURLs...)
+		}
+		dec, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rawDataURIOrB64))
+		if err != nil {
+			return mediaOutput{}, apperr.Wrap(apperr.CodeUnavailable, "Invalid base64 payload from provider", err)
+		}
+		return mediaOutput{data: dec, mimeType: domainmedia.MimeForExt(fallbackExt)}, nil
+	}
+	if remoteURL != "" {
+		if strings.HasPrefix(remoteURL, "data:") {
+			raw, ct, err := parseDataURI(remoteURL)
+			return mediaOutput{data: raw, mimeType: ct}, err
+		}
+		return s.downloadURLToFile(ctx, remoteURL, headers, trustedURLs...)
+	}
+	return mediaOutput{}, apperr.Unavailable("Provider returned neither media data nor download URL")
 }
 
 func parseDataURI(uri string) ([]byte, string, error) {
@@ -1171,10 +1381,34 @@ func parseDataURI(uri string) ([]byte, string, error) {
 	return raw, mimeType, nil
 }
 
+func readHeadBytes(out mediaOutput, max int) []byte {
+	if out.filePath == "" {
+		if len(out.data) <= max {
+			return out.data
+		}
+		return out.data[:max]
+	}
+	f, err := os.Open(out.filePath)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	buf := make([]byte, max)
+	n, _ := io.ReadFull(f, buf)
+	return buf[:n]
+}
+
 func (s *Service) saveOutput(ctx context.Context, kind domainmedia.Kind, outputDir, prefix, mimeType, fallbackExt string, data []byte, t targetSpec) (domainmedia.Result, error) {
+	return s.saveMediaOutput(ctx, kind, outputDir, prefix, fallbackExt, mediaOutput{data: data, mimeType: mimeType}, t)
+}
+
+func (s *Service) saveMediaOutput(ctx context.Context, kind domainmedia.Kind, outputDir, prefix, fallbackExt string, out mediaOutput, t targetSpec) (domainmedia.Result, error) {
+	defer out.cleanup()
+
+	mimeType := out.mimeType
 	if mimeType == "" || mimeType == "application/octet-stream" {
 		if kind == domainmedia.KindImage {
-			sniff := strings.Split(http.DetectContentType(data), ";")[0]
+			sniff := strings.Split(http.DetectContentType(readHeadBytes(out, 512)), ";")[0]
 			if strings.HasPrefix(sniff, "image/") {
 				mimeType = sniff
 			}
@@ -1203,14 +1437,39 @@ func (s *Service) saveOutput(ctx context.Context, kind domainmedia.Kind, outputD
 	if !filepath.IsAbs(dir) && mediaDir != "" {
 		dir = filepath.Join(mediaDir, dir)
 	}
+
+	name := uniqueFilename(prefix, ext)
+	fullPath := filepath.Join(dir, name)
+	if err := engine.CheckFile(ctx, fullPath, true); err != nil {
+		return domainmedia.Result{}, err
+	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return domainmedia.Result{}, apperr.Wrap(apperr.CodeUnavailable, "Failed creating media output directory", err)
 	}
 
-	name := uniqueFilename(prefix, ext)
-	fullPath := filepath.Join(dir, name)
-	if err := fsutil.WriteFileAtomic(fullPath, data, 0o600); err != nil {
-		return domainmedia.Result{}, apperr.Wrap(apperr.CodeUnavailable, "Failed writing generated media output", err)
+	var sizeBytes int64
+	if out.filePath != "" {
+		info, err := os.Stat(out.filePath)
+		if err != nil {
+			return domainmedia.Result{}, apperr.Wrap(apperr.CodeUnavailable, "Failed inspecting downloaded media output", err)
+		}
+		sizeBytes = info.Size()
+		if err := fsutil.WriteAtomic(fullPath, 0o600, func(w io.Writer) error {
+			src, err := os.Open(out.filePath)
+			if err != nil {
+				return err
+			}
+			defer src.Close()
+			_, err = io.Copy(w, src)
+			return err
+		}); err != nil {
+			return domainmedia.Result{}, apperr.Wrap(apperr.CodeUnavailable, "Failed writing generated media output", err)
+		}
+	} else {
+		sizeBytes = int64(len(out.data))
+		if err := fsutil.WriteFileAtomic(fullPath, out.data, 0o600); err != nil {
+			return domainmedia.Result{}, apperr.Wrap(apperr.CodeUnavailable, "Failed writing generated media output", err)
+		}
 	}
 
 	if reg := s.getRegistrar(); reg != nil {
@@ -1236,7 +1495,7 @@ func (s *Service) saveOutput(ctx context.Context, kind domainmedia.Kind, outputD
 			FilePath:       fullPath,
 			RegisteredRoot: regRoot,
 			MIMEType:       mimeType,
-			SizeBytes:      int64(len(data)),
+			SizeBytes:      sizeBytes,
 		})
 		if err != nil {
 			s.log.WarnContext(ctx, "mediagen: failed to register generated media asset",
@@ -1256,7 +1515,7 @@ func (s *Service) saveOutput(ctx context.Context, kind domainmedia.Kind, outputD
 		MimeType:  mimeType,
 		Provider:  t.providerName,
 		Model:     t.modelID,
-		SizeBytes: int64(len(data)),
+		SizeBytes: sizeBytes,
 	}, nil
 }
 
@@ -1388,6 +1647,43 @@ func (s *Service) StagingDir() string {
 	return ""
 }
 
+func (s *Service) resolveStageTarget(subDir, name string) (string, string, error) {
+	baseStagingDir := s.StagingDir()
+	if baseStagingDir == "" {
+		return "", "", apperr.Validation("Staging directory is not configured")
+	}
+	baseAbs, err := filepath.Abs(baseStagingDir)
+	if err != nil {
+		return "", "", apperr.Wrap(apperr.CodeValidation, "Invalid staging directory", err)
+	}
+	dir := baseAbs
+	if cleanSub := strings.TrimSpace(subDir); cleanSub != "" {
+		if filepath.IsAbs(cleanSub) || filepath.VolumeName(cleanSub) != "" || strings.HasPrefix(cleanSub, "/") || strings.HasPrefix(cleanSub, `\`) {
+			return "", "", apperr.Validation("Staging subdirectory must be relative")
+		}
+		dir = filepath.Clean(filepath.Join(baseAbs, cleanSub))
+		if !fsutil.IsSubpath(baseAbs, dir, true) {
+			return "", "", apperr.Validation("Staging subdirectory escapes staging directory")
+		}
+	}
+	fileName := strings.TrimSpace(name)
+	if fileName == "" {
+		fileName = uniqueFilename("staged", ".bin")
+	} else {
+		if filepath.IsAbs(fileName) || strings.ContainsAny(fileName, `/\`) || fileName == "." || fileName == ".." || filepath.Base(fileName) != fileName {
+			return "", "", apperr.Validation("Staging filename must be a plain basename")
+		}
+	}
+	stagedPath := filepath.Clean(filepath.Join(dir, fileName))
+	if !fsutil.IsSubpath(baseAbs, stagedPath, false) {
+		return "", "", apperr.Validation("Staged path escapes staging directory")
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return "", "", apperr.Wrap(apperr.CodeUnavailable, "Failed creating staging directory", err)
+	}
+	return dir, stagedPath, nil
+}
+
 // StageFile writes data to a unique file in the staging directory and acquires an active lease on it.
 // The caller must invoke the returned release function when the job completes.
 func (s *Service) StageFile(subDir, name string, data []byte) (string, func(), error) {
@@ -1395,20 +1691,10 @@ func (s *Service) StageFile(subDir, name string, data []byte) (string, func(), e
 		return "", nil, apperr.New(apperr.CodeUnavailable, "Staged media payload exceeded size limit").
 			WithMsg("errors.mediagen.output_too_large", nil)
 	}
-	stagingDir := s.StagingDir()
-	if stagingDir == "" {
-		return "", nil, apperr.Validation("Staging directory is not configured")
+	_, stagedPath, err := s.resolveStageTarget(subDir, name)
+	if err != nil {
+		return "", nil, err
 	}
-	if strings.TrimSpace(subDir) != "" {
-		stagingDir = filepath.Join(stagingDir, subDir)
-	}
-	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
-		return "", nil, apperr.Wrap(apperr.CodeUnavailable, "Failed creating staging directory", err)
-	}
-	if strings.TrimSpace(name) == "" {
-		name = uniqueFilename("staged", ".bin")
-	}
-	stagedPath := filepath.Join(stagingDir, name)
 	if err := fsutil.WriteFileAtomic(stagedPath, data, 0o600); err != nil {
 		return "", nil, apperr.Wrap(apperr.CodeUnavailable, "Failed writing staged media file", err)
 	}
@@ -1421,22 +1707,12 @@ func (s *Service) StageStream(subDir, name string, r io.Reader, maxBytes int64) 
 	if maxBytes <= 0 {
 		maxBytes = s.cfg.MaxOutputBytes
 	}
-	stagingDir := s.StagingDir()
-	if stagingDir == "" {
-		return "", nil, apperr.Validation("Staging directory is not configured")
+	_, stagedPath, err := s.resolveStageTarget(subDir, name)
+	if err != nil {
+		return "", nil, err
 	}
-	if strings.TrimSpace(subDir) != "" {
-		stagingDir = filepath.Join(stagingDir, subDir)
-	}
-	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
-		return "", nil, apperr.Wrap(apperr.CodeUnavailable, "Failed creating staging directory", err)
-	}
-	if strings.TrimSpace(name) == "" {
-		name = uniqueFilename("staged", ".bin")
-	}
-	stagedPath := filepath.Join(stagingDir, name)
 
-	err := fsutil.WriteAtomic(stagedPath, 0o600, func(w io.Writer) error {
+	err = fsutil.WriteAtomic(stagedPath, 0o600, func(w io.Writer) error {
 		n, copyErr := io.Copy(w, io.LimitReader(r, maxBytes+1))
 		if copyErr != nil {
 			return copyErr

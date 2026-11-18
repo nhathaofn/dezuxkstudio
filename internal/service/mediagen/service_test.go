@@ -22,6 +22,7 @@ import (
 	"app/internal/contracts"
 	domainmedia "app/internal/domain/mediagen"
 	domainprovider "app/internal/domain/provider"
+	"app/internal/engine"
 	"app/internal/service/media"
 )
 
@@ -1484,5 +1485,104 @@ func TestRateLimiterGapRPMAnd429Backoff(t *testing.T) {
 	defer cancel()
 	if _, err := l.acquire(shortCtx, "p-rpm", domainprovider.CapabilityImage, rpmLim); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected DeadlineExceeded when RPM bucket full, got %v", err)
+	}
+}
+
+func TestMediaGenHardeningAuthHeadersAndGCSEscaping(t *testing.T) {
+	hdr := map[string]string{"Authorization": "Bearer secret", "x-goog-api-key": "AIzaSyTest123"}
+	if got := filterTrustedHeaders("https://cdn.other.example/vid.mp4", hdr, "https://api.openai.com/v1"); got != nil {
+		t.Fatalf("expected untrusted host headers omitted, got %v", got)
+	}
+	if got := filterTrustedHeaders("http://api.openai.com/v1/vid.mp4", hdr, "https://api.openai.com/v1"); got != nil {
+		t.Fatalf("expected scheme downgrade headers omitted, got %v", got)
+	}
+	if got := filterTrustedHeaders("https://api.openai.com/v1/files/1", hdr, "https://api.openai.com/v1"); got == nil {
+		t.Fatal("expected matching scheme+host to keep headers")
+	}
+
+	gotGCS := escapeGCSObjectPath("/dir name/file #1?.mp4")
+	if gotGCS != "dir%20name/file%20%231%3F.mp4" {
+		t.Fatalf("unexpected escaped GCS object path: %q", gotGCS)
+	}
+
+	snip := sanitizeProviderSnippet("bad key AIzaSyDummyKeyValue1234567890123 ticket=tok123 signature=abc456")
+	if strings.Contains(snip, "AIzaSyDummyKeyValue1234567890123") || strings.Contains(snip, "tok123") || strings.Contains(snip, "abc456") {
+		t.Fatalf("expected secrets redacted from snippet, got %q", snip)
+	}
+}
+
+func TestMediaGenStageTraversalFileGuardAndStreamDownload(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := config.Default(config.ModeDesktop).MediaGen
+	cfg.MaxOutputBytes = 16
+	cfg.RetryMax = 0
+	svc := New(Options{
+		Config:   cfg,
+		MediaDir: tmpDir,
+	})
+	svc.httpClient = nil
+
+	for _, bad := range []struct{ sub, name string }{
+		{"../escape", "ok.bin"},
+		{"sub", "../escape.bin"},
+		{"sub", "nested/file.bin"},
+		{"/abs", "ok.bin"},
+	} {
+		if _, _, err := svc.StageFile(bad.sub, bad.name, []byte("hi")); err == nil {
+			t.Fatalf("StageFile(%q, %q) should fail traversal check", bad.sub, bad.name)
+		}
+		if _, _, err := svc.StageStream(bad.sub, bad.name, strings.NewReader("hi"), 16); err == nil {
+			t.Fatalf("StageStream(%q, %q) should fail traversal check", bad.sub, bad.name)
+		}
+	}
+
+	// FileGuard denies write=true in saveOutput before creating file
+	guardedCtx := engine.WithFileGuard(context.Background(), func(path string, write bool) error {
+		if write {
+			return errors.New("denied by guard")
+		}
+		return nil
+	})
+	outDir := filepath.Join(tmpDir, "guarded-out")
+	if _, err := svc.saveOutput(guardedCtx, domainmedia.KindImage, outDir, "img", "image/png", ".png", fakePNG, targetSpec{providerName: "test", modelID: "m"}); err == nil {
+		t.Fatal("expected FileGuard error from saveOutput")
+	}
+	if _, err := os.Stat(outDir); !os.IsNotExist(err) {
+		t.Fatalf("expected guarded output dir not created, stat err=%v", err)
+	}
+
+	// Local httptest server downloadURLToFile (bypassing outbound guard via direct httpClient)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ok" {
+			if r.Header.Get("Authorization") != "" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("12345678"))
+			return
+		}
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte(strings.Repeat("x", 32)))
+	}))
+	defer srv.Close()
+	svc.httpClient = srv.Client()
+
+	out, err := svc.downloadURLToFile(context.Background(), srv.URL+"/ok", map[string]string{"Authorization": "Bearer secret"}, "https://trusted.example")
+	if err != nil {
+		t.Fatalf("downloadURLToFile failed: %v", err)
+	}
+	res, err := svc.saveMediaOutput(context.Background(), domainmedia.KindVideo, tmpDir, "vid", ".mp4", out, targetSpec{providerName: "test", modelID: "m"})
+	if err != nil {
+		t.Fatalf("saveMediaOutput failed: %v", err)
+	}
+	if res.SizeBytes != 8 {
+		t.Fatalf("SizeBytes = %d, want 8", res.SizeBytes)
+	}
+	if _, err := os.Stat(out.filePath); err == nil && out.filePath != "" {
+		t.Fatalf("expected temp file %q cleaned up", out.filePath)
+	}
+	if _, err := svc.downloadURLToFile(context.Background(), srv.URL+"/big", nil); err == nil {
+		t.Fatal("expected size limit error for oversized stream")
 	}
 }

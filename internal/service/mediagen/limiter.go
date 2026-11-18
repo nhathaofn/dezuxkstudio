@@ -45,13 +45,13 @@ type bucketState struct {
 	lastStart    time.Time
 	backoffUntil time.Time
 	timestamps   []time.Time
+	notify       chan struct{}
 }
 
 // rateLimiter enforces per-(provider, capability) MaxWorkers, RPM, RequestGapMs, and 429 Retry-After backoff
 // configured in Settings -> Providers.
 type rateLimiter struct {
 	mu               sync.Mutex
-	notify           chan struct{}
 	buckets          map[limiterKey]*bucketState
 	pollInterval     time.Duration
 	defaultMaxWorker int
@@ -66,11 +66,30 @@ func newRateLimiter(pollInterval time.Duration, defaultMaxWorkers int) *rateLimi
 		defaultMaxWorkers = def.Providers.DefaultMaxWorkers
 	}
 	return &rateLimiter{
-		notify:           make(chan struct{}),
 		buckets:          make(map[limiterKey]*bucketState),
 		pollInterval:     pollInterval,
 		defaultMaxWorker: defaultMaxWorkers,
 	}
+}
+
+func (l *rateLimiter) getOrCreateBucketLocked(key limiterKey) *bucketState {
+	b := l.buckets[key]
+	if b == nil {
+		b = &bucketState{notify: make(chan struct{})}
+		l.buckets[key] = b
+	} else if b.notify == nil {
+		b.notify = make(chan struct{})
+	}
+	return b
+}
+
+func wakeBucketLocked(b *bucketState) {
+	if b == nil || b.notify == nil {
+		return
+	}
+	ch := b.notify
+	b.notify = make(chan struct{})
+	close(ch)
 }
 
 func (l *rateLimiter) acquire(ctx context.Context, owner string, cap domainprovider.Capability, limits domainprovider.Limits) (func(), error) {
@@ -84,11 +103,7 @@ func (l *rateLimiter) acquire(ctx context.Context, owner string, cap domainprovi
 
 	for {
 		l.mu.Lock()
-		b := l.buckets[key]
-		if b == nil {
-			b = &bucketState{}
-			l.buckets[key] = b
-		}
+		b := l.getOrCreateBucketLocked(key)
 		now := time.Now()
 		cutoff := now.Add(-rpmWindow)
 		kept := b.timestamps[:0]
@@ -134,18 +149,18 @@ func (l *rateLimiter) acquire(ctx context.Context, owner string, cap domainprovi
 			return func() {
 				once.Do(func() {
 					l.mu.Lock()
-					if cur := l.buckets[key]; cur != nil && cur.inFlight > 0 {
-						cur.inFlight--
+					if cur := l.buckets[key]; cur != nil {
+						if cur.inFlight > 0 {
+							cur.inFlight--
+						}
+						wakeBucketLocked(cur)
 					}
-					ch := l.notify
-					l.notify = make(chan struct{})
-					close(ch)
 					l.mu.Unlock()
 				})
 			}, nil
 		}
 
-		ch := l.notify
+		ch := b.notify
 		l.mu.Unlock()
 
 		timer := time.NewTimer(wait)
@@ -168,11 +183,7 @@ func (l *rateLimiter) recordBackoff(owner string, cap domainprovider.Capability,
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	key := limiterKey{owner: owner, cap: cap}
-	b := l.buckets[key]
-	if b == nil {
-		b = &bucketState{}
-		l.buckets[key] = b
-	}
+	b := l.getOrCreateBucketLocked(key)
 	targetTime := time.Now().Add(backoff)
 	if targetTime.After(b.backoffUntil) {
 		b.backoffUntil = targetTime

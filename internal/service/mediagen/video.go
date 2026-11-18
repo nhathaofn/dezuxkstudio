@@ -36,6 +36,7 @@ type pollProbeOutcome struct {
 	status      string
 	progress    int
 	data        []byte
+	filePath    string
 	mimeType    string
 	downloadURL string
 	errText     string
@@ -157,7 +158,11 @@ func (s *Service) PollVideoJobOnce(ctx context.Context, token domainmedia.VideoS
 }
 
 func (s *Service) finalizeVideoPoll(ctx context.Context, target targetSpec, token domainmedia.VideoSubmitToken, out pollProbeOutcome) (domainmedia.VideoPollStatus, error) {
-	res, err := s.saveOutput(ctx, domainmedia.KindVideo, token.OutputDir, "vid", out.mimeType, ".mp4", out.data, target)
+	res, err := s.saveMediaOutput(ctx, domainmedia.KindVideo, token.OutputDir, "vid", ".mp4", mediaOutput{
+		data:     out.data,
+		filePath: out.filePath,
+		mimeType: out.mimeType,
+	}, target)
 	if err != nil {
 		return domainmedia.VideoPollStatus{}, err
 	}
@@ -449,18 +454,18 @@ func (s *Service) pollOpenAIVideoOnce(ctx context.Context, t targetSpec, tok dom
 	}
 	switch strings.ToLower(st.Status) {
 	case "completed", "succeeded":
-		var raw []byte
-		var ct string
+		var out mediaOutput
 		var dlErr error
 		if st.URL != "" {
-			raw, ct, dlErr = s.downloadURL(ctx, st.URL, headers)
+			out, dlErr = s.downloadURLToFile(ctx, st.URL, headers, base)
 		} else {
-			raw, ct, dlErr = s.doBinary(ctx, "GET", base+"/videos/"+url.PathEscape(tok.ProviderJobID)+"/content", headers, nil)
+			out, dlErr = s.doBinaryToFile(ctx, "GET", base+"/videos/"+url.PathEscape(tok.ProviderJobID)+"/content", headers, nil)
 		}
 		if dlErr != nil {
+			out.cleanup()
 			return pollProbeOutcome{failed: true, status: st.Status, errText: dlErr.Error()}, dlErr
 		}
-		return pollProbeOutcome{done: true, status: st.Status, progress: 100, data: raw, mimeType: ct, downloadURL: st.URL}, nil
+		return pollProbeOutcome{done: true, status: st.Status, progress: 100, filePath: out.filePath, mimeType: out.mimeType, downloadURL: st.URL}, nil
 	case "failed", "expired", "cancelled":
 		msg := st.Status
 		if st.Error != nil && st.Error.Message != "" {
@@ -585,6 +590,7 @@ func (s *Service) pollGeminiVideoOnce(ctx context.Context, t targetSpec, tok dom
 	}
 
 	var cur opResponse
+	var trustedHosts []string
 	if isVertex {
 		vtok, proj, err := s.getVertexToken(ctx, t)
 		if err != nil {
@@ -594,6 +600,7 @@ func (s *Service) pollGeminiVideoOnce(ctx context.Context, t targetSpec, tok dom
 		if host == "" {
 			host = domainprovider.VertexAIBaseURL
 		}
+		trustedHosts = []string{host, domainprovider.GCSObjectBaseURL}
 		headers["Authorization"] = "Bearer " + vtok
 		pollURL := fmt.Sprintf("%s/v1/projects/%s/locations/global/publishers/google/models/%s:fetchPredictOperation",
 			host, proj, modelID)
@@ -602,6 +609,7 @@ func (s *Service) pollGeminiVideoOnce(ctx context.Context, t targetSpec, tok dom
 		}
 	} else {
 		host := ensureRootStrippingSuffixes(t.baseURL, "/v1beta", "/v1")
+		trustedHosts = []string{host}
 		headers["x-goog-api-key"] = t.apiKey
 		pollURL := fmt.Sprintf("%s/v1beta/%s", host, strings.TrimPrefix(tok.ProviderJobID, "/"))
 		if err := s.doJSON(ctx, "GET", pollURL, headers, nil, &cur); err != nil {
@@ -623,14 +631,16 @@ func (s *Service) pollGeminiVideoOnce(ctx context.Context, t targetSpec, tok dom
 	if cur.Response.GenerateVideoResponse != nil {
 		samples := cur.Response.GenerateVideoResponse.GeneratedSamples
 		if len(samples) > 0 && samples[0].Video.URI != "" {
-			raw, ct, err := s.downloadGeminiURI(ctx, samples[0].Video.URI, headers)
+			out, err := s.downloadGeminiURI(ctx, samples[0].Video.URI, headers, trustedHosts...)
 			if err != nil {
+				out.cleanup()
 				return pollProbeOutcome{failed: true, errText: err.Error()}, err
 			}
+			ct := out.mimeType
 			if ct == "" {
 				ct = samples[0].Video.MimeType
 			}
-			return pollProbeOutcome{done: true, status: "done", progress: 100, data: raw, mimeType: ct, downloadURL: samples[0].Video.URI}, nil
+			return pollProbeOutcome{done: true, status: "done", progress: 100, filePath: out.filePath, mimeType: ct, downloadURL: samples[0].Video.URI}, nil
 		}
 	}
 	if len(cur.Response.Videos) > 0 {
@@ -648,30 +658,49 @@ func (s *Service) pollGeminiVideoOnce(ctx context.Context, t targetSpec, tok dom
 			return pollProbeOutcome{done: true, status: "done", progress: 100, data: raw, mimeType: mime}, nil
 		}
 		if v.GCSURI != "" {
-			raw, ct, err := s.downloadGeminiURI(ctx, v.GCSURI, headers)
+			out, err := s.downloadGeminiURI(ctx, v.GCSURI, headers, trustedHosts...)
 			if err != nil {
+				out.cleanup()
 				return pollProbeOutcome{failed: true, errText: err.Error()}, err
 			}
+			ct := out.mimeType
 			if ct == "" {
 				ct = v.MimeType
 			}
-			return pollProbeOutcome{done: true, status: "done", progress: 100, data: raw, mimeType: ct, downloadURL: v.GCSURI}, nil
+			return pollProbeOutcome{done: true, status: "done", progress: 100, filePath: out.filePath, mimeType: ct, downloadURL: v.GCSURI}, nil
 		}
 	}
 	err := apperr.Unavailable("Gemini video completed with no downloadable output")
 	return pollProbeOutcome{failed: true, status: "failed", errText: err.Error()}, err
 }
 
-func (s *Service) downloadGeminiURI(ctx context.Context, uri string, authHeaders map[string]string) ([]byte, string, error) {
+func escapeGCSObjectPath(obj string) string {
+	segs := strings.Split(strings.TrimPrefix(obj, "/"), "/")
+	for i, seg := range segs {
+		segs[i] = url.PathEscape(seg)
+	}
+	return strings.Join(segs, "/")
+}
+
+func (s *Service) downloadGeminiURI(ctx context.Context, uri string, authHeaders map[string]string, trustedURLs ...string) (mediaOutput, error) {
 	if strings.HasPrefix(uri, "gs://") {
 		trimmed := strings.TrimPrefix(uri, "gs://")
 		parts := strings.SplitN(trimmed, "/", 2)
 		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
-			return nil, "", apperr.Unavailable("Malformed GCS URI from provider")
+			return mediaOutput{}, apperr.Unavailable("Malformed GCS URI from provider")
 		}
-		uri = fmt.Sprintf("%s/%s/%s", domainprovider.GCSObjectBaseURL, parts[0], parts[1])
+		uri = fmt.Sprintf("%s/%s/%s", domainprovider.GCSObjectBaseURL, url.PathEscape(parts[0]), escapeGCSObjectPath(parts[1]))
 	}
-	return s.downloadURL(ctx, uri, authHeaders)
+	return s.downloadURLToFile(ctx, uri, authHeaders, trustedURLs...)
+}
+
+func (s *Service) downloadVideoOutcome(ctx context.Context, videoURL, status string) (pollProbeOutcome, error) {
+	out, err := s.downloadURLToFile(ctx, videoURL, nil)
+	if err != nil {
+		out.cleanup()
+		return pollProbeOutcome{failed: true, errText: err.Error()}, err
+	}
+	return pollProbeOutcome{done: true, status: status, progress: 100, filePath: out.filePath, mimeType: out.mimeType, downloadURL: videoURL}, nil
 }
 
 func (s *Service) submitArkVideo(ctx context.Context, t targetSpec, req domainmedia.VideoRequest, in videoInputs) (domainmedia.VideoSubmitToken, error) {
@@ -751,11 +780,7 @@ func (s *Service) pollArkVideoOnce(ctx context.Context, t targetSpec, tok domain
 			err := apperr.Unavailable("Ark task succeeded without video_url")
 			return pollProbeOutcome{failed: true, status: st.Status, errText: err.Error()}, err
 		}
-		raw, ct, err := s.downloadURL(ctx, st.Content.VideoURL, nil)
-		if err != nil {
-			return pollProbeOutcome{failed: true, errText: err.Error()}, err
-		}
-		return pollProbeOutcome{done: true, status: st.Status, progress: 100, data: raw, mimeType: ct, downloadURL: st.Content.VideoURL}, nil
+		return s.downloadVideoOutcome(ctx, st.Content.VideoURL, st.Status)
 	case "failed", "expired":
 		msg := st.Status
 		if st.Error != nil && st.Error.Message != "" {
@@ -831,11 +856,7 @@ func (s *Service) pollDashScopeVideoOnce(ctx context.Context, t targetSpec, tok 
 			err := apperr.Unavailable("DashScope finished without video_url")
 			return pollProbeOutcome{failed: true, status: st.Output.TaskStatus, errText: err.Error()}, err
 		}
-		raw, ct, err := s.downloadURL(ctx, st.Output.VideoURL, nil)
-		if err != nil {
-			return pollProbeOutcome{failed: true, errText: err.Error()}, err
-		}
-		return pollProbeOutcome{done: true, status: st.Output.TaskStatus, progress: 100, data: raw, mimeType: ct, downloadURL: st.Output.VideoURL}, nil
+		return s.downloadVideoOutcome(ctx, st.Output.VideoURL, st.Output.TaskStatus)
 	case "FAILED", "CANCELED", "UNKNOWN":
 		err := providerUnavailableErr("DashScope video failed", st.Output.Message)
 		return pollProbeOutcome{failed: true, status: st.Output.TaskStatus, errText: err.Message}, err
@@ -914,11 +935,7 @@ func (s *Service) pollMiniMaxVideoOnce(ctx context.Context, t targetSpec, tok do
 				err := apperr.Unavailable("MiniMax v2 finished without url")
 				return pollProbeOutcome{failed: true, status: st.Task.Status, errText: err.Error()}, err
 			}
-			raw, ct, err := s.downloadURL(ctx, st.Task.Content.URL, nil)
-			if err != nil {
-				return pollProbeOutcome{failed: true, errText: err.Error()}, err
-			}
-			return pollProbeOutcome{done: true, status: st.Task.Status, progress: 100, data: raw, mimeType: ct, downloadURL: st.Task.Content.URL}, nil
+			return s.downloadVideoOutcome(ctx, st.Task.Content.URL, st.Task.Status)
 		case "failed":
 			err := providerUnavailableErr("MiniMax v2 failed", st.Task.Error)
 			return pollProbeOutcome{failed: true, status: st.Task.Status, errText: err.Message}, err
@@ -956,11 +973,7 @@ func (s *Service) pollMiniMaxVideoOnce(ctx context.Context, t targetSpec, tok do
 			err := apperr.Unavailable("MiniMax file retrieve returned empty download_url")
 			return pollProbeOutcome{failed: true, errText: err.Error()}, err
 		}
-		raw, ct, err := s.downloadURL(ctx, ret.File.DownloadURL, nil)
-		if err != nil {
-			return pollProbeOutcome{failed: true, errText: err.Error()}, err
-		}
-		return pollProbeOutcome{done: true, status: st.Status, progress: 100, data: raw, mimeType: ct, downloadURL: ret.File.DownloadURL}, nil
+		return s.downloadVideoOutcome(ctx, ret.File.DownloadURL, st.Status)
 	case "Fail":
 		err := providerUnavailableErr("MiniMax video failed", st.BaseResp.StatusMsg)
 		return pollProbeOutcome{failed: true, status: st.Status, errText: err.Message}, err
@@ -1059,11 +1072,7 @@ func (s *Service) pollKlingVideoOnce(ctx context.Context, t targetSpec, tok doma
 			return pollProbeOutcome{failed: true, status: st.Data.TaskStatus, errText: err.Error()}, err
 		}
 		videoURL := st.Data.TaskResult.Videos[0].URL
-		raw, ct, err := s.downloadURL(ctx, videoURL, nil)
-		if err != nil {
-			return pollProbeOutcome{failed: true, errText: err.Error()}, err
-		}
-		return pollProbeOutcome{done: true, status: st.Data.TaskStatus, progress: 100, data: raw, mimeType: ct, downloadURL: videoURL}, nil
+		return s.downloadVideoOutcome(ctx, videoURL, st.Data.TaskStatus)
 	case "failed":
 		err := providerUnavailableErr("Kling video failed", st.Data.TaskStatusMsg)
 		return pollProbeOutcome{failed: true, status: st.Data.TaskStatus, errText: err.Message}, err
@@ -1147,11 +1156,7 @@ func (s *Service) pollViduVideoOnce(ctx context.Context, t targetSpec, tok domai
 			return pollProbeOutcome{failed: true, status: st.State, errText: err.Error()}, err
 		}
 		videoURL := st.Creations[0].URL
-		raw, ct, err := s.downloadURL(ctx, videoURL, nil)
-		if err != nil {
-			return pollProbeOutcome{failed: true, errText: err.Error()}, err
-		}
-		return pollProbeOutcome{done: true, status: st.State, progress: 100, data: raw, mimeType: ct, downloadURL: videoURL}, nil
+		return s.downloadVideoOutcome(ctx, videoURL, st.State)
 	case "failed":
 		err := providerUnavailableErr("Vidu video failed", st.ErrCode)
 		return pollProbeOutcome{failed: true, status: st.State, errText: err.Message}, err
@@ -1212,11 +1217,7 @@ func (s *Service) pollGrokVideoOnce(ctx context.Context, t targetSpec, tok domai
 			err := apperr.Unavailable("Grok finished without video.url")
 			return pollProbeOutcome{failed: true, status: st.Status, errText: err.Error()}, err
 		}
-		raw, ct, err := s.downloadURL(ctx, st.Video.URL, nil)
-		if err != nil {
-			return pollProbeOutcome{failed: true, errText: err.Error()}, err
-		}
-		return pollProbeOutcome{done: true, status: st.Status, progress: 100, data: raw, mimeType: ct, downloadURL: st.Video.URL}, nil
+		return s.downloadVideoOutcome(ctx, st.Video.URL, st.Status)
 	case "failed", "expired":
 		err := providerUnavailableErr("Grok video failed", st.Error)
 		return pollProbeOutcome{failed: true, status: st.Status, errText: err.Message}, err
@@ -1292,11 +1293,7 @@ func (s *Service) pollAgnesVideoOnce(ctx context.Context, t targetSpec, tok doma
 			err := apperr.Unavailable("Agnes completed without video url")
 			return pollProbeOutcome{failed: true, status: status, errText: err.Error()}, err
 		}
-		raw, ct, err := s.downloadURL(ctx, videoURL, nil)
-		if err != nil {
-			return pollProbeOutcome{failed: true, errText: err.Error()}, err
-		}
-		return pollProbeOutcome{done: true, status: status, progress: 100, data: raw, mimeType: ct, downloadURL: videoURL}, nil
+		return s.downloadVideoOutcome(ctx, videoURL, status)
 	case "failed", "error":
 		err := providerUnavailableErr("Agnes video failed", st.Error)
 		return pollProbeOutcome{failed: true, status: status, errText: err.Message}, err
