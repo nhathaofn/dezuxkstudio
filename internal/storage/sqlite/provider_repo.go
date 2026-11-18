@@ -198,9 +198,26 @@ func (r *ProviderRepository) ListCustom(ctx context.Context) ([]provider.CustomP
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	for i := range out {
-		if err := r.fillCustom(ctx, &out[i]); err != nil {
+	if len(out) > 0 {
+		allModels, err := r.ListAllModels(ctx)
+		if err != nil {
 			return nil, err
+		}
+		allSettings, err := r.ListAllSettings(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for i := range out {
+			if ms, ok := allModels[out[i].ID]; ok {
+				out[i].Models = ms
+			} else {
+				out[i].Models = []provider.Model{}
+			}
+			if st, ok := allSettings[out[i].ID]; ok {
+				out[i].Settings = st
+			} else {
+				out[i].Settings = provider.Settings{}
+			}
 		}
 	}
 	return out, nil
@@ -274,6 +291,30 @@ func (r *ProviderRepository) ListModels(ctx context.Context, ownerID string) ([]
 	return listModels(ctx, r.db.read(), ownerID)
 }
 
+// ListAllModels implements provider.Repository using a single query across all owners.
+func (r *ProviderRepository) ListAllModels(ctx context.Context) (map[string][]provider.Model, error) {
+	rows, err := r.db.read().QueryContext(ctx, `SELECT owner_id, model_id, capability, endpoint, display_name, enabled, is_default, user_added, facts_json
+		FROM provider_models ORDER BY owner_id ASC, position ASC, model_id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list all provider models: %w", err)
+	}
+	defer rows.Close()
+	out := map[string][]provider.Model{}
+	for rows.Next() {
+		var ownerID, capability, endpoint, facts string
+		var m provider.Model
+		var enabled, def, user int
+		if err := rows.Scan(&ownerID, &m.ModelID, &capability, &endpoint, &m.DisplayName, &enabled, &def, &user, &facts); err != nil {
+			return nil, fmt.Errorf("sqlite: scan provider model: %w", err)
+		}
+		m.Capability, m.Endpoint = provider.Capability(capability), provider.Endpoint(endpoint)
+		m.Enabled, m.IsDefault, m.UserAdded = enabled == 1, def == 1, user == 1
+		_ = json.Unmarshal([]byte(facts), &m.Facts)
+		out[ownerID] = append(out[ownerID], m)
+	}
+	return out, rows.Err()
+}
+
 // ReplaceModels implements provider.Repository.
 func (r *ProviderRepository) ReplaceModels(ctx context.Context, ownerID string, models []provider.Model) error {
 	return r.db.inTx(ctx, func(tx *sql.Tx) error { return writeModels(ctx, tx, ownerID, models) })
@@ -294,6 +335,28 @@ func (r *ProviderRepository) GetSettings(ctx context.Context, ownerID string) (p
 			return nil, fmt.Errorf("sqlite: scan provider setting: %w", err)
 		}
 		out[k] = v
+	}
+	return out, rows.Err()
+}
+
+// ListAllSettings implements provider.Repository using a single query across all owners.
+func (r *ProviderRepository) ListAllSettings(ctx context.Context) (map[string]provider.Settings, error) {
+	rows, err := r.db.read().QueryContext(ctx, `SELECT owner_id, key, value FROM provider_settings`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list all provider settings: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]provider.Settings{}
+	for rows.Next() {
+		var ownerID, k string
+		var v int
+		if err := rows.Scan(&ownerID, &k, &v); err != nil {
+			return nil, fmt.Errorf("sqlite: scan provider setting: %w", err)
+		}
+		if out[ownerID] == nil {
+			out[ownerID] = provider.Settings{}
+		}
+		out[ownerID][k] = v
 	}
 	return out, rows.Err()
 }

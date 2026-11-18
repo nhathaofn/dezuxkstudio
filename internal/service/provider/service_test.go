@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -504,32 +505,62 @@ func TestCustomProviderLifecycle(t *testing.T) {
 	wantCode(t, e.svc.DeleteCustom(ctx, p.ID), apperr.CodeNotFound)
 }
 
-func TestStatuses(t *testing.T) {
+type failUpdateCustomRepo struct {
+	domain.Repository
+}
+
+func (f failUpdateCustomRepo) UpdateCustom(context.Context, domain.CustomProvider) error {
+	return errors.New("simulated sqlite failure")
+}
+
+func TestListBatchAndUpdateCustomRollback(t *testing.T) {
 	e := newEnv(t, 2*time.Second)
 	ctx := context.Background()
 	e.create(t, domain.IDOpenAI, apiKeyIn(testKey, nil))
-	if _, err := e.svc.CreateCustom(ctx, domain.CustomInput{Name: "c", DiscoveryFormat: domain.DiscoveryOpenAI, BaseURL: "https://a.test",
-		Models: []domain.Model{{ModelID: "m", Endpoint: domain.EndpointOpenAIChat, Enabled: true}}}); err != nil {
-		t.Fatal(err)
-	}
-	st, err := e.svc.Statuses(ctx)
+	cp, err := e.svc.CreateCustom(ctx, domain.CustomInput{
+		Name:            "c",
+		DiscoveryFormat: domain.DiscoveryOpenAI,
+		BaseURL:         "https://a.test",
+		APIKey:          "sk-initial-key-1234",
+		Models:          []domain.Model{{ModelID: "m", Endpoint: domain.EndpointOpenAIChat, Enabled: true}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var openai, custom *Status
-	for i := range st {
-		switch {
-		case st[i].ID == domain.IDOpenAI:
-			openai = &st[i]
-		case st[i].Custom:
-			custom = &st[i]
-		}
+	snap, err := e.svc.List(ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if openai == nil || !openai.Configured || custom == nil || !custom.Configured {
-		t.Fatalf("statuses = %+v", st)
+	if len(snap.Builtins) == 0 || len(snap.Custom) != 1 || snap.Custom[0].ID != cp.ID {
+		t.Fatalf("unexpected List snapshot: builtins=%d custom=%+v", len(snap.Builtins), snap.Custom)
 	}
-	if raw, _ := json.Marshal(st); strings.Contains(string(raw), testKey) {
-		t.Fatal("status leaks secret")
+	if raw, _ := json.Marshal(snap); strings.Contains(string(raw), testKey) || strings.Contains(string(raw), "sk-initial-key-1234") {
+		t.Fatal("snapshot leaks secret")
+	}
+
+	// UpdateCustom DB failure must roll back the secret store to the previous key.
+	failSvc, err := New(Options{
+		Repo:        failUpdateCustomRepo{Repository: e.repo},
+		Secrets:     e.store,
+		Client:      http.DefaultClient,
+		TestTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = failSvc.UpdateCustom(ctx, cp.ID, domain.CustomInput{
+		Name:            "c2",
+		DiscoveryFormat: domain.DiscoveryOpenAI,
+		BaseURL:         "https://b.test",
+		APIKey:          "sk-new-secret-9999",
+		Models:          []domain.Model{{ModelID: "m", Endpoint: domain.EndpointOpenAIChat, Enabled: true}},
+	})
+	if err == nil {
+		t.Fatal("expected UpdateCustom on failing repo to fail")
+	}
+	gotSec, serr := e.store.Get(customSecretKey(cp.ID))
+	if serr != nil || gotSec != "sk-initial-key-1234" {
+		t.Fatalf("expected UpdateCustom secret rolled back to initial key, got (%q, %v)", gotSec, serr)
 	}
 }
 

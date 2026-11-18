@@ -19,14 +19,14 @@ import (
 // Node types.
 const (
 	NodeList     = contracts.NodeTypeProviderList
-	NodeSetup    = "tool.provider_setup"
-	NodeTest     = "tool.provider_test"
-	NodeActivate = "tool.provider_activate"
-	NodeDelete   = "tool.provider_delete"
+	NodeSetup    = contracts.NodeTypeProviderSetup
+	NodeTest     = contracts.NodeTypeProviderTest
+	NodeActivate = contracts.NodeTypeProviderActivate
+	NodeDelete   = contracts.NodeTypeProviderDelete
 	// Models, defaults and limits.
-	NodeDiscoverModels = "tool.provider_discover_models"
-	NodeSetDefault     = "tool.provider_set_default"
-	NodeSettings       = "tool.provider_settings"
+	NodeDiscoverModels = contracts.NodeTypeProviderDiscoverModel
+	NodeSetDefault     = contracts.NodeTypeProviderSetDefault
+	NodeSettings       = contracts.NodeTypeProviderSettings
 )
 
 // Option sources (engine.Param.OptionsFrom).
@@ -105,12 +105,9 @@ func listNode(svc Service) engine.Node {
 	}, func(ctx context.Context, _ Input) (any, error) { return svc.Overview(ctx) })
 }
 
-// fixedSetupParams is the number of setup params before the registry-derived credential fields.
-var fixedSetupParams int
-
 // setupParams derives the setup settings from the registry: provider ids, protocols and every
-// credential field any provider declares.
-func setupParams() []engine.Param {
+// credential field any provider declares, along with the count of leading fixed params.
+func setupParams() ([]engine.Param, int) {
 	ids := []string{Auto}
 	for _, m := range domain.Registry() {
 		ids = append(ids, m.ID)
@@ -126,7 +123,7 @@ func setupParams() []engine.Param {
 		{Name: "name", Label: "Name (optional)", Kind: engine.ParamText},
 		{Name: "protocol", Label: "Protocol of a custom endpoint", Kind: engine.ParamSelect, Options: formats, Default: Auto},
 	}
-	fixedSetupParams = len(params)
+	fixedCount := len(params)
 	seen := map[string]bool{domain.FieldAPIKey: true, domain.FieldBaseURL: true}
 	for _, m := range domain.Registry() {
 		for _, f := range m.Fields {
@@ -141,11 +138,11 @@ func setupParams() []engine.Param {
 			params = append(params, engine.Param{Name: f.Key, Label: label, Kind: engine.ParamText, Secret: f.Secret})
 		}
 	}
-	return params
+	return params, fixedCount
 }
 
 func setupNode(svc Service) engine.Node {
-	params := setupParams()
+	params, fixedCount := setupParams()
 	return engine.Typed(engine.Spec{
 		Type: NodeSetup, Provider: "tool", Label: "Set up API key",
 		Description: "Save an AI provider API key the user gave, make it active and test it. provider=auto detects " +
@@ -162,7 +159,7 @@ func setupNode(svc Service) engine.Node {
 		if f := in.str("protocol"); f != Auto {
 			req.DiscoveryFormat = domain.DiscoveryFormat(f)
 		}
-		for _, p := range params[fixedSetupParams:] { // registry-derived fields
+		for _, p := range params[fixedCount:] { // registry-derived fields
 			v := in.str(p.Name)
 			if v == "" {
 				continue

@@ -20,6 +20,13 @@ func Nodes() []NodeSpec {
 	return []NodeSpec{
 		{"WATERMARK_REMOVER", NodeTypeWatermarkRemover, t[RemoverInput](), t[RemoverOutput]()},
 		{"PROVIDER_LIST", NodeTypeProviderList, t[Empty](), t[json.RawMessage]()},
+		{"PROVIDER_SETUP", NodeTypeProviderSetup, t[json.RawMessage](), t[json.RawMessage]()},
+		{"PROVIDER_TEST", NodeTypeProviderTest, t[json.RawMessage](), t[json.RawMessage]()},
+		{"PROVIDER_ACTIVATE", NodeTypeProviderActivate, t[json.RawMessage](), t[json.RawMessage]()},
+		{"PROVIDER_DELETE", NodeTypeProviderDelete, t[json.RawMessage](), t[json.RawMessage]()},
+		{"PROVIDER_DISCOVER_MODELS", NodeTypeProviderDiscoverModel, t[json.RawMessage](), t[json.RawMessage]()},
+		{"PROVIDER_SET_DEFAULT", NodeTypeProviderSetDefault, t[json.RawMessage](), t[json.RawMessage]()},
+		{"PROVIDER_SETTINGS", NodeTypeProviderSettings, t[json.RawMessage](), t[json.RawMessage]()},
 		{"IMAGE_GENERATE", NodeTypeImageGenerate, t[ImageGenerateInput](), t[ImageGenerateOutput]()},
 		{"VIDEO_GENERATE", NodeTypeVideoGenerate, t[VideoGenerateInput](), t[VideoGenerateOutput]()},
 		{"TTS_GENERATE", NodeTypeTTSGenerate, t[TTSGenerateInput](), t[TTSGenerateOutput]()},

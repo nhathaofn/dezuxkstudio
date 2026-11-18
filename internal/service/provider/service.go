@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,6 +50,23 @@ type Service struct {
 	onChanged     func()
 	auto          *autoCheck
 	autoOn        bool
+	ownerLocksMu  sync.Mutex
+	ownerLocks    map[string]*sync.Mutex
+}
+
+func (s *Service) lockOwner(ownerID string) func() {
+	s.ownerLocksMu.Lock()
+	if s.ownerLocks == nil {
+		s.ownerLocks = make(map[string]*sync.Mutex)
+	}
+	mu := s.ownerLocks[ownerID]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		s.ownerLocks[ownerID] = mu
+	}
+	s.ownerLocksMu.Unlock()
+	mu.Lock()
+	return mu.Unlock
 }
 
 // New validates the registry and builds the service.
@@ -68,6 +86,7 @@ func New(o Options) (*Service, error) {
 		onChanged:     o.OnChanged,
 		auto:          newAutoCheck(),
 		autoOn:        o.AutoCheck,
+		ownerLocks:    make(map[string]*sync.Mutex),
 	}, nil
 }
 
@@ -114,14 +133,26 @@ func (s *Service) List(ctx context.Context) (Snapshot, error) {
 	for i := range custom {
 		custom[i].Checking = s.isChecking(custom[i].ID)
 	}
+	allModels, err := s.repo.ListAllModels(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	allSettings, err := s.repo.ListAllSettings(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	out := Snapshot{LimitDefaults: s.limitDefaults, SecretBackend: secrets.BackendOf(s.secrets), Custom: custom}
 	for _, m := range domain.Registry() {
-		v := BuiltinView{Meta: m}
-		if v.Models, err = s.repo.ListModels(ctx, m.ID); err != nil {
-			return Snapshot{}, err
+		v := BuiltinView{
+			Meta:     m,
+			Models:   allModels[m.ID],
+			Settings: allSettings[m.ID],
 		}
-		if v.Settings, err = s.repo.GetSettings(ctx, m.ID); err != nil {
-			return Snapshot{}, err
+		if v.Models == nil {
+			v.Models = []domain.Model{}
+		}
+		if v.Settings == nil {
+			v.Settings = domain.Settings{}
 		}
 		for _, c := range creds {
 			if c.ProviderID == m.ID {
@@ -444,19 +475,36 @@ func (s *Service) UpdateCustom(ctx context.Context, id string, in domain.CustomI
 	if err := in.Validate(); err != nil {
 		return domain.CustomProvider{}, err
 	}
+	secKey := customSecretKey(id)
+	var prevSecret string
+	var hadPrevSecret bool
+	mutatingSecret := in.APIKey != "" || in.ClearAPIKey
+	if mutatingSecret {
+		if old, gerr := s.secrets.Get(secKey); gerr == nil {
+			prevSecret = old
+			hadPrevSecret = true
+		}
+	}
 	switch {
 	case in.APIKey != "":
-		if err := s.secrets.Set(customSecretKey(id), in.APIKey); err != nil {
+		if err := s.secrets.Set(secKey, in.APIKey); err != nil {
 			return domain.CustomProvider{}, apperr.Wrap(apperr.CodeUnavailable, "Could not save the secret in the credential store", err).WithMsg("errors.provider.secret_store_unavailable", nil)
 		}
 		p.KeyHint = domain.MaskSecret(in.APIKey)
 	case in.ClearAPIKey:
-		_ = s.secrets.Delete(customSecretKey(id))
+		_ = s.secrets.Delete(secKey)
 		p.KeyHint = ""
 	}
 	keyChanged := in.APIKey != "" || in.ClearAPIKey || in.BaseURL != p.BaseURL || in.DiscoveryFormat != p.DiscoveryFormat
 	p.Name, p.DiscoveryFormat, p.BaseURL, p.Models = in.Name, in.DiscoveryFormat, in.BaseURL, customModelsOrEmpty(in.Models)
 	if err := s.repo.UpdateCustom(ctx, p); err != nil {
+		if mutatingSecret {
+			if hadPrevSecret {
+				_ = s.secrets.Set(secKey, prevSecret)
+			} else {
+				_ = s.secrets.Delete(secKey)
+			}
+		}
 		return domain.CustomProvider{}, err
 	}
 	if keyChanged {
@@ -568,91 +616,4 @@ func (s *Service) customKey(p domain.CustomProvider) (string, error) {
 		return "", apperr.Wrap(apperr.CodeUnavailable, "Could not read the credential store", err).WithMsg("errors.provider.secret_store_unavailable", nil)
 	}
 	return v, nil
-}
-
-// Status is the non-secret view of provider readiness, safe for the agent.
-type Status struct {
-	ID           string
-	Name         string
-	Custom       bool
-	Capabilities []domain.Capability
-	Configured   bool
-}
-
-// Statuses lists every provider with whether it is ready to use.
-func (s *Service) Statuses(ctx context.Context) ([]Status, error) {
-	snap, err := s.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var out []Status
-	for _, b := range snap.Builtins {
-		out = append(out, Status{ID: b.Meta.ID, Name: b.Meta.DisplayName, Capabilities: b.Meta.Capabilities, Configured: b.Configured()})
-	}
-	for _, c := range snap.Custom {
-		out = append(out, Status{ID: c.ID, Name: c.Name, Custom: true, Capabilities: c.Capabilities(), Configured: len(c.Capabilities()) > 0})
-	}
-	return out, nil
-}
-
-// SetProviderLink sets an explicit opt-in link from an agent provider to an API provider credential.
-// CRITICAL DESIGN RULE: Validates compatibility before saving; rejects incompatible pairings.
-func (s *Service) SetProviderLink(ctx context.Context, agentProviderID, targetProviderID, credentialID string) error {
-	lr, ok := s.repo.(ProviderLinkRepository)
-	if !ok {
-		return errors.New("provider repository does not support agent provider links")
-	}
-	cred, err := s.repo.GetCredential(ctx, credentialID)
-	if err != nil {
-		return err
-	}
-	if cred.ProviderID != targetProviderID {
-		return apperr.Validation(fmt.Sprintf("credential %s does not belong to provider %s", credentialID, targetProviderID))
-	}
-	if !IsCompatible(agentProviderID, "", targetProviderID, "api_key") {
-		return apperr.Validation(fmt.Sprintf("target provider %q is not compatible with agent %q", targetProviderID, agentProviderID))
-	}
-	link := AgentProviderLink{
-		AgentProviderID: NormalizeAgentID(agentProviderID),
-		ProviderID:      targetProviderID,
-		CredentialID:    credentialID,
-		AuthMethod:      "api_key",
-		UpdatedAt:       time.Now(),
-	}
-	if err := lr.SetProviderLink(ctx, link); err != nil {
-		return err
-	}
-	s.changed()
-	return nil
-}
-
-// DeleteProviderLink removes the opt-in provider link for agentProviderID.
-func (s *Service) DeleteProviderLink(ctx context.Context, agentProviderID string) error {
-	lr, ok := s.repo.(ProviderLinkRepository)
-	if !ok {
-		return errors.New("provider repository does not support agent provider links")
-	}
-	if err := lr.DeleteProviderLink(ctx, NormalizeAgentID(agentProviderID)); err != nil {
-		return err
-	}
-	s.changed()
-	return nil
-}
-
-// GetProviderLink retrieves the opt-in provider link for agentProviderID.
-func (s *Service) GetProviderLink(ctx context.Context, agentProviderID string) (AgentProviderLink, error) {
-	lr, ok := s.repo.(ProviderLinkRepository)
-	if !ok {
-		return AgentProviderLink{}, errors.New("provider repository does not support agent provider links")
-	}
-	return lr.GetProviderLink(ctx, NormalizeAgentID(agentProviderID))
-}
-
-// ListProviderLinks returns all opt-in agent provider links.
-func (s *Service) ListProviderLinks(ctx context.Context) ([]AgentProviderLink, error) {
-	lr, ok := s.repo.(ProviderLinkRepository)
-	if !ok {
-		return nil, errors.New("provider repository does not support agent provider links")
-	}
-	return lr.ListProviderLinks(ctx)
 }

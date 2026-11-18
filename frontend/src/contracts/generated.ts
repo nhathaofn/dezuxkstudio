@@ -2490,6 +2490,13 @@ export interface ActionMap {
 export const NodeTypes = {
   WATERMARK_REMOVER: "tool.watermark_remover",
   PROVIDER_LIST: "tool.provider_list",
+  PROVIDER_SETUP: "tool.provider_setup",
+  PROVIDER_TEST: "tool.provider_test",
+  PROVIDER_ACTIVATE: "tool.provider_activate",
+  PROVIDER_DELETE: "tool.provider_delete",
+  PROVIDER_DISCOVER_MODELS: "tool.provider_discover_models",
+  PROVIDER_SET_DEFAULT: "tool.provider_set_default",
+  PROVIDER_SETTINGS: "tool.provider_settings",
   IMAGE_GENERATE: "tool.generate_image",
   VIDEO_GENERATE: "tool.generate_video",
   TTS_GENERATE: "tool.generate_tts",
@@ -2516,6 +2523,13 @@ export type NodeType = (typeof NodeTypes)[keyof typeof NodeTypes];
 export interface NodeMap {
   "tool.watermark_remover": { input: RemoverInput; output: RemoverOutput };
   "tool.provider_list": { input: Empty; output: unknown };
+  "tool.provider_setup": { input: unknown; output: unknown };
+  "tool.provider_test": { input: unknown; output: unknown };
+  "tool.provider_activate": { input: unknown; output: unknown };
+  "tool.provider_delete": { input: unknown; output: unknown };
+  "tool.provider_discover_models": { input: unknown; output: unknown };
+  "tool.provider_set_default": { input: unknown; output: unknown };
+  "tool.provider_settings": { input: unknown; output: unknown };
   "tool.generate_image": { input: ImageGenerateInput; output: ImageGenerateOutput };
   "tool.generate_video": { input: VideoGenerateInput; output: VideoGenerateOutput };
   "tool.generate_tts": { input: TTSGenerateInput; output: TTSGenerateOutput };

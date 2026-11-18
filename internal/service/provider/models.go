@@ -105,6 +105,8 @@ func (s *Service) DiscoverBuiltinModels(ctx context.Context, providerID string) 
 			models = append(models, dm)
 		}
 	}
+	unlock := s.lockOwner(providerID)
+	defer unlock()
 	saved, err := s.repo.ListModels(ctx, providerID)
 	if err != nil {
 		return nil, err
