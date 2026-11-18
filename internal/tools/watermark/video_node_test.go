@@ -233,3 +233,50 @@ func mustJSON(t *testing.T, v any) json.RawMessage {
 	}
 	return b
 }
+
+func TestVideoNode_AudioCodecSelectionCropAndDelogoBounds(t *testing.T) {
+	base := t.TempDir()
+	mediaDir := filepath.Join(base, "media")
+	_ = os.MkdirAll(mediaDir, 0o755)
+	webmSrc := filepath.Join(mediaDir, "clip.webm")
+	_ = os.WriteFile(webmSrc, []byte("WEBM"), 0o600)
+
+	ffmpegExe, logPath := writeFakeVideoFFmpeg(t, base)
+	probeJSONPath := filepath.Join(base, "probe_opus.json")
+	_ = os.WriteFile(probeJSONPath, []byte(`{"format":{"duration":"2.0"},"streams":[{"codec_type":"video","codec_name":"vp9","width":640,"height":360},{"codec_type":"audio","codec_name":"opus"}]}`), 0o600)
+	var ffprobeExe string
+	if runtime.GOOS == "windows" {
+		ffprobeExe = filepath.Join(base, "ffprobe.cmd")
+		_ = os.WriteFile(ffprobeExe, []byte("@echo off\r\ntype \""+probeJSONPath+"\"\r\n"), 0o700)
+	} else {
+		ffprobeExe = filepath.Join(base, "ffprobe.sh")
+		_ = os.WriteFile(ffprobeExe, []byte("#!/bin/sh\ncat \""+probeJSONPath+"\"\n"), 0o755)
+	}
+
+	node := watermark.NewVideoRemoveNode(watermark.Options{
+		MediaDir: mediaDir,
+		Binaries: &fakeVideoBins{ffmpeg: ffmpegExe, ffprobe: ffprobeExe},
+	})
+
+	// 1. Out-of-bounds delogo (x+w >= iw) rejected cleanly with Validation error
+	if _, err := node.Run(context.Background(), mustJSON(t, map[string]any{
+		"video_path": webmSrc, "mode": "delogo", "x": 500, "y": 10, "width": 140, "height": 50,
+	})); err == nil || !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected CodeValidation when x+w >= width, got %v", err)
+	}
+
+	// 2. .webm with opus audio transcodes audio with -c:a aac instead of -c:a copy; crop left pads even
+	if _, err := node.Run(context.Background(), mustJSON(t, map[string]any{
+		"video_path": webmSrc, "mode": "crop", "crop_edge": "left", "crop_px": 41,
+	})); err != nil {
+		t.Fatalf("crop left opus webm failed: %v", err)
+	}
+	argsRaw, _ := os.ReadFile(logPath)
+	argsStr := string(argsRaw)
+	if !strings.Contains(argsStr, "-c:a aac") || strings.Contains(argsStr, "-c:a copy") {
+		t.Fatalf("expected opus audio to transcode to aac, got:\n%s", argsStr)
+	}
+	if !strings.Contains(argsStr, "crop=iw-42:ih:42:0,pad=iw+42:ih:42:0:black,pad=ceil(iw/2)*2:ceil(ih/2)*2") {
+		t.Fatalf("expected symmetric even-aligned left crop filter, got:\n%s", argsStr)
+	}
+}

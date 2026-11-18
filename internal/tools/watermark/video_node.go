@@ -2,7 +2,6 @@ package watermark
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -20,6 +19,7 @@ import (
 	"app/internal/progress"
 	"app/internal/runner"
 	"app/internal/service/media"
+	"app/internal/tools/mediautil"
 )
 
 // NodeTypeVideo is the unique identifier for the sibling MP4 video watermark remover node.
@@ -115,7 +115,8 @@ func NewVideoNode(opts Options) engine.Node {
 			return contracts.VideoWatermarkRemoveOutput{}, err
 		}
 
-		vf, err := buildVideoWatermarkFilter(in, defW, defH, defCrop, maxDim, maxLogoDim, maxCrop)
+		srcMeta := probeVideoMetadata(ctx, opts, vidPath)
+		vf, err := buildVideoWatermarkFilter(in, srcMeta, defW, defH, defCrop, maxDim, maxLogoDim, maxCrop)
 		if err != nil {
 			return contracts.VideoWatermarkRemoveOutput{}, err
 		}
@@ -139,8 +140,7 @@ func NewVideoNode(opts Options) engine.Node {
 		_ = tmpFile.Close()
 		defer func() { _ = os.Remove(tmpOut) }()
 
-		srcMeta := probeVideoMetadata(ctx, opts, vidPath)
-		totalUs := int64(srcMeta.durationSec * videoMicrosecondsPerSec)
+		totalUs := int64(srcMeta.DurationSec * videoMicrosecondsPerSec)
 
 		ffCtx, cancel := context.WithTimeout(ctx, studioCfg.FFmpegTimeout)
 		defer cancel()
@@ -154,8 +154,9 @@ func NewVideoNode(opts Options) engine.Node {
 			"-y", "-i", vidPath,
 			"-vf", vf,
 			"-c:v", studioCfg.FFmpegVideoCodec, "-preset", studioCfg.FFmpegPreset, "-crf", strconv.Itoa(studioCfg.FFmpegCRF), "-pix_fmt", studioCfg.FFmpegPixelFormat,
-			"-c:a", "copy", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", tmpOut,
 		}
+		args = append(args, mediautil.MP4AudioEncodeArgs(srcMeta, studioCfg.FFmpegAudioBitrate)...)
+		args = append(args, "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", tmpOut)
 		runOpts := runner.FFmpegPipeProgressOptions(ctx, totalUs, "watermark.progress.video", "Cleaning video watermark")
 		res, err := runner.RunWithOptions(ffCtx, ffmpegExe, args, runOpts)
 		if err != nil || res == nil || res.ExitCode != 0 {
@@ -172,12 +173,12 @@ func NewVideoNode(opts Options) engine.Node {
 		progress.Report(ctx, progress.Update{Percent: 100, Message: "Video watermark removed", Key: "watermark.progress.done"})
 
 		outMeta := probeVideoMetadata(ctx, opts, outPath)
-		if outMeta.durationSec <= 0 {
-			outMeta.durationSec = srcMeta.durationSec
+		if outMeta.DurationSec <= 0 {
+			outMeta.DurationSec = srcMeta.DurationSec
 		}
-		if outMeta.width <= 0 {
-			outMeta.width = srcMeta.width
-			outMeta.height = srcMeta.height
+		if outMeta.Width <= 0 {
+			outMeta.Width = srcMeta.Width
+			outMeta.Height = srcMeta.Height
 		}
 
 		var assetID string
@@ -188,9 +189,9 @@ func NewVideoNode(opts Options) engine.Node {
 				FilePath:       outPath,
 				RegisteredRoot: cleanOutDir,
 				MIMEType:       "video/mp4",
-				Width:          outMeta.width,
-				Height:         outMeta.height,
-				DurationSec:    outMeta.durationSec,
+				Width:          outMeta.Width,
+				Height:         outMeta.Height,
+				DurationSec:    outMeta.DurationSec,
 			})
 			if rerr != nil {
 				if opts.Logger != nil {
@@ -207,9 +208,9 @@ func NewVideoNode(opts Options) engine.Node {
 			Video:       engine.RefFor(outPath, engine.MediaVideo),
 			Path:        outPath,
 			AssetID:     assetID,
-			Width:       outMeta.width,
-			Height:      outMeta.height,
-			DurationSec: outMeta.durationSec,
+			Width:       outMeta.Width,
+			Height:      outMeta.Height,
+			DurationSec: outMeta.DurationSec,
 		}, nil
 	})
 }
@@ -237,12 +238,7 @@ func checkWatermarkFile(ctx context.Context, path string, write bool) error {
 }
 
 func isSupportedVideoExt(path string) bool {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v", ".mpeg", ".mpg", ".ts":
-		return true
-	default:
-		return false
-	}
+	return mediautil.IsSupportedVideoExt(path)
 }
 
 func resolveVideoInputPath(ctx context.Context, opts Options, raw string) (string, error) {
@@ -369,7 +365,7 @@ func resolveVideoOutputDir(ctx context.Context, opts Options, rawOutDir string) 
 	return cleanOutDir, nil
 }
 
-func buildVideoWatermarkFilter(in contracts.VideoWatermarkRemoveInput, defW, defH, defCrop, maxDim, maxLogoDim, maxCrop int) (string, error) {
+func buildVideoWatermarkFilter(in contracts.VideoWatermarkRemoveInput, srcMeta mediautil.FFprobeResult, defW, defH, defCrop, maxDim, maxLogoDim, maxCrop int) (string, error) {
 	mode := strings.ToLower(strings.TrimSpace(in.Mode))
 	if mode == "" {
 		mode = "delogo"
@@ -397,13 +393,13 @@ func buildVideoWatermarkFilter(in contracts.VideoWatermarkRemoveInput, defW, def
 		edge := strings.ToLower(strings.TrimSpace(in.CropEdge))
 		switch edge {
 		case "", "bottom":
-			return fmt.Sprintf("crop=iw:ih-%d:0:0,pad=iw:ih+%d:0:0:black", px, px), nil
+			return fmt.Sprintf("crop=iw:ih-%d:0:0,pad=iw:ih+%d:0:0:black,pad=ceil(iw/2)*2:ceil(ih/2)*2", px, px), nil
 		case "top":
-			return fmt.Sprintf("crop=iw:ih-%d:0:%d,pad=iw:ih+%d:0:%d:black", px, px, px, px), nil
+			return fmt.Sprintf("crop=iw:ih-%d:0:%d,pad=iw:ih+%d:0:%d:black,pad=ceil(iw/2)*2:ceil(ih/2)*2", px, px, px, px), nil
 		case "left":
-			return fmt.Sprintf("crop=iw-%d:ih:%d:0", px, px), nil
+			return fmt.Sprintf("crop=iw-%d:ih:%d:0,pad=iw+%d:ih:%d:0:black,pad=ceil(iw/2)*2:ceil(ih/2)*2", px, px, px, px), nil
 		case "right":
-			return fmt.Sprintf("crop=iw-%d:ih:0:0", px), nil
+			return fmt.Sprintf("crop=iw-%d:ih:0:0,pad=iw+%d:ih:0:0:black,pad=ceil(iw/2)*2:ceil(ih/2)*2", px, px), nil
 		default:
 			return "", apperr.Validation("invalid crop_edge: must be bottom, top, left, or right").
 				WithMsg("errors.watermark.invalid_crop_edge", nil)
@@ -426,65 +422,33 @@ func buildVideoWatermarkFilter(in contracts.VideoWatermarkRemoveInput, defW, def
 		return "", apperr.Validation(fmt.Sprintf("delogo width and height must be between 1 and %d", maxLogoDim)).
 			WithMsg("errors.watermark.invalid_delogo_bounds", nil)
 	}
+	if srcMeta.Width > 0 && in.X+w > srcMeta.Width-1 {
+		return "", apperr.Validation(fmt.Sprintf("delogo x+width (%d) must be < video width (%d)", in.X+w, srcMeta.Width)).
+			WithMsg("errors.watermark.invalid_delogo_bounds", nil)
+	}
+	if srcMeta.Height > 0 && in.Y+h > srcMeta.Height-1 {
+		return "", apperr.Validation(fmt.Sprintf("delogo y+height (%d) must be < video height (%d)", in.Y+h, srcMeta.Height)).
+			WithMsg("errors.watermark.invalid_delogo_bounds", nil)
+	}
 	return fmt.Sprintf("delogo=x=%d:y=%d:w=%d:h=%d", in.X, in.Y, w, h), nil
 }
 
-type probedVideoMeta struct {
-	width       int
-	height      int
-	durationSec float64
-}
-
-func probeVideoMetadata(ctx context.Context, opts Options, vidPath string) probedVideoMeta {
+func probeVideoMetadata(ctx context.Context, opts Options, vidPath string) mediautil.FFprobeResult {
 	if opts.Binaries == nil {
-		return probedVideoMeta{}
+		return mediautil.FFprobeResult{}
 	}
 	ffprobeExe, _, _, err := opts.Binaries.Resolve(ctx, domainbinaries.IDFFprobe)
 	if err != nil || strings.TrimSpace(ffprobeExe) == "" {
-		return probedVideoMeta{}
+		return mediautil.FFprobeResult{}
 	}
 	timeout := config.ResolveStudioConfig(opts.StudioConfig).FFprobeTimeout
 	pCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	stop := progress.KeepAlive(ctx)
-	res, err := runner.Run(pCtx, ffprobeExe, "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", vidPath)
+	res, pErr := mediautil.ProbeFile(pCtx, ffprobeExe, vidPath)
 	stop()
-	if err != nil || res == nil || res.ExitCode != 0 {
-		return probedVideoMeta{}
+	if pErr != nil {
+		return mediautil.FFprobeResult{}
 	}
-	var raw struct {
-		Format struct {
-			Duration string `json:"duration"`
-		} `json:"format"`
-		Streams []struct {
-			CodecType string `json:"codec_type"`
-			Width     int    `json:"width"`
-			Height    int    `json:"height"`
-			Duration  string `json:"duration"`
-		} `json:"streams"`
-	}
-	if json.Unmarshal([]byte(res.Stdout), &raw) != nil {
-		if sec, perr := strconv.ParseFloat(strings.TrimSpace(res.Stdout), 64); perr == nil && sec > 0 {
-			return probedVideoMeta{durationSec: sec}
-		}
-		return probedVideoMeta{}
-	}
-	var meta probedVideoMeta
-	if sec, perr := strconv.ParseFloat(strings.TrimSpace(raw.Format.Duration), 64); perr == nil && sec > 0 {
-		meta.durationSec = sec
-	}
-	for _, st := range raw.Streams {
-		if st.CodecType == "video" {
-			if meta.width == 0 && st.Width > 0 {
-				meta.width = st.Width
-				meta.height = st.Height
-			}
-			if meta.durationSec == 0 {
-				if sec, perr := strconv.ParseFloat(strings.TrimSpace(st.Duration), 64); perr == nil && sec > 0 {
-					meta.durationSec = sec
-				}
-			}
-		}
-	}
-	return meta
+	return res
 }

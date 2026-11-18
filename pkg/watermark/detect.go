@@ -38,17 +38,7 @@ func putFloatBuffer(buf *[]float64) {
 	floatPool.Put(buf)
 }
 
-type engineLimits struct {
-	maxImagePixels    int64
-	decodeConcurrency int
-	decodeSem         chan struct{}
-}
-
-var (
-	engineLimitsMu   sync.RWMutex
-	engineLimitsMap  = make(map[*Engine]*engineLimits)
-	defaultDecodeSem = make(chan struct{}, 2)
-)
+var defaultDecodeSem = make(chan struct{}, 2)
 
 // SetLimits configures the maximum allowed image pixels and decode concurrency for this Engine.
 func (e *Engine) SetLimits(maxPixels int64, decodeConcurrency int) {
@@ -58,23 +48,25 @@ func (e *Engine) SetLimits(maxPixels int64, decodeConcurrency int) {
 	if decodeConcurrency <= 0 {
 		decodeConcurrency = 2
 	}
-	engineLimitsMu.Lock()
-	defer engineLimitsMu.Unlock()
-	engineLimitsMap[e] = &engineLimits{
-		maxImagePixels:    maxPixels,
-		decodeConcurrency: decodeConcurrency,
-		decodeSem:         make(chan struct{}, decodeConcurrency),
-	}
+	sem := make(chan struct{}, decodeConcurrency)
+	e.limitsMu.Lock()
+	e.maxImagePixels = maxPixels
+	e.decodeSem = sem
+	e.limitsMu.Unlock()
 }
 
 func (e *Engine) getLimits() (int64, chan struct{}) {
-	engineLimitsMu.RLock()
-	lim := engineLimitsMap[e]
-	engineLimitsMu.RUnlock()
-	if lim != nil {
-		return lim.maxImagePixels, lim.decodeSem
+	e.limitsMu.RLock()
+	maxPixels := e.maxImagePixels
+	sem := e.decodeSem
+	e.limitsMu.RUnlock()
+	if maxPixels <= 0 {
+		maxPixels = 100_000_000
 	}
-	return 100_000_000, defaultDecodeSem
+	if sem == nil {
+		sem = defaultDecodeSem
+	}
+	return maxPixels, sem
 }
 
 // decodeImage decodes an image with max_image_pixels validation and bounded decode concurrency.
@@ -449,6 +441,9 @@ func (e *Engine) DetectContext(ctx context.Context, data []byte) (present bool, 
 	}
 
 	match := e.findWatermarkContext(ctx, img)
+	if ctx != nil && ctx.Err() != nil {
+		return false, 0, Info{}, ctx.Err()
+	}
 	if !match.found {
 		return false, match.score, Info{}, nil
 	}

@@ -55,6 +55,7 @@ type Options struct {
 	StudioConfig      config.StudioConfig
 	WatermarkConfig   config.WatermarkConfig
 	Config            *config.Config
+	Provenance        *watermark.ProvenanceStore
 	Logger            *slog.Logger
 }
 
@@ -117,6 +118,10 @@ func NewNode(opts Options) engine.Node {
 			{Name: "copy_clean", Label: "Copy clean images to destination", Kind: engine.ParamToggle, Default: "true"},
 			{Name: "preserve_tree", Label: "Preserve directory structure", Kind: engine.ParamToggle, Default: "false"},
 		},
+	}
+
+	if opts.Provenance == nil {
+		opts.Provenance = watermark.NewProvenanceStore()
 	}
 
 	return engine.Typed(spec, func(ctx context.Context, in RemoverInput) (RemoverOutput, error) {
@@ -209,7 +214,10 @@ func NewNode(opts Options) engine.Node {
 				Params:  map[string]string{"done": strconv.Itoa(d), "total": strconv.Itoa(total)},
 			})
 		}
+		var readerWG sync.WaitGroup
+		readerWG.Add(1)
 		safego.Go("watermark.node.reader", func() {
+			defer readerWG.Done()
 			defer close(itemsCh)
 			for i, p := range rawPaths {
 				resPath, data, err := readInput(streamCtx, p, mediaDir)
@@ -230,8 +238,13 @@ func NewNode(opts Options) engine.Node {
 			}
 		})
 
-		for br := range eng.ProcessStream(streamCtx, itemsCh, workers) {
+		outCh := eng.ProcessStream(streamCtx, itemsCh, workers)
+		for br := range outCh {
 			if ctx.Err() != nil {
+				cancel()
+				for range outCh {
+				}
+				readerWG.Wait()
 				return RemoverOutput{}, ctx.Err()
 			}
 			i, err := strconv.Atoi(br.ID)
@@ -241,6 +254,7 @@ func NewNode(opts Options) engine.Node {
 			itemResults[i], outPaths[i] = finishItem(ctx, in, targetDir, rawPaths[i], resolvedPaths[i], br, opts)
 			reportDone()
 		}
+		readerWG.Wait()
 		if ctx.Err() != nil {
 			return RemoverOutput{}, ctx.Err()
 		}
@@ -306,6 +320,10 @@ func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPat
 			Status: watermark.StatusFailed,
 			Error:  err.Error(),
 		}, ""
+	}
+	var store *watermark.ProvenanceStore
+	if len(nodeOpts) > 0 {
+		store = nodeOpts[0].Provenance
 	}
 
 	if br.Err != nil {
@@ -377,7 +395,7 @@ func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPat
 			return res, ""
 		}
 
-		outPath, isIdempotent := watermark.ResolveOutputPath(destDir, base, "", ext, taskParams, nil)
+		outPath, isIdempotent := watermark.ResolveOutputPath(destDir, base, "", ext, taskParams, store)
 		if isIdempotent {
 			res.Status = watermark.StatusSkipped
 			res.Reason = watermark.ReasonIdempotentSkip
@@ -401,7 +419,7 @@ func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPat
 			res.Error = formatPathError("write file", outPath, err)
 			return res, ""
 		}
-		watermark.DefaultProvenance.Record(outPath, taskParams)
+		store.Record(outPath, taskParams)
 		res.Status = watermark.StatusCopied
 		res.OutPath = outPath
 		res.AssetID = registerWatermarkAsset(ctx, nodeOpts, destDir, outPath)
@@ -451,7 +469,7 @@ func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPat
 		}
 
 		var isIdempotent bool
-		outPath, isIdempotent = watermark.ResolveOutputPath(destDir, base, "_nowm", outExt, taskParams, nil)
+		outPath, isIdempotent = watermark.ResolveOutputPath(destDir, base, "_nowm", outExt, taskParams, store)
 		if isIdempotent {
 			res.Status = watermark.StatusSkipped
 			res.Reason = watermark.ReasonIdempotentSkip
@@ -496,7 +514,7 @@ func finishItem(ctx context.Context, in RemoverInput, targetDir, rawPath, resPat
 		}
 	}
 
-	watermark.DefaultProvenance.Record(outPath, taskParams)
+	store.Record(outPath, taskParams)
 	res.Status = watermark.StatusProcessed
 	res.OutPath = outPath
 	res.AssetID = registerWatermarkAsset(ctx, nodeOpts, destDir, outPath)

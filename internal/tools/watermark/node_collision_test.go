@@ -40,7 +40,7 @@ func createCollisionTestPNG(t *testing.T, dir, filename string, r, g, b uint8) s
 }
 
 func TestCollision_AvoidanceDifferentSources(t *testing.T) {
-	pkgwatermark.DefaultProvenance.Clear()
+	opts := Options{Provenance: pkgwatermark.NewProvenanceStore()}
 	baseDir := t.TempDir()
 	dirA := filepath.Join(baseDir, "sourceA")
 	dirB := filepath.Join(baseDir, "sourceB")
@@ -63,7 +63,7 @@ func TestCollision_AvoidanceDifferentSources(t *testing.T) {
 		MinGain:   0.4,
 		MaxGain:   0.9,
 	}
-	resA, outA := finishItem(context.Background(), inA, outDir, srcA, srcA, brA)
+	resA, outA := finishItem(context.Background(), inA, outDir, srcA, srcA, brA, opts)
 	if resA.Status != pkgwatermark.StatusProcessed {
 		t.Fatalf("expected Status=processed for item A, got %s", resA.Status)
 	}
@@ -85,7 +85,7 @@ func TestCollision_AvoidanceDifferentSources(t *testing.T) {
 		MinGain:   0.4,
 		MaxGain:   0.9,
 	}
-	resB, outB := finishItem(context.Background(), inB, outDir, srcB, srcB, brB)
+	resB, outB := finishItem(context.Background(), inB, outDir, srcB, srcB, brB, opts)
 	if resB.Status != pkgwatermark.StatusProcessed {
 		t.Fatalf("expected Status=processed for item B, got %s", resB.Status)
 	}
@@ -102,7 +102,7 @@ func TestCollision_AvoidanceDifferentSources(t *testing.T) {
 }
 
 func TestCollision_IdempotentReRunSkips(t *testing.T) {
-	pkgwatermark.DefaultProvenance.Clear()
+	opts := Options{Provenance: pkgwatermark.NewProvenanceStore()}
 	baseDir := t.TempDir()
 	srcDir := filepath.Join(baseDir, "source")
 	outDir := filepath.Join(baseDir, "output")
@@ -125,7 +125,7 @@ func TestCollision_IdempotentReRunSkips(t *testing.T) {
 	}
 
 	// First run: writes output
-	res1, out1 := finishItem(context.Background(), in, outDir, src, src, br)
+	res1, out1 := finishItem(context.Background(), in, outDir, src, src, br, opts)
 	if res1.Status != pkgwatermark.StatusProcessed {
 		t.Fatalf("first run: expected Status=processed, got %s", res1.Status)
 	}
@@ -134,7 +134,7 @@ func TestCollision_IdempotentReRunSkips(t *testing.T) {
 	}
 
 	// Second run: exact same input path + exact same parameters
-	res2, out2 := finishItem(context.Background(), in, outDir, src, src, br)
+	res2, out2 := finishItem(context.Background(), in, outDir, src, src, br, opts)
 	if res2.Status != pkgwatermark.StatusSkipped {
 		t.Fatalf("second run: expected Status=skipped, got %s", res2.Status)
 	}
@@ -153,7 +153,7 @@ func TestCollision_IdempotentReRunSkips(t *testing.T) {
 }
 
 func TestCollision_ParameterChangeGeneratesNewOutput(t *testing.T) {
-	pkgwatermark.DefaultProvenance.Clear()
+	opts := Options{Provenance: pkgwatermark.NewProvenanceStore()}
 	baseDir := t.TempDir()
 	srcDir := filepath.Join(baseDir, "source")
 	outDir := filepath.Join(baseDir, "output")
@@ -174,7 +174,7 @@ func TestCollision_ParameterChangeGeneratesNewOutput(t *testing.T) {
 		MinGain:   0.4,
 		MaxGain:   0.9,
 	}
-	res1, out1 := finishItem(context.Background(), inBR, outDir, src, src, br)
+	res1, out1 := finishItem(context.Background(), inBR, outDir, src, src, br, opts)
 	if res1.Status != pkgwatermark.StatusProcessed || filepath.Base(out1) != "param_change_nowm.png" {
 		t.Fatalf("first run failed: status=%s, out=%s", res1.Status, out1)
 	}
@@ -182,7 +182,7 @@ func TestCollision_ParameterChangeGeneratesNewOutput(t *testing.T) {
 	// Now re-run with different parameter (Corner = top-left)
 	inTL := inBR
 	inTL.Corner = "top-left"
-	res2, out2 := finishItem(context.Background(), inTL, outDir, src, src, br)
+	res2, out2 := finishItem(context.Background(), inTL, outDir, src, src, br, opts)
 	if res2.Status != pkgwatermark.StatusProcessed {
 		t.Fatalf("param change run: expected Status=processed, got %s", res2.Status)
 	}
@@ -192,7 +192,7 @@ func TestCollision_ParameterChangeGeneratesNewOutput(t *testing.T) {
 }
 
 func TestCollision_CopyClean(t *testing.T) {
-	pkgwatermark.DefaultProvenance.Clear()
+	opts := Options{Provenance: pkgwatermark.NewProvenanceStore()}
 	baseDir := t.TempDir()
 	srcDir := filepath.Join(baseDir, "source")
 	outDir := filepath.Join(baseDir, "output")
@@ -208,7 +208,7 @@ func TestCollision_CopyClean(t *testing.T) {
 	inCopyClean := RemoverInput{
 		OutputDir: outDir,
 	}
-	res, outPath := finishItem(context.Background(), inCopyClean, outDir, src, src, brClean)
+	res, outPath := finishItem(context.Background(), inCopyClean, outDir, src, src, brClean, opts)
 	if res.Status != pkgwatermark.StatusCopied {
 		t.Fatalf("expected Status=copied, got %s", res.Status)
 	}
@@ -230,7 +230,7 @@ func TestCollision_CopyClean(t *testing.T) {
 	}
 
 	// Second run of clean image with identical parameters -> idempotent skip
-	res2, outPath2 := finishItem(context.Background(), inCopyClean, outDir, src, src, brClean)
+	res2, outPath2 := finishItem(context.Background(), inCopyClean, outDir, src, src, brClean, opts)
 	if res2.Status != pkgwatermark.StatusSkipped {
 		t.Fatalf("expected Status=skipped on clean copy re-run, got %s", res2.Status)
 	}
@@ -243,7 +243,7 @@ func TestCollision_CopyClean(t *testing.T) {
 }
 
 func TestCollision_CopyCleanDisabled(t *testing.T) {
-	pkgwatermark.DefaultProvenance.Clear()
+	opts := Options{Provenance: pkgwatermark.NewProvenanceStore()}
 	baseDir := t.TempDir()
 	srcDir := filepath.Join(baseDir, "source")
 	outDir := filepath.Join(baseDir, "output")
@@ -260,7 +260,7 @@ func TestCollision_CopyCleanDisabled(t *testing.T) {
 		OutputDir: outDir,
 		CopyClean: &f,
 	}
-	res, outPath := finishItem(context.Background(), inNoCopy, outDir, src, src, brClean)
+	res, outPath := finishItem(context.Background(), inNoCopy, outDir, src, src, brClean, opts)
 	if res.Status != pkgwatermark.StatusSkipped {
 		t.Fatalf("expected Status=skipped when CopyClean is disabled, got %s", res.Status)
 	}
@@ -279,7 +279,7 @@ func TestCollision_CopyCleanDisabled(t *testing.T) {
 }
 
 func TestCollision_PreserveTree(t *testing.T) {
-	pkgwatermark.DefaultProvenance.Clear()
+	opts := Options{Provenance: pkgwatermark.NewProvenanceStore()}
 	baseDir := t.TempDir()
 	mediaDir := filepath.Join(baseDir, "media")
 	outDir := filepath.Join(baseDir, "output")
@@ -301,7 +301,7 @@ func TestCollision_PreserveTree(t *testing.T) {
 		PreserveTree: &preserve,
 	}
 
-	res, outPath := finishItem(context.Background(), in, outDir, nestedRel, absSrc, br)
+	res, outPath := finishItem(context.Background(), in, outDir, nestedRel, absSrc, br, opts)
 	if res.Status != pkgwatermark.StatusProcessed {
 		t.Fatalf("expected Status=processed, got %s (error=%s)", res.Status, res.Error)
 	}
