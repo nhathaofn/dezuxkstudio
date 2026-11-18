@@ -21,16 +21,26 @@ type WorkspaceTree struct {
 	ProjectsDir  string
 }
 
+func cleanAbsPath(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(trimmed); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(trimmed)
+}
+
 // ResolveWorkspaceTree calculates all creative workspace directories based on customRoot
 // and an optional agent workspace override.
 // If customRoot is empty or whitespace, it falls back to appPaths.DefaultStudioRoot().
 func ResolveWorkspaceTree(appPaths Paths, customRoot, agentWorkspaceOverride string) WorkspaceTree {
 	var root string
-	trimmedRoot := strings.TrimSpace(customRoot)
-	if trimmedRoot == "" {
-		root = appPaths.DefaultStudioRoot()
+	if absRoot := cleanAbsPath(customRoot); absRoot != "" {
+		root = absRoot
 	} else {
-		root = filepath.Clean(trimmedRoot)
+		root = cleanAbsPath(appPaths.DefaultStudioRoot())
 	}
 
 	mediaDir := filepath.Join(root, "media")
@@ -40,9 +50,8 @@ func ResolveWorkspaceTree(appPaths Paths, customRoot, agentWorkspaceOverride str
 	watermarkDir := filepath.Join(mediaDir, "watermark")
 
 	var workspaceDir string
-	trimmedOverride := strings.TrimSpace(agentWorkspaceOverride)
-	if trimmedOverride != "" {
-		workspaceDir = filepath.Clean(trimmedOverride)
+	if absOverride := cleanAbsPath(agentWorkspaceOverride); absOverride != "" {
+		workspaceDir = absOverride
 	} else {
 		workspaceDir = filepath.Join(root, "workspace")
 	}

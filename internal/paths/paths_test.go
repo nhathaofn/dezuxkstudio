@@ -123,6 +123,13 @@ func TestResolveWorkspaceTree(t *testing.T) {
 			t.Fatalf("expected override projects %q, got %q", filepath.Join(agentOverride, "projects"), tree.ProjectsDir)
 		}
 	})
+
+	t.Run("relative customRoot and agentWorkspaceOverride resolve to absolute paths", func(t *testing.T) {
+		tree := ResolveWorkspaceTree(appPaths, "rel_studio_root", "rel_agent_ws")
+		if !filepath.IsAbs(tree.Root) || !filepath.IsAbs(tree.WorkspaceDir) || !filepath.IsAbs(tree.ProjectsDir) {
+			t.Fatalf("expected absolute paths from relative inputs, got root=%q ws=%q proj=%q", tree.Root, tree.WorkspaceDir, tree.ProjectsDir)
+		}
+	})
 }
 
 func TestWorkspaceTreeEnsure(t *testing.T) {

@@ -213,6 +213,7 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 			MaxUploadBytes: cfg.Server.MaxMediaUploadBytes,
 			TicketSigner:   ticketSigner,
 			AssetResolver:  c.mediaSvc,
+			FileGuard:      workflowFileGuard(cfg.Mode, c.agentSvc),
 		}),
 	})
 	if err != nil {
@@ -267,21 +268,26 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		skipChanged := p.AgentSkipTrustedApproval != oldPrefs.AgentSkipTrustedApproval
 
 		if rootChanged {
-			// 1. If previous root was custom (prevRoot != ""), automatically add it to agentSvc.AddAllowedDir
+			prevTree := c.WorkspaceTree()
+
+			// 1. If previous root was custom (prevRoot != ""), persist it in user allowed dirs as well.
 			if oldPrefs.WorkspaceRoot != "" && agentSvc != nil {
 				if _, err := agentSvc.AddAllowedDir(context.Background(), oldPrefs.WorkspaceRoot); err != nil {
-					o.Logger.Warn("preferences: failed to keep previous workspace root in allowed dirs", "dir", oldPrefs.WorkspaceRoot, "error", err)
+					o.Logger.WarnContext(context.Background(), "preferences: failed to keep previous workspace root in allowed dirs", "error", err)
 				}
 			}
-			// 2. Update atomic pointer to new tree and ensure directories exist
+			// 2. Update atomic pointer to new tree and ensure directories exist.
 			newTree := paths.ResolveWorkspaceTree(o.Paths, p.WorkspaceRoot, cfg.Agent.WorkspaceDir)
 			if err := newTree.Ensure(); err != nil {
-				o.Logger.Error("preferences: failed to ensure new workspace tree directories", "root", newTree.Root, "error", err)
+				o.Logger.ErrorContext(context.Background(), "preferences: failed to ensure new workspace tree directories", "error", err)
 			}
 			c.workspaceTree.Store(&newTree)
 
-			// 3. Call mediaSvc.SetMediaDir, mediaGenSvc.SetMediaDir, agentSvc.SetWorkspaceDirs, and studioSvc.SetProjectsDir
+			// 3. Retain previous studio/media roots and propagate new workspace roots across services.
 			if mediaSvc != nil {
+				mediaSvc.AddAllowedRoot(prevTree.MediaDir)
+				mediaSvc.AddAllowedRoot(prevTree.WorkspaceDir)
+				mediaSvc.AddAllowedRoot(prevTree.ProjectsDir)
 				mediaSvc.SetMediaDir(newTree.MediaDir)
 				mediaSvc.AddAllowedRoot(newTree.WorkspaceDir)
 				mediaSvc.AddAllowedRoot(newTree.ProjectsDir)
@@ -290,7 +296,9 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 				mediaGenSvc.SetMediaDir(newTree.MediaDir)
 			}
 			if agentSvc != nil {
+				agentSvc.AddLegacyRoots(prevTree.WorkspaceDir, prevTree.ProjectsDir, prevTree.MediaDir)
 				agentSvc.SetWorkspaceDirs(newTree.WorkspaceDir, newTree.MediaDir)
+				agentSvc.SetProjectsDir(newTree.ProjectsDir)
 			}
 			if studioSvc != nil {
 				studioSvc.SetProjectsDir(newTree.ProjectsDir)
@@ -308,20 +316,22 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 
 	validator := func(raw string) (string, error) {
 		var norm string
-		if strings.TrimSpace(raw) != "" {
+		if trimmed := strings.TrimSpace(raw); trimmed != "" {
 			if agentSvc != nil {
 				var err error
-				norm, err = agentSvc.ValidateWorkspaceRoot(raw)
+				norm, err = agentSvc.ValidateWorkspaceRoot(trimmed)
 				if err != nil {
 					return "", apperr.Validation(err.Error())
 				}
+			} else if abs, err := filepath.Abs(trimmed); err == nil {
+				norm = filepath.Clean(abs)
 			} else {
-				norm = filepath.Clean(strings.TrimSpace(raw))
+				norm = filepath.Clean(trimmed)
 			}
 		}
 		candidateTree := paths.ResolveWorkspaceTree(o.Paths, norm, cfg.Agent.WorkspaceDir)
 		if err := candidateTree.Ensure(); err != nil {
-			return "", apperr.Validation(err.Error())
+			return "", apperr.Wrap(apperr.CodeValidation, "cannot prepare workspace directory", err)
 		}
 		return norm, nil
 	}
@@ -416,10 +426,18 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 	if storedDirs, err := agentRepo.ListAllowedDirs(ctx); err == nil {
 		allowedRoots = append(allowedRoots, storedDirs...)
 	}
-	for _, fallbackMedia := range []string{o.Paths.Media(), filepath.Join(o.Paths.DefaultStudioRoot(), "media")} {
-		if fallbackMedia != "" {
-			if fi, err := os.Stat(fallbackMedia); err == nil && fi.IsDir() {
-				allowedRoots = append(allowedRoots, fallbackMedia)
+	var legacyStudioRoots []string
+	defaultStudioRoot := o.Paths.DefaultStudioRoot()
+	for _, fallbackDir := range []string{
+		o.Paths.Media(),
+		filepath.Join(defaultStudioRoot, "media"),
+		filepath.Join(defaultStudioRoot, "workspace"),
+		filepath.Join(defaultStudioRoot, "workspace", "projects"),
+	} {
+		if fallbackDir != "" {
+			if fi, err := os.Stat(fallbackDir); err == nil && fi.IsDir() {
+				allowedRoots = append(allowedRoots, fallbackDir)
+				legacyStudioRoots = append(legacyStudioRoots, fallbackDir)
 			}
 		}
 	}
@@ -511,6 +529,7 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		Repo:                agentRepo,
 		DataDir:             o.Paths.Data,
 		WorkspaceDir:        tree.WorkspaceDir,
+		ProjectsDir:         tree.ProjectsDir,
 		MediaDir:            tree.MediaDir,
 		StagingDir:          o.Paths.Staging(),
 		SkipTrustedApproval: initPrefs.AgentSkipTrustedApproval,
@@ -551,6 +570,9 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		return nil, err
 	}
 	prefSvc.SetWorkspaceRootValidator(validator)
+	if len(legacyStudioRoots) > 0 {
+		agentSvc.AddLegacyRoots(legacyStudioRoots...)
+	}
 	agentSvc.SetProviderLinks(sqlite.NewProviderRepository(c.db))
 	agentSvc.SetMediaInspector(&mediaInspectorAdapter{svc: mediaSvc})
 	c.agentSvc = agentSvc
@@ -579,7 +601,7 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 			LockCustomizations: lockRemoteHost,
 		},
 		modules.Providers{Service: provSvc},
-		modules.Media{Service: mediaSvc},
+		modules.Media{Service: mediaSvc, FileGuard: workflowFileGuard(cfg.Mode, agentSvc)},
 		modules.Studio{Service: studioSvc, FileGuard: workflowFileGuard(cfg.Mode, agentSvc), LockHostAdmin: lockRemoteHost},
 	}, nil
 }
@@ -638,16 +660,18 @@ func (c *Core) Close() error {
 	if c.provSvc != nil {
 		c.provSvc.Close() // running key checks write to the database: finish them first
 	}
+	hubCtx, hubCancel := context.WithTimeout(context.Background(), c.shutdown)
+	defer hubCancel()
+	hubErr := c.hub.Close(hubCtx)
+	srvErr := c.srv.Stop()
 	var agentErr error
 	if c.agentSvc != nil {
 		agentErr = c.agentSvc.Close()
 	}
-	hubCtx, hubCancel := context.WithTimeout(context.Background(), c.shutdown)
-	defer hubCancel()
 	return errors.Join(
+		hubErr,
+		srvErr,
 		agentErr,
-		c.hub.Close(hubCtx),
-		c.srv.Stop(),
 		c.db.Close(),
 	)
 }

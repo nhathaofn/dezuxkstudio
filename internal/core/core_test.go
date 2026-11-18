@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -852,6 +853,11 @@ func TestCore_StudioWorkspaceRootHotReloadAndWorkflowGuard(t *testing.T) {
 	if err != nil || !r1.Success {
 		t.Fatalf("studio:project_create #1 failed: err=%v resp=%+v", err, r1.Error)
 	}
+	var detail1 contracts.StudioProjectDetailResult
+	if err := json.Unmarshal(r1.Data, &detail1); err != nil {
+		t.Fatal(err)
+	}
+	firstFilmArtifact := filepath.Join(detail1.Project.RootDir, "episodes", "ep01", "script", "normalized_script.json")
 
 	// Switch WorkspaceRoot via preferences:update
 	newRoot := createTestWorkspace(t, "studio_hot_reload")
@@ -866,6 +872,18 @@ func TestCore_StudioWorkspaceRootHotReloadAndWorkflowGuard(t *testing.T) {
 	wantNewProjectsDir := filepath.Join(newRoot, "workspace", "projects")
 	if !strings.EqualFold(filepath.Clean(c.Studio().ProjectsDir()), filepath.Clean(wantNewProjectsDir)) {
 		t.Fatalf("expected hot-reloaded ProjectsDir=%q, got %q", wantNewProjectsDir, c.Studio().ProjectsDir())
+	}
+
+	// "First Film" in the previous default <Data>/studio/workspace/projects must remain trusted & editable after hot-reload
+	if err := c.Agent().CheckTrustedFile(firstFilmArtifact, true); err != nil {
+		t.Fatalf("CheckTrustedFile should retain access to First Film artifact %q after hot-reload: %v", firstFilmArtifact, err)
+	}
+	saveFirst, err := call(contracts.ActionStudioEpisodeSaveScript, map[string]any{
+		"episode_id": detail1.ActiveEpisode.Episode.ID,
+		"raw_script": "Cảnh mở đầu giữ nguyên sau khi đổi thư mục gốc.",
+	})
+	if err != nil || !saveFirst.Success {
+		t.Fatalf("First Film episode_save_script after hot-reload failed: err=%v resp=%+v", err, saveFirst.Error)
 	}
 
 	// New project should be created inside the updated ProjectsDir
@@ -891,5 +909,123 @@ func TestCore_StudioWorkspaceRootHotReloadAndWorkflowGuard(t *testing.T) {
 	outsideFile := filepath.Join(untrustedDir, "evil.json")
 	if err := c.Agent().CheckTrustedFile(outsideFile, true); err == nil {
 		t.Fatalf("CheckTrustedFile should reject untrusted path %q", outsideFile)
+	}
+
+	// Restart Core with same Paths/DB and verify "First Film" remains trusted and accessible
+	ws.CloseNow()
+	if err := c.Close(); err != nil {
+		t.Fatalf("core.Close #1: %v", err)
+	}
+
+	token2, _ := security.NewToken()
+	c2, err := core.New(ctx, core.Options{
+		Config:        cfg,
+		Paths:         p,
+		Logger:        slog.New(slog.DiscardHandler),
+		AuthToken:     token2,
+		OpenDirectory: func(string) error { return nil },
+		HTTPClient:    http.DefaultClient,
+	})
+	if err != nil {
+		t.Fatalf("core.New #2: %v", err)
+	}
+	if err := c2.Start(); err != nil {
+		t.Fatalf("core.Start #2: %v", err)
+	}
+	defer func() { _ = c2.Close() }()
+
+	if err := c2.Agent().CheckTrustedFile(firstFilmArtifact, true); err != nil {
+		t.Fatalf("CheckTrustedFile should permit First Film artifact %q after restart: %v", firstFilmArtifact, err)
+	}
+	ws2, call2 := dialCoreWS(t, c2.WSURL(), token2)
+	defer ws2.CloseNow()
+	getFirst, err := call2(contracts.ActionStudioProjectGet, map[string]any{"id": detail1.Project.ID})
+	if err != nil || !getFirst.Success {
+		t.Fatalf("studio:project_get First Film after restart failed: err=%v resp=%+v", err, getFirst.Error)
+	}
+}
+
+func TestCore_ServerModeBlocksMediaRegisterInputRootPoisoningAndDownload(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	p := paths.Paths{
+		Config: filepath.Join(tmp, "config"),
+		Data:   filepath.Join(tmp, "data"),
+		Logs:   filepath.Join(tmp, "logs"),
+	}
+	if err := p.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default(config.ModeServer)
+	cfg.Server.Host = "127.0.0.1"
+	cfg.Server.Port = 0
+	cfg.Providers.CheckOnStartup = false
+	cfg.Providers.AutoCheck = false
+	token, _ := security.NewToken()
+
+	c, err := core.New(ctx, core.Options{
+		Config:        cfg,
+		Paths:         p,
+		Logger:        slog.New(slog.DiscardHandler),
+		AuthToken:     token,
+		OpenDirectory: func(string) error { return nil },
+		HTTPClient:    http.DefaultClient,
+	})
+	if err != nil {
+		t.Fatalf("core.New server: %v", err)
+	}
+	if err := c.Start(); err != nil {
+		t.Fatalf("core.Start server: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	ws, call := dialCoreWS(t, c.WSURL(), token)
+	defer ws.CloseNow()
+
+	outsideDir := t.TempDir()
+	outsideImg := filepath.Join(outsideDir, "host_secret.png")
+	if err := os.WriteFile(outsideImg, []byte("secret-png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Remote client attempts media:register_input on untrusted host path -> MUST fail with ERR_UNAUTHORIZED
+	regResp, err := call(contracts.ActionMediaRegisterInput, map[string]any{
+		"file_path": outsideImg,
+	})
+	if err != nil {
+		t.Fatalf("media:register_input transport err: %v", err)
+	}
+	if regResp.Success || regResp.Error == nil || regResp.Error.Code != "ERR_UNAUTHORIZED" {
+		t.Fatalf("expected ERR_UNAUTHORIZED on server media:register_input, got success=%v err=%+v", regResp.Success, regResp.Error)
+	}
+
+	// 2. Subsequent GET /api/media/download?path=<outsideImg> MUST be 403 Forbidden (allowedRoots was NOT poisoned)
+	httpBase := "http" + c.WSURL()[len("ws"):len(c.WSURL())-len("/ws")]
+	dlReq, _ := http.NewRequest(http.MethodGet, httpBase+"/api/media/download?path="+url.QueryEscape(outsideImg), nil)
+	dlReq.Header.Set("Authorization", "Bearer "+token)
+	dlResp, err := (&http.Client{Timeout: 5 * time.Second}).Do(dlReq)
+	if err != nil {
+		t.Fatalf("download request failed: %v", err)
+	}
+	_ = dlResp.Body.Close()
+	if dlResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for outside path download in server mode, got %d", dlResp.StatusCode)
+	}
+
+	// 3. Even inside MediaDir, secret/non-media files (.env, secrets.enc) cannot be downloaded via ?path=
+	mediaSecret := filepath.Join(c.WorkspaceTree().MediaDir, "secrets.enc")
+	if err := os.WriteFile(mediaSecret, []byte("encrypted-keys"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secReq, _ := http.NewRequest(http.MethodGet, httpBase+"/api/media/download?path=secrets.enc", nil)
+	secReq.Header.Set("Authorization", "Bearer "+token)
+	secResp, err := (&http.Client{Timeout: 5 * time.Second}).Do(secReq)
+	if err != nil {
+		t.Fatalf("download secrets.enc request failed: %v", err)
+	}
+	_ = secResp.Body.Close()
+	if secResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for secrets.enc inside mediaDir, got %d", secResp.StatusCode)
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+
+	"app/internal/apperr"
 )
 
 // AccessPolicy decides which files DezuxkStudio's agent may touch.
@@ -25,9 +27,11 @@ type AccessPolicy struct {
 	mu           sync.RWMutex
 	dataDir      string
 	workspaceDir string
+	projectsDir  string
 	mediaDir     string
 	stagingDir   string
 	profilesDir  string
+	legacyRoots  []string // preserved built-in studio/media roots across workspace hot-reloads
 	trustedDirs  []string
 	protected    []string // absolute directories that are always off-limits
 	devMode      bool
@@ -99,6 +103,39 @@ func (p *AccessPolicy) SetWorkspaceDirs(workspaceDir, mediaDir, stagingDir strin
 	p.stagingDir = normalizeAbsPath(stagingDir)
 }
 
+// SetProjectsDir updates DezuxkStudio's active studio projects directory at runtime under mutex lock.
+func (p *AccessPolicy) SetProjectsDir(projectsDir string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.projectsDir = normalizeAbsPath(projectsDir)
+}
+
+// AddLegacyRoots retains previous built-in studio/media roots (including default <Data>/studio/* directories)
+// so existing projects and assets remain accessible after switching WorkspaceRoot.
+func (p *AccessPolicy) AddLegacyRoots(dirs ...string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	seen := make(map[string]struct{}, len(p.legacyRoots))
+	for _, existing := range p.legacyRoots {
+		seen[pathKey(existing)] = struct{}{}
+	}
+	for _, d := range dirs {
+		norm := normalizeAbsPath(d)
+		if norm == "" {
+			continue
+		}
+		if resolved, err := resolvePathFollowAncestors(norm); err == nil {
+			norm = resolved
+		}
+		key := pathKey(norm)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		p.legacyRoots = append(p.legacyRoots, norm)
+	}
+}
+
 // FileClass groups file extensions by what the agent may do with them.
 type FileClass string
 
@@ -115,7 +152,7 @@ const (
 var textExtensions = map[string]bool{
 	".txt": true, ".md": true, ".markdown": true, ".json": true, ".jsonl": true,
 	".srt": true, ".vtt": true, ".ass": true, ".ssa": true, ".lrc": true, ".sbv": true,
-	".csv": true, ".tsv": true, ".xml": true, ".log": true,
+	".csv": true, ".tsv": true, ".xml": true, ".fcpxml": true, ".otio": true, ".log": true,
 }
 
 var imageExtensions = map[string]bool{
@@ -137,7 +174,7 @@ var documentExtensions = map[string]bool{
 	".odt": true, ".ods": true, ".odp": true, ".rtf": true, ".psd": true, ".ai": true, ".svg": false,
 	".zip": true, ".rar": true, ".7z": true, ".tar": true, ".gz": true,
 	".ttf": true, ".otf": true, ".woff": true, ".woff2": true,
-	".prproj": true, ".aep": true, ".drp": true, ".fcpxml": true, ".kdenlive": true, ".cube": true,
+	".prproj": true, ".aep": true, ".drp": true, ".kdenlive": true, ".cube": true,
 }
 
 // readableDocumentExtensions are document formats whose plain text can be extracted via workspace_read_document.
@@ -195,7 +232,7 @@ var forbiddenExtensions = map[string]bool{
 	".application": true, ".gadget": true, ".workflow": true, ".command": true,
 	// Secrets and databases.
 	".env": true, ".pem": true, ".key": true, ".crt": true, ".cer": true, ".p12": true, ".pfx": true, ".jks": true,
-	".keystore": true, ".kdbx": true, ".kdb": true, ".gpg": true, ".asc": true, ".ovpn": true, ".rdp": true,
+	".keystore": true, ".kdbx": true, ".kdb": true, ".gpg": true, ".asc": true, ".enc": true, ".ovpn": true, ".rdp": true,
 	".db": true, ".sqlite": true, ".sqlite3": true, ".mdb": true, ".accdb": true,
 }
 
@@ -205,7 +242,7 @@ var forbiddenFileNames = map[string]bool{
 	".gitconfig": true, ".bashrc": true, ".zshrc": true, ".profile": true, ".bash_profile": true, ".bash_history": true,
 	".zsh_history": true, "known_hosts": true, "authorized_keys": true, "id_rsa": true, "id_dsa": true, "id_ecdsa": true,
 	"id_ed25519": true, "credentials": true, "credentials.json": true, "client_secret.json": true, "service-account.json": true,
-	"auth.json": true, "token.json": true, "secrets.json": true, "login data": true, "cookies": true, "web data": true,
+	"auth.json": true, "token.json": true, "secrets.json": true, "secrets.enc": true, "master.key": true, "login data": true, "cookies": true, "web data": true,
 	"package.json": true, "package-lock.json": true, "tsconfig.json": true, "jsconfig.json": true, "composer.json": true,
 	"wails.json": true, "deno.json": true, "go.work": true, "dockerfile": true, "makefile": true, "cmakelists.txt": true,
 	"requirements.txt": true, "pipfile": true, "gemfile": true, "cargo.lock": true, "yarn.lock": true, "pnpm-lock.yaml": true,
@@ -268,17 +305,45 @@ func containsDOSDeviceSegment(p string) bool {
 	return false
 }
 
+var internalProtectedSubdirs = []string{
+	"backups", "diagnostics", "logs", "secrets", "tools", "agent-profiles", "agent-customizations", "agent-cli",
+}
+
 // NewAccessPolicy constructs the policy. allowedDirs are user-granted trusted folders.
 func NewAccessPolicy(dataDir, workspaceDir, mediaDir, profilesDir string, allowedDirs []string) *AccessPolicy {
+	normWS := normalizeAbsPath(workspaceDir)
+	projDir := ""
+	if normWS != "" {
+		projDir = filepath.Join(normWS, "projects")
+	}
 	p := &AccessPolicy{
 		dataDir:      normalizeAbsPath(dataDir),
-		workspaceDir: normalizeAbsPath(workspaceDir),
+		workspaceDir: normWS,
+		projectsDir:  projDir,
 		mediaDir:     normalizeAbsPath(mediaDir),
 		profilesDir:  normalizeAbsPath(profilesDir),
 	}
 	p.protected = p.buildProtectedDirs()
+	p.seedExistingDefaultStudioRoots()
 	p.SetAllowedDirs(allowedDirs)
 	return p
+}
+
+func (p *AccessPolicy) seedExistingDefaultStudioRoots() {
+	if p.dataDir == "" {
+		return
+	}
+	studioRoot := filepath.Join(p.dataDir, "studio")
+	for _, cand := range []string{
+		filepath.Join(studioRoot, "workspace"),
+		filepath.Join(studioRoot, "workspace", "projects"),
+		filepath.Join(studioRoot, "media"),
+		filepath.Join(p.dataDir, "media"),
+	} {
+		if fi, err := os.Stat(cand); err == nil && fi.IsDir() {
+			p.AddLegacyRoots(cand)
+		}
+	}
 }
 
 func (p *AccessPolicy) buildProtectedDirs() []string {
@@ -290,7 +355,7 @@ func (p *AccessPolicy) buildProtectedDirs() []string {
 	}
 	add(p.profilesDir)
 	if p.dataDir != "" {
-		for _, sub := range []string{"backups", "diagnostics", "logs", "tools", "agent-profiles", "agent-customizations", "agent-cli"} {
+		for _, sub := range internalProtectedSubdirs {
 			add(filepath.Join(p.dataDir, sub))
 		}
 	}
@@ -360,8 +425,12 @@ func (p *AccessPolicy) Roots() []string {
 	}
 
 	add(p.workspaceDir)
+	add(p.projectsDir)
 	add(p.mediaDir)
 	add(p.stagingDir)
+	for _, lr := range p.legacyRoots {
+		add(lr)
+	}
 	for _, td := range p.trustedDirs {
 		add(td)
 	}
@@ -480,7 +549,7 @@ func (p *AccessPolicy) ValidateWorkspaceRootCandidate(raw string) (string, error
 
 	// Check protected directories: dataDir, OS system folders, AppData
 	if p.dataDir != "" && isWithinDir(resolved, p.dataDir) {
-		return "", fmt.Errorf("access denied: workspace root cannot be inside DezuxkStudio internal data directory (%q)", resolved)
+		return "", fmt.Errorf("access denied: workspace root cannot be inside DezuxkStudio internal data directory")
 	}
 
 	p.mu.RLock()
@@ -490,7 +559,7 @@ func (p *AccessPolicy) ValidateWorkspaceRootCandidate(raw string) (string, error
 
 	for _, dir := range protectedList {
 		if isWithinDir(resolved, dir) {
-			return "", fmt.Errorf("access denied: workspace root cannot be inside protected system or application data folder (%q)", resolved)
+			return "", fmt.Errorf("access denied: workspace root cannot be inside protected system or application data folder")
 		}
 	}
 
@@ -601,7 +670,7 @@ func (p *AccessPolicy) protectedReason(resolved string) string {
 		if pathKey(resolved) == pathKey(p.dataDir) {
 			return "DezuxkStudio's internal data directory"
 		}
-		for _, sub := range []string{"backups", "diagnostics", "logs", "tools", "agent-profiles", "agent-customizations", "agent-cli"} {
+		for _, sub := range internalProtectedSubdirs {
 			if isWithinDir(resolved, filepath.Join(p.dataDir, sub)) {
 				return "DezuxkStudio's internal " + sub + " location"
 			}
@@ -781,6 +850,7 @@ func (p *AccessPolicy) ValidateDelete(raw string) (string, error) {
 	}
 	p.mu.RLock()
 	ws := p.workspaceDir
+	projects := p.projectsDir
 	media := p.mediaDir
 	staging := p.stagingDir
 	p.mu.RUnlock()
@@ -788,6 +858,9 @@ func (p *AccessPolicy) ValidateDelete(raw string) (string, error) {
 		if parent := filepath.Dir(ws); parent != ws && pathKey(parent) == targetKey {
 			return "", fmt.Errorf("access denied: cannot delete DezuxkStudio workspace root folder")
 		}
+	}
+	if projects != "" && pathKey(projects) == targetKey {
+		return "", fmt.Errorf("access denied: cannot delete DezuxkStudio studio projects directory")
 	}
 	if media != "" && pathKey(media) == targetKey {
 		return "", fmt.Errorf("access denied: cannot delete DezuxkStudio media directory")
@@ -895,15 +968,42 @@ func pathKey(p string) string {
 	return strings.ToLower(filepath.Clean(p))
 }
 
+func isExplicitlyForbiddenBase(base string) bool {
+	return forbiddenFileNames[base] ||
+		base == ".env" || strings.HasPrefix(base, ".env.") ||
+		strings.HasPrefix(base, "id_rsa") || strings.HasPrefix(base, "id_ed25519") || strings.HasPrefix(base, "id_ecdsa")
+}
+
 // CheckTrustedFile is an engine.FileGuard for clients that must stay inside the trusted roots (workspace,
-// media, user-granted folders): the path must pass the policy and lie inside one of those roots.
-func (p *AccessPolicy) CheckTrustedFile(path string, _ bool) error {
+// projects, media, staging, user-granted folders): the path must pass the policy, stay outside protected
+// directories, and never target forbidden secret/code/binary/database files.
+// Returned errors never expose server host directory paths in their message.
+func (p *AccessPolicy) CheckTrustedFile(path string, write bool) error {
 	resolved, err := p.Resolve(path)
 	if err != nil {
-		return err
+		return apperr.New(apperr.CodeUnauthorized, "access denied: path is outside trusted workspace or inside a protected location")
 	}
-	if !p.IsTrusted(resolved) {
-		return fmt.Errorf("access denied: %q is outside DezuxkStudio's media, workspace and trusted folders", path)
+	if p.protectedReason(resolved) != "" || !p.IsTrusted(resolved) {
+		return apperr.New(apperr.CodeUnauthorized, "access denied: path is outside trusted workspace or inside a protected location")
+	}
+
+	st, statErr := os.Stat(resolved)
+	if statErr == nil {
+		if st.IsDir() {
+			return nil
+		}
+	} else if !os.IsNotExist(statErr) {
+		return apperr.New(apperr.CodeUnauthorized, "access denied: cannot verify target path")
+	}
+
+	base := strings.ToLower(filepath.Base(resolved))
+	if write && os.IsNotExist(statErr) && filepath.Ext(base) == "" && !isExplicitlyForbiddenBase(base) {
+		// Allow pre-flight directory creation checks (e.g. os.MkdirAll on a new output folder inside a trusted root).
+		return nil
+	}
+
+	if p.classifyForPolicy(resolved) == FileClassForbidden {
+		return apperr.New(apperr.CodeUnauthorized, "access denied: operation on restricted code, executable, database, or secret file is forbidden")
 	}
 	return nil
 }

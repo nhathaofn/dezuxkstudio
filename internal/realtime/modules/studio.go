@@ -12,7 +12,7 @@ import (
 // Studio exposes studio:* realtime actions.
 type Studio struct {
 	Service *studiosvc.Service
-	// FileGuard, when set (headless server mode), constrains node file access during RunStage.
+	// FileGuard, when set (headless server mode), constrains local file access across all studio operations.
 	FileGuard engine.FileGuard
 	// LockHostAdmin disables studio:open_export_folder in headless server mode unless server.allow_host_admin is enabled.
 	LockHostAdmin bool
@@ -23,25 +23,22 @@ func (Studio) Name() string { return "studio" }
 func (s Studio) Register(r *realtime.Registry) {
 	realtime.Handle(r, contracts.ActionStudioProjectList,
 		func(ctx context.Context, _ *realtime.Request, _ contracts.Empty) (contracts.StudioProjectListResult, error) {
-			return s.Service.ListProjects(ctx)
+			return s.Service.ListProjects(engine.WithFileGuard(ctx, s.FileGuard))
 		})
 
 	realtime.Handle(r, contracts.ActionStudioProjectCreate,
 		func(ctx context.Context, _ *realtime.Request, p contracts.StudioProjectCreatePayload) (contracts.StudioProjectDetailResult, error) {
-			return s.Service.CreateProject(ctx, p)
+			return s.Service.CreateProject(engine.WithFileGuard(ctx, s.FileGuard), p)
 		})
 
 	realtime.Handle(r, contracts.ActionStudioProjectGet,
 		func(ctx context.Context, _ *realtime.Request, p contracts.StudioIDPayload) (contracts.StudioProjectDetailResult, error) {
-			if err := p.Validate(); err != nil {
-				return contracts.StudioProjectDetailResult{}, err
-			}
-			return s.Service.GetProject(ctx, p.ID)
+			return s.Service.GetProject(engine.WithFileGuard(ctx, s.FileGuard), p.ID)
 		})
 
 	realtime.Handle(r, contracts.ActionStudioProjectUpdate,
 		func(ctx context.Context, _ *realtime.Request, p contracts.StudioProjectUpdatePayload) (contracts.StudioProjectDetailResult, error) {
-			return s.Service.UpdateProject(ctx, p)
+			return s.Service.UpdateProject(engine.WithFileGuard(ctx, s.FileGuard), p)
 		})
 
 	realtime.Handle(r, contracts.ActionStudioProjectDelete,
@@ -54,15 +51,12 @@ func (s Studio) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionStudioEpisodeCreate,
 		func(ctx context.Context, _ *realtime.Request, p contracts.StudioEpisodeCreatePayload) (contracts.StudioEpisodeDetailResult, error) {
-			return s.Service.CreateEpisode(ctx, p)
+			return s.Service.CreateEpisode(engine.WithFileGuard(ctx, s.FileGuard), p)
 		})
 
 	realtime.Handle(r, contracts.ActionStudioEpisodeGet,
 		func(ctx context.Context, _ *realtime.Request, p contracts.StudioIDPayload) (contracts.StudioEpisodeDetailResult, error) {
-			if err := p.Validate(); err != nil {
-				return contracts.StudioEpisodeDetailResult{}, err
-			}
-			return s.Service.GetEpisode(ctx, p.ID)
+			return s.Service.GetEpisode(engine.WithFileGuard(ctx, s.FileGuard), p.ID)
 		})
 
 	realtime.Handle(r, contracts.ActionStudioEpisodeSaveScript,
@@ -82,7 +76,7 @@ func (s Studio) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionStudioShotReorder,
 		func(ctx context.Context, _ *realtime.Request, p contracts.StudioShotReorderPayload) (contracts.StudioShotListResult, error) {
-			return s.Service.ReorderShots(ctx, p)
+			return s.Service.ReorderShots(engine.WithFileGuard(ctx, s.FileGuard), p)
 		})
 
 	realtime.Handle(r, contracts.ActionStudioEpisodeRunStage,
@@ -102,7 +96,7 @@ func (s Studio) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionStudioQueueControl,
 		func(ctx context.Context, _ *realtime.Request, p contracts.StudioQueueControlPayload) (contracts.StudioQueueControlResult, error) {
-			return s.Service.ControlQueue(ctx, p)
+			return s.Service.ControlQueue(engine.WithFileGuard(ctx, s.FileGuard), p)
 		})
 
 	realtime.Handle(r, contracts.ActionStudioCostSummary,
@@ -152,9 +146,6 @@ func (s Studio) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionStudioTimelineGet,
 		func(ctx context.Context, _ *realtime.Request, p contracts.StudioIDPayload) (contracts.StudioTimelineResult, error) {
-			if err := p.Validate(); err != nil {
-				return contracts.StudioTimelineResult{}, err
-			}
 			return s.Service.GetTimeline(engine.WithFileGuard(ctx, s.FileGuard), p.ID)
 		})
 

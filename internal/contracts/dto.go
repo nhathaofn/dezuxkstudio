@@ -748,13 +748,16 @@ type MediaSignURLPayload struct {
 	TTLSeconds int    `json:"ttl_seconds,omitempty"` // optional custom TTL in seconds
 }
 
-// Validate checks the asset ID and optional purpose.
+// Validate checks the asset ID, optional purpose, and non-negative TTL.
 func (p MediaSignURLPayload) Validate() error {
 	if strings.TrimSpace(p.AssetID) == "" {
 		return apperr.Validation("asset_id is required")
 	}
 	if p.Purpose != "" && p.Purpose != "preview" && p.Purpose != "download" {
 		return apperr.Validation(fmt.Sprintf("invalid purpose %q: must be preview or download", p.Purpose))
+	}
+	if p.TTLSeconds < 0 {
+		return apperr.Validation("ttl_seconds must be >= 0")
 	}
 	return nil
 }

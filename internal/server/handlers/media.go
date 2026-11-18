@@ -20,6 +20,8 @@ import (
 
 	"app/internal/apperr"
 	"app/internal/config"
+	"app/internal/engine"
+	"app/internal/fsutil"
 	"app/internal/security"
 )
 
@@ -40,6 +42,7 @@ type mediaDownloadConfig struct {
 	mediaDirFunc   func() string
 	ticketSigner   *security.TicketSigner
 	assetResolver  AssetResolver
+	fileGuard      engine.FileGuard
 	authToken      string
 	allowAnonymous bool
 	enforceAuth    bool
@@ -69,6 +72,13 @@ func WithAssetResolver(resolver AssetResolver) MediaDownloadOption {
 	}
 }
 
+// WithFileGuard sets an optional FileGuard enforced against resolved download targets (e.g. headless server mode).
+func WithFileGuard(guard engine.FileGuard) MediaDownloadOption {
+	return func(c *mediaDownloadConfig) {
+		c.fileGuard = guard
+	}
+}
+
 // WithAuth configures master token or anonymous authentication for MediaDownload.
 func WithAuth(token string, allowAnonymous bool) MediaDownloadOption {
 	return func(c *mediaDownloadConfig) {
@@ -82,8 +92,10 @@ const (
 	// MediaStagingSubdir holds HTTP-uploaded inputs and their sibling outputs under MediaDir.
 	MediaStagingSubdir = "staging"
 
+	// maxMultipartMemory bounds in-memory multipart form buffering before Go spills upload parts to temp files.
 	maxMultipartMemory = 8 << 20
-	maxFilenameRunes   = 80
+	// maxFilenameRunes bounds sanitized upload stem length so Windows MAX_PATH limits are never exceeded in staging subdirs.
+	maxFilenameRunes = 80
 )
 
 var allowedImageContentTypes = map[string]string{
@@ -97,11 +109,17 @@ var downloadMimeByExt = map[string]string{
 	".jpg":    "image/jpeg",
 	".jpeg":   "image/jpeg",
 	".webp":   "image/webp",
+	".gif":    "image/gif",
+	".bmp":    "image/bmp",
+	".tif":    "image/tiff",
+	".tiff":   "image/tiff",
+	".avif":   "image/avif",
 	".mp4":    "video/mp4",
 	".m4v":    "video/x-m4v",
 	".mov":    "video/quicktime",
 	".webm":   "video/webm",
 	".mkv":    "video/x-matroska",
+	".avi":    "video/x-msvideo",
 	".mp3":    "audio/mpeg",
 	".wav":    "audio/wav",
 	".ogg":    "audio/ogg",
@@ -114,7 +132,22 @@ var downloadMimeByExt = map[string]string{
 	".otio":   "application/json; charset=utf-8",
 	".json":   "application/json; charset=utf-8",
 	".srt":    "text/plain; charset=utf-8",
+	".vtt":    "text/vtt; charset=utf-8",
 	".ass":    "text/plain; charset=utf-8",
+}
+
+var restrictedDownloadFilenames = map[string]bool{
+	"credentials.json":     true,
+	"client_secret.json":   true,
+	"service-account.json": true,
+	"auth.json":            true,
+	"token.json":           true,
+	"secrets.json":         true,
+	"package.json":         true,
+	"package-lock.json":    true,
+	"tsconfig.json":        true,
+	"jsconfig.json":        true,
+	"wails.json":           true,
 }
 
 type mediaUploadResponse struct {
@@ -191,23 +224,20 @@ func MediaUpload(mediaDir string, maxBytes int64) http.Handler {
 			return
 		}
 
-		f, err := os.OpenFile(destPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err != nil {
-			_ = os.RemoveAll(destDir)
-			writeError(w, http.StatusInternalServerError, apperr.Wrap(apperr.CodeInternal, "failed to store uploaded file", err))
-			return
-		}
-
-		written, copyErr := io.Copy(f, io.MultiReader(bytes.NewReader(sniff[:n]), src))
-		closeErr := f.Close()
-		if copyErr != nil || closeErr != nil {
+		var written int64
+		writeErr := fsutil.WriteAtomic(destPath, 0o600, func(dst io.Writer) error {
+			var cerr error
+			written, cerr = io.Copy(dst, io.MultiReader(bytes.NewReader(sniff[:n]), src))
+			return cerr
+		})
+		if writeErr != nil {
 			_ = os.RemoveAll(destDir)
 			var maxErr *http.MaxBytesError
-			if errors.As(copyErr, &maxErr) {
+			if errors.As(writeErr, &maxErr) {
 				writeError(w, http.StatusRequestEntityTooLarge, apperr.Validation("uploaded file exceeds maximum size"))
 				return
 			}
-			writeError(w, http.StatusInternalServerError, apperr.New(apperr.CodeInternal, "failed to save uploaded file"))
+			writeError(w, http.StatusInternalServerError, apperr.Wrap(apperr.CodeInternal, "failed to save uploaded file", writeErr))
 			return
 		}
 
@@ -220,7 +250,7 @@ func MediaUpload(mediaDir string, maxBytes int64) http.Handler {
 }
 
 // MediaDownload handles GET /api/media/download supporting asset_id with signed HMAC tickets
-// or valid Bearer tokens, as well as legacy path resolution inside mediaDir.
+// or valid Bearer tokens, as well as authorized path resolution inside mediaDir.
 // It streams files using http.ServeContent to support HTTP 206 Range requests and video seeking.
 func MediaDownload(mediaDir string, opts ...MediaDownloadOption) http.Handler {
 	cfg := mediaDownloadConfig{}
@@ -294,7 +324,7 @@ func MediaDownload(mediaDir string, opts ...MediaDownloadOption) http.Handler {
 					writeError(w, http.StatusForbidden, apperr.New(apperr.CodeUnauthorized, "invalid ticket signature"))
 					return
 				}
-				writeError(w, http.StatusForbidden, apperr.New(apperr.CodeUnauthorized, err.Error()))
+				writeError(w, http.StatusForbidden, apperr.Wrap(apperr.CodeUnauthorized, "invalid media ticket", err))
 				return
 			}
 			purpose = claims.Purpose
@@ -386,6 +416,13 @@ func MediaDownload(mediaDir string, opts ...MediaDownloadOption) http.Handler {
 			}
 		}
 
+		if cfg.fileGuard != nil {
+			if err := cfg.fileGuard(realTarget, false); err != nil {
+				writeError(w, http.StatusForbidden, apperr.New(apperr.CodeUnauthorized, "access denied by file policy"))
+				return
+			}
+		}
+
 		info, err := os.Stat(realTarget)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -400,18 +437,20 @@ func MediaDownload(mediaDir string, opts ...MediaDownloadOption) http.Handler {
 			return
 		}
 
+		lowerBase := strings.ToLower(filepath.Base(realTarget))
+		ext := strings.ToLower(filepath.Ext(lowerBase))
+		contentType := downloadMimeByExt[ext]
+		if contentType == "" || strings.HasPrefix(lowerBase, ".") || restrictedDownloadFilenames[lowerBase] {
+			writeError(w, http.StatusForbidden, apperr.New(apperr.CodeUnauthorized, "unsupported or restricted media file type"))
+			return
+		}
+
 		f, err := os.Open(realTarget)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, apperr.Wrap(apperr.CodeInternal, "failed to open media file", err))
 			return
 		}
 		defer func() { _ = f.Close() }()
-
-		ext := strings.ToLower(filepath.Ext(realTarget))
-		contentType := downloadMimeByExt[ext]
-		if contentType == "" {
-			contentType = "application/octet-stream"
-		}
 
 		dispositionType := "attachment"
 		if purpose == security.PurposePreview {
@@ -454,8 +493,8 @@ func RunStagingCleanupWithGuard(ctx context.Context, dir string, ttl, interval t
 		stagingDir = filepath.Join(dir, MediaStagingSubdir)
 	}
 	clean := func() {
-		if err := CleanupStagingDirWhere(stagingDir, ttl, time.Now(), shouldSkip); err != nil && log != nil {
-			log.Warn("media: staging cleanup failed", "error", err)
+		if err := CleanupStagingDirWhereContext(ctx, stagingDir, ttl, time.Now(), shouldSkip); err != nil && !errors.Is(err, context.Canceled) && log != nil {
+			log.WarnContext(ctx, "media: staging cleanup failed", "error", err)
 		}
 	}
 	clean()
@@ -474,13 +513,21 @@ func RunStagingCleanupWithGuard(ctx context.Context, dir string, ttl, interval t
 
 // CleanupStagingDir removes staging entries whose newest file mtime is older than maxAge relative to now.
 func CleanupStagingDir(stagingDir string, maxAge time.Duration, now time.Time) error {
-	return CleanupStagingDirWhere(stagingDir, maxAge, now, nil)
+	return CleanupStagingDirWhereContext(context.Background(), stagingDir, maxAge, now, nil)
 }
 
 // CleanupStagingDirWhere removes staging entries older than maxAge unless shouldSkip returns true for their path.
 func CleanupStagingDirWhere(stagingDir string, maxAge time.Duration, now time.Time, shouldSkip func(path string) bool) error {
+	return CleanupStagingDirWhereContext(context.Background(), stagingDir, maxAge, now, shouldSkip)
+}
+
+// CleanupStagingDirWhereContext removes staging entries older than maxAge while honouring ctx cancellation.
+func CleanupStagingDirWhereContext(ctx context.Context, stagingDir string, maxAge time.Duration, now time.Time, shouldSkip func(path string) bool) error {
 	if maxAge <= 0 || strings.TrimSpace(stagingDir) == "" {
 		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	entries, err := os.ReadDir(stagingDir)
 	if err != nil {
@@ -492,12 +539,18 @@ func CleanupStagingDirWhere(stagingDir string, maxAge time.Duration, now time.Ti
 
 	cutoff := now.Add(-maxAge)
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		p := filepath.Join(stagingDir, entry.Name())
 		if shouldSkip != nil && shouldSkip(p) {
 			continue
 		}
-		latest, err := latestModTime(p)
+		latest, err := latestModTime(ctx, p)
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
 			continue
 		}
 		if latest.Before(cutoff) {
@@ -507,7 +560,7 @@ func CleanupStagingDirWhere(stagingDir string, maxAge time.Duration, now time.Ti
 	return nil
 }
 
-func latestModTime(root string) (time.Time, error) {
+func latestModTime(ctx context.Context, root string) (time.Time, error) {
 	info, err := os.Stat(root)
 	if err != nil {
 		return time.Time{}, err
@@ -516,8 +569,11 @@ func latestModTime(root string) (time.Time, error) {
 	if !info.IsDir() {
 		return latest, nil
 	}
-	_ = filepath.WalkDir(root, func(_ string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
+	walkErr := filepath.WalkDir(root, func(_ string, d fs.DirEntry, wErr error) error {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		if wErr != nil {
 			return nil
 		}
 		fi, err := d.Info()
@@ -529,6 +585,9 @@ func latestModTime(root string) (time.Time, error) {
 		}
 		return nil
 	})
+	if errors.Is(walkErr, context.Canceled) || errors.Is(walkErr, context.DeadlineExceeded) {
+		return time.Time{}, walkErr
+	}
 	return latest, nil
 }
 

@@ -48,6 +48,7 @@ type Options struct {
 	MaxApprovalContinuations int                // max chained continuation turns after approval
 	DataDir                  string
 	WorkspaceDir             string
+	ProjectsDir              string
 	MediaDir                 string
 	StagingDir               string
 	ProfilesDir              string
@@ -206,7 +207,7 @@ func New(o Options) (*Service, error) {
 	}
 	maxContinuations := o.MaxApprovalContinuations
 	if maxContinuations <= 0 {
-		maxContinuations = 5
+		maxContinuations = limits.MaxApprovalContinuations
 	}
 	s := &Service{
 		repo:                     o.Repo,
@@ -295,6 +296,9 @@ func New(o Options) (*Service, error) {
 	if o.StagingDir != "" {
 		s.policy.SetWorkspaceDirs(o.WorkspaceDir, o.MediaDir, o.StagingDir)
 	}
+	if o.ProjectsDir != "" {
+		s.policy.SetProjectsDir(o.ProjectsDir)
+	}
 	if s.approvalRepo != nil {
 		if recErr := s.approvalRepo.RecoverAmbiguousApprovals(context.Background()); recErr != nil {
 			s.log.Warn("agent: failed to recover ambiguous approvals", "error", recErr)
@@ -342,6 +346,16 @@ func (s *Service) SetWorkspaceDirs(workspaceDir, mediaDir string) {
 	s.mu.Unlock()
 
 	s.closeCodexAppServer()
+}
+
+// SetProjectsDir updates the studio projects root directory on the access policy.
+func (s *Service) SetProjectsDir(projectsDir string) {
+	s.policy.SetProjectsDir(projectsDir)
+}
+
+// AddLegacyRoots retains previous built-in studio/media roots on the access policy across workspace switches.
+func (s *Service) AddLegacyRoots(dirs ...string) {
+	s.policy.AddLegacyRoots(dirs...)
 }
 
 // SetSkipTrustedApproval updates whether destructive file operations in trusted directories can be auto-approved.

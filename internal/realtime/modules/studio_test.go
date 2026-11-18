@@ -170,7 +170,15 @@ func TestStudioModule_RegisterDispatchAndFileGuard(t *testing.T) {
 	}
 
 	hTimelineGet, _ := reg.Lookup(contracts.ActionStudioTimelineGet)
-	if _, err := hTimelineGet(context.Background(), &realtime.Request{}, []byte(`{"episode_id":"   "}`)); !apperr.IsCode(err, apperr.CodeValidation) {
-		t.Fatalf("expected ERR_VALIDATION for blank episode_id on ActionStudioTimelineGet, got %v", err)
+	if _, err := hTimelineGet(context.Background(), &realtime.Request{}, []byte(`{"id":"   "}`)); !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected ERR_VALIDATION for blank id on ActionStudioTimelineGet, got %v", err)
+	}
+
+	// Verify ActionStudioProjectCreate value-receiver Validate() runs in realtime.Handle
+	if _, err := hCreate(context.Background(), &realtime.Request{}, []byte(`{"title":"   "}`)); !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected ERR_VALIDATION for blank title on ActionStudioProjectCreate, got %v", err)
+	}
+	if _, err := hCreate(context.Background(), &realtime.Request{}, []byte(`{"title":"Valid","genre":"invalid_genre"}`)); !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected ERR_VALIDATION for invalid genre on ActionStudioProjectCreate, got %v", err)
 	}
 }

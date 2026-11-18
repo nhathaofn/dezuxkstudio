@@ -12,6 +12,7 @@ import (
 	"app/internal/apperr"
 	"app/internal/config"
 	"app/internal/contracts"
+	"app/internal/engine"
 	"app/internal/security"
 	"app/internal/service/media"
 	"app/internal/storage/sqlite"
@@ -547,4 +548,98 @@ func TestMediaServiceConcurrency(t *testing.T) {
 		_ = svc.IsPathAuthorized(filepath.Join(tmpDir, "dir", "a", "file.png"))
 	}
 	<-done
+}
+
+func TestMediaServiceFailClosedFileGuardAndTTLCap(t *testing.T) {
+	tmpDir := t.TempDir()
+	mediaDir := filepath.Join(tmpDir, "media")
+	externalDir := filepath.Join(tmpDir, "external")
+	secretDir := filepath.Join(tmpDir, "secrets")
+	for _, d := range []string{mediaDir, externalDir, secretDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 1. Empty allowedRoots fails closed.
+	emptySvc := media.New(media.Options{Repo: newMemoryMediaRepo()})
+	extImg := filepath.Join(externalDir, "hero.png")
+	_ = os.WriteFile(extImg, []byte("png"), 0o644)
+	if emptySvc.IsPathAuthorized(extImg) {
+		t.Fatal("expected empty allowedRoots to fail closed")
+	}
+
+	signer := security.NewTicketSigner([]byte("test-key-32-bytes-long-for-guard-cap"))
+	svc := media.New(media.Options{
+		Repo:     newMemoryMediaRepo(),
+		Signer:   signer,
+		MediaDir: mediaDir,
+		Config: config.MediaConfig{
+			TicketTTL: 5 * time.Minute,
+		},
+	})
+
+	// 2. Server mode (WithFileGuard) blocks RegisterInput on untrusted path WITHOUT poisoning allowedRoots.
+	secretFile := filepath.Join(secretDir, "leak.png")
+	_ = os.WriteFile(secretFile, []byte("secret-bytes"), 0o644)
+	guardedCtx := engine.WithFileGuard(context.Background(), func(path string, _ bool) error {
+		if !strings.HasPrefix(strings.ToLower(filepath.Clean(path)), strings.ToLower(filepath.Clean(mediaDir))) {
+			return apperr.New(apperr.CodeUnauthorized, "access denied")
+		}
+		return nil
+	})
+	if _, err := svc.RegisterInput(guardedCtx, contracts.MediaRegisterInputPayload{FilePath: secretFile}); !apperr.IsCode(err, apperr.CodeUnauthorized) {
+		t.Fatalf("expected CodeUnauthorized on guarded RegisterInput, got %v", err)
+	}
+	if svc.IsPathAuthorized(secretFile) {
+		t.Fatal("guarded RegisterInput must NEVER add untrusted parent directory to allowedRoots")
+	}
+
+	// 3. Desktop mode (no FileGuard) registers external regular media file with RegisteredRoot = realDir,
+	// while rejecting non-media extensions (.env).
+	envFile := filepath.Join(externalDir, ".env")
+	_ = os.WriteFile(envFile, []byte("SECRET=1"), 0o600)
+	if _, err := svc.RegisterInput(context.Background(), contracts.MediaRegisterInputPayload{FilePath: envFile}); !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected non-media extension .env rejected, got %v", err)
+	}
+	extItem, err := svc.RegisterInput(context.Background(), contracts.MediaRegisterInputPayload{FilePath: extImg, Kind: "image"})
+	if err != nil {
+		t.Fatalf("desktop external media RegisterInput failed: %v", err)
+	}
+	if !strings.EqualFold(filepath.Clean(extItem.RegisteredRoot), filepath.Clean(externalDir)) {
+		t.Fatalf("expected RegisteredRoot=%q, got %q", externalDir, extItem.RegisteredRoot)
+	}
+
+	// 4. SignAssetURL rejects negative TTL and caps excessive TTL at TicketTTL (5m).
+	if _, err := svc.SignAssetURL(context.Background(), contracts.MediaSignURLPayload{
+		AssetID:    extItem.ID,
+		TTLSeconds: -10,
+	}); !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected negative TTLSeconds rejected, got %v", err)
+	}
+	maxValidExpiry := time.Now().Add(5*time.Minute + 5*time.Second).Unix()
+	signed, err := svc.SignAssetURL(context.Background(), contracts.MediaSignURLPayload{
+		AssetID:    extItem.ID,
+		TTLSeconds: 86400,
+	})
+	if err != nil {
+		t.Fatalf("SignAssetURL failed: %v", err)
+	}
+	if signed.ExpiresAt > maxValidExpiry {
+		t.Fatalf("expected ExpiresAt capped to ~5m (<= %d), got %d", maxValidExpiry, signed.ExpiresAt)
+	}
+
+	// 5. Delete(deleteFile: true) enforces FileGuard before os.Remove.
+	denyDeleteCtx := engine.WithFileGuard(context.Background(), func(_ string, write bool) error {
+		if write {
+			return apperr.New(apperr.CodeUnauthorized, "delete denied")
+		}
+		return nil
+	})
+	if err := svc.Delete(denyDeleteCtx, extItem.ID, true); !apperr.IsCode(err, apperr.CodeUnauthorized) {
+		t.Fatalf("expected Delete blocked by FileGuard, got %v", err)
+	}
+	if _, err := os.Stat(extImg); err != nil {
+		t.Fatalf("backing file must remain when FileGuard denies Delete: %v", err)
+	}
 }

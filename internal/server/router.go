@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"app/internal/engine"
 	"app/internal/realtime"
 	"app/internal/security"
 	"app/internal/server/handlers"
@@ -41,6 +42,7 @@ type RouterOptions struct {
 	MaxUploadBytes        int64
 	TicketSigner          *security.TicketSigner
 	AssetResolver         handlers.AssetResolver
+	FileGuard             engine.FileGuard
 	Logger                *slog.Logger
 }
 
@@ -82,6 +84,9 @@ func NewRouter(o RouterOptions) http.Handler {
 		}
 		if mediaDirGetter != nil {
 			opts = append(opts, handlers.WithMediaDirFunc(mediaDirGetter))
+		}
+		if o.FileGuard != nil {
+			opts = append(opts, handlers.WithFileGuard(o.FileGuard))
 		}
 		mux.Handle(PathMediaDownload, cors(handlers.MediaDownload(
 			o.MediaDir,

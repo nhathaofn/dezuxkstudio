@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"app/internal/apperr"
 	"app/internal/security"
 	"app/internal/server/middleware"
 )
@@ -827,5 +828,46 @@ func TestStagingCleanupWhere_ProtectsGuardedEntries(t *testing.T) {
 	}
 	if _, err := os.Stat(expiredLeased); err != nil {
 		t.Fatalf("expected guarded leased dir %q to remain: %v", expiredLeased, err)
+	}
+}
+
+func TestMediaDownloadRejectsRestrictedFilesAndHonoursFileGuard(t *testing.T) {
+	mediaDir := t.TempDir()
+	for _, restricted := range []string{".env", "secrets.enc", "app.db", "credentials.json", "notes.txt"} {
+		if err := os.WriteFile(filepath.Join(mediaDir, restricted), []byte("sensitive"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(mediaDir, "ok.png"), makeTestPNG(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h := MediaDownload(mediaDir)
+	for _, restricted := range []string{".env", "secrets.enc", "app.db", "credentials.json", "notes.txt"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/media/download?path="+url.QueryEscape(restricted), nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 Forbidden for restricted download %q, got %d (%s)", restricted, rec.Code, rec.Body.String())
+		}
+	}
+
+	guarded := MediaDownload(mediaDir, WithFileGuard(func(path string, _ bool) error {
+		if strings.HasSuffix(path, "ok.png") {
+			return apperr.New(apperr.CodeUnauthorized, "blocked by policy")
+		}
+		return nil
+	}))
+	reqGuard := httptest.NewRequest(http.MethodGet, "/api/media/download?path=ok.png", nil)
+	recGuard := httptest.NewRecorder()
+	guarded.ServeHTTP(recGuard, reqGuard)
+	if recGuard.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 when WithFileGuard denies path, got %d", recGuard.Code)
+	}
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := CleanupStagingDirWhereContext(canceledCtx, mediaDir, time.Hour, time.Now(), nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled from CleanupStagingDirWhereContext, got %v", err)
 	}
 }

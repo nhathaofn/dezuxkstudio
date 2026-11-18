@@ -23,20 +23,21 @@ const (
 
 // Limits tunes timeouts, caches and chat context size. Zero fields fall back to DefaultLimits.
 type Limits struct {
-	TurnTimeout            time.Duration
-	InitializeTimeout      time.Duration
-	VersionProbeTimeout    time.Duration
-	AuthProbeTimeout       time.Duration
-	LoginTimeout           time.Duration
-	ModelCatalogTimeout    time.Duration
-	MCPToolTimeout         time.Duration // max duration of one MCP tool call the CLI waits for (workflow runs)
-	MCPShutdownTimeout     time.Duration // graceful stop of the local MCP server
-	InterruptWait          time.Duration // how long a cancelled Codex turn waits for turn/completed
-	StatusCacheTTL         time.Duration
-	ApprovalTTL            time.Duration
-	MaxPendingApprovals    int
-	HistoryLimit           int
-	MaxConcurrentSubagents int
+	TurnTimeout              time.Duration
+	InitializeTimeout        time.Duration
+	VersionProbeTimeout      time.Duration
+	AuthProbeTimeout         time.Duration
+	LoginTimeout             time.Duration
+	ModelCatalogTimeout      time.Duration
+	MCPToolTimeout           time.Duration // max duration of one MCP tool call the CLI waits for (workflow runs)
+	MCPShutdownTimeout       time.Duration // graceful stop of the local MCP server
+	InterruptWait            time.Duration // how long a cancelled Codex turn waits for turn/completed
+	StatusCacheTTL           time.Duration
+	ApprovalTTL              time.Duration
+	MaxApprovalContinuations int
+	MaxPendingApprovals      int
+	HistoryLimit             int
+	MaxConcurrentSubagents   int
 }
 
 // LimitsFrom builds the service limits from the application config — the only place their
@@ -51,14 +52,15 @@ func LimitsFrom(c *config.Config) Limits {
 		LoginTimeout:        a.LoginTimeout,
 		ModelCatalogTimeout: a.ModelCatalogTimeout,
 		// An MCP tool call may run a whole workflow, which the hub bounds by the long action timeout.
-		MCPToolTimeout:         c.Realtime.LongActionTimeout,
-		MCPShutdownTimeout:     c.Server.ShutdownTimeout,
-		InterruptWait:          a.InterruptWait,
-		StatusCacheTTL:         a.StatusCacheTTL,
-		ApprovalTTL:            a.ApprovalTTL,
-		MaxPendingApprovals:    a.MaxPendingApprovals,
-		HistoryLimit:           a.HistoryLimit,
-		MaxConcurrentSubagents: a.MaxConcurrentSubagents,
+		MCPToolTimeout:           c.Realtime.LongActionTimeout,
+		MCPShutdownTimeout:       c.Server.ShutdownTimeout,
+		InterruptWait:            a.InterruptWait,
+		StatusCacheTTL:           a.StatusCacheTTL,
+		ApprovalTTL:              a.ApprovalTTL,
+		MaxApprovalContinuations: a.MaxApprovalContinuations,
+		MaxPendingApprovals:      a.MaxPendingApprovals,
+		HistoryLimit:             a.HistoryLimit,
+		MaxConcurrentSubagents:   a.MaxConcurrentSubagents,
 	}
 }
 
@@ -86,6 +88,7 @@ func (l Limits) withDefaults() Limits {
 		}
 	}
 	ints := []struct{ v, def *int }{
+		{&l.MaxApprovalContinuations, &d.MaxApprovalContinuations},
 		{&l.HistoryLimit, &d.HistoryLimit},
 		{&l.MaxPendingApprovals, &d.MaxPendingApprovals},
 		{&l.MaxConcurrentSubagents, &d.MaxConcurrentSubagents},
