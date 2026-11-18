@@ -580,6 +580,7 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 	agentSvc.SetMediaInspector(&mediaInspectorAdapter{svc: mediaSvc})
 	c.agentSvc = agentSvc
 	studioSvc.SetFileGuard(workflowFileGuard(cfg.Mode, agentSvc))
+	c.background("media-gc", mediaSvc.RunGC)
 	c.background("studio-queue-worker", studioSvc.RunQueueWorker)
 	c.background("agent-provision-clis", agentSvc.ProvisionCLIs)
 	if cfg.Agent.RestoreConnection {

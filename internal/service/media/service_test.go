@@ -12,25 +12,25 @@ import (
 	"app/internal/apperr"
 	"app/internal/config"
 	"app/internal/contracts"
+	domainmedia "app/internal/domain/media"
 	"app/internal/engine"
 	"app/internal/security"
 	"app/internal/service/media"
-	"app/internal/storage/sqlite"
 )
 
 type memoryMediaRepo struct {
-	assets map[string]sqlite.MediaAssetRecord
+	assets map[string]domainmedia.AssetRecord
 	byPath map[string]string
 }
 
 func newMemoryMediaRepo() *memoryMediaRepo {
 	return &memoryMediaRepo{
-		assets: make(map[string]sqlite.MediaAssetRecord),
+		assets: make(map[string]domainmedia.AssetRecord),
 		byPath: make(map[string]string),
 	}
 }
 
-func (m *memoryMediaRepo) RegisterAsset(ctx context.Context, asset sqlite.MediaAssetRecord) (*sqlite.MediaAssetRecord, error) {
+func (m *memoryMediaRepo) RegisterAsset(ctx context.Context, asset domainmedia.AssetRecord) (*domainmedia.AssetRecord, error) {
 	if existingID, ok := m.byPath[asset.FilePath]; ok {
 		old := m.assets[existingID]
 		asset.ID = old.ID
@@ -43,7 +43,7 @@ func (m *memoryMediaRepo) RegisterAsset(ctx context.Context, asset sqlite.MediaA
 	return &asset, nil
 }
 
-func (m *memoryMediaRepo) GetAsset(ctx context.Context, id string) (*sqlite.MediaAssetRecord, error) {
+func (m *memoryMediaRepo) GetAsset(ctx context.Context, id string) (*domainmedia.AssetRecord, error) {
 	a, ok := m.assets[id]
 	if !ok {
 		return nil, nil
@@ -51,7 +51,7 @@ func (m *memoryMediaRepo) GetAsset(ctx context.Context, id string) (*sqlite.Medi
 	return &a, nil
 }
 
-func (m *memoryMediaRepo) GetAssetByPath(ctx context.Context, filePath string) (*sqlite.MediaAssetRecord, error) {
+func (m *memoryMediaRepo) GetAssetByPath(ctx context.Context, filePath string) (*domainmedia.AssetRecord, error) {
 	id, ok := m.byPath[filePath]
 	if !ok {
 		return nil, nil
@@ -60,8 +60,8 @@ func (m *memoryMediaRepo) GetAssetByPath(ctx context.Context, filePath string) (
 	return &a, nil
 }
 
-func (m *memoryMediaRepo) ListAssets(ctx context.Context, filter sqlite.MediaListFilter) ([]sqlite.MediaAssetRecord, int, error) {
-	var out []sqlite.MediaAssetRecord
+func (m *memoryMediaRepo) ListAssets(ctx context.Context, filter domainmedia.ListFilter) ([]domainmedia.AssetRecord, int, error) {
+	var out []domainmedia.AssetRecord
 	for _, a := range m.assets {
 		if filter.Kind != "" && a.Kind != filter.Kind {
 			continue
@@ -283,16 +283,25 @@ func TestMediaServiceAutoPruneMissingOnListing(t *testing.T) {
 		t.Fatalf("expected 2 items, got %d", list1.Total)
 	}
 
-	// Delete file2 on disk
+	// Delete file2 on disk: List remains read-only; PruneNow prunes missing files.
 	_ = os.Remove(file2)
 
-	// List again: file2 should be automatically pruned
-	list2, err := svc.List(ctx, contracts.MediaListPayload{})
+	listBeforePrune, err := svc.List(ctx, contracts.MediaListPayload{})
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
+	if listBeforePrune.Total != 2 {
+		t.Fatalf("expected List to remain read-only before GC, got total=%d", listBeforePrune.Total)
+	}
+
+	svc.PruneNow(ctx)
+
+	list2, err := svc.List(ctx, contracts.MediaListPayload{})
+	if err != nil {
+		t.Fatalf("List after PruneNow failed: %v", err)
+	}
 	if list2.Total != 1 || len(list2.Assets) != 1 || list2.Assets[0].FilePath != file1 {
-		t.Fatalf("expected 1 remaining asset, got total=%d, assets=%+v", list2.Total, list2.Assets)
+		t.Fatalf("expected 1 remaining asset after PruneNow, got total=%d, assets=%+v", list2.Total, list2.Assets)
 	}
 }
 
@@ -343,19 +352,25 @@ func TestMediaServiceRegisterInputAndSignURL(t *testing.T) {
 		t.Fatalf("expected OnChanged to be called once, got %d", changedCalls)
 	}
 
-	// SignURL helper
-	signedURL, err := svc.SignURL(ctx, item.ID, "download")
+	// SignAssetURL helper
+	signedDownload, err := svc.SignAssetURL(ctx, contracts.MediaSignURLPayload{
+		AssetID: item.ID,
+		Purpose: "download",
+	})
 	if err != nil {
-		t.Fatalf("SignURL failed: %v", err)
+		t.Fatalf("SignAssetURL failed: %v", err)
 	}
-	if !strings.Contains(signedURL, "purpose=download") || !strings.Contains(signedURL, "ticket=") {
-		t.Fatalf("unexpected signed url: %s", signedURL)
+	if !strings.Contains(signedDownload.URL, "purpose=download") || !strings.Contains(signedDownload.URL, "ticket=") {
+		t.Fatalf("unexpected signed url: %s", signedDownload.URL)
 	}
 
-	// SignURL invalid asset ID
-	_, err = svc.SignURL(ctx, "non-existent", "preview")
+	// SignAssetURL invalid asset ID
+	_, err = svc.SignAssetURL(ctx, contracts.MediaSignURLPayload{
+		AssetID: "non-existent",
+		Purpose: "preview",
+	})
 	if err == nil {
-		t.Fatal("expected SignURL to fail for non-existent asset")
+		t.Fatal("expected SignAssetURL to fail for non-existent asset")
 	}
 
 	// Resolve non-existent asset

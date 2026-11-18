@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -16,9 +15,10 @@ import (
 	"app/internal/apperr"
 	"app/internal/config"
 	"app/internal/contracts"
+	domainmedia "app/internal/domain/media"
 	"app/internal/engine"
+	"app/internal/fsutil"
 	"app/internal/security"
-	"app/internal/storage/sqlite"
 )
 
 // RegisterAssetParams contains input parameters for registering a media asset.
@@ -37,16 +37,7 @@ type RegisterAssetParams struct {
 }
 
 // Repository defines the storage contract required by media.Service.
-type Repository interface {
-	RegisterAsset(ctx context.Context, asset sqlite.MediaAssetRecord) (*sqlite.MediaAssetRecord, error)
-	GetAsset(ctx context.Context, id string) (*sqlite.MediaAssetRecord, error)
-	GetAssetByPath(ctx context.Context, filePath string) (*sqlite.MediaAssetRecord, error)
-	ListAssets(ctx context.Context, filter sqlite.MediaListFilter) ([]sqlite.MediaAssetRecord, int, error)
-	DeleteAsset(ctx context.Context, id string) error
-	PruneMissingAssets(ctx context.Context, missingIDs []string) (int64, error)
-	PruneExpiredAssets(ctx context.Context, olderThan time.Time, maxItems int) (int64, error)
-	UpdateLastVerified(ctx context.Context, id string, verifiedAt int64) error
-}
+type Repository = domainmedia.Repository
 
 // Options configures Service construction.
 type Options struct {
@@ -268,7 +259,7 @@ func (s *Service) isRootAuthorized(realRoot string) bool {
 	}
 
 	for _, allowed := range s.allowedRoots {
-		if isSubpath(allowed, realRoot) {
+		if fsutil.IsSubpath(allowed, realRoot, false) {
 			return true
 		}
 	}
@@ -282,7 +273,7 @@ func (s *Service) matchingAuthorizedRoot(realTarget string) string {
 
 	best := ""
 	for _, allowed := range s.allowedRoots {
-		if isSubpath(allowed, realTarget) && len(allowed) > len(best) {
+		if fsutil.IsSubpath(allowed, realTarget, false) && len(allowed) > len(best) {
 			best = allowed
 		}
 	}
@@ -306,7 +297,7 @@ func (s *Service) IsPathAuthorized(target string) bool {
 	}
 
 	for _, allowed := range s.allowedRoots {
-		if isSubpath(allowed, cleanTarget) {
+		if fsutil.IsSubpath(allowed, cleanTarget, false) {
 			return true
 		}
 	}
@@ -372,7 +363,7 @@ func (s *Service) RegisterAsset(ctx context.Context, req RegisterAssetParams) (*
 		sourceNode = "user_input"
 	}
 
-	record := sqlite.MediaAssetRecord{
+	record := domainmedia.AssetRecord{
 		ID:             req.ID,
 		Kind:           kind,
 		SourceNode:     sourceNode,
@@ -475,22 +466,14 @@ func (s *Service) RegisterInput(ctx context.Context, p contracts.MediaRegisterIn
 	return *item, nil
 }
 
-// List returns a paginated list of media assets matching filter, and performs auto-pruning.
+// List returns a paginated list of media assets matching filter.
+// Expiration and missing-file pruning run asynchronously in RunGC / PruneNow rather than on read queries.
 func (s *Service) List(ctx context.Context, filter contracts.MediaListPayload) (contracts.MediaListResult, error) {
 	if s.repo == nil {
 		return contracts.MediaListResult{Assets: []contracts.MediaAssetItem{}}, nil
 	}
 
-	// Auto-prune expired assets if exceeding library max items or retention
-	if s.cfg.LibraryMaxItems > 0 || s.cfg.LibraryRetention > 0 {
-		olderThan := time.Time{}
-		if s.cfg.LibraryRetention > 0 {
-			olderThan = time.Now().Add(-s.cfg.LibraryRetention)
-		}
-		_, _ = s.repo.PruneExpiredAssets(ctx, olderThan, s.cfg.LibraryMaxItems)
-	}
-
-	records, total, err := s.repo.ListAssets(ctx, sqlite.MediaListFilter{
+	records, total, err := s.repo.ListAssets(ctx, domainmedia.ListFilter{
 		Kind:   filter.Kind,
 		Limit:  filter.Limit,
 		Offset: filter.Offset,
@@ -498,26 +481,6 @@ func (s *Service) List(ctx context.Context, filter contracts.MediaListPayload) (
 	})
 	if err != nil {
 		return contracts.MediaListResult{}, apperr.Wrap(apperr.CodeInternal, "failed to list media assets", err)
-	}
-
-	// Auto-prune missing files on listing
-	var missingIDs []string
-	validRecords := make([]sqlite.MediaAssetRecord, 0, len(records))
-	for _, rec := range records {
-		if _, err := os.Stat(rec.FilePath); os.IsNotExist(err) {
-			missingIDs = append(missingIDs, rec.ID)
-		} else {
-			validRecords = append(validRecords, rec)
-		}
-	}
-
-	if len(missingIDs) > 0 {
-		_, _ = s.repo.PruneMissingAssets(ctx, missingIDs)
-		total -= len(missingIDs)
-		if total < 0 {
-			total = 0
-		}
-		records = validRecords
 	}
 
 	assets := make([]contracts.MediaAssetItem, len(records))
@@ -531,7 +494,61 @@ func (s *Service) List(ctx context.Context, filter contracts.MediaListPayload) (
 	}, nil
 }
 
+// RunGC periodically prunes expired and missing media asset records until ctx is cancelled.
+func (s *Service) RunGC(ctx context.Context) {
+	s.PruneNow(ctx)
+	ticker := time.NewTicker(15 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.PruneNow(ctx)
+		}
+	}
+}
+
+// PruneNow removes expired library entries and missing on-disk backing files in bounded batches.
+func (s *Service) PruneNow(ctx context.Context) {
+	if s.repo == nil || ctx.Err() != nil {
+		return
+	}
+	if s.cfg.LibraryMaxItems > 0 || s.cfg.LibraryRetention > 0 {
+		olderThan := time.Time{}
+		if s.cfg.LibraryRetention > 0 {
+			olderThan = time.Now().Add(-s.cfg.LibraryRetention)
+		}
+		_, _ = s.repo.PruneExpiredAssets(ctx, olderThan, s.cfg.LibraryMaxItems)
+	}
+	const batchSize = 200
+	var missingIDs []string
+	for offset := 0; ; offset += batchSize {
+		if ctx.Err() != nil {
+			return
+		}
+		records, total, err := s.repo.ListAssets(ctx, domainmedia.ListFilter{Limit: batchSize, Offset: offset})
+		if err != nil || len(records) == 0 {
+			break
+		}
+		for _, rec := range records {
+			if _, statErr := os.Stat(rec.FilePath); os.IsNotExist(statErr) {
+				missingIDs = append(missingIDs, rec.ID)
+			}
+		}
+		if offset+len(records) >= total {
+			break
+		}
+	}
+	if len(missingIDs) > 0 {
+		if n, err := s.repo.PruneMissingAssets(ctx, missingIDs); err == nil && n > 0 && s.onChanged != nil {
+			s.onChanged()
+		}
+	}
+}
+
 // Delete removes an asset from the library, optionally removing the backing file.
+// Validates paths and guards first, deletes the database record, then removes the backing file.
 func (s *Service) Delete(ctx context.Context, id string, deleteFile bool) error {
 	if s.repo == nil {
 		return apperr.Unavailable("media repository is unavailable")
@@ -545,24 +562,28 @@ func (s *Service) Delete(ctx context.Context, id string, deleteFile bool) error 
 		return apperr.NotFound("media asset not found").WithDetails(map[string]any{"id": id})
 	}
 
+	var realTarget string
 	if deleteFile {
-		realTarget, realRoot, err := evalSubpath(asset.FilePath, asset.RegisteredRoot)
+		target, realRoot, err := evalSubpath(asset.FilePath, asset.RegisteredRoot)
 		if err != nil {
 			return apperr.Wrap(apperr.CodeUnauthorized, "cannot safely delete backing file", err)
 		}
 		if !s.isRootAuthorized(realRoot) {
 			return apperr.New(apperr.CodeUnauthorized, "cannot delete backing file: root is not authorized")
 		}
-		if err := engine.CheckFile(ctx, realTarget, true); err != nil {
+		if err := engine.CheckFile(ctx, target, true); err != nil {
 			return apperr.From(err)
 		}
-		if err := os.Remove(realTarget); err != nil && !os.IsNotExist(err) {
-			return apperr.Wrap(apperr.CodeUnavailable, "failed to remove media file from disk", err)
-		}
+		realTarget = target
 	}
 
 	if err := s.repo.DeleteAsset(ctx, id); err != nil {
 		return apperr.Wrap(apperr.CodeInternal, "failed to delete media asset record", err)
+	}
+	if deleteFile && realTarget != "" {
+		if err := os.Remove(realTarget); err != nil && !os.IsNotExist(err) {
+			return apperr.Wrap(apperr.CodeUnavailable, "failed to remove media file from disk", err)
+		}
 	}
 
 	if s.onChanged != nil {
@@ -621,18 +642,6 @@ func (s *Service) SignAssetURL(ctx context.Context, p contracts.MediaSignURLPayl
 		ExpiresAt: expiresAt,
 		Purpose:   purpose,
 	}, nil
-}
-
-// SignURL issues a signed URL string using default TicketTTL.
-func (s *Service) SignURL(ctx context.Context, assetID, purpose string) (string, error) {
-	res, err := s.SignAssetURL(ctx, contracts.MediaSignURLPayload{
-		AssetID: assetID,
-		Purpose: purpose,
-	})
-	if err != nil {
-		return "", err
-	}
-	return res.URL, nil
 }
 
 // ResolveAssetFile resolves the real on-disk file path, verifies that it strictly resides
@@ -729,30 +738,12 @@ func evalSubpath(targetPath, rootPath string) (realTarget, realRoot string, err 
 		return "", "", apperr.Wrap(apperr.CodeValidation, "invalid media path", err)
 	}
 
-	if !isSubpath(realRoot, realTarget) {
+	resolvedTarget, resolvedRoot, resErr := fsutil.ResolveSubpath(realRoot, realTarget, false)
+	if resErr != nil {
 		return "", "", apperr.New(apperr.CodeUnauthorized, "path escapes registered root boundary")
 	}
 
-	return realTarget, realRoot, nil
-}
-
-// isSubpath reports whether target is strictly inside or equal to root directory.
-func isSubpath(root, target string) bool {
-	r := filepath.Clean(root)
-	t := filepath.Clean(target)
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
-		r = strings.ToLower(r)
-		t = strings.ToLower(t)
-	}
-
-	rel, err := filepath.Rel(r, t)
-	if err != nil {
-		return false
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return false
-	}
-	return true
+	return resolvedTarget, resolvedRoot, nil
 }
 
 func detectMimeType(filePath string) string {
@@ -820,7 +811,7 @@ func inferKindFromMime(mime string) string {
 	return "image"
 }
 
-func toContract(r sqlite.MediaAssetRecord) contracts.MediaAssetItem {
+func toContract(r domainmedia.AssetRecord) contracts.MediaAssetItem {
 	return contracts.MediaAssetItem{
 		ID:             r.ID,
 		Kind:           r.Kind,
