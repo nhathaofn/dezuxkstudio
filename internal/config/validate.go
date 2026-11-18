@@ -18,6 +18,9 @@ const (
 	maxWindowSize      = 16384
 	minWindowSize      = 200
 	minMaxMessageBytes = 1024
+	maxStudioFPS       = 120
+	minThumbHeightPx   = 32
+	maxThumbHeightPx   = 360
 )
 
 // Validate checks every invariant and reports all violations at once.
@@ -65,6 +68,7 @@ func (c *Config) Validate() error {
 			"realtime.keepalive_interval":           c.Realtime.KeepAliveInterval,
 			"storage.busy_timeout":                  c.Storage.BusyTimeout,
 			"binaries.probe_timeout":                c.Binaries.ProbeTimeout,
+			"binaries.download_retry_delay":         c.Binaries.DownloadRetryDelay,
 			"providers.test_timeout":                c.Providers.TestTimeout,
 			"mediagen.request_timeout":              c.MediaGen.RequestTimeout,
 			"mediagen.video_timeout":                c.MediaGen.VideoTimeout,
@@ -73,6 +77,13 @@ func (c *Config) Validate() error {
 			"mediagen.retry_initial_delay":          c.MediaGen.RetryInitialDelay,
 			"mediagen.retry_max_delay":              c.MediaGen.RetryMaxDelay,
 			"mediagen.limiter_poll_interval":        c.MediaGen.LimiterPollInterval,
+			"mediagen.oauth_refresh_skew":           c.MediaGen.OAuthRefreshSkew,
+			"mediagen.oauth_fallback_ttl":           c.MediaGen.OAuthFallbackTTL,
+			"media.library_retention":               c.Media.LibraryRetention,
+			"media.ticket_ttl":                      c.Media.TicketTTL,
+			"media.ticket_renew_skew":               c.Media.TicketRenewSkew,
+			"media.staging_ttl":                     c.Media.StagingTTL,
+			"media.staging_gc_interval":             c.Media.StagingGCInterval,
 			"studio.ffmpeg_timeout":                 c.Studio.FFmpegTimeout,
 			"studio.ffprobe_timeout":                c.Studio.FFprobeTimeout,
 			"studio.queue_poll_interval":            c.Studio.QueuePollInterval,
@@ -90,33 +101,50 @@ func (c *Config) Validate() error {
 			"agent.approval_ttl":                    c.Agent.ApprovalTTL,
 		})
 		positiveInts(add, map[string]int{
-			"providers.check_concurrency":        c.Providers.CheckConcurrency,
-			"providers.default_max_workers":      c.Providers.DefaultMaxWorkers,
-			"realtime.max_concurrent_actions":    c.Realtime.MaxConcurrentActions,
-			"realtime.client_buffer_size":        c.Realtime.ClientBufferSize,
-			"storage.backups_to_keep":            c.Storage.BackupsToKeep,
-			"diagnostics.keep":                   c.Diagnostics.Keep,
-			"network.max_idle_conns":             c.Network.MaxIdleConns,
-			"network.max_idle_conns_per_host":    c.Network.MaxIdleConnsPerHost,
-			"agent.history_limit":                c.Agent.HistoryLimit,
-			"agent.max_pending_approvals":        c.Agent.MaxPendingApprovals,
-			"agent.max_concurrent_subagents":     c.Agent.MaxConcurrentSubagents,
-			"mediagen.text_max_tokens":           c.MediaGen.TextMaxTokens,
-			"mediagen.retry_max":                 c.MediaGen.RetryMax,
-			"studio.default_fps":                 c.Studio.DefaultFPS,
-			"studio.ffmpeg_audio_sample_rate":    c.Studio.FFmpegAudioSampleRate,
-			"studio.max_video_dimension":         c.Studio.MaxVideoDimension,
-			"studio.default_shot_duration_sec":   c.Studio.DefaultShotDurationSec,
-			"studio.max_shot_duration_sec":       c.Studio.MaxShotDurationSec,
-			"studio.grid_split_max_count":        c.Studio.GridSplitMaxCount,
-			"studio.max_concurrent_batch":        c.Studio.MaxConcurrentBatch,
-			"studio.queue_workers":               c.Studio.QueueWorkers,
-			"studio.queue_max_attempts":          c.Studio.QueueMaxAttempts,
-			"studio.timeline_thumb_height":       c.Studio.TimelineThumbHeight,
-			"studio.timeline_max_strip_thumbs":   c.Studio.TimelineMaxStripThumbs,
-			"studio.timeline_wave_sample_rate":   c.Studio.TimelineWaveSampleRate,
-			"studio.timeline_wave_block_samples": c.Studio.TimelineWaveBlockSamples,
-			"studio.timeline_revision_limit":     c.Studio.TimelineRevisionLimit,
+			"providers.check_concurrency":             c.Providers.CheckConcurrency,
+			"providers.default_max_workers":           c.Providers.DefaultMaxWorkers,
+			"realtime.max_concurrent_actions":         c.Realtime.MaxConcurrentActions,
+			"realtime.client_buffer_size":             c.Realtime.ClientBufferSize,
+			"storage.backups_to_keep":                 c.Storage.BackupsToKeep,
+			"diagnostics.keep":                        c.Diagnostics.Keep,
+			"network.max_idle_conns":                  c.Network.MaxIdleConns,
+			"network.max_idle_conns_per_host":         c.Network.MaxIdleConnsPerHost,
+			"agent.history_limit":                     c.Agent.HistoryLimit,
+			"agent.max_pending_approvals":             c.Agent.MaxPendingApprovals,
+			"agent.max_approval_continuations":        c.Agent.MaxApprovalContinuations,
+			"agent.max_concurrent_subagents":          c.Agent.MaxConcurrentSubagents,
+			"mediagen.text_max_tokens":                c.MediaGen.TextMaxTokens,
+			"mediagen.retry_max":                      c.MediaGen.RetryMax,
+			"media.library_max_items":                 c.Media.LibraryMaxItems,
+			"media.registered_roots_max":              c.Media.RegisteredRootsMax,
+			"watermark.max_workers":                   c.Watermark.MaxWorkers,
+			"watermark.decode_concurrency":            c.Watermark.DecodeConcurrency,
+			"watermark.video_default_crop_px":         c.Watermark.VideoDefaultCropPx,
+			"studio.default_fps":                      c.Studio.DefaultFPS,
+			"studio.ffmpeg_audio_sample_rate":         c.Studio.FFmpegAudioSampleRate,
+			"studio.max_video_dimension":              c.Studio.MaxVideoDimension,
+			"studio.default_shot_duration_sec":        c.Studio.DefaultShotDurationSec,
+			"studio.max_shot_duration_sec":            c.Studio.MaxShotDurationSec,
+			"studio.grid_split_max_count":             c.Studio.GridSplitMaxCount,
+			"studio.grid_split_max_margin_px":         c.Studio.GridSplitMaxMarginPx,
+			"studio.grid_split_max_gutter_px":         c.Studio.GridSplitMaxGutterPx,
+			"studio.extract_frame_default_count":      c.Studio.ExtractFrameDefaultCount,
+			"studio.extract_frame_max_count":          c.Studio.ExtractFrameMaxCount,
+			"studio.qc_sample_frame_default":          c.Studio.QCSampleFrameDefault,
+			"studio.qc_sample_frame_max":              c.Studio.QCSampleFrameMax,
+			"studio.qc_max_reference_images":          c.Studio.QCMaxReferenceImages,
+			"studio.lipsync_max_face_index":           c.Studio.LipSyncMaxFaceIndex,
+			"studio.preflight_max_items":              c.Studio.PreflightMaxItems,
+			"studio.preflight_large_batch_warn_count": c.Studio.PreflightLargeBatchWarnCount,
+			"studio.default_list_limit":               c.Studio.DefaultListLimit,
+			"studio.max_concurrent_batch":             c.Studio.MaxConcurrentBatch,
+			"studio.queue_workers":                    c.Studio.QueueWorkers,
+			"studio.queue_max_attempts":               c.Studio.QueueMaxAttempts,
+			"studio.timeline_thumb_height":            c.Studio.TimelineThumbHeight,
+			"studio.timeline_max_strip_thumbs":        c.Studio.TimelineMaxStripThumbs,
+			"studio.timeline_wave_sample_rate":        c.Studio.TimelineWaveSampleRate,
+			"studio.timeline_wave_block_samples":      c.Studio.TimelineWaveBlockSamples,
+			"studio.timeline_revision_limit":          c.Studio.TimelineRevisionLimit,
 		})
 		switch strings.ToLower(strings.TrimSpace(c.Agent.Mode)) {
 		case "", "assistant":
@@ -204,10 +232,58 @@ func (c *Config) Validate() error {
 	if c.Providers.DefaultRPM < 0 || c.Providers.DefaultRequestGapMs < 0 {
 		add("providers.default_rpm and providers.default_request_gap_ms must be >= 0")
 	}
+	for _, entry := range []struct {
+		key string
+		val string
+	}{
+		{"log.dir", c.Log.Dir},
+		{"storage.data_dir", c.Storage.DataDir},
+		{"storage.db_file", c.Storage.DBFile},
+		{"server.auth_token_file", c.Server.AuthTokenFile},
+		{"agent.workspace_dir", c.Agent.WorkspaceDir},
+	} {
+		if strings.ContainsRune(entry.val, 0) {
+			add("%s must not contain NUL bytes", entry.key)
+		}
+	}
 	if c.Mode != ModeClient && (c.MediaGen.MaxOutputBytes <= 0 || c.MediaGen.MaxReferenceBytes <= 0 || c.MediaGen.MaxJSONResponseBytes <= 0) {
 		add("mediagen.max_output_bytes, mediagen.max_reference_bytes, and mediagen.max_json_response_bytes must be > 0")
 	}
 	if c.Mode != ModeClient {
+		if c.Binaries.DownloadRetryMax < 0 {
+			add("binaries.download_retry_max must be >= 0, got %d", c.Binaries.DownloadRetryMax)
+		}
+		if c.Network.MaxIdleConnsPerHost > c.Network.MaxIdleConns {
+			add("network.max_idle_conns_per_host must be <= network.max_idle_conns")
+		}
+		if c.Media.TicketRenewSkew >= c.Media.TicketTTL {
+			add("media.ticket_renew_skew must be < media.ticket_ttl")
+		}
+		if c.Watermark.MaxImagePixels <= 0 {
+			add("watermark.max_image_pixels must be > 0")
+		}
+		if c.Watermark.VideoDefaultWidth < 2 || c.Watermark.VideoDefaultHeight < 2 {
+			add("watermark.video_default_width and watermark.video_default_height must be >= 2")
+		}
+		if c.MediaGen.VideoPollInterval >= c.MediaGen.VideoTimeout {
+			add("mediagen.video_poll_interval must be < mediagen.video_timeout")
+		}
+		if c.MediaGen.OAuthRefreshSkew >= c.MediaGen.OAuthFallbackTTL {
+			add("mediagen.oauth_refresh_skew must be < mediagen.oauth_fallback_ttl")
+		}
+		for _, v := range []struct {
+			key string
+			val string
+		}{
+			{"mediagen.tts_default_voice_openai", c.MediaGen.TTSDefaultVoiceOpenAI},
+			{"mediagen.tts_default_voice_gemini", c.MediaGen.TTSDefaultVoiceGemini},
+			{"mediagen.tts_default_voice_dashscope", c.MediaGen.TTSDefaultVoiceDashScope},
+			{"mediagen.tts_default_voice_minimax", c.MediaGen.TTSDefaultVoiceMiniMax},
+		} {
+			if strings.TrimSpace(v.val) == "" {
+				add("%s must not be empty", v.key)
+			}
+		}
 		if math.IsNaN(c.MediaGen.TextTemperature) || math.IsInf(c.MediaGen.TextTemperature, 0) || c.MediaGen.TextTemperature < 0 || c.MediaGen.TextTemperature > 2 {
 			add("mediagen.text_temperature must be between 0 and 2, got %v", c.MediaGen.TextTemperature)
 		}
@@ -217,11 +293,15 @@ func (c *Config) Validate() error {
 		if c.MediaGen.RetryMaxDelay < c.MediaGen.RetryInitialDelay {
 			add("mediagen.retry_max_delay must be >= mediagen.retry_initial_delay")
 		}
+		if c.Studio.DefaultFPS > maxStudioFPS {
+			add("studio.default_fps must be <= %d, got %d", maxStudioFPS, c.Studio.DefaultFPS)
+		}
 		if c.Studio.FFmpegCRF < 0 || c.Studio.FFmpegCRF > 51 {
 			add("studio.ffmpeg_crf must be 0-51, got %d", c.Studio.FFmpegCRF)
 		}
-		if strings.TrimSpace(c.Studio.FFmpegPreset) == "" {
-			add("studio.ffmpeg_preset must not be empty")
+		preset := strings.ToLower(strings.TrimSpace(c.Studio.FFmpegPreset))
+		if preset == "" || !slices.Contains(ValidFFmpegPresets(), preset) {
+			add("studio.ffmpeg_preset must be a valid x264 preset, got %q", c.Studio.FFmpegPreset)
 		}
 		if strings.TrimSpace(c.Studio.FFmpegVideoCodec) == "" || strings.TrimSpace(c.Studio.FFmpegPixelFormat) == "" || strings.TrimSpace(c.Studio.FFmpegAudioCodec) == "" || strings.TrimSpace(c.Studio.FFmpegAudioBitrate) == "" {
 			add("studio FFmpeg codec, pixel format, and audio bitrate fields must not be empty")
@@ -238,6 +318,9 @@ func (c *Config) Validate() error {
 		if c.Studio.GridSplitMaxCount < 1 || c.Studio.GridSplitMaxCount > 32 {
 			add("studio.grid_split_max_count must be between 1 and 32, got %d", c.Studio.GridSplitMaxCount)
 		}
+		if c.Studio.ExtractFrameDefaultCount > c.Studio.ExtractFrameMaxCount {
+			add("studio.extract_frame_default_count must be <= studio.extract_frame_max_count")
+		}
 		if c.Studio.ExtractFrameEOFOffsetSec <= 0 || c.Studio.ExtractFrameEndPadSec <= 0 || c.Studio.ExtractFrameLastPadSec <= 0 {
 			add("studio frame extract offset/pad values must be > 0")
 		}
@@ -246,6 +329,21 @@ func (c *Config) Validate() error {
 		}
 		if math.IsNaN(c.Studio.QCSilenceWarnRatio) || math.IsInf(c.Studio.QCSilenceWarnRatio, 0) || c.Studio.QCSilenceWarnRatio <= 0 || c.Studio.QCSilenceWarnRatio > 1 {
 			add("studio.qc_silence_warn_ratio must be in (0, 1], got %v", c.Studio.QCSilenceWarnRatio)
+		}
+		if c.Studio.QCSampleFrameDefault > c.Studio.QCSampleFrameMax {
+			add("studio.qc_sample_frame_default must be <= studio.qc_sample_frame_max")
+		}
+		if c.Studio.MaxMaskBytes <= 0 {
+			add("studio.max_mask_bytes must be > 0")
+		}
+		if math.IsNaN(c.Studio.AudioOverflowToleranceSec) || math.IsInf(c.Studio.AudioOverflowToleranceSec, 0) || c.Studio.AudioOverflowToleranceSec < 0 || c.Studio.AudioOverflowToleranceSec > 10 {
+			add("studio.audio_overflow_tolerance_sec must be between 0 and 10, got %v", c.Studio.AudioOverflowToleranceSec)
+		}
+		if c.Studio.PreflightLargeBatchWarnCount > c.Studio.PreflightMaxItems {
+			add("studio.preflight_large_batch_warn_count must be <= studio.preflight_max_items")
+		}
+		if c.Studio.QueuePollLeaseMin < c.Studio.QueuePollInterval {
+			add("studio.queue_poll_lease_min must be >= studio.queue_poll_interval")
 		}
 		if c.Studio.QueuePollBackoffMax < c.Studio.QueuePollInterval {
 			add("studio.queue_poll_backoff_max must be >= studio.queue_poll_interval")
@@ -259,6 +357,9 @@ func (c *Config) Validate() error {
 		if c.Studio.ExportSubtitleFontSize < 8 || c.Studio.ExportSubtitleFontSize > 96 {
 			add("studio.export_subtitle_font_size must be between 8 and 96, got %d", c.Studio.ExportSubtitleFontSize)
 		}
+		if strings.TrimSpace(c.Studio.ExportSubtitleFontFamily) == "" {
+			add("studio.export_subtitle_font_family must not be empty")
+		}
 		if c.Studio.TimelineDefaultTransitionMs < 0 {
 			add("studio.timeline_default_transition_ms must be >= 0")
 		}
@@ -267,6 +368,9 @@ func (c *Config) Validate() error {
 		}
 		if math.IsNaN(c.Studio.TimelineThumbIntervalSec) || math.IsInf(c.Studio.TimelineThumbIntervalSec, 0) || c.Studio.TimelineThumbIntervalSec <= 0 {
 			add("studio.timeline_thumb_interval_sec must be > 0, got %v", c.Studio.TimelineThumbIntervalSec)
+		}
+		if c.Studio.TimelineThumbHeight < minThumbHeightPx || c.Studio.TimelineThumbHeight > maxThumbHeightPx {
+			add("studio.timeline_thumb_height must be between %d and %d, got %d", minThumbHeightPx, maxThumbHeightPx, c.Studio.TimelineThumbHeight)
 		}
 		if c.Studio.TimelinePeakBins < 16 || c.Studio.TimelinePeakBins > 4096 {
 			add("studio.timeline_peak_bins must be between 16 and 4096, got %d", c.Studio.TimelinePeakBins)

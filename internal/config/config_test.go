@@ -516,11 +516,19 @@ func TestPhase3WaveAConfigFieldsAndAccessors(t *testing.T) {
 	if zeroCfg.WatermarkMaxWorkers() != 4 ||
 		zeroCfg.WatermarkMaxImagePixels() != 100_000_000 ||
 		zeroCfg.WatermarkDecodeConcurrency() != 2 ||
-		zeroCfg.BinariesDownloadRetryMax() != 0 ||
+		!zeroCfg.BinariesDownloadResume() ||
+		zeroCfg.BinariesDownloadRetryMax() != 3 ||
 		zeroCfg.BinariesDownloadRetryDelay() != 1*time.Second ||
 		zeroCfg.MediaStagingTTL() != 24*time.Hour ||
 		zeroCfg.MediaStagingGCInterval() != 1*time.Hour {
 		t.Error("zeroCfg accessors failed to return safe fallback defaults")
+	}
+
+	explicitZeroRetries := Default(ModeDesktop)
+	explicitZeroRetries.Binaries.DownloadRetryMax = 0
+	explicitZeroRetries.Binaries.DownloadResume = false
+	if explicitZeroRetries.BinariesDownloadRetryMax() != 0 || explicitZeroRetries.BinariesDownloadResume() {
+		t.Error("configured explicit zero retries or false resume must be preserved")
 	}
 
 	// 4. Layer parsing (flags, env, file)
@@ -792,6 +800,163 @@ func TestStudioAndMediaGenZeroHardcodeTunables(t *testing.T) {
 			c.MediaGen.RetryInitialDelay = 3 * time.Second
 			c.MediaGen.RetryMaxDelay = 1 * time.Second
 		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := Default(ModeDesktop)
+			mutate(c)
+			if err := c.Validate(); err == nil {
+				t.Fatalf("%s: expected validation error", name)
+			}
+		})
+	}
+}
+
+func TestCentralizedWave1TunablesAndValidation(t *testing.T) {
+	def := Default(ModeDesktop)
+	if def.Studio.PreflightMaxItems != 500 ||
+		def.Studio.PreflightLargeBatchWarnCount != 10 ||
+		def.Studio.ExtractFrameDefaultCount != 4 ||
+		def.Studio.ExtractFrameMaxCount != 24 ||
+		def.Studio.MaxMaskBytes != 8<<20 ||
+		def.Studio.ExportSubtitleFontFamily != "Arial" ||
+		def.Studio.DefaultListLimit != 200 ||
+		def.Studio.QCSampleFrameDefault != 3 ||
+		def.Studio.QCSampleFrameMax != 6 ||
+		def.Studio.QCMaxReferenceImages != 2 ||
+		def.Studio.LipSyncMaxFaceIndex != 8 ||
+		def.Studio.GridSplitMaxMarginPx != 512 ||
+		def.Studio.GridSplitMaxGutterPx != 256 ||
+		def.Studio.AudioOverflowToleranceSec != 0.15 {
+		t.Fatalf("unexpected Studio Wave 1 defaults: %+v", def.Studio)
+	}
+	if def.Watermark.VideoDefaultWidth != 160 ||
+		def.Watermark.VideoDefaultHeight != 64 ||
+		def.Watermark.VideoDefaultCropPx != 64 {
+		t.Fatalf("unexpected Watermark Wave 1 defaults: %+v", def.Watermark)
+	}
+	if def.MediaGen.OAuthRefreshSkew != 2*time.Minute ||
+		def.MediaGen.OAuthFallbackTTL != 30*time.Minute {
+		t.Fatalf("unexpected MediaGen OAuth defaults: %+v", def.MediaGen)
+	}
+
+	// ResolveMediaConfig and ResolveWatermarkConfig populate zero structs from Default(ModeDesktop).
+	resMedia := ResolveMediaConfig(MediaConfig{})
+	if resMedia != def.Media {
+		t.Fatalf("ResolveMediaConfig(zero) = %+v, want %+v", resMedia, def.Media)
+	}
+	resWM := ResolveWatermarkConfig(WatermarkConfig{})
+	if resWM != def.Watermark {
+		t.Fatalf("ResolveWatermarkConfig(zero) = %+v, want %+v", resWM, def.Watermark)
+	}
+	var nilCfg *Config
+	if nilCfg.WatermarkOrDefault() != def.Watermark || nilCfg.MediaOrDefault() != def.Media {
+		t.Fatal("nil config *OrDefault() mismatch")
+	}
+
+	// ResolveStudioConfig preserves explicit 0 on transition_ms, bgm_volume, and duck_orig_vol when configured.
+	zeroTimelineKnobs := ResolveStudioConfig(StudioConfig{
+		DefaultFPS:                  24,
+		TimelineDefaultTransitionMs: 0,
+		TimelineDefaultBGMVolume:    0,
+		TimelineAudioDuckOrigVol:    0,
+		AudioOverflowToleranceSec:   0,
+	})
+	if zeroTimelineKnobs.TimelineDefaultTransitionMs != 0 ||
+		zeroTimelineKnobs.TimelineDefaultBGMVolume != 0 ||
+		zeroTimelineKnobs.TimelineAudioDuckOrigVol != 0 ||
+		zeroTimelineKnobs.AudioOverflowToleranceSec != 0 {
+		t.Fatalf("expected explicit 0 timeline/audio knobs preserved, got %+v", zeroTimelineKnobs)
+	}
+
+	// Layered file -> env -> flag overrides for new tunables.
+	dir := t.TempDir()
+	writeFile(t, dir, FileName, `{
+		"mediagen": {"oauth_refresh_skew": "90s", "oauth_fallback_ttl": "45m"},
+		"watermark": {"video_default_width": 200, "video_default_height": 80, "video_default_crop_px": 48},
+		"studio": {
+			"preflight_max_items": 300,
+			"preflight_large_batch_warn_count": 15,
+			"extract_frame_default_count": 5,
+			"extract_frame_max_count": 20,
+			"max_mask_bytes": 4194304,
+			"export_subtitle_font_family": "Noto Sans",
+			"default_list_limit": 150,
+			"qc_sample_frame_default": 2,
+			"qc_sample_frame_max": 5,
+			"qc_max_reference_images": 4,
+			"lipsync_max_face_index": 6,
+			"grid_split_max_margin_px": 256,
+			"grid_split_max_gutter_px": 128,
+			"audio_overflow_tolerance_sec": 0.25
+		}
+	}`)
+	loaded, err := Load(Source{
+		Mode:      ModeDesktop,
+		ConfigDir: dir,
+		EnvPrefix: "T_",
+		LookupEnv: env(map[string]string{
+			"T_STUDIO_DEFAULT_LIST_LIMIT":     "250",
+			"T_WATERMARK_VIDEO_DEFAULT_WIDTH": "240",
+		}),
+		Args: []string{"--studio-export-subtitle-font-family=Roboto", "--mediagen-oauth-refresh-skew=3m"},
+	})
+	if err != nil {
+		t.Fatalf("Load Wave 1 tunables failed: %v", err)
+	}
+	if loaded.Config.Studio.DefaultListLimit != 250 ||
+		loaded.Config.Studio.ExportSubtitleFontFamily != "Roboto" ||
+		loaded.Config.Watermark.VideoDefaultWidth != 240 ||
+		loaded.Config.MediaGen.OAuthRefreshSkew != 3*time.Minute {
+		t.Fatalf("unexpected layered Wave 1 overrides: studio=%+v wm=%+v mg=%+v",
+			loaded.Config.Studio, loaded.Config.Watermark, loaded.Config.MediaGen)
+	}
+
+	for name, mutate := range map[string]func(*Config){
+		"media library_max_items <= 0":       func(c *Config) { c.Media.LibraryMaxItems = 0 },
+		"media ticket_ttl <= 0":              func(c *Config) { c.Media.TicketTTL = 0 },
+		"media renew_skew >= ticket_ttl":     func(c *Config) { c.Media.TicketRenewSkew = c.Media.TicketTTL },
+		"media registered_roots_max <= 0":    func(c *Config) { c.Media.RegisteredRootsMax = 0 },
+		"media staging_ttl <= 0":             func(c *Config) { c.Media.StagingTTL = 0 },
+		"media staging_gc_interval <= 0":     func(c *Config) { c.Media.StagingGCInterval = 0 },
+		"watermark max_workers <= 0":         func(c *Config) { c.Watermark.MaxWorkers = 0 },
+		"watermark max_image_pixels <= 0":    func(c *Config) { c.Watermark.MaxImagePixels = 0 },
+		"watermark decode_concurrency <= 0":  func(c *Config) { c.Watermark.DecodeConcurrency = 0 },
+		"watermark video_default_width < 2":  func(c *Config) { c.Watermark.VideoDefaultWidth = 1 },
+		"watermark video_default_height < 2": func(c *Config) { c.Watermark.VideoDefaultHeight = 1 },
+		"watermark video_default_crop < 1":   func(c *Config) { c.Watermark.VideoDefaultCropPx = 0 },
+		"binaries download_retry_max < 0":    func(c *Config) { c.Binaries.DownloadRetryMax = -1 },
+		"binaries download_retry_delay <= 0": func(c *Config) { c.Binaries.DownloadRetryDelay = 0 },
+		"agent max_approval_cont <= 0":       func(c *Config) { c.Agent.MaxApprovalContinuations = 0 },
+		"blank tts_default_voice_openai":     func(c *Config) { c.MediaGen.TTSDefaultVoiceOpenAI = " " },
+		"blank tts_default_voice_gemini":     func(c *Config) { c.MediaGen.TTSDefaultVoiceGemini = "" },
+		"video_poll >= video_timeout": func(c *Config) {
+			c.MediaGen.VideoPollInterval = 5 * time.Minute
+			c.MediaGen.VideoTimeout = 5 * time.Minute
+		},
+		"oauth_skew >= oauth_ttl": func(c *Config) {
+			c.MediaGen.OAuthRefreshSkew = 30 * time.Minute
+			c.MediaGen.OAuthFallbackTTL = 30 * time.Minute
+		},
+		"idle_conns_per_host > idle_conns": func(c *Config) {
+			c.Network.MaxIdleConns = 5
+			c.Network.MaxIdleConnsPerHost = 10
+		},
+		"studio default_fps > 120":     func(c *Config) { c.Studio.DefaultFPS = 240 },
+		"invalid studio ffmpeg_preset": func(c *Config) { c.Studio.FFmpegPreset = "turbo" },
+		"lease_min < poll_interval": func(c *Config) {
+			c.Studio.QueuePollInterval = 10 * time.Second
+			c.Studio.QueuePollLeaseMin = 5 * time.Second
+		},
+		"thumb_height < 32":                 func(c *Config) { c.Studio.TimelineThumbHeight = 16 },
+		"thumb_height > 360":                func(c *Config) { c.Studio.TimelineThumbHeight = 400 },
+		"extract_default > extract_max":     func(c *Config) { c.Studio.ExtractFrameDefaultCount = 10; c.Studio.ExtractFrameMaxCount = 5 },
+		"qc_sample_default > qc_sample_max": func(c *Config) { c.Studio.QCSampleFrameDefault = 8; c.Studio.QCSampleFrameMax = 4 },
+		"preflight_warn > preflight_max":    func(c *Config) { c.Studio.PreflightLargeBatchWarnCount = 600; c.Studio.PreflightMaxItems = 500 },
+		"max_mask_bytes <= 0":               func(c *Config) { c.Studio.MaxMaskBytes = 0 },
+		"empty subtitle_font_family":        func(c *Config) { c.Studio.ExportSubtitleFontFamily = "  " },
+		"negative overflow_tolerance":       func(c *Config) { c.Studio.AudioOverflowToleranceSec = -0.1 },
+		"nul byte in workspace_dir":         func(c *Config) { c.Agent.WorkspaceDir = "D:\\ws\x00bad" },
+		"nul byte in storage.data_dir":      func(c *Config) { c.Storage.DataDir = "D:\\data\x00bad" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := Default(ModeDesktop)
