@@ -7,7 +7,6 @@ package core
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -124,8 +123,8 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 	cfg := o.Config
 	c := &Core{log: o.Logger, shutdown: cfg.Server.ShutdownTimeout, startedAt: time.Now()}
 	defer func() {
-		if err != nil && c.db != nil {
-			_ = c.db.Close()
+		if err != nil {
+			_ = c.Close()
 		}
 	}()
 
@@ -161,15 +160,9 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 		return nil, err
 	}
 
-	var ticketSecret []byte
-	if o.AuthToken != "" {
-		h := sha256.Sum256([]byte("ticket-signing-secret:" + o.AuthToken))
-		ticketSecret = h[:]
-	} else {
-		ticketSecret = make([]byte, 32)
-		if _, err := rand.Read(ticketSecret); err != nil {
-			return nil, fmt.Errorf("core: ticket secret: %w", err)
-		}
+	ticketSecret := make([]byte, 32)
+	if _, err := rand.Read(ticketSecret); err != nil {
+		return nil, fmt.Errorf("core: ticket secret: %w", err)
 	}
 	ticketSigner := security.NewTicketSigner(ticketSecret)
 
@@ -214,6 +207,7 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 			TicketSigner:   ticketSigner,
 			AssetResolver:  c.mediaSvc,
 			FileGuard:      workflowFileGuard(cfg.Mode, c.agentSvc),
+			Logger:         o.Logger,
 		}),
 	})
 	if err != nil {
@@ -640,15 +634,29 @@ func (c *Core) WSURL() string { return c.srv.WSURL() }
 func (c *Core) Errors() <-chan error { return c.srv.Errors() }
 
 // Close drains sessions and in-flight actions (bounded by server.shutdown_timeout),
-// stops the HTTP listener, then closes storage — in that order, so no action ever
-// runs against a closed database.
+// stops the HTTP listener, waits for background workers and services to stop,
+// and closes storage last — so no handler or worker ever runs against a closed database.
 func (c *Core) Close() error {
 	if c.bgCancel != nil {
 		c.bgCancel()
-		// Bound background wait separately so a stalled startup task cannot exhaust the session drain timeout.
-		bgBudget := c.shutdown / 2
-		if bgBudget <= 0 {
-			bgBudget = c.shutdown
+	}
+
+	var hubErr error
+	if c.hub != nil {
+		hubCtx, hubCancel := context.WithTimeout(context.Background(), c.shutdown)
+		hubErr = c.hub.Close(hubCtx)
+		hubCancel()
+	}
+
+	var srvErr error
+	if c.srv != nil {
+		srvErr = c.srv.Stop()
+	}
+
+	if c.bgCancel != nil {
+		bgBudget := c.shutdown
+		if bgBudget < 5*time.Second {
+			bgBudget = 5 * time.Second
 		}
 		bgCtx, bgCancel := context.WithTimeout(context.Background(), bgBudget)
 		done := make(chan struct{})
@@ -656,25 +664,29 @@ func (c *Core) Close() error {
 		select {
 		case <-done:
 		case <-bgCtx.Done():
+			if c.log != nil {
+				c.log.Warn("core: background workers did not finish within shutdown deadline", "timeout", bgBudget)
+			}
 		}
 		bgCancel()
 	}
+
 	if c.provSvc != nil {
 		c.provSvc.Close() // running key checks write to the database: finish them first
 	}
-	hubCtx, hubCancel := context.WithTimeout(context.Background(), c.shutdown)
-	defer hubCancel()
-	hubErr := c.hub.Close(hubCtx)
-	srvErr := c.srv.Stop()
 	var agentErr error
 	if c.agentSvc != nil {
 		agentErr = c.agentSvc.Close()
+	}
+	var dbErr error
+	if c.db != nil {
+		dbErr = c.db.Close()
 	}
 	return errors.Join(
 		hubErr,
 		srvErr,
 		agentErr,
-		c.db.Close(),
+		dbErr,
 	)
 }
 

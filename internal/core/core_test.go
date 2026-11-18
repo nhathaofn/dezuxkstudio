@@ -1029,3 +1029,111 @@ func TestCore_ServerModeBlocksMediaRegisterInputRootPoisoningAndDownload(t *test
 		t.Fatalf("expected 403 Forbidden for secrets.enc inside mediaDir, got %d", secResp.StatusCode)
 	}
 }
+
+func TestCore_TicketSecretIndependentOfAuthTokenAndLoggerWired(t *testing.T) {
+	newCore := func(t *testing.T, logBuf *bytes.Buffer, token string) *core.Core {
+		t.Helper()
+		tmp := t.TempDir()
+		p, err := paths.Resolve("core_test", paths.Overrides{DataDir: filepath.Join(tmp, "data"), LogDir: filepath.Join(tmp, "logs")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.Config = filepath.Join(tmp, "config")
+		if err := p.Ensure(); err != nil {
+			t.Fatal(err)
+		}
+		cfg := config.Default(config.ModeServer)
+		cfg.Agent.AutoInstallCLI, cfg.Agent.AutoUpdateCLI = false, false
+		cfg.Providers.CheckOnStartup = false
+		cfg.Server.Host = "127.0.0.1"
+		cfg.Server.Port = 0
+		cfg.Log.Level = "debug"
+
+		var lg *slog.Logger
+		if logBuf != nil {
+			lg = slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		} else {
+			lg = slog.New(slog.DiscardHandler)
+		}
+
+		c, err := core.New(context.Background(), core.Options{
+			Config:        cfg,
+			Paths:         p,
+			Logger:        lg,
+			AuthToken:     token,
+			OpenDirectory: func(string) error { return nil },
+			HTTPClient:    http.DefaultClient,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Start(); err != nil {
+			_ = c.Close()
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		return c
+	}
+
+	const sharedToken = "identical-server-auth-token"
+	var logBuf bytes.Buffer
+	c1 := newCore(t, &logBuf, sharedToken)
+	c2 := newCore(t, nil, sharedToken)
+
+	// Register a media file in c1 and sign a URL.
+	samplePath := filepath.Join(c1.WorkspaceTree().MediaDir, "sample.png")
+	if err := os.WriteFile(samplePath, generateTestPNG(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws1, call1 := dialCoreWS(t, c1.WSURL(), sharedToken)
+	defer ws1.CloseNow()
+
+	regResp, err := call1(contracts.ActionMediaRegisterInput, map[string]any{"file_path": samplePath})
+	if err != nil || !regResp.Success {
+		t.Fatalf("register_input failed: err=%v resp=%+v", err, regResp)
+	}
+	var regData contracts.MediaAssetItem
+	if err := json.Unmarshal(regResp.Data, &regData); err != nil {
+		t.Fatal(err)
+	}
+	signResp, err := call1(contracts.ActionMediaSignURL, map[string]any{"asset_id": regData.ID, "purpose": "preview"})
+	if err != nil || !signResp.Success {
+		t.Fatalf("sign_url failed: err=%v resp=%+v", err, signResp)
+	}
+	var signData struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(signResp.Data, &signData); err != nil {
+		t.Fatal(err)
+	}
+	u1, err := url.Parse(signData.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := u1.Query().Get("ticket")
+	if ticket == "" {
+		t.Fatalf("missing ticket in signed URL: %s", signData.URL)
+	}
+
+	// Ticket signed by c1 must NOT validate on c2 even with the exact same AuthToken.
+	httpBase2 := "http" + c2.WSURL()[len("ws"):len(c2.WSURL())-len("/ws")]
+	resp2, err := (&http.Client{Timeout: 5 * time.Second}).Get(httpBase2 + "/api/media/download?ticket=" + url.QueryEscape(ticket))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp2.Body.Close()
+	if resp2.StatusCode == http.StatusOK {
+		t.Fatalf("ticket from c1 must not be accepted by c2 with identical AuthToken")
+	}
+
+	// RequestLogger must be wired on c1 HTTP router.
+	httpBase1 := "http" + c1.WSURL()[len("ws"):len(c1.WSURL())-len("/ws")]
+	healthResp, err := (&http.Client{Timeout: 5 * time.Second}).Get(httpBase1 + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = healthResp.Body.Close()
+	if !strings.Contains(logBuf.String(), "/health") {
+		t.Fatalf("expected RequestLogger to log /health, got logs: %s", logBuf.String())
+	}
+}
