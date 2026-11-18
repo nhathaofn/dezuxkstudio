@@ -51,11 +51,14 @@ func (r *Registry) Specs() []Spec {
 	return specs
 }
 
-// Run executes one node with its JSON request.
+// Run executes one node with its JSON request after validating Spec.Params bounds and options.
 func (r *Registry) Run(ctx context.Context, nodeType string, input json.RawMessage) (any, error) {
 	n, ok := r.node(nodeType)
 	if !ok {
 		return nil, Invalid(fmt.Sprintf("Unknown node type %q.", nodeType))
+	}
+	if err := ValidateNodeInput(n.Spec(), input); err != nil {
+		return nil, err
 	}
 	return n.Run(ctx, input)
 }

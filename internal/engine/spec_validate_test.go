@@ -1,8 +1,12 @@
 package engine
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func validSpec() Spec {
@@ -46,5 +50,61 @@ func TestValidateSpecRejectsWhatTheAgentCannotUse(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: got %v", want, err)
 		}
+	}
+}
+
+func TestEngineSubstrateHardening(t *testing.T) {
+	// nil ctx CheckFile returns nil safely
+	if err := CheckFile(nil, "anything", true); err != nil { //nolint:staticcheck
+		t.Fatalf("CheckFile(nil) got %v", err)
+	}
+
+	// RefFor ignores dots inside directory segments
+	ref := RefFor(`D:\v1.0\img\clip`, MediaVideo)
+	if ref.Kind != MediaVideo || ref.MimeType != "" {
+		t.Fatalf("unexpected RefFor on extensionless dotted dir: %+v", ref)
+	}
+
+	// Registry.Run enforces Spec.Params bounds & options
+	reg := NewRegistry()
+	var ran bool
+	n := Typed(validSpec(), func(_ context.Context, _ struct{}) (struct{}, error) {
+		ran = true
+		return struct{}{}, nil
+	})
+	if err := reg.Register(n); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Run(context.Background(), "tool.x", json.RawMessage(`{"workers":999}`)); err == nil {
+		t.Fatal("expected out-of-range workers error")
+	}
+	if _, err := reg.Run(context.Background(), "tool.x", json.RawMessage(`{"corner":"invalid"}`)); err == nil {
+		t.Fatal("expected invalid select option error")
+	}
+	if _, err := reg.Run(context.Background(), "tool.x", json.RawMessage(`{"workers":4,"corner":"b"}`)); err != nil || !ran {
+		t.Fatalf("expected valid input to execute node, ran=%v err=%v", ran, err)
+	}
+
+	// RunGraph returns promptly on context cancel even if worker refuses to exit immediately
+	release := make(chan struct{})
+	defer close(release)
+	slowReg := NewRegistry()
+	_ = slowReg.Register(Typed(Spec{
+		Type: "tool.slow", Label: "Slow", Description: "Blocks until released.",
+	}, func(_ context.Context, _ struct{}) (struct{}, error) {
+		<-release
+		return struct{}{}, nil
+	}))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := slowReg.RunGraph(ctx, Graph{
+		Nodes: []GraphNode{{ID: "n1", Type: "tool.slow"}},
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected DeadlineExceeded, got %v", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatalf("RunGraph blocked on slow worker for %v", time.Since(start))
 	}
 }

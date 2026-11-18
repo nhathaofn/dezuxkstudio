@@ -29,6 +29,9 @@ func HasFileGuard(ctx context.Context) bool {
 // CheckFile asks the guard attached to ctx (if any) whether path may be accessed.
 // Every node that touches local files must call it before reading or writing.
 func CheckFile(ctx context.Context, path string, write bool) error {
+	if ctx == nil {
+		return nil
+	}
 	if g, ok := ctx.Value(fileGuardKey{}).(FileGuard); ok {
 		return g(path, write)
 	}

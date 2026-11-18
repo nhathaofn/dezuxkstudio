@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"time"
 
 	"app/internal/apperr"
 	"app/internal/progress"
@@ -122,6 +123,9 @@ func (r *Registry) RunGraph(ctx context.Context, g Graph) (GraphResult, error) {
 		}
 	}
 
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	workers := min(total, max(4, runtime.NumCPU()))
 	jobs := make(chan scheduledJob, total)
 	results := make(chan finishedJob, total)
@@ -132,7 +136,7 @@ func (r *Registry) RunGraph(ctx context.Context, g Graph) (GraphResult, error) {
 		safego.Go("engine.graph.worker", func() {
 			defer wg.Done()
 			for job := range jobs {
-				results <- r.executeScheduledJob(ctx, g.RequestID, job)
+				results <- r.executeScheduledJob(runCtx, g.RequestID, job)
 			}
 		})
 	}
@@ -188,9 +192,7 @@ func (r *Registry) RunGraph(ctx context.Context, g Graph) (GraphResult, error) {
 		}
 	}
 
-	drainReady()
-	for completed < total {
-		fin := <-results
+	handleFinished := func(fin finishedJob) {
 		res.Nodes[fin.id] = fin.run
 		res.Order = append(res.Order, fin.id)
 		if fin.out != nil {
@@ -205,6 +207,30 @@ func (r *Registry) RunGraph(ctx context.Context, g Graph) (GraphResult, error) {
 			}
 		}
 		drainReady()
+	}
+
+	drainReady()
+	doneCh := ctx.Done()
+	var graceTimer *time.Timer
+	var graceCh <-chan time.Time
+	for completed < total {
+		select {
+		case fin := <-results:
+			handleFinished(fin)
+		case <-doneCh:
+			cancel()
+			doneCh = nil
+			// Allow cooperative nodes a brief grace window to exit and populate RunCancelled results.
+			graceTimer = time.NewTimer(150 * time.Millisecond)
+			graceCh = graceTimer.C
+		case <-graceCh:
+			graceTimer.Stop()
+			close(jobs)
+			return res, ctx.Err()
+		}
+	}
+	if graceTimer != nil {
+		graceTimer.Stop()
 	}
 
 	close(jobs)
