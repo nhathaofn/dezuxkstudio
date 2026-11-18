@@ -113,6 +113,8 @@ export const en = {
     "Keys are stored in an encrypted file because no OS keychain is available. Set DEZUXK_MASTER_KEY to manage the encryption key.",
   "providers.backend.memory":
     "Keys are stored only in memory and will be lost when the app restarts.",
+  "providers.backend.error":
+    "The encrypted secrets store on disk could not be opened (damaged file or wrong DEZUXK_MASTER_KEY). Fix or remove the store before saving keys.",
   "providers.backend.keyring": "Keys are stored in the OS keychain.",
   "providers.filterShort.all": "All",
   "providers.filterShort.llm": "LLM",

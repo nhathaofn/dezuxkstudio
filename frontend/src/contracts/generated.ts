@@ -70,7 +70,7 @@ export type ProviderTestOutcome = (typeof ProviderTestOutcomeValues)[number];
 export const ProviderPurposeValues = ["text", "image", "video", "tts", "lipsync"] as const;
 export type ProviderPurpose = (typeof ProviderPurposeValues)[number];
 
-export const SecretBackendValues = ["keyring", "encrypted_file", "memory"] as const;
+export const SecretBackendValues = ["keyring", "encrypted_file", "memory", "error"] as const;
 export type SecretBackend = (typeof SecretBackendValues)[number];
 
 export const StudioGenreValues = ["drama", "narration"] as const;

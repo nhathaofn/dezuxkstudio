@@ -114,6 +114,8 @@ export const vi: Record<MessageKey, string> = {
     "Khóa được lưu trong tệp mã hóa vì không có kho khóa của hệ điều hành. Hãy đặt biến môi trường DEZUXK_MASTER_KEY để quản lý khóa mã hóa.",
   "providers.backend.memory":
     "Khóa chỉ được lưu trong bộ nhớ và sẽ mất khi khởi động lại ứng dụng.",
+  "providers.backend.error":
+    "Không thể mở tệp lưu khóa mã hóa trên đĩa (tệp hỏng hoặc sai DEZUXK_MASTER_KEY). Hãy kiểm tra trước khi lưu khóa mới.",
   "providers.backend.keyring": "Khóa được lưu trong kho khóa của hệ điều hành.",
   "providers.filterShort.all": "Tất cả",
   "providers.filterShort.llm": "LLM",
