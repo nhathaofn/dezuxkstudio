@@ -147,6 +147,7 @@
   --timeline-player-bg: #0b0f19;
   --timeline-subtitle-scrim: rgba(9, 11, 16, 0.72);
   --timeline-subtitle-text: #ffffff;
+  --studio-mask-brush-stroke: rgba(255, 255, 255, 0.85);
 
   /* 5. Custom Select & Dropdown Tokens */
   --select-arrow-offset: 13px;
@@ -270,6 +271,7 @@ html[data-theme="light"],
   --timeline-player-bg: #05070b;
   --timeline-subtitle-scrim: rgba(5, 7, 11, 0.8);
   --timeline-subtitle-text: #ffffff;
+  --studio-mask-brush-stroke: rgba(255, 255, 255, 0.85);
 
   --select-chevron-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23cbd5e1' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 

@@ -1129,6 +1129,16 @@ export const en = {
   "studio.queue.status.succeeded": "Succeeded",
   "studio.queue.status.failed": "Failed",
   "studio.queue.status.canceled": "Canceled",
+  "studio.queue.kind.image": "Image",
+  "studio.queue.kind.video": "Video",
+  "studio.queue.kind.tts": "TTS Speech",
+  "studio.queue.kind.lipsync": "Lip-Sync",
+  "studio.queue.kind.mask_edit": "Mask Edit",
+  "studio.queue.kind.grid_split": "Grid Split",
+  "studio.queue.kind.extract_frames": "Extract Frames",
+  "studio.queue.kind.tts_dub_mux": "Dubbing Mux",
+  "studio.queue.kind.video_wm_remove": "Video Watermark",
+  "studio.queue.kind.qc_review": "QC Review",
   "studio.queue.providerId": "Remote ID: {id}",
 
   "studio.cost.title": "Cost Ledger",
@@ -1148,7 +1158,7 @@ export const en = {
   "studio.approval.reject": "Reject",
   "studio.approval.preflightTitle": "Preflight & Batch Approval Gate",
   "studio.approval.preflightItems": "Items: {count}",
-  "studio.approval.preflightEst": "Estimated Cost: ${usd}",
+  "studio.approval.preflightEst": "Estimated Cost: {usd}",
   "studio.approval.preflightSec": "Estimated Duration: ~{sec}s",
   "studio.approval.confirmRun": "Approve & Execute",
   "studio.approval.blocked": "Blocked: fix provider checks above before launching.",
@@ -1171,6 +1181,7 @@ export const en = {
   "studio.gridSplit.applyTarget": "Set as Active Output",
   "studio.gridSplit.rowSplitPct": "Row {index} weight",
   "studio.gridSplit.colSplitPct": "Col {index} weight",
+  "studio.gridSplit.previewAlt": "Storyboard grid source preview",
 
   "studio.maskEdit.title": "Mask & Inpaint Editor",
   "studio.maskEdit.button": "Mask Edit",
@@ -1181,6 +1192,7 @@ export const en = {
   "studio.maskEdit.promptPlaceholder": "Describe what should replace the painted mask area…",
   "studio.maskEdit.apply": "Apply Mask Edit",
   "studio.maskEdit.hint": "Paint white strokes over the exact region to regenerate.",
+  "studio.maskEdit.baseImageAlt": "Target image for mask editing",
 
   "studio.extractFrame.button": "Last Frame → Next Keyframe",
   "studio.extractFrame.noNextShot": "Needs next shot in storyboard",
@@ -1266,6 +1278,9 @@ export const en = {
   "studio.timeline.nleFormats.otio": "OpenTimelineIO (.otio)",
   "studio.timeline.nleProjectName": "Draft Project Name",
   "studio.timeline.includeMediaCopy": "Bundle source media copies inside zip archive",
+  "studio.timeline.muteLabel": "Toggle mute",
+  "studio.timeline.soloLabel": "Toggle solo",
+  "studio.timeline.lockLabel": "Toggle lock",
 } as const;
 
 export type MessageKey = keyof typeof en;

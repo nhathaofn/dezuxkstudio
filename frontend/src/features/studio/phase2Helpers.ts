@@ -3,6 +3,10 @@ export interface MaskStroke {
   points: { x: number; y: number }[];
 }
 
+// FFmpeg / inpainting 1-bit binary mask encoding: black = preserve background, white = edit region.
+export const MASK_PRESERVE_COLOR = "#000000" as const;
+export const MASK_EDIT_COLOR = "#ffffff" as const;
+
 /** Normalize weights into 0..100 percentages matching backend splitAxisSpans logic. */
 export function computeGridDividerPercents(weights: number[]): number[] {
   const sum = weights.reduce((acc, w) => acc + (w > 0 ? w : 1), 0);
@@ -27,9 +31,9 @@ export function buildMaskDataURLFromStrokes(
   off.height = Math.max(1, Math.round(height));
   const ctx = off.getContext("2d");
   if (!ctx) return "";
-  ctx.fillStyle = "#000000";
+  ctx.fillStyle = MASK_PRESERVE_COLOR;
   ctx.fillRect(0, 0, off.width, off.height);
-  ctx.strokeStyle = "#ffffff";
+  ctx.strokeStyle = MASK_EDIT_COLOR;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   for (const s of strokes) {

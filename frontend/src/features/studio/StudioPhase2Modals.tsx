@@ -3,11 +3,13 @@ import { Check, Eraser, Grid, Paintbrush, RotateCcw, ShieldCheck, ShieldAlert } 
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
-import { NodeTypes } from "../../contracts/generated";
+import { appConfig } from "../../config/appConfig";
+import { NodeTypes, type StudioMediaTargetKind, type StudioQCStatus } from "../../contracts/generated";
 import { useSignedMediaURL } from "../../lib/hooks/useSignedMediaURL";
-import { useT } from "../../lib/i18n";
+import { translateServerMessage, useT } from "../../lib/i18n";
 import { findParam, useNodeSpec } from "../workflow/useNodeSpecs";
-import { targetVersionKey, useStudioStore, type StudioMaskModalTarget } from "./useStudioStore";
+import { formatUSD } from "./studioFormatters";
+import { targetVersionKey, useStudioStore, type StudioGridModalTarget, type StudioMaskModalTarget } from "./useStudioStore";
 import {
   buildMaskDataURLFromStrokes,
   computeGridDividerPercents,
@@ -44,21 +46,27 @@ export const StudioPreflightDialog: React.FC = () => {
           <Badge>{pending.stage}</Badge>
           <Badge>{t("studio.approval.preflightItems", { count: preflight.item_count })}</Badge>
           <Badge>
-            {t("studio.approval.preflightEst", { usd: preflight.estimated_usd.toFixed(4) })}
+            {t("studio.approval.preflightEst", { usd: formatUSD(preflight.estimated_usd, 4) })}
           </Badge>
           <Badge>{t("studio.approval.preflightSec", { sec: preflight.estimated_sec })}</Badge>
         </div>
         {preflight.model_id && (
           <div className="studio-field-hint">
-            {preflight.provider_id}/{preflight.model_id} · {preflight.unit} ($
-            {preflight.unit_price_usd}/u)
+            {preflight.provider_id}/{preflight.model_id} · {preflight.unit} (
+            {formatUSD(preflight.unit_price_usd, 4)}/u)
           </div>
         )}
-        {preflight.warnings?.map((w, idx) => (
-          <div key={idx} className="studio-notice studio-notice--warn">
-            {w}
-          </div>
-        ))}
+        {(preflight.warning_items && preflight.warning_items.length > 0
+          ? preflight.warning_items.map((w, idx) => (
+              <div key={idx} className="studio-notice studio-notice--warn">
+                {translateServerMessage(t, w.msg_key, w.msg_params) ?? w.message}
+              </div>
+            ))
+          : (preflight.warnings ?? []).map((w, idx) => (
+              <div key={idx} className="studio-notice studio-notice--warn">
+                {w}
+              </div>
+            )))}
         {preflight.blockers?.map((b, idx) => (
           <div key={idx} className="studio-notice studio-notice--error">
             {b}
@@ -115,16 +123,20 @@ export const StudioVersionDrawer: React.FC = () => {
             disabled={saving || !target.mediaPath}
             onClick={handleRunQC}
           >
-            {latestQC?.verdict === "pass" ? <ShieldCheck size={14} /> : <ShieldAlert size={14} />}
+            {latestQC?.verdict === ("pass" satisfies StudioQCStatus) ? (
+              <ShieldCheck size={14} />
+            ) : (
+              <ShieldAlert size={14} />
+            )}
             {t("studio.qc.button")}
           </Button>
           {latestQC && (
             <div className="studio-phase2-meta-grid">
               <Badge
                 className={
-                  latestQC.verdict === "pass"
+                  latestQC.verdict === ("pass" satisfies StudioQCStatus)
                     ? "studio-badge--ok"
-                    : latestQC.verdict === "fail"
+                    : latestQC.verdict === ("fail" satisfies StudioQCStatus)
                       ? "studio-badge--error"
                       : "studio-badge--warn"
                 }
@@ -141,14 +153,14 @@ export const StudioVersionDrawer: React.FC = () => {
             {latestQC.vision_summary && (
               <p className="studio-qc-summary">{latestQC.vision_summary}</p>
             )}
-            {latestQC.issues.length > 0 && (
+            {(latestQC.issues ?? []).length > 0 && (
               <ul className="studio-qc-issues">
-                {latestQC.issues.map((iss, idx) => (
+                {(latestQC.issues ?? []).map((iss, idx) => (
                   <li key={idx}>
                     <strong>
                       [{iss.severity}/{iss.category}]
                     </strong>{" "}
-                    {iss.message}
+                    {translateServerMessage(t, iss.msg_key, iss.msg_params) ?? iss.message}
                   </li>
                 ))}
               </ul>
@@ -177,7 +189,7 @@ export const StudioVersionDrawer: React.FC = () => {
                   </div>
                 </div>
                 <div className="studio-field-hint">
-                  {v.model_ref || v.source_node} · ${v.cost_usd.toFixed(4)}
+                  {v.model_ref || v.source_node} · {formatUSD(v.cost_usd, 4)}
                 </div>
                 {v.prompt_used && <p className="studio-version-prompt">{v.prompt_used}</p>}
                 <div className="studio-field-hint studio-path-truncate">{v.media_path}</div>
@@ -201,63 +213,135 @@ export const StudioVersionDrawer: React.FC = () => {
   );
 };
 
+const equalGridWeights = (count: number) =>
+  Array.from({ length: count }, () =>
+    Math.round(appConfig.studio.gridSplitter.weightTotalPct / Math.max(1, count))
+  );
+
+const clampGridBound = (val: number, minVal?: number, maxVal?: number) => {
+  let out = val;
+  if (minVal !== undefined) out = Math.max(minVal, out);
+  if (maxVal !== undefined) out = Math.min(maxVal, out);
+  return out;
+};
+
 export const StudioGridSplitterModal: React.FC = () => {
-  const t = useT();
   const gridSpec = useNodeSpec(NodeTypes.GRID_SPLIT);
+  const target = useStudioStore((s) => s.gridModalTarget);
+  if (!target) return null;
+
   const rowsParam = findParam(gridSpec, "rows");
   const colsParam = findParam(gridSpec, "cols");
   const marginParam = findParam(gridSpec, "margin_px");
   const gutterParam = findParam(gridSpec, "gutter_px");
-  const rowsMin = rowsParam?.min ?? 1;
-  const rowsMax = rowsParam?.max ?? 8;
-  const colsMin = colsParam?.min ?? 1;
-  const colsMax = colsParam?.max ?? 8;
-  const marginMin = marginParam?.min ?? 0;
-  const marginMax = marginParam?.max ?? 512;
-  const gutterMin = gutterParam?.min ?? 0;
-  const gutterMax = gutterParam?.max ?? 256;
 
-  const target = useStudioStore((s) => s.gridModalTarget);
+  const defaultRows = rowsParam?.default
+    ? Number(rowsParam.default)
+    : appConfig.studio.gridSplitter.defaultRows;
+  const defaultCols = colsParam?.default
+    ? Number(colsParam.default)
+    : appConfig.studio.gridSplitter.defaultCols;
+  const defaultMargin = marginParam?.default ? Number(marginParam.default) : 0;
+  const defaultGutter = gutterParam?.default ? Number(gutterParam.default) : 0;
+
+  return (
+    <StudioGridSplitterBody
+      key={`${target.targetId}:${target.imagePath}:${defaultRows}:${defaultCols}:${defaultMargin}:${defaultGutter}`}
+      target={target}
+      defaultRows={defaultRows}
+      defaultCols={defaultCols}
+      defaultMargin={defaultMargin}
+      defaultGutter={defaultGutter}
+      rowsMin={rowsParam?.min}
+      rowsMax={rowsParam?.max}
+      colsMin={colsParam?.min}
+      colsMax={colsParam?.max}
+      marginMin={marginParam?.min}
+      marginMax={marginParam?.max}
+      gutterMin={gutterParam?.min}
+      gutterMax={gutterParam?.max}
+    />
+  );
+};
+
+interface StudioGridSplitterBodyProps {
+  target: StudioGridModalTarget;
+  defaultRows: number;
+  defaultCols: number;
+  defaultMargin: number;
+  defaultGutter: number;
+  rowsMin?: number;
+  rowsMax?: number;
+  colsMin?: number;
+  colsMax?: number;
+  marginMin?: number;
+  marginMax?: number;
+  gutterMin?: number;
+  gutterMax?: number;
+}
+
+const StudioGridSplitterBody: React.FC<StudioGridSplitterBodyProps> = ({
+  target,
+  defaultRows,
+  defaultCols,
+  defaultMargin,
+  defaultGutter,
+  rowsMin,
+  rowsMax,
+  colsMin,
+  colsMax,
+  marginMin,
+  marginMax,
+  gutterMin,
+  gutterMax,
+}) => {
+  const t = useT();
   const openGridModal = useStudioStore((s) => s.openGridModal);
   const splitGrid = useStudioStore((s) => s.splitGrid);
   const versionsByTarget = useStudioStore((s) => s.versionsByTarget);
   const selectVersion = useStudioStore((s) => s.selectVersion);
   const saving = useStudioStore((s) => s.saving);
 
-  const [rows, setRows] = useState(() => Number(rowsParam?.default ?? "2") || 2);
-  const [cols, setCols] = useState(() => Number(colsParam?.default ?? "2") || 2);
-  const [marginPx, setMarginPx] = useState(() => Number(marginParam?.default ?? "0") || 0);
-  const [gutterPx, setGutterPx] = useState(() => Number(gutterParam?.default ?? "0") || 0);
-  const [rowWeights, setRowWeights] = useState<number[]>([50, 50]);
-  const [colWeights, setColWeights] = useState<number[]>([50, 50]);
-  const { url } = useSignedMediaURL(target?.assetId || null, "preview");
+  const [rows, setRows] = useState<number>(defaultRows);
+  const [cols, setCols] = useState<number>(defaultCols);
+  const [marginPx, setMarginPx] = useState<number>(defaultMargin);
+  const [gutterPx, setGutterPx] = useState<number>(defaultGutter);
+  const [rowWeights, setRowWeights] = useState<number[]>(() => equalGridWeights(defaultRows));
+  const [colWeights, setColWeights] = useState<number[]>(() => equalGridWeights(defaultCols));
+  const { url } = useSignedMediaURL(target.assetId || null, "preview");
 
   const handleRowsChange = (nextRows: number) => {
-    const clamped = Math.max(rowsMin, Math.min(rowsMax, nextRows));
+    const clamped = clampGridBound(nextRows, rowsMin ?? 1, rowsMax);
     setRows(clamped);
     setRowWeights((prev) =>
-      Array.from({ length: clamped }, (_, i) => prev[i] ?? Math.round(100 / clamped))
+      Array.from(
+        { length: clamped },
+        (_, i) =>
+          prev[i] ?? Math.round(appConfig.studio.gridSplitter.weightTotalPct / Math.max(1, clamped))
+      )
     );
   };
 
   const handleColsChange = (nextCols: number) => {
-    const clamped = Math.max(colsMin, Math.min(colsMax, nextCols));
+    const clamped = clampGridBound(nextCols, colsMin ?? 1, colsMax);
     setCols(clamped);
     setColWeights((prev) =>
-      Array.from({ length: clamped }, (_, i) => prev[i] ?? Math.round(100 / clamped))
+      Array.from(
+        { length: clamped },
+        (_, i) =>
+          prev[i] ?? Math.round(appConfig.studio.gridSplitter.weightTotalPct / Math.max(1, clamped))
+      )
     );
   };
-
-  if (!target) return null;
 
   const hCuts = computeGridDividerPercents(rowWeights);
   const vCuts = computeGridDividerPercents(colWeights);
   const panelKey = targetVersionKey(
-    target.targetKind || "grid_panel",
+    target.targetKind || ("grid_panel" satisfies StudioMediaTargetKind),
     target.targetId || target.projectId
   );
   const recentPanels = (versionsByTarget[panelKey] ?? []).filter(
-    (v) => v.source_node === "tool.grid_split"
+    (v) => v.source_node === NodeTypes.GRID_SPLIT
   );
 
   const handleSplit = () => {
@@ -287,7 +371,7 @@ export const StudioGridSplitterModal: React.FC = () => {
               min={rowsMin}
               max={rowsMax}
               value={rows}
-              onChange={(e) => handleRowsChange(Number(e.target.value) || rowsMin)}
+              onChange={(e) => handleRowsChange(Number(e.target.value) || rowsMin || 1)}
             />
           </label>
           <label className="studio-field-inline">
@@ -297,7 +381,7 @@ export const StudioGridSplitterModal: React.FC = () => {
               min={colsMin}
               max={colsMax}
               value={cols}
-              onChange={(e) => handleColsChange(Number(e.target.value) || colsMin)}
+              onChange={(e) => handleColsChange(Number(e.target.value) || colsMin || 1)}
             />
           </label>
           <label className="studio-field-inline">
@@ -308,7 +392,7 @@ export const StudioGridSplitterModal: React.FC = () => {
               max={marginMax}
               value={marginPx}
               onChange={(e) =>
-                setMarginPx(Math.max(marginMin, Math.min(marginMax, Number(e.target.value) || 0)))
+                setMarginPx(clampGridBound(Number(e.target.value) || 0, marginMin ?? 0, marginMax))
               }
             />
           </label>
@@ -320,7 +404,7 @@ export const StudioGridSplitterModal: React.FC = () => {
               max={gutterMax}
               value={gutterPx}
               onChange={(e) =>
-                setGutterPx(Math.max(gutterMin, Math.min(gutterMax, Number(e.target.value) || 0)))
+                setGutterPx(clampGridBound(Number(e.target.value) || 0, gutterMin ?? 0, gutterMax))
               }
             />
           </label>
@@ -332,7 +416,11 @@ export const StudioGridSplitterModal: React.FC = () => {
 
         <div className="studio-grid-preview-frame">
           {url ? (
-            <img src={url} alt="Grid source" className="studio-grid-preview-img" />
+            <img
+              src={url}
+              alt={t("studio.gridSplit.previewAlt")}
+              className="studio-grid-preview-img"
+            />
           ) : (
             <div className="studio-field-hint">{target.imagePath}</div>
           )}
@@ -358,8 +446,8 @@ export const StudioGridSplitterModal: React.FC = () => {
               <span>{t("studio.gridSplit.rowSplitPct", { index: i + 1 })}</span>
               <input
                 type="range"
-                min={10}
-                max={90}
+                min={appConfig.studio.gridSplitter.minWeightPct}
+                max={appConfig.studio.gridSplitter.maxWeightPct}
                 value={w}
                 onChange={(e) =>
                   setRowWeights((prev) =>
@@ -374,8 +462,8 @@ export const StudioGridSplitterModal: React.FC = () => {
               <span>{t("studio.gridSplit.colSplitPct", { index: i + 1 })}</span>
               <input
                 type="range"
-                min={10}
-                max={90}
+                min={appConfig.studio.gridSplitter.minWeightPct}
+                max={appConfig.studio.gridSplitter.maxWeightPct}
                 value={w}
                 onChange={(e) =>
                   setColWeights((prev) =>
@@ -425,8 +513,11 @@ const StudioMaskEditorBody: React.FC<{ target: StudioMaskModalTarget }> = ({ tar
   const saving = useStudioStore((s) => s.saving);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [imgSize, setImgSize] = useState({ w: 512, h: 512 });
-  const [brushSize, setBrushSize] = useState(28);
+  const [imgSize, setImgSize] = useState<{ w: number; h: number }>({
+    w: appConfig.studio.maskEditor.defaultWidthPx,
+    h: appConfig.studio.maskEditor.defaultHeightPx,
+  });
+  const [brushSize, setBrushSize] = useState<number>(appConfig.studio.maskEditor.defaultBrushPx);
   const [strokes, setStrokes] = useState<MaskStroke[]>([]);
   const [drawing, setDrawing] = useState(false);
   const [prompt, setPrompt] = useState(() => target.defaultPrompt ?? "");
@@ -438,7 +529,11 @@ const StudioMaskEditorBody: React.FC<{ target: StudioMaskModalTarget }> = ({ tar
     const ctx = cvs.getContext("2d");
     if (!ctx) return;
     ctx.clearRect(0, 0, cvs.width, cvs.height);
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+    const tokenColor =
+      typeof window !== "undefined"
+        ? getComputedStyle(cvs).getPropertyValue("--studio-mask-brush-stroke").trim()
+        : "";
+    ctx.strokeStyle = tokenColor || getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     for (const s of strokes) {
@@ -493,8 +588,8 @@ const StudioMaskEditorBody: React.FC<{ target: StudioMaskModalTarget }> = ({ tar
             </span>
             <input
               type="range"
-              min={6}
-              max={96}
+              min={appConfig.studio.maskEditor.minBrushPx}
+              max={appConfig.studio.maskEditor.maxBrushPx}
               value={brushSize}
               onChange={(e) => setBrushSize(Number(e.target.value))}
             />
@@ -523,7 +618,7 @@ const StudioMaskEditorBody: React.FC<{ target: StudioMaskModalTarget }> = ({ tar
           {url && (
             <img
               src={url}
-              alt="Base mask target"
+              alt={t("studio.maskEdit.baseImageAlt")}
               className="studio-mask-base-img"
               onLoad={(e) => {
                 const el = e.currentTarget;

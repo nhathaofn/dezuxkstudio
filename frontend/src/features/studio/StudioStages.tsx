@@ -59,7 +59,7 @@ export const CreateProjectDialog: React.FC<{
   const t = useT();
   const scriptSpec = useNodeSpec(NodeTypes.SCRIPT_NORMALIZE);
   const aspectParam = findParam(scriptSpec, "aspect_ratio");
-  const aspectOptions = aspectParam?.options ?? ["16:9", "9:16", "1:1", "4:3", "3:4"];
+  const aspectOptions = aspectParam?.options ?? [];
   const createProject = useStudioStore((s) => s.createProject);
   const saving = useStudioStore((s) => s.saving);
 
@@ -70,7 +70,7 @@ export const CreateProjectDialog: React.FC<{
   const [stylePrompt, setStylePrompt] = useState("");
   const [autoApproveBatches, setAutoApproveBatches] = useState(false);
 
-  const effectiveAspectRatio = aspectRatio || aspectParam?.default || "16:9";
+  const effectiveAspectRatio = aspectRatio || aspectParam?.default || aspectOptions[0] || "";
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -261,7 +261,8 @@ export const ScriptStagePanel: React.FC<{
 
   const busy = saving || runningStage !== null;
   const parsed = detail.normalized_script;
-  const beatTotal = parsed?.scenes.reduce((acc, sc) => acc + sc.beats.length, 0) ?? 0;
+  const scenes = parsed?.scenes ?? [];
+  const beatTotal = scenes.reduce((acc, sc) => acc + (sc.beats ?? []).length, 0);
 
   const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -771,9 +772,23 @@ const StoryboardShotCard: React.FC<{
   index: number;
   total: number;
   shotModeOptions: string[];
+  durMin?: number;
+  durMax?: number;
+  durDefault?: number;
   busy: boolean;
   onMove: (delta: number) => void;
-}> = ({ projectId, shot, index, total, shotModeOptions, busy, onMove }) => {
+}> = ({
+  projectId,
+  shot,
+  index,
+  total,
+  shotModeOptions,
+  durMin,
+  durMax,
+  durDefault,
+  busy,
+  onMove,
+}) => {
   const t = useT();
   const upsertShot = useStudioStore((s) => s.upsertShot);
   const uploadShotKeyframe = useStudioStore((s) => s.uploadShotKeyframe);
@@ -856,11 +871,17 @@ const StoryboardShotCard: React.FC<{
         </select>
         <input
           type="number"
-          min={1}
-          max={60}
+          min={durMin}
+          max={durMax}
           className="input-control"
           value={durationSec}
-          onChange={(e) => setDurationSec(Math.max(1, Number(e.target.value) || 5))}
+          onChange={(e) => {
+            const raw = Number(e.target.value);
+            const floor = durMin ?? 1;
+            const ceil = durMax;
+            const next = Number.isFinite(raw) && raw > 0 ? raw : (durDefault ?? floor);
+            setDurationSec(ceil !== undefined ? Math.min(ceil, Math.max(floor, next)) : Math.max(floor, next));
+          }}
           disabled={busy}
         />
       </div>
@@ -1017,6 +1038,10 @@ export const StoryboardStagePanel: React.FC<{
   const t = useT();
   const shotSpec = useNodeSpec(NodeTypes.AUTHOR_SHOT_PROMPTS);
   const shotModes = findParam(shotSpec, "shot_mode_default")?.options ?? [...StudioShotModeValues];
+  const durParam = findParam(shotSpec, "default_duration_sec");
+  const durMin = durParam?.min;
+  const durMax = durParam?.max;
+  const durDefault = durParam?.default ? Number(durParam.default) : undefined;
   const runStage = useStudioStore((s) => s.runStage);
   const upsertShot = useStudioStore((s) => s.upsertShot);
   const reorderShots = useStudioStore((s) => s.reorderShots);
@@ -1102,6 +1127,9 @@ export const StoryboardStagePanel: React.FC<{
               index={idx}
               total={detail.shots.length}
               shotModeOptions={shotModes}
+              durMin={durMin}
+              durMax={durMax}
+              durDefault={durDefault}
               busy={busy}
               onMove={(delta) => handleMove(idx, delta)}
             />
@@ -1120,7 +1148,7 @@ export const VideoShotsStagePanel: React.FC<{
   const t = useT();
   const videoSpec = useNodeSpec(NodeTypes.VIDEO_GENERATE);
   const resParam = findParam(videoSpec, "resolution");
-  const resOptions = resParam?.options ?? ["720p", "1080p", "480p"];
+  const resOptions = resParam?.options ?? [];
   const [resolution, setResolution] = useState("");
   const effectiveResolution = resolution || resParam?.default || resOptions[0] || "720p";
 
@@ -1405,11 +1433,11 @@ export const ExportStagePanel: React.FC<{
 }> = ({ detail }) => {
   const t = useT();
   const concatSpec = useNodeSpec(NodeTypes.VIDEO_CONCAT_BASIC);
-  const resDefault = findParam(concatSpec, "resolution")?.default ?? "1920x1080";
+  const resDefault = findParam(concatSpec, "resolution")?.default ?? "";
   const fpsParam = findParam(concatSpec, "fps");
-  const fpsMin = fpsParam?.min ?? 1;
-  const fpsMax = fpsParam?.max ?? 120;
-  const fpsDefault = Number(fpsParam?.default ?? "24") || 24;
+  const fpsMin = fpsParam?.min;
+  const fpsMax = fpsParam?.max;
+  const fpsDefault = fpsParam?.default ? Number(fpsParam.default) : undefined;
 
   const [resolution, setResolution] = useState("");
   const [fps, setFps] = useState<number | null>(null);
@@ -1462,8 +1490,8 @@ export const ExportStagePanel: React.FC<{
               min={fpsMin}
               max={fpsMax}
               className="input-control"
-              value={effectiveFPS}
-              onChange={(e) => setFps(Number(e.target.value) || fpsDefault)}
+              value={effectiveFPS ?? ""}
+              onChange={(e) => setFps(e.target.value === "" ? null : Number(e.target.value))}
               disabled={busy}
             />
           </div>
@@ -1494,8 +1522,8 @@ export const ExportStagePanel: React.FC<{
             variant="primary"
             onClick={() =>
               void runStage("concat_video", {
-                resolution: effectiveResolution,
-                fps: effectiveFPS,
+                ...(effectiveResolution ? { resolution: effectiveResolution } : {}),
+                ...(effectiveFPS !== undefined ? { fps: effectiveFPS } : {}),
                 ...(narrationPath ? { narration_audio_path: narrationPath } : {}),
               })
             }

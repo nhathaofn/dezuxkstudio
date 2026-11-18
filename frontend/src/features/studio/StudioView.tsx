@@ -38,6 +38,7 @@ import {
   StudioVersionDrawer,
 } from "./StudioPhase2Modals";
 import { StudioQueueCostDrawer } from "./StudioQueueCostDrawer";
+import { formatUSD } from "./studioFormatters";
 import {
   AssetsStagePanel,
   CreateProjectDialog,
@@ -195,12 +196,13 @@ export const StudioView: React.FC = () => {
     : "";
 
   const progressLabel = batchProgress
-    ? t("studio.common.batchProgress", {
+    ? (translateServerMessage(t, batchProgress.msg_key, batchProgress.msg_params) ??
+      t("studio.common.batchProgress", {
         stage: batchProgress.stage,
         current: batchProgress.current,
         total: batchProgress.total,
         message: batchProgress.message,
-      })
+      }))
     : translatedActionMsg || t("studio.common.running");
 
   return (
@@ -263,7 +265,7 @@ export const StudioView: React.FC = () => {
                 disabled={loadingEpisode}
                 aria-label={t("studio.sidebar.episodes")}
               >
-                {projectDetail.episodes.map((ep) => (
+                {(projectDetail.episodes ?? []).map((ep) => (
                   <option key={ep.id} value={ep.id}>
                     {ep.code} — {ep.title}
                   </option>
@@ -367,8 +369,8 @@ export const StudioView: React.FC = () => {
               <span>{activeProj ? activeProj.title : t("studio.title")}</span>
               {activeProj && (
                 <>
-                  <Badge>{activeProj.genre}</Badge>
-                  <Badge>{activeProj.production_mode}</Badge>
+                  <Badge>{t(`studio.modal.genre.${activeProj.genre}`)}</Badge>
+                  <Badge>{t(`studio.modal.mode.${activeProj.production_mode}`)}</Badge>
                   <Badge>{activeProj.aspect_ratio}</Badge>
                 </>
               )}
@@ -406,7 +408,7 @@ export const StudioView: React.FC = () => {
                   ) : (
                     <ShieldAlert size={11} />
                   )}
-                  ${(costSummary?.actual_total_usd ?? 0).toFixed(2)}
+                  {formatUSD(costSummary?.actual_total_usd ?? 0, 2)}
                 </Badge>
               </>
             )}
@@ -492,7 +494,7 @@ export const StudioView: React.FC = () => {
             <LoadingSkeleton />
           ) : activeStage === "script" ? (
             <ScriptStagePanel
-              key={`${episodeDetail.episode.id}:${episodeDetail.raw_script ?? ""}`}
+              key={episodeDetail.episode.id}
               detail={episodeDetail}
               modelOverride={textModel}
             />
@@ -515,7 +517,7 @@ export const StudioView: React.FC = () => {
               ttsModel={ttsModel}
             />
           ) : (
-            <TimelineWorkspace detail={episodeDetail} />
+            <TimelineWorkspace key={episodeDetail.episode.id} detail={episodeDetail} />
           )}
         </div>
       </section>

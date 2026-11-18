@@ -631,7 +631,7 @@ describe("Studio Phase 2 ArcReel helpers, store & modals", () => {
 
     const gridHtml = renderToStaticMarkup(React.createElement(StudioGridSplitterModal));
     expect(gridHtml).toContain("Interactive Grid Splitter");
-    expect(gridHtml).toContain('max="8"');
+    expect(gridHtml).not.toContain('max="8"');
 
     // Also verifies grid splitter reads max bounds dynamically from workflow node spec
     useNodeSpecsStore.setState({

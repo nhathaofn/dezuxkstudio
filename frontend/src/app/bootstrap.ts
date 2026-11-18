@@ -59,7 +59,10 @@ export function bootstrap(): void {
   let firstConnect = true;
   rtClient.onStatus((status) => {
     uiLog.info(`connection: ${status}`);
-    if (status !== "connected") return;
+    if (status !== "connected") {
+      useStudioStore.getState().clearTransientState();
+      return;
+    }
     void usePreferencesStore.getState().load();
     void useSystemStore.getState().loadInfo();
     // A screen opened before the socket was up (or on a different server) gets fresh node specs.
@@ -72,6 +75,9 @@ export function bootstrap(): void {
     void useAgentStore.getState().fetchApprovals();
     void useAgentStore.getState().fetchAllowedDirs();
     void useAgentCustomizationsStore.getState().fetchCustomizations();
+    if (!firstConnect) {
+      void useStudioStore.getState().resyncAfterReconnect();
+    }
     if (firstConnect && useConnectionStore.getState().endpoint?.checkUpdatesOnStartup) {
       void useSystemStore.getState().checkUpdate();
     }

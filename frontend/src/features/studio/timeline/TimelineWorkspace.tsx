@@ -28,6 +28,7 @@ import { Button } from "../../../components/ui/Button";
 import { Card } from "../../../components/ui/Card";
 import { Dialog } from "../../../components/ui/Dialog";
 import { Switch } from "../../../components/ui/Switch";
+import { appConfig } from "../../../config/appConfig";
 import {
   NodeTypes,
   StudioKenBurnsPresetValues,
@@ -41,9 +42,11 @@ import {
   type StudioSubtitleCue,
   type StudioTimelineClip,
   type StudioTimelineOp,
+  type StudioTimelineOpKind,
+  type StudioTrackKind,
   type StudioTransitionType,
 } from "../../../contracts/generated";
-import { useT } from "../../../lib/i18n";
+import { translateServerMessage, useT } from "../../../lib/i18n";
 import { mediaBasename, saveMediaToDevice } from "../../../lib/rtClient";
 import { signMediaURL } from "../../../lib/rtClient/media";
 import { askAgentAboutMediaAsset } from "../../agent/screenContext";
@@ -68,10 +71,10 @@ interface RenderDialogProps {
   onClose: () => void;
 }
 
-function parseParamNumber(param: Param | undefined, fallback: number): number {
-  if (param?.default === undefined || param.default === "") return fallback;
+function parseOptionalParamNumber(param: Param | undefined): number | undefined {
+  if (param?.default === undefined || param.default === "") return undefined;
   const n = Number(param.default);
-  return Number.isFinite(n) ? n : fallback;
+  return Number.isFinite(n) ? n : undefined;
 }
 
 export const RenderTimelineDialog: React.FC<RenderDialogProps> = ({ defaultFilename, onClose }) => {
@@ -92,24 +95,20 @@ export const RenderTimelineDialog: React.FC<RenderDialogProps> = ({ defaultFilen
   const [crfOverride, setCrfOverride] = useState<number | null>(null);
   const [presetOverride, setPresetOverride] = useState<string | null>(null);
 
-  const fontSize = fontSizeOverride ?? parseParamNumber(fontParam, 24);
-  const loudnormLUFS = lufsOverride ?? parseParamNumber(lufsParam, -14);
-  const crf = crfOverride ?? parseParamNumber(crfParam, 20);
-  const preset = presetOverride ?? (presetParam?.default || "medium");
-
-  const presetOptions =
-    presetParam?.options && presetParam.options.length > 0
-      ? presetParam.options
-      : ["ultrafast", "veryfast", "fast", "medium", "slow"];
+  const fontSize = fontSizeOverride ?? parseOptionalParamNumber(fontParam);
+  const loudnormLUFS = lufsOverride ?? parseOptionalParamNumber(lufsParam);
+  const crf = crfOverride ?? parseOptionalParamNumber(crfParam);
+  const presetOptions = presetParam?.options ?? [];
+  const preset = presetOverride ?? (presetParam?.default || presetOptions[0] || "");
 
   const submit = async () => {
     const res = await renderTimeline({
       filename: filename.trim() || undefined,
       burn_subtitles: burnSubtitles,
-      subtitle_font_size: fontSize,
-      loudnorm_lufs: loudnormLUFS,
-      crf,
-      preset,
+      ...(fontSize !== undefined ? { subtitle_font_size: fontSize } : {}),
+      ...(loudnormLUFS !== undefined ? { loudnorm_lufs: loudnormLUFS } : {}),
+      ...(crf !== undefined ? { crf } : {}),
+      ...(preset ? { preset } : {}),
     });
     if (res) onClose();
   };
@@ -154,11 +153,13 @@ export const RenderTimelineDialog: React.FC<RenderDialogProps> = ({ defaultFilen
               id="tl-render-lufs"
               type="number"
               step="0.5"
-              min={lufsParam?.min ?? -30}
-              max={lufsParam?.max ?? -5}
+              min={lufsParam?.min}
+              max={lufsParam?.max}
               className="input-control"
-              value={loudnormLUFS}
-              onChange={(e) => setLufsOverride(Number(e.target.value))}
+              value={loudnormLUFS ?? ""}
+              onChange={(e) =>
+                setLufsOverride(e.target.value === "" ? null : Number(e.target.value))
+              }
               disabled={rendering}
             />
           </div>
@@ -170,11 +171,13 @@ export const RenderTimelineDialog: React.FC<RenderDialogProps> = ({ defaultFilen
             <input
               id="tl-render-fontsize"
               type="number"
-              min={fontParam?.min ?? 12}
-              max={fontParam?.max ?? 72}
+              min={fontParam?.min}
+              max={fontParam?.max}
               className="input-control"
-              value={fontSize}
-              onChange={(e) => setFontSizeOverride(Number(e.target.value))}
+              value={fontSize ?? ""}
+              onChange={(e) =>
+                setFontSizeOverride(e.target.value === "" ? null : Number(e.target.value))
+              }
               disabled={rendering}
             />
           </div>
@@ -188,11 +191,13 @@ export const RenderTimelineDialog: React.FC<RenderDialogProps> = ({ defaultFilen
             <input
               id="tl-render-crf"
               type="number"
-              min={crfParam?.min ?? 10}
-              max={crfParam?.max ?? 36}
+              min={crfParam?.min}
+              max={crfParam?.max}
               className="input-control"
-              value={crf}
-              onChange={(e) => setCrfOverride(Number(e.target.value))}
+              value={crf ?? ""}
+              onChange={(e) =>
+                setCrfOverride(e.target.value === "" ? null : Number(e.target.value))
+              }
               disabled={rendering}
             />
           </div>
@@ -382,8 +387,8 @@ const ClipInspectorForm: React.FC<ClipInspectorProps> = ({
           size="sm"
           disabled={busy || locked}
           onClick={() => {
-            const op = buildClipTrimOp(clip, "in", -200);
-            if (op) void onApplyOps([op], "trim clip in -200ms");
+            const op = buildClipTrimOp(clip, "in", -appConfig.studio.timeline.trimStepMs);
+            if (op) void onApplyOps([op], "trim clip in");
           }}
         >
           {t("studio.timeline.trimInEarlier")}
@@ -393,8 +398,8 @@ const ClipInspectorForm: React.FC<ClipInspectorProps> = ({
           size="sm"
           disabled={busy || locked}
           onClick={() => {
-            const op = buildClipTrimOp(clip, "in", 200);
-            if (op) void onApplyOps([op], "trim clip in +200ms");
+            const op = buildClipTrimOp(clip, "in", appConfig.studio.timeline.trimStepMs);
+            if (op) void onApplyOps([op], "trim clip in");
           }}
         >
           {t("studio.timeline.trimInLater")}
@@ -404,8 +409,8 @@ const ClipInspectorForm: React.FC<ClipInspectorProps> = ({
           size="sm"
           disabled={busy || locked}
           onClick={() => {
-            const op = buildClipTrimOp(clip, "out", -200);
-            if (op) void onApplyOps([op], "trim clip out -200ms");
+            const op = buildClipTrimOp(clip, "out", -appConfig.studio.timeline.trimStepMs);
+            if (op) void onApplyOps([op], "trim clip out");
           }}
         >
           {t("studio.timeline.trimOutEarlier")}
@@ -415,8 +420,8 @@ const ClipInspectorForm: React.FC<ClipInspectorProps> = ({
           size="sm"
           disabled={busy || locked}
           onClick={() => {
-            const op = buildClipTrimOp(clip, "out", 200);
-            if (op) void onApplyOps([op], "trim clip out +200ms");
+            const op = buildClipTrimOp(clip, "out", appConfig.studio.timeline.trimStepMs);
+            if (op) void onApplyOps([op], "trim clip out");
           }}
         >
           {t("studio.timeline.trimOutLater")}
@@ -432,8 +437,8 @@ const ClipInspectorForm: React.FC<ClipInspectorProps> = ({
             id="tl-clip-speed"
             type="number"
             step="0.1"
-            min={0.25}
-            max={4}
+            min={appConfig.studio.timeline.minSpeed}
+            max={appConfig.studio.timeline.maxSpeed}
             className="input-control"
             value={speed}
             onChange={(e) => setSpeed(Number(e.target.value) || 1)}
@@ -449,7 +454,7 @@ const ClipInspectorForm: React.FC<ClipInspectorProps> = ({
             type="number"
             step="0.1"
             min={0}
-            max={2}
+            max={appConfig.studio.timeline.maxVolume}
             className="input-control"
             value={volume}
             onChange={(e) => setVolume(Number(e.target.value))}
@@ -526,7 +531,7 @@ const ClipInspectorForm: React.FC<ClipInspectorProps> = ({
             void onApplyOps(
               [
                 {
-                  op: "split_clip",
+                  op: "split_clip" satisfies StudioTimelineOpKind,
                   clip_id: clip.id,
                   split_at_ms: Math.round(playheadMs),
                 },
@@ -554,7 +559,10 @@ const ClipInspectorForm: React.FC<ClipInspectorProps> = ({
           onClick={() => {
             const id = clip.id;
             onDeleted();
-            void onApplyOps([{ op: "remove_clip", clip_id: id }], `remove clip ${id}`);
+            void onApplyOps(
+              [{ op: "remove_clip" satisfies StudioTimelineOpKind, clip_id: id }],
+              `remove clip ${id}`
+            );
           }}
         >
           <Trash2 size={14} />
@@ -596,11 +604,14 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
 
   const timeline: StudioEditTimeline | null =
     timelineResult?.episode_id === epId ? timelineResult.timeline : null;
-  const durationMs = Math.max(1000, computeTimelineDurationMs(timeline));
+  const durationMs = Math.max(
+    appConfig.studio.timeline.minDurationMs,
+    computeTimelineDurationMs(timeline)
+  );
 
   const [playheadMs, setPlayheadMs] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [pxPerSec, setPxPerSec] = useState(64);
+  const [pxPerSec, setPxPerSec] = useState<number>(appConfig.studio.timeline.defaultPxPerSec);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [showRenderDialog, setShowRenderDialog] = useState(false);
   const [showNLEDialog, setShowNLEDialog] = useState(false);
@@ -681,7 +692,10 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
       if (vid && state.videoClip?.asset_id && signedUrls[state.videoClip.asset_id]) {
         vid.muted = state.videoTrackMuted;
         vid.playbackRate = state.videoClip.speed > 0 ? state.videoClip.speed : 1;
-        if (Math.abs(vid.currentTime - state.videoSourceSec) > 0.25) {
+        if (
+          Math.abs(vid.currentTime - state.videoSourceSec) >
+          appConfig.studio.timeline.playSeekToleranceSec
+        ) {
           try {
             vid.currentTime = Math.max(0, state.videoSourceSec);
           } catch {
@@ -705,7 +719,10 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
         if (cue && cue.clip.asset_id && signedUrls[cue.clip.asset_id]) {
           ael.volume = Math.max(0, Math.min(1, cue.effectiveVolume));
           ael.playbackRate = cue.clip.speed > 0 ? cue.clip.speed : 1;
-          if (Math.abs(ael.currentTime - cue.sourceSec) > 0.25) {
+          if (
+            Math.abs(ael.currentTime - cue.sourceSec) >
+            appConfig.studio.timeline.playSeekToleranceSec
+          ) {
             try {
               ael.currentTime = Math.max(0, cue.sourceSec);
             } catch {
@@ -725,11 +742,21 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
     [timeline, signedUrls, activeAudioTracks]
   );
 
+  const setVideoRef = useCallback((el: HTMLVideoElement | null) => {
+    if (!el) {
+      videoRef.current?.pause();
+    }
+    videoRef.current = el;
+  }, []);
+
   useEffect(() => {
     if (!playing) {
       syncMediaElements(playheadMs, false);
-      return;
     }
+  }, [playing, playheadMs, syncMediaElements]);
+
+  useEffect(() => {
+    if (!playing) return;
     let rafId = 0;
     let lastTs = performance.now();
 
@@ -749,7 +776,16 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
 
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [playing, durationMs, syncMediaElements, playheadMs]);
+  }, [playing, durationMs, syncMediaElements]);
+
+  useEffect(() => {
+    const audioMap = audioRefs.current;
+    return () => {
+      for (const el of Object.values(audioMap)) {
+        el?.pause();
+      }
+    };
+  }, []);
 
   const seekTo = (ms: number) => {
     const clamped = Math.max(0, Math.min(durationMs, Math.round(ms)));
@@ -758,9 +794,24 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
     syncMediaElements(clamped, playing);
   };
 
-  const laneWidthPx = Math.max(520, Math.ceil((durationMs / 1000) * pxPerSec) + 80);
+  const laneWidthPx = Math.max(
+    appConfig.studio.timeline.minLaneWidthPx,
+    Math.ceil((durationMs / 1000) * pxPerSec) + appConfig.studio.timeline.lanePaddingPx
+  );
   const rulerTicks = useMemo(() => {
-    const stepSec = pxPerSec < 40 ? 4 : pxPerSec < 80 ? 2 : 1;
+    const {
+      rulerMediumThresholdPx,
+      rulerDenseThresholdPx,
+      rulerStepCoarseSec,
+      rulerStepMediumSec,
+      rulerStepFineSec,
+    } = appConfig.studio.timeline;
+    const stepSec =
+      pxPerSec < rulerMediumThresholdPx
+        ? rulerStepCoarseSec
+        : pxPerSec < rulerDenseThresholdPx
+          ? rulerStepMediumSec
+          : rulerStepFineSec;
     const totalSec = Math.ceil(durationMs / 1000);
     const out: number[] = [];
     for (let s = 0; s <= totalSec; s += stepSec) {
@@ -777,18 +828,18 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
   const canSplitSelected = Boolean(
     selectedEntry &&
     !selectedEntry.track.locked &&
-    playheadMs > selectedEntry.clip.timeline_start_ms + 250 &&
-    playheadMs < clipEndMs(selectedEntry.clip) - 250
+    playheadMs > selectedEntry.clip.timeline_start_ms + appConfig.studio.timeline.splitGuardEdgeMs &&
+    playheadMs < clipEndMs(selectedEntry.clip) - appConfig.studio.timeline.splitGuardEdgeMs
   );
 
   const addSubtitleCue = async () => {
     if (!newSubText.trim()) return;
     const startMs = Math.max(0, Math.round(playheadMs));
-    const endMs = startMs + 3000;
+    const endMs = startMs + appConfig.studio.timeline.subtitleDefaultDurMs;
     await applyTimelineOps(
       [
         {
-          op: "add_subtitle",
+          op: "add_subtitle" satisfies StudioTimelineOpKind,
           subtitle: {
             id: `sub-${Date.now()}`,
             start_ms: startMs,
@@ -807,7 +858,13 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
   const saveSubtitleEdit = async () => {
     if (!editingSub || !editingSub.text.trim()) return;
     await applyTimelineOps(
-      [{ op: "update_subtitle", subtitle_id: editingSub.id, subtitle: editingSub }],
+      [
+        {
+          op: "update_subtitle" satisfies StudioTimelineOpKind,
+          subtitle_id: editingSub.id,
+          subtitle: editingSub,
+        },
+      ],
       "update subtitle"
     );
     setEditingSub(null);
@@ -877,7 +934,14 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => setPxPerSec((z) => Math.max(24, z - 16))}
+            onClick={() =>
+              setPxPerSec((z) =>
+                Math.max(
+                  appConfig.studio.timeline.minPxPerSec,
+                  z - appConfig.studio.timeline.zoomStepPx
+                )
+              )
+            }
             title={t("studio.timeline.zoomOut")}
           >
             <ZoomOut size={14} />
@@ -885,7 +949,14 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => setPxPerSec((z) => Math.min(180, z + 16))}
+            onClick={() =>
+              setPxPerSec((z) =>
+                Math.min(
+                  appConfig.studio.timeline.maxPxPerSec,
+                  z + appConfig.studio.timeline.zoomStepPx
+                )
+              )
+            }
             title={t("studio.timeline.zoomIn")}
           >
             <ZoomIn size={14} />
@@ -894,7 +965,9 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
             variant="secondary"
             size="sm"
             onClick={() => setShowNLEDialog(true)}
-            disabled={busy || !timeline || timeline.tracks.every((tr) => tr.clips.length === 0)}
+            disabled={
+              busy || !timeline || (timeline.tracks ?? []).every((tr) => (tr.clips ?? []).length === 0)
+            }
           >
             <FileArchive size={14} />
             {t("studio.timeline.exportNLE")}
@@ -903,7 +976,9 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
             variant="primary"
             size="sm"
             onClick={() => setShowRenderDialog(true)}
-            disabled={busy || !timeline || timeline.tracks.every((tr) => tr.clips.length === 0)}
+            disabled={
+              busy || !timeline || (timeline.tracks ?? []).every((tr) => (tr.clips ?? []).length === 0)
+            }
           >
             <Clapperboard size={14} />
             {t("studio.timeline.renderMP4")}
@@ -914,7 +989,10 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
       {actionProgress && (
         <div className="studio-progress-banner">
           <Loader2 size={14} className="animate-spin" />
-          <span>{actionProgress.message}</span>
+          <span>
+            {translateServerMessage(t, actionProgress.msg_key, actionProgress.msg_params) ??
+              actionProgress.message}
+          </span>
           {actionProgress.percent > 0 && <Badge>{Math.round(actionProgress.percent)}%</Badge>}
         </div>
       )}
@@ -925,7 +1003,7 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
           <div className="timeline-player-stage">
             {activeVideoSrc ? (
               <video
-                ref={videoRef}
+                ref={setVideoRef}
                 className="timeline-player-video"
                 src={activeVideoSrc}
                 preload="auto"
@@ -950,6 +1028,9 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
                 <audio
                   key={tr.id}
                   ref={(el) => {
+                    if (!el) {
+                      audioRefs.current[tr.id]?.pause();
+                    }
                     audioRefs.current[tr.id] = el;
                   }}
                   src={src}
@@ -978,7 +1059,11 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
             <Button variant="primary" size="sm" onClick={() => setPlaying((p) => !p)}>
               {playing ? <Pause size={14} /> : <Play size={14} />}
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => seekTo(playheadMs + 40)}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => seekTo(playheadMs + appConfig.studio.timeline.nudgeStepMs)}
+            >
               <SkipForward size={14} />
             </Button>
             <input
@@ -986,7 +1071,7 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
               className="timeline-scrubber"
               min={0}
               max={durationMs}
-              step={20}
+              step={appConfig.studio.timeline.scrubStepMs}
               value={playheadMs}
               onChange={(e) => seekTo(Number(e.target.value))}
               aria-label={t("studio.timeline.scrubLabel")}
@@ -1204,9 +1289,9 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
           {/* Media Tracks */}
           {(timeline?.tracks ?? []).map((tr) => {
             const clipVariant =
-              tr.kind === "video"
+              tr.kind === ("video" satisfies StudioTrackKind)
                 ? "timeline-clip--video"
-                : tr.kind === "audio_bgm"
+                : tr.kind === ("audio_bgm" satisfies StudioTrackKind)
                   ? "timeline-clip--bgm"
                   : "timeline-clip--audio";
             return (
@@ -1219,10 +1304,18 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
                   <div className="timeline-track-controls">
                     <button
                       type="button"
+                      title={t("studio.timeline.muteLabel")}
+                      aria-label={t("studio.timeline.muteLabel")}
                       className={`timeline-mini-btn ${tr.muted ? "timeline-mini-btn--active" : ""}`}
                       onClick={() =>
                         void applyTimelineOps(
-                          [{ op: "update_track", track_id: tr.id, muted: !tr.muted }],
+                          [
+                            {
+                              op: "update_track" satisfies StudioTimelineOpKind,
+                              track_id: tr.id,
+                              muted: !tr.muted,
+                            },
+                          ],
                           "toggle mute"
                         )
                       }
@@ -1232,10 +1325,18 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
                     </button>
                     <button
                       type="button"
+                      title={t("studio.timeline.soloLabel")}
+                      aria-label={t("studio.timeline.soloLabel")}
                       className={`timeline-mini-btn ${tr.solo ? "timeline-mini-btn--active" : ""}`}
                       onClick={() =>
                         void applyTimelineOps(
-                          [{ op: "update_track", track_id: tr.id, solo: !tr.solo }],
+                          [
+                            {
+                              op: "update_track" satisfies StudioTimelineOpKind,
+                              track_id: tr.id,
+                              solo: !tr.solo,
+                            },
+                          ],
                           "toggle solo"
                         )
                       }
@@ -1245,10 +1346,18 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
                     </button>
                     <button
                       type="button"
+                      title={t("studio.timeline.lockLabel")}
+                      aria-label={t("studio.timeline.lockLabel")}
                       className={`timeline-mini-btn ${tr.locked ? "timeline-mini-btn--active" : ""}`}
                       onClick={() =>
                         void applyTimelineOps(
-                          [{ op: "update_track", track_id: tr.id, locked: !tr.locked }],
+                          [
+                            {
+                              op: "update_track" satisfies StudioTimelineOpKind,
+                              track_id: tr.id,
+                              locked: !tr.locked,
+                            },
+                          ],
                           "toggle lock"
                         )
                       }
@@ -1262,9 +1371,12 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
                 </div>
 
                 <div className="timeline-lane-canvas" style={{ width: `${laneWidthPx}px` }}>
-                  {tr.clips.map((cl) => {
+                  {(tr.clips ?? []).map((cl) => {
                     const leftPx = (cl.timeline_start_ms / 1000) * pxPerSec;
-                    const widthPx = Math.max(26, (clipSpanMs(cl) / 1000) * pxPerSec);
+                    const widthPx = Math.max(
+                      appConfig.studio.timeline.minClipWidthPx,
+                      (clipSpanMs(cl) / 1000) * pxPerSec
+                    );
                     const spriteUrl = cl.sprite_asset_id
                       ? signedUrls[cl.sprite_asset_id]
                       : undefined;
@@ -1297,18 +1409,21 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
                         {cl.peaks && cl.peaks.length > 0 && (
                           <svg
                             className="timeline-clip-waveform"
-                            viewBox={`0 0 ${cl.peaks.length * 4} 20`}
+                            viewBox={`0 0 ${cl.peaks.length * appConfig.studio.timeline.waveformWidthStepPx} ${appConfig.studio.timeline.waveformHeightPx}`}
                             preserveAspectRatio="none"
                           >
                             {cl.peaks.map((pk, idx) => {
-                              const h = Math.max(2, Math.round(pk * 18));
+                              const h = Math.max(
+                                appConfig.studio.timeline.waveformBarMinHeightPx,
+                                Math.round(pk * appConfig.studio.timeline.waveformBarMaxHeightPx)
+                              );
                               return (
                                 <rect
                                   key={idx}
                                   className="timeline-waveform-bar"
-                                  x={idx * 4}
-                                  y={20 - h}
-                                  width={2}
+                                  x={idx * appConfig.studio.timeline.waveformWidthStepPx}
+                                  y={appConfig.studio.timeline.waveformHeightPx - h}
+                                  width={appConfig.studio.timeline.waveformBarWidthPx}
                                   height={h}
                                 />
                               );
@@ -1332,13 +1447,16 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
             <div className="timeline-track-header">
               <div className="timeline-track-title">
                 <span>{t("studio.timeline.subtitlesLane")}</span>
-                <Badge>{timeline?.subtitles.length ?? 0}</Badge>
+                <Badge>{(timeline?.subtitles ?? []).length}</Badge>
               </div>
             </div>
             <div className="timeline-lane-canvas" style={{ width: `${laneWidthPx}px` }}>
               {(timeline?.subtitles ?? []).map((cue) => {
                 const leftPx = (cue.start_ms / 1000) * pxPerSec;
-                const widthPx = Math.max(28, ((cue.end_ms - cue.start_ms) / 1000) * pxPerSec);
+                const widthPx = Math.max(
+                  appConfig.studio.timeline.minSubClipWidthPx,
+                  ((cue.end_ms - cue.start_ms) / 1000) * pxPerSec
+                );
                 return (
                   <div
                     key={cue.id}

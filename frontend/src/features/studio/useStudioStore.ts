@@ -4,11 +4,13 @@ import {
   NodeTypes,
   type ActionProgress,
   type BatchPreflightOutput,
+  type ErrorCode,
   type ExportNLEDraftOutput,
   type MediaPeaksThumbsOutput,
   type ProbeMediaOutput,
   type StudioAssetUpsertPayload,
   type StudioBatchProgressEvent,
+  type StudioBatchStatus,
   type StudioCostSummaryResult,
   type StudioCostUpdatedEvent,
   type StudioEpisodeDetailResult,
@@ -22,6 +24,7 @@ import {
   type StudioMediaVersion,
   type StudioPricingUpsertPayload,
   type StudioProject,
+  type StudioProjectChangedAction,
   type StudioProjectChangedEvent,
   type StudioProjectCreatePayload,
   type StudioProjectDetailResult,
@@ -34,6 +37,7 @@ import {
   type StudioRunStageAction,
   type StudioShot,
   type StudioShotUpsertPayload,
+  type StudioTimelineActor,
   type StudioTimelineAutoAssemblePayload,
   type StudioTimelineChangedEvent,
   type StudioTimelineExportNLEPayload,
@@ -43,6 +47,11 @@ import {
   type StudioTimelineResult,
 } from "../../contracts/generated";
 import { rtClient, toActionError, uploadMediaFile, type ActionError } from "../../lib/rtClient";
+import {
+  normalizeEpisodeDetail,
+  normalizeProjectDetail,
+  normalizeTimeline,
+} from "./studioFormatters";
 
 export interface StudioState {
   projects: StudioProject[];
@@ -82,6 +91,8 @@ export interface StudioState {
   setActiveStage: (stage: StudioEpisodeStage) => void;
   toggleSelectedAssetId: (assetId: string) => void;
   clearError: () => void;
+  clearTransientState: () => void;
+  resyncAfterReconnect: () => Promise<void>;
 
   fetchProjects: () => Promise<void>;
   selectProject: (projectId: string) => Promise<void>;
@@ -204,14 +215,16 @@ export function targetVersionKey(targetKind: string, targetId: string): string {
   return `${targetKind}:${targetId}`;
 }
 
+const HEAVY_STAGES = new Set<string>([
+  "generate_assets",
+  "generate_keyframes",
+  "generate_videos",
+  "generate_tts",
+  "lipsync",
+] satisfies (StudioRunStageAction | "lipsync")[]);
+
 function isHeavyStudioStage(stage: string): boolean {
-  return (
-    stage === "generate_assets" ||
-    stage === "generate_keyframes" ||
-    stage === "generate_videos" ||
-    stage === "generate_tts" ||
-    stage === "lipsync"
-  );
+  return HEAVY_STAGES.has(stage);
 }
 
 export const useStudioStore = create<StudioState>((set, get) => ({
@@ -260,6 +273,32 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
   clearError: () => set({ error: null }),
 
+  clearTransientState: () =>
+    set({
+      saving: false,
+      runningStage: null,
+      timelineLoading: false,
+      renderingTimeline: false,
+      exportingNLE: false,
+      actionProgress: null,
+      batchProgress: null,
+      peaksLoadingClipIds: {},
+    }),
+
+  resyncAfterReconnect: async () => {
+    const pid = get().activeProjectId;
+    const epId = get().activeEpisodeId;
+    await get().fetchProjects();
+    if (epId) {
+      await get().selectEpisode(epId);
+      if (get().timelineResult?.episode_id === epId) {
+        await get().fetchTimeline(epId, { preserveError: true });
+      }
+    } else if (pid) {
+      await get().selectProject(pid);
+    }
+  },
+
   fetchProjects: async () => {
     set({ loadingProjects: true, error: null });
     try {
@@ -290,7 +329,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   selectProject: async (projectId) => {
     set({ loadingEpisode: true, error: null, activeProjectId: projectId });
     try {
-      const detail = await rtClient.request(Actions.STUDIO_PROJECT_GET, { id: projectId });
+      const raw = await rtClient.request(Actions.STUDIO_PROJECT_GET, { id: projectId });
+      const detail = normalizeProjectDetail(raw);
       const activeEp = detail.active_episode ?? null;
       set({
         projectDetail: detail,
@@ -310,7 +350,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   createProject: async (payload) => {
     set({ saving: true, error: null });
     try {
-      const detail = await rtClient.request(Actions.STUDIO_PROJECT_CREATE, payload);
+      const raw = await rtClient.request(Actions.STUDIO_PROJECT_CREATE, payload);
+      const detail = normalizeProjectDetail(raw);
       const activeEp = detail.active_episode ?? null;
       set((s) => ({
         projects: [detail.project, ...s.projects.filter((p) => p.id !== detail.project.id)],
@@ -332,11 +373,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   updateProject: async (payload) => {
     set({ saving: true, error: null });
     try {
-      const detail = await rtClient.request(Actions.STUDIO_PROJECT_UPDATE, payload);
+      const raw = await rtClient.request(Actions.STUDIO_PROJECT_UPDATE, payload);
+      const detail = normalizeProjectDetail(raw);
       const curEpId = get().activeEpisodeId;
       let nextEp = detail.active_episode ?? get().episodeDetail;
       if (curEpId && nextEp?.episode.id !== curEpId) {
-        nextEp = await rtClient.request(Actions.STUDIO_EPISODE_GET, { id: curEpId });
+        nextEp = normalizeEpisodeDetail(
+          await rtClient.request(Actions.STUDIO_EPISODE_GET, { id: curEpId })
+        );
       }
       set((s) => ({
         projects: s.projects.map((p) => (p.id === detail.project.id ? detail.project : p)),
@@ -374,7 +418,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   selectEpisode: async (episodeId) => {
     set({ loadingEpisode: true, error: null, activeEpisodeId: episodeId });
     try {
-      const detail = await rtClient.request(Actions.STUDIO_EPISODE_GET, { id: episodeId });
+      const detail = normalizeEpisodeDetail(
+        await rtClient.request(Actions.STUDIO_EPISODE_GET, { id: episodeId })
+      );
       set({
         episodeDetail: detail,
         activeEpisodeId: detail.episode.id,
@@ -390,11 +436,15 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   createEpisode: async (projectId, title) => {
     set({ saving: true, error: null });
     try {
-      const epDetail = await rtClient.request(Actions.STUDIO_EPISODE_CREATE, {
-        project_id: projectId,
-        title,
-      });
-      const projDetail = await rtClient.request(Actions.STUDIO_PROJECT_GET, { id: projectId });
+      const epDetail = normalizeEpisodeDetail(
+        await rtClient.request(Actions.STUDIO_EPISODE_CREATE, {
+          project_id: projectId,
+          title,
+        })
+      );
+      const projDetail = normalizeProjectDetail(
+        await rtClient.request(Actions.STUDIO_PROJECT_GET, { id: projectId })
+      );
       set({
         projectDetail: projDetail,
         episodeDetail: epDetail,
@@ -414,10 +464,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     if (!epId) return false;
     set({ saving: true, error: null });
     try {
-      const detail = await rtClient.request(Actions.STUDIO_EPISODE_SAVE_SCRIPT, {
-        episode_id: epId,
-        raw_script: rawScript,
-      });
+      const detail = normalizeEpisodeDetail(
+        await rtClient.request(Actions.STUDIO_EPISODE_SAVE_SCRIPT, {
+          episode_id: epId,
+          raw_script: rawScript,
+        })
+      );
       set({ episodeDetail: detail, saving: false, lastSummary: "Saved raw script" });
       return true;
     } catch (err) {
@@ -482,7 +534,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const res = await rtClient.request(Actions.STUDIO_SHOT_UPSERT, payload);
       set((s) => ({
         episodeDetail: s.episodeDetail
-          ? { ...s.episodeDetail, shots: res.shots ?? [] }
+          ? normalizeEpisodeDetail({ ...s.episodeDetail, shots: res.shots ?? [] })
           : s.episodeDetail,
         saving: false,
       }));
@@ -531,7 +583,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       });
       set((s) => ({
         episodeDetail: s.episodeDetail
-          ? { ...s.episodeDetail, shots: res.shots ?? [] }
+          ? normalizeEpisodeDetail({ ...s.episodeDetail, shots: res.shots ?? [] })
           : s.episodeDetail,
         saving: false,
       }));
@@ -572,7 +624,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         }
       );
       set({
-        episodeDetail: res.episode,
+        episodeDetail: normalizeEpisodeDetail(res.episode),
         runningStage: null,
         actionProgress: null,
         lastSummary: res.summary || stage,
@@ -610,7 +662,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
   receiveProjectChanged: (evt) => {
     void get().fetchProjects();
-    if (evt.project_id && evt.project_id === get().activeProjectId && evt.action !== "deleted") {
+    if (
+      evt.project_id &&
+      evt.project_id === get().activeProjectId &&
+      evt.action !== ("deleted" satisfies StudioProjectChangedAction)
+    ) {
       void get().selectProject(evt.project_id);
     }
   },
@@ -623,7 +679,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
   receiveBatchProgress: (evt) => {
     if (evt.episode_id === get().activeEpisodeId) {
-      set({ batchProgress: evt.status === "running" ? evt : null });
+      set({
+        batchProgress: evt.status === ("running" satisfies StudioBatchStatus) ? evt : null,
+      });
     }
   },
 
@@ -921,8 +979,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }));
     try {
       const res = await rtClient.request(Actions.STUDIO_TIMELINE_GET, { id: epId });
-      set({ timelineResult: res, timelineLoading: false });
-      return res;
+      const normRes: StudioTimelineResult = { ...res, timeline: normalizeTimeline(res.timeline) };
+      set({ timelineResult: normRes, timelineLoading: false });
+      return normRes;
     } catch (err) {
       set({ timelineLoading: false, error: toActionError(err) });
       return null;
@@ -939,16 +998,16 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       const res = await rtClient.request(Actions.STUDIO_TIMELINE_APPLY_OPS, {
         episode_id: epId,
         expected_revision: expectedRev,
-        actor: "user",
+        actor: "user" satisfies StudioTimelineActor,
         summary,
         ops,
       });
-      set({ saving: false, timelineResult: res });
+      set({ saving: false, timelineResult: { ...res, timeline: normalizeTimeline(res.timeline) } });
       return true;
     } catch (err) {
       const ae = toActionError(err);
       set({ saving: false, error: ae });
-      if (ae.code === "ERR_CONFLICT") {
+      if (ae.code === ("ERR_CONFLICT" satisfies ErrorCode)) {
         void get().fetchTimeline(epId, { preserveError: true });
       }
       return false;
@@ -965,7 +1024,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         episode_id: epId,
         expected_revision: cur?.revision ?? 0,
       });
-      set({ saving: false, timelineResult: res });
+      set({ saving: false, timelineResult: { ...res, timeline: normalizeTimeline(res.timeline) } });
       return true;
     } catch (err) {
       set({ saving: false, error: toActionError(err) });
@@ -983,7 +1042,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         episode_id: epId,
         expected_revision: cur?.revision ?? 0,
       });
-      set({ saving: false, timelineResult: res });
+      set({ saving: false, timelineResult: { ...res, timeline: normalizeTimeline(res.timeline) } });
       return true;
     } catch (err) {
       set({ saving: false, error: toActionError(err) });
@@ -1014,7 +1073,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       set({
         timelineLoading: false,
         actionProgress: null,
-        timelineResult: res,
+        timelineResult: { ...res, timeline: normalizeTimeline(res.timeline) },
       });
       return true;
     } catch (err) {
@@ -1077,7 +1136,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         renderingTimeline: false,
         actionProgress: null,
         lastRenderResult: res,
-        episodeDetail: res.episode ?? get().episodeDetail,
+        episodeDetail: res.episode ? normalizeEpisodeDetail(res.episode) : get().episodeDetail,
         lastSummary: res.output_path,
       });
       return res;
@@ -1138,7 +1197,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           can_redo: evt.can_redo,
           duration_ms: evt.duration_ms,
           timeline_path: prev?.episode_id === evt.episode_id ? prev.timeline_path : undefined,
-          timeline: evt.timeline,
+          timeline: normalizeTimeline(evt.timeline),
           revisions: prev?.episode_id === evt.episode_id ? prev.revisions : undefined,
           updated_at: Date.now(),
         },

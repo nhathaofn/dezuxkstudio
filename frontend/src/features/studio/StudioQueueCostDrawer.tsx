@@ -6,6 +6,7 @@ import { Dialog } from "../../components/ui/Dialog";
 import { Switch } from "../../components/ui/Switch";
 import { useT } from "../../lib/i18n";
 import { useAgentStore } from "../agent/useAgentStore";
+import { formatUSD } from "./studioFormatters";
 import { useStudioStore } from "./useStudioStore";
 
 export const StudioQueueCostDrawer: React.FC = () => {
@@ -227,23 +228,23 @@ export const StudioQueueCostDrawer: React.FC = () => {
             <div className="studio-phase2-stack">
               <div className="studio-phase2-meta-grid">
                 <Badge className="studio-badge--info">
-                  {t("studio.cost.actualTotal")}: ${costSummary.actual_total_usd.toFixed(4)}
+                  {t("studio.cost.actualTotal")}: {formatUSD(costSummary.actual_total_usd, 4)}
                 </Badge>
                 <Badge>
-                  {t("studio.cost.estimatedTotal")}: ${costSummary.estimated_total_usd.toFixed(4)}
+                  {t("studio.cost.estimatedTotal")}: {formatUSD(costSummary.estimated_total_usd, 4)}
                 </Badge>
                 <Badge>{t("studio.cost.entriesCount", { count: costSummary.entry_count })}</Badge>
               </div>
-              {Object.keys(costSummary.by_capability).length > 0 && (
+              {Object.keys(costSummary.by_capability ?? {}).length > 0 && (
                 <div className="studio-phase2-meta-grid">
-                  {Object.entries(costSummary.by_capability).map(([cap, usd]) => (
+                  {Object.entries(costSummary.by_capability ?? {}).map(([cap, usd]) => (
                     <Badge key={cap}>
-                      {cap}: ${usd.toFixed(4)}
+                      {cap}: {formatUSD(usd, 4)}
                     </Badge>
                   ))}
                 </div>
               )}
-              {costSummary.pricing.length > 0 && (
+              {(costSummary.pricing ?? []).length > 0 && (
                 <details className="studio-pricing-details">
                   <summary>{t("studio.cost.pricingCatalog")}</summary>
                   <div className="studio-pricing-list">

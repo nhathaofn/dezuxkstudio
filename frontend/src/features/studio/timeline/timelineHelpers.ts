@@ -57,8 +57,8 @@ export function findClipInTimeline(
   clipId: string | null
 ): { track: StudioTimelineTrack; clip: StudioTimelineClip } | null {
   if (!timeline || !clipId) return null;
-  for (const tr of timeline.tracks) {
-    for (const cl of tr.clips) {
+  for (const tr of timeline.tracks ?? []) {
+    for (const cl of tr.clips ?? []) {
       if (cl.id === clipId) return { track: tr, clip: cl };
     }
   }
@@ -115,7 +115,7 @@ export function resolvePreviewStateAtTime(
         videoTrackMuted = true;
       }
       if (!videoClip) {
-        const hit = tr.clips.find(
+        const hit = (tr.clips ?? []).find(
           (cl) => playheadMs >= cl.timeline_start_ms && playheadMs < clipEndMs(cl)
         );
         if (hit) {
@@ -138,7 +138,7 @@ export function resolvePreviewStateAtTime(
     }
 
     if (isAudioTrackKind(tr.kind) && audible) {
-      for (const cl of tr.clips) {
+      for (const cl of tr.clips ?? []) {
         if (playheadMs >= cl.timeline_start_ms && playheadMs < clipEndMs(cl)) {
           const spd = cl.speed > 0 ? cl.speed : 1;
           const offsetMs = Math.max(0, playheadMs - cl.timeline_start_ms);
