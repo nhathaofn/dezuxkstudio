@@ -27,13 +27,13 @@ func (s *Service) GenerateTTS(ctx context.Context, req domainmedia.TTSRequest) (
 		return domainmedia.Result{}, err
 	}
 
-	release, err := s.acquireLimit(ctx, target, domainprovider.CapabilityTTS, limits)
+	limCtx, release, err := s.acquireLimit(ctx, target, domainprovider.CapabilityTTS, limits)
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
 	defer release()
 
-	callCtx, cleanup := s.prepareJobContext(ctx, false)
+	callCtx, cleanup := s.prepareJobContext(limCtx, false)
 	defer cleanup()
 
 	progress.Report(callCtx, progress.Update{
@@ -62,7 +62,7 @@ func (s *Service) GenerateTTS(ctx context.Context, req domainmedia.TTSRequest) (
 	}
 
 	fallbackExt := "." + norm.Format
-	res, err := s.saveOutput(domainmedia.KindTTS, norm.OutputDir, "tts", mimeType, fallbackExt, data, target)
+	res, err := s.saveOutput(ctx, domainmedia.KindTTS, norm.OutputDir, "tts", mimeType, fallbackExt, data, target)
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
@@ -125,7 +125,7 @@ func (s *Service) genGeminiTTS(ctx context.Context, t targetSpec, req domainmedi
 		}
 		host := strings.TrimRight(t.baseURL, "/")
 		if host == "" {
-			host = "https://aiplatform.googleapis.com"
+			host = domainprovider.VertexAIBaseURL
 		}
 		headers["Authorization"] = "Bearer " + tok
 		targetURL = fmt.Sprintf("%s/v1beta1/projects/%s/locations/global/publishers/google/models/%s:generateContent",
@@ -224,7 +224,7 @@ func (s *Service) genDashScopeTTS(ctx context.Context, t targetSpec, req domainm
 		return s.downloadURL(ctx, resp.Output.Audio.URL, nil)
 	}
 	if resp.Message != "" {
-		return nil, "", apperr.Unavailable("DashScope TTS: " + resp.Message)
+		return nil, "", providerUnavailableErr("DashScope TTS failed", resp.Message)
 	}
 	return nil, "", apperr.Unavailable("DashScope TTS returned no audio payload")
 }
@@ -265,7 +265,7 @@ func (s *Service) genMiniMaxTTS(ctx context.Context, t targetSpec, req domainmed
 		return nil, "", err
 	}
 	if resp.BaseResp.StatusCode != 0 {
-		return nil, "", apperr.Unavailable(fmt.Sprintf("MiniMax TTS (%d): %s", resp.BaseResp.StatusCode, resp.BaseResp.StatusMsg))
+		return nil, "", providerUnavailableErr(fmt.Sprintf("MiniMax TTS (%d)", resp.BaseResp.StatusCode), resp.BaseResp.StatusMsg)
 	}
 	if resp.Data.Audio == "" {
 		return nil, "", apperr.Unavailable("MiniMax TTS returned empty audio hex")

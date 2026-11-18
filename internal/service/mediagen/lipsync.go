@@ -10,31 +10,41 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
 	"app/internal/apperr"
-	"app/internal/config"
 	domainmedia "app/internal/domain/mediagen"
 	domainprovider "app/internal/domain/provider"
 	"app/internal/progress"
 )
 
 func (s *Service) readBinaryInput(path, fallbackMime string) ([]byte, string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		code := apperr.CodeUnavailable
+		if os.IsNotExist(err) {
+			code = apperr.CodeNotFound
+		}
+		return nil, "", apperr.Wrap(code, "Cannot access lip-sync input file", err)
+	}
+	if info.IsDir() {
+		return nil, "", apperr.Validation("Lip-sync input path must be a media file")
+	}
+	maxBytes := s.cfg.MaxOutputBytes
+	if info.Size() > maxBytes {
+		return nil, "", apperr.Validation("Lip-sync input file exceeds maximum allowed size")
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, "", apperr.Wrap(apperr.CodeValidation, "Cannot read lip-sync input "+filepath.Base(path), err)
+		return nil, "", apperr.Wrap(apperr.CodeUnavailable, "Cannot open lip-sync input file", err)
 	}
 	defer func() { _ = f.Close() }()
 
-	maxBytes := s.cfg.MaxOutputBytes
-	if maxBytes <= 0 {
-		maxBytes = config.ResolveMediaGenConfig(s.cfg).MaxOutputBytes
-	}
 	raw, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
 	if err != nil {
-		return nil, "", apperr.Wrap(apperr.CodeInternal, "Failed reading lip-sync input", err)
+		return nil, "", apperr.Wrap(apperr.CodeUnavailable, "Failed reading lip-sync input file", err)
 	}
 	if int64(len(raw)) > maxBytes {
 		return nil, "", apperr.Validation("Lip-sync input file exceeds maximum allowed size")
@@ -69,13 +79,13 @@ func (s *Service) GenerateLipSync(ctx context.Context, req domainmedia.LipSyncRe
 		return domainmedia.Result{}, err
 	}
 
-	release, err := s.acquireLimit(ctx, target, domainprovider.CapabilityLipSync, limits)
+	limCtx, release, err := s.acquireLimit(ctx, target, domainprovider.CapabilityLipSync, limits)
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
 	defer release()
 
-	callCtx, cleanup := s.prepareJobContext(ctx, true)
+	callCtx, cleanup := s.prepareJobContext(limCtx, true)
 	defer cleanup()
 
 	progress.Report(callCtx, progress.Update{
@@ -101,7 +111,7 @@ func (s *Service) GenerateLipSync(ctx context.Context, req domainmedia.LipSyncRe
 		return domainmedia.Result{}, err
 	}
 
-	res, err := s.saveOutput(domainmedia.KindVideo, norm.OutputDir, "lipsync", mimeType, ".mp4", data, target)
+	res, err := s.saveOutput(ctx, domainmedia.KindVideo, norm.OutputDir, "lipsync", mimeType, ".mp4", data, target)
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
@@ -156,14 +166,14 @@ func (s *Service) genKlingLipSync(ctx context.Context, t targetSpec, req domainm
 		return nil, "", err
 	}
 	if submitResp.Code != 0 && submitResp.Data.TaskID == "" {
-		return nil, "", apperr.Unavailable("Kling lip-sync error: " + submitResp.Message)
+		return nil, "", providerUnavailableErr("Kling lip-sync error", submitResp.Message)
 	}
 	if submitResp.Data.TaskID == "" {
 		return nil, "", apperr.Unavailable("Kling lip-sync returned empty task_id")
 	}
 
 	var outURL string
-	err = s.pollUntil(ctx, "mediagen.progress.polling_video", "Waiting for Kling lip-sync…", func() (bool, error) {
+	err = s.pollUntil(ctx, "mediagen.progress.polling_video", "Waiting for Kling lip-sync…", map[string]string{"provider": t.providerName}, func() (bool, error) {
 		var st struct {
 			Data struct {
 				TaskStatus    string `json:"task_status"`
@@ -186,7 +196,7 @@ func (s *Service) genKlingLipSync(ctx context.Context, t targetSpec, req domainm
 			outURL = st.Data.TaskResult.Videos[0].URL
 			return true, nil
 		case "failed":
-			return true, apperr.Unavailable("Kling lip-sync failed: " + st.Data.TaskStatusMsg)
+			return true, providerUnavailableErr("Kling lip-sync failed", st.Data.TaskStatusMsg)
 		default:
 			return false, nil
 		}
@@ -219,14 +229,14 @@ func (s *Service) genMiniMaxLipSync(ctx context.Context, t targetSpec, req domai
 		return nil, "", err
 	}
 	if submitResp.BaseResp.StatusCode != 0 {
-		return nil, "", apperr.Unavailable(fmt.Sprintf("MiniMax lip-sync (%d): %s", submitResp.BaseResp.StatusCode, submitResp.BaseResp.StatusMsg))
+		return nil, "", providerUnavailableErr(fmt.Sprintf("MiniMax lip-sync (%d)", submitResp.BaseResp.StatusCode), submitResp.BaseResp.StatusMsg)
 	}
 	if submitResp.TaskID == "" {
 		return nil, "", apperr.Unavailable("MiniMax lip-sync returned empty task_id")
 	}
 
 	var fileID string
-	err := s.pollUntil(ctx, "mediagen.progress.polling_video", "Waiting for MiniMax lip-sync…", func() (bool, error) {
+	err := s.pollUntil(ctx, "mediagen.progress.polling_video", "Waiting for MiniMax lip-sync…", map[string]string{"provider": t.providerName}, func() (bool, error) {
 		var st struct {
 			Status   string `json:"status"`
 			FileID   string `json:"file_id"`
@@ -243,7 +253,7 @@ func (s *Service) genMiniMaxLipSync(ctx context.Context, t targetSpec, req domai
 			fileID = st.FileID
 			return true, nil
 		case "Fail":
-			return true, apperr.Unavailable("MiniMax lip-sync failed: " + st.BaseResp.StatusMsg)
+			return true, providerUnavailableErr("MiniMax lip-sync failed", st.BaseResp.StatusMsg)
 		default:
 			return false, nil
 		}
@@ -277,12 +287,18 @@ func (s *Service) genOpenAILipSync(ctx context.Context, t targetSpec, req domain
 	}
 	err := s.doMultipart(ctx, base+"/videos/lipsync", headers, func(mw *multipart.Writer) error {
 		if t.modelID != "" {
-			_ = mw.WriteField("model", t.modelID)
+			if err := writeMultipartField(mw, "model", t.modelID); err != nil {
+				return err
+			}
 		}
 		if req.Prompt != "" {
-			_ = mw.WriteField("prompt", req.Prompt)
+			if err := writeMultipartField(mw, "prompt", req.Prompt); err != nil {
+				return err
+			}
 		}
-		_ = mw.WriteField("face_index", strconv.Itoa(req.FaceIndex))
+		if err := writeMultipartField(mw, "face_index", strconv.Itoa(req.FaceIndex)); err != nil {
+			return err
+		}
 		writePart := func(field, fname, mime string, data []byte) error {
 			h := make(textproto.MIMEHeader)
 			h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, field, fname))
@@ -311,7 +327,7 @@ func (s *Service) genOpenAILipSync(ctx context.Context, t targetSpec, req domain
 	}
 
 	var outURL string
-	err = s.pollUntil(ctx, "mediagen.progress.polling_video", "Waiting for lip-sync job…", func() (bool, error) {
+	err = s.pollUntil(ctx, "mediagen.progress.polling_video", "Waiting for lip-sync job…", map[string]string{"provider": t.providerName}, func() (bool, error) {
 		var st struct {
 			Status string `json:"status"`
 			URL    string `json:"url"`
@@ -325,7 +341,7 @@ func (s *Service) genOpenAILipSync(ctx context.Context, t targetSpec, req domain
 			outURL = st.URL
 			return true, nil
 		case "failed", "error":
-			return true, apperr.Unavailable("Lip-sync failed: " + st.Error)
+			return true, providerUnavailableErr("Lip-sync failed", st.Error)
 		default:
 			return false, nil
 		}

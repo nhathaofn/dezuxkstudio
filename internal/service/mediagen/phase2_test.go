@@ -13,8 +13,10 @@ import (
 	"testing"
 
 	"app/internal/apperr"
+	"app/internal/config"
 	domainmedia "app/internal/domain/mediagen"
 	domainprovider "app/internal/domain/provider"
+	"app/internal/progress"
 )
 
 func TestSubmitVideoJobAndPollOnceAcrossRestart(t *testing.T) {
@@ -209,6 +211,12 @@ func TestGenerateLipSyncProtocolsAndUsage(t *testing.T) {
 			_, _ = w.Write([]byte(`{"data":{"task_status":"succeed","task_result":{"videos":[{"url":"` + srv.URL + `/dl/ls.mp4"}]}}}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/videos/lipsync":
 			_, _ = w.Write([]byte(`{"id":"ols_1","url":"` + srv.URL + `/dl/ls.mp4"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/video_generation":
+			_, _ = w.Write([]byte(`{"task_id":"mm_ls_1","base_resp":{"status_code":0}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/query/video_generation":
+			_, _ = w.Write([]byte(`{"status":"Success","file_id":"mm_f1","base_resp":{"status_code":0}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/files/retrieve":
+			_, _ = w.Write([]byte(`{"file":{"download_url":"` + srv.URL + `/dl/ls.mp4"}}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/dl/ls.mp4":
 			w.Header().Set("Content-Type", "video/mp4")
 			_, _ = w.Write([]byte("LIPSYNCMP4"))
@@ -233,6 +241,13 @@ func TestGenerateLipSyncProtocolsAndUsage(t *testing.T) {
 					Custom:  &domainprovider.ResolvedCustom{Provider: domainprovider.CustomProvider{ID: "c1", BaseURL: srv.URL + "/v1"}, APIKey: "k"},
 				}, nil
 			}
+			if ref == "minimax/ls" {
+				return domainprovider.ResolvedModel{
+					Purpose: p,
+					Model:   domainprovider.Model{ModelID: "MiniMax-LipSync", Capability: domainprovider.CapabilityLipSync},
+					Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDMiniMax, BaseURL: srv.URL + "/v1", Secrets: map[string]string{"api_key": "k"}},
+				}, nil
+			}
 			return domainprovider.ResolvedModel{
 				Purpose: p,
 				Model:   domainprovider.Model{ModelID: "kling-lip-sync", Capability: domainprovider.CapabilityLipSync},
@@ -245,7 +260,7 @@ func TestGenerateLipSyncProtocolsAndUsage(t *testing.T) {
 	var events []domainmedia.UsageEvent
 	svc.SetUsageHook(func(_ context.Context, ev domainmedia.UsageEvent) { events = append(events, ev) })
 
-	for _, ref := range []string{"kling/kling-lip-sync", "custom/ls"} {
+	for _, ref := range []string{"kling/kling-lip-sync", "minimax/ls", "custom/ls"} {
 		res, err := svc.GenerateLipSync(context.Background(), domainmedia.LipSyncRequest{
 			ModelRef:  ref,
 			VideoPath: vidPath,
@@ -256,7 +271,89 @@ func TestGenerateLipSyncProtocolsAndUsage(t *testing.T) {
 			t.Fatalf("%s GenerateLipSync = %+v err=%v", ref, res, err)
 		}
 	}
-	if len(events) != 2 || events[0].Capability != "lipsync" || events[1].Capability != "lipsync" {
-		t.Fatalf("expected 2 lipsync usage events, got %+v", events)
+	if len(events) != 3 || events[0].Capability != "lipsync" || events[1].Capability != "lipsync" || events[2].Capability != "lipsync" {
+		t.Fatalf("expected 3 lipsync usage events, got %+v", events)
+	}
+}
+
+func TestVideoCustomDurationLimitsPollParamsAndErrorScrubbing(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/videos":
+			_, _ = w.Write([]byte(`{"id":"job_90s"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/videos/job_90s":
+			_, _ = w.Write([]byte(`{"status":"failed","error":{"message":"upstream failed for https://cdn.example.com/v.mp4?token=secret123 with Bearer supersecret"}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/videos/job_progress":
+			_, _ = w.Write([]byte(`{"status":"in_progress"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	resolver := &fakeResolver{
+		resolveFn: func(_ context.Context, p domainprovider.Purpose, _ string) (domainprovider.ResolvedModel, error) {
+			return domainprovider.ResolvedModel{
+				Purpose: p,
+				Model:   domainprovider.Model{ModelID: "sora-2", Capability: domainprovider.CapabilityVideo},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDOpenAI, BaseURL: srv.URL + "/v1", Secrets: map[string]string{"api_key": "k"}},
+			}, nil
+		},
+	}
+
+	svc := New(Options{
+		Providers:               resolver,
+		MediaDir:                t.TempDir(),
+		MaxVideoDurationSec:     90,
+		DefaultVideoDurationSec: 8,
+		Config: config.MediaGenConfig{
+			VideoPollInterval: 5,
+		},
+	})
+
+	tok, err := svc.SubmitVideoJob(context.Background(), domainmedia.VideoRequest{
+		Prompt:      "long shot",
+		DurationSec: 90,
+	})
+	if err != nil || tok.DurationSec != 90 {
+		t.Fatalf("expected 90s duration to succeed with MaxVideoDurationSec=90, got tok=%+v err=%v", tok, err)
+	}
+
+	st, err := svc.PollVideoJobOnce(context.Background(), tok)
+	if err == nil || !st.Failed {
+		t.Fatalf("expected permanent provider failure on failed status, got st=%+v err=%v", st, err)
+	}
+	ae := apperr.From(err)
+	if strings.Contains(ae.Message, "secret123") || strings.Contains(ae.Message, "supersecret") {
+		t.Fatalf("provider error leaked secrets/tokens in Message: %q", ae.Message)
+	}
+
+	// Verify polling_video progress includes provider param and isVideo=true does not emit fake KeepAlive beats
+	var sawProviderParam bool
+	var beatCalls atomic.Int32
+	baseCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pCtx := progress.With(baseCtx, progress.Sink{
+		Interval: 5,
+		Beat:     func() { beatCalls.Add(1) },
+		Report: func(u progress.Update) {
+			if u.Key == "mediagen.progress.polling_video" && u.Params["provider"] == "OpenAI" {
+				sawProviderParam = true
+				cancel()
+			}
+		},
+	})
+	jobCtx, cleanup := svc.prepareJobContext(pCtx, true)
+	defer cleanup()
+	_ = svc.pollUntil(jobCtx, "mediagen.progress.polling_video", "Generating…", map[string]string{"provider": "OpenAI"}, func() (bool, error) {
+		return false, nil
+	})
+	if !sawProviderParam {
+		t.Fatal("expected mediagen.progress.polling_video to emit provider param")
+	}
+	if beatCalls.Load() != 0 {
+		t.Fatalf("expected zero KeepAlive beats on isVideo=true polling context, got %d", beatCalls.Load())
 	}
 }

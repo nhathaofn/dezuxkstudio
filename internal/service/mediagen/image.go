@@ -48,13 +48,13 @@ func (s *Service) GenerateImage(ctx context.Context, req domainmedia.ImageReques
 		return domainmedia.Result{}, err
 	}
 
-	release, err := s.acquireLimit(ctx, target, domainprovider.CapabilityImage, limits)
+	limCtx, release, err := s.acquireLimit(ctx, target, domainprovider.CapabilityImage, limits)
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
 	defer release()
 
-	callCtx, cleanup := s.prepareJobContext(ctx, false)
+	callCtx, cleanup := s.prepareJobContext(limCtx, false)
 	defer cleanup()
 
 	progress.Report(callCtx, progress.Update{
@@ -111,7 +111,7 @@ func (s *Service) GenerateImage(ctx context.Context, req domainmedia.ImageReques
 		return domainmedia.Result{}, err
 	}
 
-	res, err := s.saveOutput(domainmedia.KindImage, norm.OutputDir, "img", mimeType, ".png", data, target)
+	res, err := s.saveOutput(ctx, domainmedia.KindImage, norm.OutputDir, "img", mimeType, ".png", data, target)
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
@@ -184,9 +184,15 @@ func (s *Service) genOpenAIImages(ctx context.Context, t targetSpec, req domainm
 			fieldName = "image[]"
 		}
 		err := s.doMultipart(ctx, base+"/images/edits", headers, func(mw *multipart.Writer) error {
-			_ = mw.WriteField("model", t.modelID)
-			_ = mw.WriteField("prompt", req.Prompt)
-			_ = mw.WriteField("size", size)
+			if err := writeMultipartField(mw, "model", t.modelID); err != nil {
+				return err
+			}
+			if err := writeMultipartField(mw, "prompt", req.Prompt); err != nil {
+				return err
+			}
+			if err := writeMultipartField(mw, "size", size); err != nil {
+				return err
+			}
 			for i, ref := range refs {
 				h := make(textproto.MIMEHeader)
 				h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="ref_%d%s"`, fieldName, i, domainmedia.ExtForMime(ref.MimeType, ".png")))
@@ -342,7 +348,7 @@ func (s *Service) genGeminiImage(ctx context.Context, t targetSpec, req domainme
 		}
 		host := strings.TrimRight(t.baseURL, "/")
 		if host == "" {
-			host = "https://aiplatform.googleapis.com"
+			host = domainprovider.VertexAIBaseURL
 		}
 		headers["Authorization"] = "Bearer " + tok
 		action := "generateContent"
@@ -530,7 +536,7 @@ func (s *Service) genDashScopeImage(ctx context.Context, t targetSpec, req domai
 		}
 	}
 	if resp.Message != "" {
-		return nil, "", apperr.Unavailable("DashScope: " + resp.Message)
+		return nil, "", providerUnavailableErr("DashScope image failed", resp.Message)
 	}
 	return nil, "", apperr.Unavailable("DashScope returned no generated image URL")
 }
@@ -573,7 +579,7 @@ func (s *Service) genMiniMaxImage(ctx context.Context, t targetSpec, req domainm
 		return nil, "", err
 	}
 	if resp.BaseResp.StatusCode != 0 {
-		return nil, "", apperr.Unavailable(fmt.Sprintf("MiniMax (%d): %s", resp.BaseResp.StatusCode, resp.BaseResp.StatusMsg))
+		return nil, "", providerUnavailableErr(fmt.Sprintf("MiniMax (%d)", resp.BaseResp.StatusCode), resp.BaseResp.StatusMsg)
 	}
 	var b64, urlStr string
 	if len(resp.Data.ImageBase64) > 0 {
@@ -614,7 +620,7 @@ func (s *Service) genKlingImage(ctx context.Context, t targetSpec, req domainmed
 		return nil, "", err
 	}
 	if submitResp.Code != 0 && submitResp.Data.TaskID == "" {
-		return nil, "", apperr.Unavailable("Kling submit error: " + submitResp.Message)
+		return nil, "", providerUnavailableErr("Kling submit error", submitResp.Message)
 	}
 	taskID := submitResp.Data.TaskID
 	if taskID == "" {
@@ -622,7 +628,7 @@ func (s *Service) genKlingImage(ctx context.Context, t targetSpec, req domainmed
 	}
 
 	var resultURL string
-	err = s.pollUntil(ctx, "mediagen.progress.polling", "Waiting for Kling image…", func() (bool, error) {
+	err = s.pollUntil(ctx, "mediagen.progress.polling", "Waiting for Kling image…", map[string]string{"provider": t.providerName}, func() (bool, error) {
 		var st struct {
 			Data struct {
 				TaskStatus    string `json:"task_status"`
@@ -645,7 +651,7 @@ func (s *Service) genKlingImage(ctx context.Context, t targetSpec, req domainmed
 			resultURL = st.Data.TaskResult.Images[0].URL
 			return true, nil
 		case "failed":
-			return true, apperr.Unavailable("Kling image failed: " + st.Data.TaskStatusMsg)
+			return true, providerUnavailableErr("Kling image failed", st.Data.TaskStatusMsg)
 		default:
 			return false, nil
 		}
@@ -690,7 +696,7 @@ func (s *Service) genViduImage(ctx context.Context, t targetSpec, req domainmedi
 	}
 
 	var resultURL string
-	err := s.pollUntil(ctx, "mediagen.progress.polling", "Waiting for Vidu image…", func() (bool, error) {
+	err := s.pollUntil(ctx, "mediagen.progress.polling", "Waiting for Vidu image…", map[string]string{"provider": t.providerName}, func() (bool, error) {
 		var st struct {
 			State     string `json:"state"`
 			ErrCode   string `json:"err_code"`
@@ -709,7 +715,7 @@ func (s *Service) genViduImage(ctx context.Context, t targetSpec, req domainmedi
 			resultURL = st.Creations[0].URL
 			return true, nil
 		case "failed":
-			return true, apperr.Unavailable("Vidu image failed: " + st.ErrCode)
+			return true, providerUnavailableErr("Vidu image failed", st.ErrCode)
 		default:
 			return false, nil
 		}

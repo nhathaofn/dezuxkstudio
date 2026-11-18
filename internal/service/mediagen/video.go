@@ -18,6 +18,12 @@ import (
 	"app/internal/progress"
 )
 
+const (
+	// openAIPollActiveProgress and defaultPollActiveProgress represent baseline UI progress for single-step PollVideoJobOnce status probes.
+	openAIPollActiveProgress  = 40
+	defaultPollActiveProgress = 45
+)
+
 type videoInputs struct {
 	start *localImageData
 	end   *localImageData
@@ -63,9 +69,12 @@ func (s *Service) loadVideoInputs(norm domainmedia.VideoRequest) (videoInputs, f
 	return inputs, releaseLeases, nil
 }
 
-func applyVideoModelDefaults(norm *domainmedia.VideoRequest, facts domainprovider.ModelFacts, explicitDur, explicitRes bool) {
+func applyVideoModelDefaults(norm *domainmedia.VideoRequest, facts domainprovider.ModelFacts, defaultDurSec int, explicitDur, explicitRes bool) {
+	if defaultDurSec <= 0 {
+		defaultDurSec = domainmedia.DefaultVideoDurationSec
+	}
 	if !explicitDur && len(facts.Durations) > 0 {
-		norm.DurationSec = pickNearestInt(facts.Durations, domainmedia.DefaultVideoDurationSec)
+		norm.DurationSec = pickNearestInt(facts.Durations, defaultDurSec)
 	}
 	if !explicitRes && len(facts.Resolutions) > 0 {
 		if !slices.Contains(facts.Resolutions, norm.Resolution) {
@@ -80,7 +89,7 @@ func (s *Service) SubmitVideoJob(ctx context.Context, req domainmedia.VideoReque
 	explicitDuration := req.DurationSec > 0
 	explicitResolution := strings.TrimSpace(req.Resolution) != ""
 
-	norm, err := domainmedia.NormalizeVideoRequest(req)
+	norm, err := domainmedia.NormalizeVideoRequestWithLimits(req, s.maxVideoDurationSec, s.defaultVideoDurationSec)
 	if err != nil {
 		return domainmedia.VideoSubmitToken{}, err
 	}
@@ -94,15 +103,15 @@ func (s *Service) SubmitVideoJob(ctx context.Context, req domainmedia.VideoReque
 	if err != nil {
 		return domainmedia.VideoSubmitToken{}, err
 	}
-	applyVideoModelDefaults(&norm, target.modelFacts.Facts, explicitDuration, explicitResolution)
+	applyVideoModelDefaults(&norm, target.modelFacts.Facts, s.defaultVideoDurationSec, explicitDuration, explicitResolution)
 
-	release, err := s.acquireLimit(ctx, target, domainprovider.CapabilityVideo, limits)
+	limCtx, release, err := s.acquireLimit(ctx, target, domainprovider.CapabilityVideo, limits)
 	if err != nil {
 		return domainmedia.VideoSubmitToken{}, err
 	}
 	defer release()
 
-	callCtx, cancel := s.requestTimeoutCtx(ctx, false)
+	callCtx, cancel := s.requestTimeoutCtx(limCtx, false)
 	defer cancel()
 
 	return s.submitVideoTarget(callCtx, target, norm, inputs)
@@ -123,7 +132,8 @@ func (s *Service) PollVideoJobOnce(ctx context.Context, token domainmedia.VideoS
 		target.protocol = token.Protocol
 	}
 
-	callCtx, cancel := s.requestTimeoutCtx(ctx, true)
+	scopedCtx := withRateLimitScope(ctx, target.ownerID, domainprovider.CapabilityVideo)
+	callCtx, cancel := s.requestTimeoutCtx(scopedCtx, true)
 	defer cancel()
 
 	out, err := s.pollVideoTargetOnce(callCtx, target, token)
@@ -147,7 +157,7 @@ func (s *Service) PollVideoJobOnce(ctx context.Context, token domainmedia.VideoS
 }
 
 func (s *Service) finalizeVideoPoll(ctx context.Context, target targetSpec, token domainmedia.VideoSubmitToken, out pollProbeOutcome) (domainmedia.VideoPollStatus, error) {
-	res, err := s.saveOutput(domainmedia.KindVideo, token.OutputDir, "vid", out.mimeType, ".mp4", out.data, target)
+	res, err := s.saveOutput(ctx, domainmedia.KindVideo, token.OutputDir, "vid", out.mimeType, ".mp4", out.data, target)
 	if err != nil {
 		return domainmedia.VideoPollStatus{}, err
 	}
@@ -179,7 +189,7 @@ func (s *Service) GenerateVideo(ctx context.Context, req domainmedia.VideoReques
 	explicitDuration := req.DurationSec > 0
 	explicitResolution := strings.TrimSpace(req.Resolution) != ""
 
-	norm, err := domainmedia.NormalizeVideoRequest(req)
+	norm, err := domainmedia.NormalizeVideoRequestWithLimits(req, s.maxVideoDurationSec, s.defaultVideoDurationSec)
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
@@ -193,15 +203,15 @@ func (s *Service) GenerateVideo(ctx context.Context, req domainmedia.VideoReques
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
-	applyVideoModelDefaults(&norm, target.modelFacts.Facts, explicitDuration, explicitResolution)
+	applyVideoModelDefaults(&norm, target.modelFacts.Facts, s.defaultVideoDurationSec, explicitDuration, explicitResolution)
 
-	release, err := s.acquireLimit(ctx, target, domainprovider.CapabilityVideo, limits)
+	limCtx, release, err := s.acquireLimit(ctx, target, domainprovider.CapabilityVideo, limits)
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
 	defer release()
 
-	callCtx, cleanup := s.prepareJobContext(ctx, true)
+	callCtx, cleanup := s.prepareJobContext(limCtx, true)
 	defer cleanup()
 
 	progress.Report(callCtx, progress.Update{
@@ -216,7 +226,7 @@ func (s *Service) GenerateVideo(ctx context.Context, req domainmedia.VideoReques
 	}
 
 	var doneOut pollProbeOutcome
-	err = s.pollUntil(callCtx, "mediagen.progress.polling_video", videoPollMessage(target.protocol), func() (bool, error) {
+	err = s.pollUntil(callCtx, "mediagen.progress.polling_video", videoPollMessage(target.protocol), map[string]string{"provider": target.providerName}, func() (bool, error) {
 		out, pollErr := s.pollVideoTargetOnce(callCtx, target, token)
 		if pollErr != nil {
 			if out.failed {
@@ -234,7 +244,7 @@ func (s *Service) GenerateVideo(ctx context.Context, req domainmedia.VideoReques
 		return domainmedia.Result{}, err
 	}
 
-	res, err := s.saveOutput(domainmedia.KindVideo, norm.OutputDir, "vid", doneOut.mimeType, ".mp4", doneOut.data, target)
+	res, err := s.saveOutput(ctx, domainmedia.KindVideo, norm.OutputDir, "vid", doneOut.mimeType, ".mp4", doneOut.data, target)
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
@@ -381,10 +391,18 @@ func (s *Service) submitOpenAIVideo(ctx context.Context, t targetSpec, req domai
 	}
 	if in.start != nil {
 		err := s.doMultipart(ctx, base+"/videos", headers, func(mw *multipart.Writer) error {
-			_ = mw.WriteField("model", t.modelID)
-			_ = mw.WriteField("prompt", req.Prompt)
-			_ = mw.WriteField("seconds", seconds)
-			_ = mw.WriteField("size", size)
+			if err := writeMultipartField(mw, "model", t.modelID); err != nil {
+				return err
+			}
+			if err := writeMultipartField(mw, "prompt", req.Prompt); err != nil {
+				return err
+			}
+			if err := writeMultipartField(mw, "seconds", seconds); err != nil {
+				return err
+			}
+			if err := writeMultipartField(mw, "size", size); err != nil {
+				return err
+			}
 			h := make(textproto.MIMEHeader)
 			h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="input_reference"; filename="start%s"`, domainmedia.ExtForMime(in.start.MimeType, ".png")))
 			h.Set("Content-Type", in.start.MimeType)
@@ -448,10 +466,10 @@ func (s *Service) pollOpenAIVideoOnce(ctx context.Context, t targetSpec, tok dom
 		if st.Error != nil && st.Error.Message != "" {
 			msg = st.Error.Message
 		}
-		err := apperr.Unavailable("OpenAI video failed: " + msg)
-		return pollProbeOutcome{failed: true, status: st.Status, errText: err.Error()}, err
+		err := providerUnavailableErr("OpenAI video failed", msg)
+		return pollProbeOutcome{failed: true, status: st.Status, errText: err.Message}, err
 	default:
-		return pollProbeOutcome{status: st.Status, progress: 40}, nil
+		return pollProbeOutcome{status: st.Status, progress: openAIPollActiveProgress}, nil
 	}
 }
 
@@ -468,7 +486,7 @@ func (s *Service) submitGeminiVideo(ctx context.Context, t targetSpec, req domai
 		}
 		host := strings.TrimRight(t.baseURL, "/")
 		if host == "" {
-			host = "https://aiplatform.googleapis.com"
+			host = domainprovider.VertexAIBaseURL
 		}
 		headers["Authorization"] = "Bearer " + tok
 		submitURL = fmt.Sprintf("%s/v1/projects/%s/locations/global/publishers/google/models/%s:predictLongRunning",
@@ -574,7 +592,7 @@ func (s *Service) pollGeminiVideoOnce(ctx context.Context, t targetSpec, tok dom
 		}
 		host := strings.TrimRight(t.baseURL, "/")
 		if host == "" {
-			host = "https://aiplatform.googleapis.com"
+			host = domainprovider.VertexAIBaseURL
 		}
 		headers["Authorization"] = "Bearer " + vtok
 		pollURL := fmt.Sprintf("%s/v1/projects/%s/locations/global/publishers/google/models/%s:fetchPredictOperation",
@@ -592,11 +610,11 @@ func (s *Service) pollGeminiVideoOnce(ctx context.Context, t targetSpec, tok dom
 	}
 
 	if !cur.Done {
-		return pollProbeOutcome{status: "running", progress: 45}, nil
+		return pollProbeOutcome{status: "running", progress: defaultPollActiveProgress}, nil
 	}
 	if cur.Error != nil {
-		err := apperr.Unavailable("Gemini video failed: " + cur.Error.Message)
-		return pollProbeOutcome{failed: true, status: "failed", errText: err.Error()}, err
+		err := providerUnavailableErr("Gemini video failed", cur.Error.Message)
+		return pollProbeOutcome{failed: true, status: "failed", errText: err.Message}, err
 	}
 	if cur.Response == nil {
 		err := apperr.Unavailable("Gemini operation completed without response payload")
@@ -648,10 +666,10 @@ func (s *Service) downloadGeminiURI(ctx context.Context, uri string, authHeaders
 	if strings.HasPrefix(uri, "gs://") {
 		trimmed := strings.TrimPrefix(uri, "gs://")
 		parts := strings.SplitN(trimmed, "/", 2)
-		if len(parts) != 2 {
-			return nil, "", apperr.Unavailable("Malformed GCS URI: " + uri)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+			return nil, "", apperr.Unavailable("Malformed GCS URI from provider")
 		}
-		uri = fmt.Sprintf("https://storage.googleapis.com/%s/%s", parts[0], parts[1])
+		uri = fmt.Sprintf("%s/%s/%s", domainprovider.GCSObjectBaseURL, parts[0], parts[1])
 	}
 	return s.downloadURL(ctx, uri, authHeaders)
 }
@@ -743,10 +761,10 @@ func (s *Service) pollArkVideoOnce(ctx context.Context, t targetSpec, tok domain
 		if st.Error != nil && st.Error.Message != "" {
 			msg = st.Error.Message
 		}
-		err := apperr.Unavailable("Ark video failed: " + msg)
-		return pollProbeOutcome{failed: true, status: st.Status, errText: err.Error()}, err
+		err := providerUnavailableErr("Ark video failed", msg)
+		return pollProbeOutcome{failed: true, status: st.Status, errText: err.Message}, err
 	default:
-		return pollProbeOutcome{status: st.Status, progress: 45}, nil
+		return pollProbeOutcome{status: st.Status, progress: defaultPollActiveProgress}, nil
 	}
 }
 
@@ -788,7 +806,7 @@ func (s *Service) submitDashScopeVideo(ctx context.Context, t targetSpec, req do
 		return domainmedia.VideoSubmitToken{}, err
 	}
 	if submitResp.Output.TaskID == "" {
-		return domainmedia.VideoSubmitToken{}, apperr.Unavailable("DashScope video submit error: " + submitResp.Message)
+		return domainmedia.VideoSubmitToken{}, providerUnavailableErr("DashScope video submit error", submitResp.Message)
 	}
 	return domainmedia.VideoSubmitToken{ProviderJobID: submitResp.Output.TaskID}, nil
 }
@@ -819,10 +837,10 @@ func (s *Service) pollDashScopeVideoOnce(ctx context.Context, t targetSpec, tok 
 		}
 		return pollProbeOutcome{done: true, status: st.Output.TaskStatus, progress: 100, data: raw, mimeType: ct, downloadURL: st.Output.VideoURL}, nil
 	case "FAILED", "CANCELED", "UNKNOWN":
-		err := apperr.Unavailable("DashScope video failed: " + st.Output.Message)
-		return pollProbeOutcome{failed: true, status: st.Output.TaskStatus, errText: err.Error()}, err
+		err := providerUnavailableErr("DashScope video failed", st.Output.Message)
+		return pollProbeOutcome{failed: true, status: st.Output.TaskStatus, errText: err.Message}, err
 	default:
-		return pollProbeOutcome{status: st.Output.TaskStatus, progress: 45}, nil
+		return pollProbeOutcome{status: st.Output.TaskStatus, progress: defaultPollActiveProgress}, nil
 	}
 }
 
@@ -864,7 +882,7 @@ func (s *Service) submitMiniMaxVideo(ctx context.Context, t targetSpec, req doma
 		return domainmedia.VideoSubmitToken{}, err
 	}
 	if submitResp.BaseResp.StatusCode != 0 {
-		return domainmedia.VideoSubmitToken{}, apperr.Unavailable(fmt.Sprintf("MiniMax video (%d): %s", submitResp.BaseResp.StatusCode, submitResp.BaseResp.StatusMsg))
+		return domainmedia.VideoSubmitToken{}, providerUnavailableErr(fmt.Sprintf("MiniMax video (%d)", submitResp.BaseResp.StatusCode), submitResp.BaseResp.StatusMsg)
 	}
 	if submitResp.TaskID == "" {
 		return domainmedia.VideoSubmitToken{}, apperr.Unavailable("MiniMax returned empty task_id")
@@ -902,10 +920,10 @@ func (s *Service) pollMiniMaxVideoOnce(ctx context.Context, t targetSpec, tok do
 			}
 			return pollProbeOutcome{done: true, status: st.Task.Status, progress: 100, data: raw, mimeType: ct, downloadURL: st.Task.Content.URL}, nil
 		case "failed":
-			err := apperr.Unavailable("MiniMax v2 failed: " + st.Task.Error)
-			return pollProbeOutcome{failed: true, status: st.Task.Status, errText: err.Error()}, err
+			err := providerUnavailableErr("MiniMax v2 failed", st.Task.Error)
+			return pollProbeOutcome{failed: true, status: st.Task.Status, errText: err.Message}, err
 		default:
-			return pollProbeOutcome{status: st.Task.Status, progress: 45}, nil
+			return pollProbeOutcome{status: st.Task.Status, progress: defaultPollActiveProgress}, nil
 		}
 	}
 
@@ -944,10 +962,10 @@ func (s *Service) pollMiniMaxVideoOnce(ctx context.Context, t targetSpec, tok do
 		}
 		return pollProbeOutcome{done: true, status: st.Status, progress: 100, data: raw, mimeType: ct, downloadURL: ret.File.DownloadURL}, nil
 	case "Fail":
-		err := apperr.Unavailable("MiniMax video failed: " + st.BaseResp.StatusMsg)
-		return pollProbeOutcome{failed: true, status: st.Status, errText: err.Error()}, err
+		err := providerUnavailableErr("MiniMax video failed", st.BaseResp.StatusMsg)
+		return pollProbeOutcome{failed: true, status: st.Status, errText: err.Message}, err
 	default:
-		return pollProbeOutcome{status: st.Status, progress: 45}, nil
+		return pollProbeOutcome{status: st.Status, progress: defaultPollActiveProgress}, nil
 	}
 }
 
@@ -999,7 +1017,7 @@ func (s *Service) submitKlingVideo(ctx context.Context, t targetSpec, req domain
 		return domainmedia.VideoSubmitToken{}, err
 	}
 	if submitResp.Code != 0 && submitResp.Data.TaskID == "" {
-		return domainmedia.VideoSubmitToken{}, apperr.Unavailable("Kling video error: " + submitResp.Message)
+		return domainmedia.VideoSubmitToken{}, providerUnavailableErr("Kling video error", submitResp.Message)
 	}
 	taskID := submitResp.Data.TaskID
 	if taskID == "" {
@@ -1047,10 +1065,10 @@ func (s *Service) pollKlingVideoOnce(ctx context.Context, t targetSpec, tok doma
 		}
 		return pollProbeOutcome{done: true, status: st.Data.TaskStatus, progress: 100, data: raw, mimeType: ct, downloadURL: videoURL}, nil
 	case "failed":
-		err := apperr.Unavailable("Kling video failed: " + st.Data.TaskStatusMsg)
-		return pollProbeOutcome{failed: true, status: st.Data.TaskStatus, errText: err.Error()}, err
+		err := providerUnavailableErr("Kling video failed", st.Data.TaskStatusMsg)
+		return pollProbeOutcome{failed: true, status: st.Data.TaskStatus, errText: err.Message}, err
 	default:
-		return pollProbeOutcome{status: st.Data.TaskStatus, progress: 45}, nil
+		return pollProbeOutcome{status: st.Data.TaskStatus, progress: defaultPollActiveProgress}, nil
 	}
 }
 
@@ -1135,10 +1153,10 @@ func (s *Service) pollViduVideoOnce(ctx context.Context, t targetSpec, tok domai
 		}
 		return pollProbeOutcome{done: true, status: st.State, progress: 100, data: raw, mimeType: ct, downloadURL: videoURL}, nil
 	case "failed":
-		err := apperr.Unavailable("Vidu video failed: " + st.ErrCode)
-		return pollProbeOutcome{failed: true, status: st.State, errText: err.Error()}, err
+		err := providerUnavailableErr("Vidu video failed", st.ErrCode)
+		return pollProbeOutcome{failed: true, status: st.State, errText: err.Message}, err
 	default:
-		return pollProbeOutcome{status: st.State, progress: 45}, nil
+		return pollProbeOutcome{status: st.State, progress: defaultPollActiveProgress}, nil
 	}
 }
 
@@ -1200,10 +1218,10 @@ func (s *Service) pollGrokVideoOnce(ctx context.Context, t targetSpec, tok domai
 		}
 		return pollProbeOutcome{done: true, status: st.Status, progress: 100, data: raw, mimeType: ct, downloadURL: st.Video.URL}, nil
 	case "failed", "expired":
-		err := apperr.Unavailable("Grok video failed: " + st.Error)
-		return pollProbeOutcome{failed: true, status: st.Status, errText: err.Error()}, err
+		err := providerUnavailableErr("Grok video failed", st.Error)
+		return pollProbeOutcome{failed: true, status: st.Status, errText: err.Message}, err
 	default:
-		return pollProbeOutcome{status: st.Status, progress: 45}, nil
+		return pollProbeOutcome{status: st.Status, progress: defaultPollActiveProgress}, nil
 	}
 }
 
@@ -1280,9 +1298,9 @@ func (s *Service) pollAgnesVideoOnce(ctx context.Context, t targetSpec, tok doma
 		}
 		return pollProbeOutcome{done: true, status: status, progress: 100, data: raw, mimeType: ct, downloadURL: videoURL}, nil
 	case "failed", "error":
-		err := apperr.Unavailable("Agnes video failed: " + st.Error)
-		return pollProbeOutcome{failed: true, status: status, errText: err.Error()}, err
+		err := providerUnavailableErr("Agnes video failed", st.Error)
+		return pollProbeOutcome{failed: true, status: status, errText: err.Message}, err
 	default:
-		return pollProbeOutcome{status: status, progress: 45}, nil
+		return pollProbeOutcome{status: status, progress: defaultPollActiveProgress}, nil
 	}
 }

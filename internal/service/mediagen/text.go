@@ -40,13 +40,13 @@ func (s *Service) GenerateText(ctx context.Context, req domainmedia.TextRequest)
 		return domainmedia.TextResult{}, err
 	}
 
-	release, err := s.acquireLimit(ctx, target, domainprovider.CapabilityLLM, limits)
+	limCtx, release, err := s.acquireLimit(ctx, target, domainprovider.CapabilityLLM, limits)
 	if err != nil {
 		return domainmedia.TextResult{}, err
 	}
 	defer release()
 
-	callCtx, cancel := s.textTimeoutCtx(ctx)
+	callCtx, cancel := s.textTimeoutCtx(limCtx)
 	defer cancel()
 	defer progress.KeepAlive(callCtx)()
 
@@ -98,7 +98,7 @@ func (s *Service) GenerateText(ctx context.Context, req domainmedia.TextRequest)
 			return domainmedia.TextResult{}, apperr.Unavailable("LLM returned invalid JSON output")
 		}
 		if err := verifyRequiredSchemaKeys([]byte(cleaned), schemaObj); err != nil {
-			return domainmedia.TextResult{}, apperr.Unavailable("LLM JSON output missed required fields: " + err.Error())
+			return domainmedia.TextResult{}, apperr.Wrap(apperr.CodeUnavailable, "LLM JSON output missed required fields", err)
 		}
 		text = cleaned
 		parsedJSON = json.RawMessage(cleaned)
@@ -349,7 +349,7 @@ func (s *Service) genGeminiText(
 		}
 		host := strings.TrimRight(t.baseURL, "/")
 		if host == "" {
-			host = "https://aiplatform.googleapis.com"
+			host = domainprovider.VertexAIBaseURL
 		}
 		headers["Authorization"] = "Bearer " + tok
 		targetURL = fmt.Sprintf("%s/v1beta1/projects/%s/locations/global/publishers/google/models/%s:generateContent",
@@ -469,7 +469,7 @@ func (s *Service) genAnthropicText(
 	endpoint := root + "/v1/messages"
 	headers := map[string]string{
 		"x-api-key":         t.apiKey,
-		"anthropic-version": "2023-06-01",
+		"anthropic-version": domainprovider.AnthropicAPIVersion,
 	}
 
 	content := make([]map[string]any, 0, len(images)+1)
@@ -524,7 +524,7 @@ func (s *Service) genAnthropicText(
 		if errors.As(err, &ae) && ae.Code == apperr.CodeUnauthorized {
 			bearerHeaders := map[string]string{
 				"Authorization":     "Bearer " + t.apiKey,
-				"anthropic-version": "2023-06-01",
+				"anthropic-version": domainprovider.AnthropicAPIVersion,
 			}
 			err = s.doJSON(ctx, "POST", endpoint, bearerHeaders, payload, &resp)
 		}
@@ -619,7 +619,7 @@ func (s *Service) genMiniMaxText(
 		return textProviderOutcome{}, err
 	}
 	if resp.BaseResp.StatusCode != 0 {
-		return textProviderOutcome{}, apperr.Unavailable(fmt.Sprintf("MiniMax (%d): %s", resp.BaseResp.StatusCode, resp.BaseResp.StatusMsg))
+		return textProviderOutcome{}, providerUnavailableErr(fmt.Sprintf("MiniMax (%d)", resp.BaseResp.StatusCode), resp.BaseResp.StatusMsg)
 	}
 	if len(resp.Choices) == 0 || strings.TrimSpace(resp.Choices[0].Message.Content) == "" {
 		return textProviderOutcome{}, apperr.Unavailable("MiniMax returned empty content")

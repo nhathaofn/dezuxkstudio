@@ -19,8 +19,10 @@ import (
 	"time"
 
 	"app/internal/config"
+	"app/internal/contracts"
 	domainmedia "app/internal/domain/mediagen"
 	domainprovider "app/internal/domain/provider"
+	"app/internal/service/media"
 )
 
 type fakeResolver struct {
@@ -361,7 +363,18 @@ func TestVideoGenerationAllProtocols(t *testing.T) {
 		switch {
 		case r.URL.Path == "/v1/videos" && r.Method == "POST":
 			w.Header().Set("Content-Type", "application/json")
+			if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+				var body map[string]any
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				if body["model"] == "agnes-2.5-vid" {
+					_, _ = w.Write([]byte(`{"task_id":"ag-v1"}`))
+					return
+				}
+			}
 			_, _ = w.Write([]byte(`{"id":"oai-vid-1"}`))
+		case r.URL.Path == "/agnesapi" && r.Method == "GET":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"completed","video_url":"` + srv.URL + `/dl/video.mp4"}`))
 		case r.URL.Path == "/v1/videos/oai-vid-1" && r.Method == "GET":
 			w.Header().Set("Content-Type", "application/json")
 			if polls.Add(1) < 2 {
@@ -560,6 +573,16 @@ func TestVideoGenerationAllProtocols(t *testing.T) {
 				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDGrok, BaseURL: srv.URL + "/v1", Secrets: map[string]string{"api_key": "k"}},
 			},
 			req:     domainmedia.VideoRequest{Prompt: "grok"},
+			wantDur: 5,
+		},
+		{
+			name: "agnes-video",
+			resolved: domainprovider.ResolvedModel{
+				Purpose: domainprovider.PurposeVideo,
+				Model:   domainprovider.Model{ModelID: "agnes-2.5-vid", Capability: domainprovider.CapabilityVideo},
+				Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDAgnes, BaseURL: srv.URL + "/v1", Secrets: map[string]string{"api_key": "k"}},
+			},
+			req:     domainmedia.VideoRequest{Prompt: "agnes", StartImage: refPath},
 			wantDur: 5,
 		},
 	}
@@ -1311,7 +1334,7 @@ func TestMediaGenDynamicMediaDirAndStagingIsolation(t *testing.T) {
 		t.Fatalf("expected StagingDir to remain %s, got %s", stagingDir, svc.StagingDir())
 	}
 
-	// Test fallback when StagingDir is empty
+	// Test fallback when StagingDir is empty: SetMediaDir must update StagingDir dynamically!
 	svcDefault := New(Options{
 		MediaDir: mediaDir1,
 	})
@@ -1319,19 +1342,39 @@ func TestMediaGenDynamicMediaDirAndStagingIsolation(t *testing.T) {
 	if svcDefault.StagingDir() != expectedFallback {
 		t.Fatalf("expected fallback StagingDir=%s, got %s", expectedFallback, svcDefault.StagingDir())
 	}
+	svcDefault.SetMediaDir(mediaDir2)
+	expectedFallback2 := filepath.Join(mediaDir2, "staging")
+	if svcDefault.StagingDir() != expectedFallback2 {
+		t.Fatalf("expected updated fallback StagingDir=%s after SetMediaDir, got %s", expectedFallback2, svcDefault.StagingDir())
+	}
+}
+
+type noopRegistrar struct {
+	calls atomic.Int32
+}
+
+func (n *noopRegistrar) RegisterAsset(_ context.Context, p media.RegisterAssetParams) (*contracts.MediaAssetItem, error) {
+	id := n.calls.Add(1)
+	return &contracts.MediaAssetItem{ID: "asset-" + filepath.Base(p.FilePath) + "-" + string(rune('0'+(id%10)))}, nil
 }
 
 func TestMediaGenConcurrency(t *testing.T) {
 	tmpDir := t.TempDir()
+	reg1 := &noopRegistrar{}
+	reg2 := &noopRegistrar{}
 	svc := New(Options{
-		MediaDir:   filepath.Join(tmpDir, "initial"),
-		StagingDir: filepath.Join(tmpDir, "staging"),
+		MediaDir: filepath.Join(tmpDir, "initial"),
 	})
 
 	done := make(chan struct{})
 	go func() {
 		for i := 0; i < 200; i++ {
 			svc.SetMediaDir(filepath.Join(tmpDir, "media", "dynamic"))
+			if i%2 == 0 {
+				svc.SetRegistrar(reg1)
+			} else {
+				svc.SetRegistrar(reg2)
+			}
 		}
 		close(done)
 	}()
@@ -1339,6 +1382,107 @@ func TestMediaGenConcurrency(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		_ = svc.MediaDir()
 		_ = svc.StagingDir()
+		_, _ = svc.saveOutput(context.Background(), domainmedia.KindImage, filepath.Join(tmpDir, "out"), "img", "image/png", ".png", fakePNG, targetSpec{providerName: "test", modelID: "m"})
 	}
 	<-done
+}
+
+func TestStageStreamLimitsAndAssetCacheEviction(t *testing.T) {
+	svc := New(Options{
+		MediaDir: t.TempDir(),
+		Config: config.MediaGenConfig{
+			MaxOutputBytes: 16,
+		},
+	})
+
+	// StageFile exceeds MaxOutputBytes
+	if _, _, err := svc.StageFile("sub", "big.bin", make([]byte, 32)); err == nil {
+		t.Fatal("expected StageFile size limit error")
+	}
+
+	// StageStream exceeds maxBytes and cleans up temp file
+	if _, _, err := svc.StageStream("sub", "stream_big.bin", strings.NewReader(strings.Repeat("x", 32)), 16); err == nil {
+		t.Fatal("expected StageStream size limit error")
+	}
+	entries, _ := os.ReadDir(filepath.Join(svc.StagingDir(), "sub"))
+	if len(entries) != 0 {
+		t.Fatalf("expected zero leftover temp files after failed StageStream, got %d", len(entries))
+	}
+
+	// StageStream within limit succeeds and leases file
+	staged, release, err := svc.StageStream("sub", "ok.bin", strings.NewReader("hello"), 16)
+	if err != nil {
+		t.Fatalf("StageStream valid: %v", err)
+	}
+	if !svc.IsLeased(staged) {
+		t.Fatal("expected staged file to hold active lease")
+	}
+	release()
+	if svc.IsLeased(staged) {
+		t.Fatal("expected staged file lease to release")
+	}
+
+	// Bounded asset cache eviction
+	for i := 0; i < maxCachedAssetIDs+25; i++ {
+		p := filepath.Join(svc.MediaDir(), "f-"+strings.Repeat("a", i%5)+string(rune(i)))
+		svc.setAssetID(p, "id")
+	}
+	svc.assetsMu.RLock()
+	gotLen := len(svc.assets)
+	svc.assetsMu.RUnlock()
+	if gotLen > maxCachedAssetIDs {
+		t.Fatalf("assets cache len = %d, exceeds maxCachedAssetIDs=%d", gotLen, maxCachedAssetIDs)
+	}
+}
+
+func TestRateLimiterGapRPMAnd429Backoff(t *testing.T) {
+	l := newRateLimiter(5*time.Millisecond, 2)
+	lim := domainprovider.Limits{
+		MaxWorkers:   map[domainprovider.Capability]int{domainprovider.CapabilityImage: 2},
+		RequestGapMs: 35,
+	}
+
+	t0 := time.Now()
+	rel1, err := l.acquire(context.Background(), "p-gap", domainprovider.CapabilityImage, lim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel1()
+
+	// Record explicit 429 Retry-After backoff even when RequestGapMs is 0
+	l.recordBackoff("p-429", domainprovider.CapabilityImage, 40*time.Millisecond)
+	tBackoff := time.Now()
+	rel2, err := l.acquire(context.Background(), "p-429", domainprovider.CapabilityImage, domainprovider.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel2()
+	if elapsed := time.Since(tBackoff); elapsed < 30*time.Millisecond {
+		t.Fatalf("expected 429 recordBackoff to delay acquire, elapsed=%v", elapsed)
+	}
+
+	// Verify RequestGapMs spacing on p-gap
+	rel3, err := l.acquire(context.Background(), "p-gap", domainprovider.CapabilityImage, lim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel3()
+	if elapsed := time.Since(t0); elapsed < 30*time.Millisecond {
+		t.Fatalf("expected RequestGapMs spacing, elapsed=%v", elapsed)
+	}
+
+	// Verify RPM exhaustion cancels promptly when context times out
+	rpmLim := domainprovider.Limits{
+		RPM: map[domainprovider.Capability]int{domainprovider.CapabilityImage: 1},
+	}
+	relRPM, err := l.acquire(context.Background(), "p-rpm", domainprovider.CapabilityImage, rpmLim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relRPM()
+	shortCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := l.acquire(shortCtx, "p-rpm", domainprovider.CapabilityImage, rpmLim); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected DeadlineExceeded when RPM bucket full, got %v", err)
+	}
 }

@@ -467,15 +467,17 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 	c.mediaSvc = mediaSvc
 
 	mediaGenSvc = mediagensvc.New(mediagensvc.Options{
-		Providers:         provSvc,
-		HTTPClient:        o.HTTPClient,
-		MediaDir:          tree.MediaDir,
-		StagingDir:        o.Paths.MediaGenStaging(),
-		Registrar:         mediaSvc,
-		Config:            cfg.MediaGen,
-		Logger:            o.Logger,
-		StagingTTL:        cfg.MediaStagingTTL(),
-		StagingGCInterval: cfg.MediaStagingGCInterval(),
+		Providers:               provSvc,
+		HTTPClient:              o.HTTPClient,
+		MediaDir:                tree.MediaDir,
+		StagingDir:              o.Paths.MediaGenStaging(),
+		Registrar:               mediaSvc,
+		Config:                  cfg.MediaGen,
+		MaxVideoDurationSec:     cfg.Studio.MaxShotDurationSec,
+		DefaultVideoDurationSec: cfg.Studio.DefaultShotDurationSec,
+		Logger:                  o.Logger,
+		StagingTTL:              cfg.MediaStagingTTL(),
+		StagingGCInterval:       cfg.MediaStagingGCInterval(),
 	})
 	c.mediaGenSvc = mediaGenSvc
 	if stagedDir := mediaGenSvc.StagingDir(); stagedDir != "" {

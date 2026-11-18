@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"app/internal/apperr"
 	"app/internal/config"
 	domainmedia "app/internal/domain/mediagen"
 	domainprovider "app/internal/domain/provider"
@@ -209,5 +210,113 @@ func TestGenerateTextRejectsMissingRequiredSchemaKeys(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "missing \"scenes\"") {
 		t.Fatalf("expected missing required field error, got %v", err)
+	}
+	if ae := apperr.From(err); strings.Contains(ae.Message, "missing \"scenes\"") {
+		t.Fatalf("apperr.Message must not include raw Go cause: %q", ae.Message)
+	}
+}
+
+func TestGenerateTextMultimodalAnthropicBearerRetryAndTimeout(t *testing.T) {
+	imgPath := writeTempPNG(t)
+	var sawMultimodalImage bool
+	var sawAnthropicBearer bool
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/completions":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			msgs, _ := body["messages"].([]any)
+			if len(msgs) > 0 {
+				m0, _ := msgs[len(msgs)-1].(map[string]any)
+				if parts, ok := m0["content"].([]any); ok && len(parts) >= 2 {
+					sawMultimodalImage = true
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"frame ok"}}]}`))
+		case "/v1/messages":
+			if r.Header.Get("Authorization") != "Bearer ant-oauth-tok" {
+				http.Error(w, `{"error":{"message":"x-api-key rejected"}}`, http.StatusUnauthorized)
+				return
+			}
+			sawAnthropicBearer = true
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"bearer ok"}],"usage":{"input_tokens":4,"output_tokens":2}}`))
+		case "/slow/v1/chat/completions":
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(200 * time.Millisecond):
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"late"}}]}`))
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	resolver := &fakeResolver{
+		resolveFn: func(_ context.Context, p domainprovider.Purpose, ref string) (domainprovider.ResolvedModel, error) {
+			switch ref {
+			case "anthropic/bearer":
+				return domainprovider.ResolvedModel{
+					Purpose: p,
+					Model:   domainprovider.Model{ModelID: "claude-sonnet-4", Capability: domainprovider.CapabilityLLM},
+					Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDAnthropic, BaseURL: srv.URL, Secrets: map[string]string{"api_key": "ant-oauth-tok"}},
+				}, nil
+			case "openai/slow":
+				return domainprovider.ResolvedModel{
+					Purpose: p,
+					Model:   domainprovider.Model{ModelID: "gpt-4o", Capability: domainprovider.CapabilityLLM},
+					Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDOpenAI, BaseURL: srv.URL + "/slow/v1", Secrets: map[string]string{"api_key": "k"}},
+				}, nil
+			default:
+				return domainprovider.ResolvedModel{
+					Purpose: p,
+					Model:   domainprovider.Model{ModelID: "gpt-4o", Capability: domainprovider.CapabilityLLM},
+					Builtin: &domainprovider.Resolved{ProviderID: domainprovider.IDOpenAI, BaseURL: srv.URL + "/v1", Secrets: map[string]string{"api_key": "k"}},
+				}, nil
+			}
+		},
+	}
+
+	svc := New(Options{
+		Providers: resolver,
+		MediaDir:  t.TempDir(),
+		Config: config.MediaGenConfig{
+			TextTimeout:    35 * time.Millisecond,
+			RequestTimeout: 35 * time.Millisecond,
+			RetryMax:       0,
+		},
+	})
+
+	// 1. Multimodal ImageInputs
+	res, err := svc.GenerateText(context.Background(), domainmedia.TextRequest{
+		ModelRef:    "openai/gpt-4o",
+		UserPrompt:  "Inspect frame",
+		ImageInputs: []string{imgPath},
+	})
+	if err != nil || !sawMultimodalImage || res.Text != "frame ok" {
+		t.Fatalf("multimodal GenerateText failed: sawImage=%v res=%+v err=%v", sawMultimodalImage, res, err)
+	}
+
+	// 2. Anthropic 401 -> Bearer fallback
+	resAnt, err := svc.GenerateText(context.Background(), domainmedia.TextRequest{
+		ModelRef:    "anthropic/bearer",
+		UserPrompt:  "Inspect frame",
+		ImageInputs: []string{imgPath},
+	})
+	if err != nil || !sawAnthropicBearer || resAnt.Text != "bearer ok" {
+		t.Fatalf("Anthropic Bearer fallback failed: sawBearer=%v res=%+v err=%v", sawAnthropicBearer, resAnt, err)
+	}
+
+	// 3. TextTimeout deadline
+	if _, err := svc.GenerateText(context.Background(), domainmedia.TextRequest{
+		ModelRef:   "openai/slow",
+		UserPrompt: "Slow call",
+	}); !apperr.IsCode(err, apperr.CodeTimeout) {
+		t.Fatalf("expected CodeTimeout on TextTimeout expiry, got %v", err)
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,8 +39,19 @@ import (
 )
 
 const (
-	maxErrorSnippetBytes  = 512
-	defaultPollPercentCap = 90.0
+	// maxErrorSnippetBytes bounds sanitized upstream provider error snippets included in user-facing messages.
+	maxErrorSnippetBytes = 512
+	// defaultPollStartPercent and defaultPollPercentCap bound intermediate progress reporting while polling async tasks.
+	defaultPollStartPercent = 20.0
+	defaultPollPercentCap   = 90.0
+	// maxCachedAssetIDs bounds the in-memory path->assetID lookup map over long server uptimes.
+	maxCachedAssetIDs = 2048
+)
+
+var (
+	errStageTooLarge     = errors.New("staged media payload exceeded size limit")
+	secretTokenPattern   = regexp.MustCompile(`(?i)(bearer\s+[A-Za-z0-9._\-~+/=]+|sk-[A-Za-z0-9_\-]{8,}|(?:api[_-]?key|token|secret|signature|sig)=[^&\s"']+)`)
+	embeddedURLPattern   = regexp.MustCompile(`https?://[^\s"'<>]+`)
 )
 
 // MediaRegistrar registers newly produced media files into the media library.
@@ -55,18 +67,20 @@ type ProviderResolver interface {
 
 // Options configures Service construction.
 type Options struct {
-	Providers         ProviderResolver
-	HTTPClient        *http.Client
-	MediaDir          string
-	StagingDir        string
-	Registrar         MediaRegistrar
-	MediaRepo         MediaRegistrar
-	Config            config.MediaGenConfig
-	Logger            *slog.Logger
-	Leases            *LeaseRegistry
-	StagingTTL        time.Duration
-	StagingGCInterval time.Duration
-	OnUsage           func(context.Context, domainmedia.UsageEvent)
+	Providers               ProviderResolver
+	HTTPClient              *http.Client
+	MediaDir                string
+	StagingDir              string
+	Registrar               MediaRegistrar
+	MediaRepo               MediaRegistrar
+	Config                  config.MediaGenConfig
+	MaxVideoDurationSec     int
+	DefaultVideoDurationSec int
+	Logger                  *slog.Logger
+	Leases                  *LeaseRegistry
+	StagingTTL              time.Duration
+	StagingGCInterval       time.Duration
+	OnUsage                 func(context.Context, domainmedia.UsageEvent)
 }
 
 type cachedVertexToken struct {
@@ -77,24 +91,27 @@ type cachedVertexToken struct {
 
 // Service unifies media generation across built-in providers and custom provider endpoints.
 type Service struct {
-	providers         ProviderResolver
-	httpClient        *http.Client
-	mediaMu           sync.RWMutex
-	mediaDir          string
-	stagingDir        string
-	registrar         MediaRegistrar
-	cfg               config.MediaGenConfig
-	log               *slog.Logger
-	limiter           *rateLimiter
-	leases            *LeaseRegistry
-	stagingTTL        time.Duration
-	stagingGCInterval time.Duration
+	providers               ProviderResolver
+	httpClient              *http.Client
+	mediaMu                 sync.RWMutex
+	mediaDir                string
+	stagingDir              string
+	registrar               MediaRegistrar
+	cfg                     config.MediaGenConfig
+	maxVideoDurationSec     int
+	defaultVideoDurationSec int
+	log                     *slog.Logger
+	limiter                 *rateLimiter
+	leases                  *LeaseRegistry
+	stagingTTL              time.Duration
+	stagingGCInterval       time.Duration
 
 	vertexMu    sync.Mutex
 	vertexCache map[string]cachedVertexToken
 
-	assetsMu sync.RWMutex
-	assets   map[string]string // map[path]assetID
+	assetsMu    sync.RWMutex
+	assets      map[string]string // map[path]assetID
+	assetsOrder []string
 
 	usageMu sync.RWMutex
 	onUsage func(context.Context, domainmedia.UsageEvent)
@@ -102,13 +119,14 @@ type Service struct {
 
 // New constructs a unified media generation service.
 func New(o Options) *Service {
+	def := config.Default(config.ModeDesktop)
 	client := o.HTTPClient
 	if client == nil {
-		client = httpclient.New(config.Default(config.ModeDesktop).Network)
+		client = httpclient.New(def.Network)
 	}
 	clientCopy := httpclient.WithRedirectGuard(client, domainprovider.ValidateOutboundURL)
 
-	cfg := withMediaGenDefaults(o.Config)
+	cfg := config.ResolveMediaGenConfig(o.Config)
 
 	log := o.Logger
 	if log == nil {
@@ -124,7 +142,6 @@ func New(o Options) *Service {
 	if leases == nil {
 		leases = defaultLeaseRegistry
 	}
-	def := config.Default(config.ModeDesktop)
 	stagingTTL := o.StagingTTL
 	if stagingTTL <= 0 {
 		stagingTTL = def.Media.StagingTTL
@@ -133,27 +150,35 @@ func New(o Options) *Service {
 	if stagingGCInterval <= 0 {
 		stagingGCInterval = def.Media.StagingGCInterval
 	}
-
-	stagingDir := strings.TrimSpace(o.StagingDir)
-	if stagingDir == "" && strings.TrimSpace(o.MediaDir) != "" {
-		stagingDir = filepath.Join(o.MediaDir, "staging")
+	maxVidDur := o.MaxVideoDurationSec
+	if maxVidDur <= 0 {
+		maxVidDur = def.Studio.MaxShotDurationSec
+	}
+	defVidDur := o.DefaultVideoDurationSec
+	if defVidDur <= 0 {
+		defVidDur = def.Studio.DefaultShotDurationSec
+	}
+	if defVidDur > maxVidDur {
+		defVidDur = maxVidDur
 	}
 
 	return &Service{
-		providers:         o.Providers,
-		httpClient:        clientCopy,
-		mediaDir:          o.MediaDir,
-		stagingDir:        stagingDir,
-		registrar:         reg,
-		cfg:               cfg,
-		log:               log,
-		limiter:           newRateLimiter(cfg.LimiterPollInterval, def.Providers.DefaultMaxWorkers),
-		leases:            leases,
-		stagingTTL:        stagingTTL,
-		stagingGCInterval: stagingGCInterval,
-		vertexCache:       make(map[string]cachedVertexToken),
-		assets:            make(map[string]string),
-		onUsage:           o.OnUsage,
+		providers:               o.Providers,
+		httpClient:              clientCopy,
+		mediaDir:                o.MediaDir,
+		stagingDir:              strings.TrimSpace(o.StagingDir),
+		registrar:               reg,
+		cfg:                     cfg,
+		maxVideoDurationSec:     maxVidDur,
+		defaultVideoDurationSec: defVidDur,
+		log:                     log,
+		limiter:                 newRateLimiter(cfg.LimiterPollInterval, def.Providers.DefaultMaxWorkers),
+		leases:                  leases,
+		stagingTTL:              stagingTTL,
+		stagingGCInterval:       stagingGCInterval,
+		vertexCache:             make(map[string]cachedVertexToken),
+		assets:                  make(map[string]string),
+		onUsage:                 o.OnUsage,
 	}
 }
 
@@ -462,7 +487,7 @@ func (s *Service) getVertexToken(ctx context.Context, t targetSpec) (accessToken
 		cacheKey = t.vertexJSON
 	}
 	s.vertexMu.Lock()
-	if cached, ok := s.vertexCache[cacheKey]; ok && time.Until(cached.expiresAt) > 2*time.Minute {
+	if cached, ok := s.vertexCache[cacheKey]; ok && time.Until(cached.expiresAt) > s.cfg.OAuthRefreshSkew {
 		s.vertexMu.Unlock()
 		return cached.accessToken, cached.projectID, nil
 	}
@@ -474,7 +499,7 @@ func (s *Service) getVertexToken(ctx context.Context, t targetSpec) (accessToken
 			WithMsg("errors.mediagen.auth_failed", map[string]any{"provider": t.providerName})
 	}
 	if expiresIn <= 0 {
-		expiresIn = 30 * time.Minute
+		expiresIn = s.cfg.OAuthFallbackTTL
 	}
 	s.vertexMu.Lock()
 	s.vertexCache[cacheKey] = cachedVertexToken{
@@ -522,7 +547,7 @@ func geminiModelName(modelID string) string {
 func ensureArkBase(raw string) string {
 	trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
 	if trimmed == "" {
-		return "https://ark.cn-beijing.volces.com/api/v3"
+		return domainprovider.DefaultBaseURLFor(domainprovider.IDArk)
 	}
 	if strings.HasSuffix(trimmed, "/api/v3") || strings.HasSuffix(trimmed, "/v3") {
 		return trimmed
@@ -824,20 +849,28 @@ func computeDelay(attempt int, cfg RetryConfig, retryAfter string) time.Duration
 // ExecHTTPWithRetry executes an HTTP request with bounded body streaming and transient retry with backoff.
 // It retries on HTTP 503, 429, and transient network errors (such as connection reset).
 func ExecHTTPWithRetry(ctx context.Context, client *http.Client, req *http.Request, maxBytes int64, cfg RetryConfig) ([]byte, string, int, error) {
+	return execHTTPWithRetryObserver(ctx, client, req, maxBytes, cfg, nil)
+}
+
+func execHTTPWithRetryObserver(ctx context.Context, client *http.Client, req *http.Request, maxBytes int64, cfg RetryConfig, onRateLimit func(time.Duration)) ([]byte, string, int, error) {
 	if client == nil {
-		client = http.DefaultClient
+		client = httpclient.WithRedirectGuard(
+			httpclient.New(config.Default(config.ModeDesktop).Network),
+			domainprovider.ValidateOutboundURL,
+		)
 	}
+	defCfg := DefaultRetryConfig()
 	if cfg.MaxRetries < 0 {
 		cfg.MaxRetries = 0
 	}
 	if cfg.InitialDelay <= 0 {
-		cfg.InitialDelay = 50 * time.Millisecond
+		cfg.InitialDelay = defCfg.InitialDelay
 	}
 	if cfg.MaxDelay <= 0 {
-		cfg.MaxDelay = 2 * time.Second
+		cfg.MaxDelay = defCfg.MaxDelay
 	}
 	if cfg.BackoffFactor <= 0 {
-		cfg.BackoffFactor = 2.0
+		cfg.BackoffFactor = defCfg.BackoffFactor
 	}
 
 	var lastErr error
@@ -885,11 +918,20 @@ func ExecHTTPWithRetry(ctx context.Context, client *http.Client, req *http.Reque
 		lastStatus = resp.StatusCode
 		lastRaw = raw
 		lastCT = resp.Header.Get("Content-Type")
+		retryAfterHeader := resp.Header.Get("Retry-After")
+
+		if resp.StatusCode == http.StatusTooManyRequests && onRateLimit != nil {
+			bo, ok := parseRetryAfter(retryAfterHeader)
+			if !ok || bo <= 0 {
+				bo = computeDelay(attempt, cfg, "")
+			}
+			onRateLimit(bo)
+		}
 
 		if readErr != nil {
 			lastErr = readErr
 			if attempt < cfg.MaxRetries && (IsRetryableStatus(resp.StatusCode) || IsTransientNetErr(readErr)) {
-				delay := computeDelay(attempt, cfg, resp.Header.Get("Retry-After"))
+				delay := computeDelay(attempt, cfg, retryAfterHeader)
 				select {
 				case <-ctx.Done():
 					return nil, "", 0, apperr.From(ctx.Err())
@@ -906,7 +948,7 @@ func ExecHTTPWithRetry(ctx context.Context, client *http.Client, req *http.Reque
 		}
 
 		if attempt < cfg.MaxRetries && IsRetryableStatus(resp.StatusCode) {
-			delay := computeDelay(attempt, cfg, resp.Header.Get("Retry-After"))
+			delay := computeDelay(attempt, cfg, retryAfterHeader)
 			select {
 			case <-ctx.Done():
 				return nil, "", 0, apperr.From(ctx.Err())
@@ -934,12 +976,22 @@ func (s *Service) retryConfig() RetryConfig {
 	}
 }
 
+func (s *Service) rateLimitObserver(ctx context.Context) func(time.Duration) {
+	scope, ok := rateLimitScopeFromContext(ctx)
+	if !ok || s.limiter == nil {
+		return nil
+	}
+	return func(backoff time.Duration) {
+		s.limiter.recordBackoff(scope.owner, scope.cap, backoff)
+	}
+}
+
 func (s *Service) execHTTP(req *http.Request, maxBytes int64) ([]byte, string, int, error) {
-	return ExecHTTPWithRetry(req.Context(), s.httpClient, req, maxBytes, s.retryConfig())
+	return s.execHTTPWithRetry(req, maxBytes, s.retryConfig())
 }
 
 func (s *Service) execHTTPWithRetry(req *http.Request, maxBytes int64, cfg RetryConfig) ([]byte, string, int, error) {
-	return ExecHTTPWithRetry(req.Context(), s.httpClient, req, maxBytes, cfg)
+	return execHTTPWithRetryObserver(req.Context(), s.httpClient, req, maxBytes, cfg, s.rateLimitObserver(req.Context()))
 }
 
 func mapAPIError(status int, body []byte) error {
@@ -970,21 +1022,51 @@ func extractAPIErrorMessage(body []byte) string {
 	if err := json.Unmarshal(body, &obj); err == nil {
 		if errVal, ok := obj["error"].(map[string]any); ok {
 			if m, _ := errVal["message"].(string); m != "" {
-				return clipText(m, maxErrorSnippetBytes)
+				return sanitizeProviderSnippet(m)
 			}
 		}
 		if baseResp, ok := obj["base_resp"].(map[string]any); ok {
 			if m, _ := baseResp["status_msg"].(string); m != "" {
-				return clipText(m, maxErrorSnippetBytes)
+				return sanitizeProviderSnippet(m)
 			}
 		}
 		for _, k := range []string{"message", "detail", "msg", "error"} {
 			if m, _ := obj[k].(string); m != "" {
-				return clipText(m, maxErrorSnippetBytes)
+				return sanitizeProviderSnippet(m)
 			}
 		}
 	}
-	return clipText(trimmed, maxErrorSnippetBytes)
+	return sanitizeProviderSnippet(trimmed)
+}
+
+func sanitizeProviderSnippet(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	cleaned := embeddedURLPattern.ReplaceAllStringFunc(raw, func(match string) string {
+		if safe := domainmedia.SanitizeRemoteURL(match); safe != "" {
+			return safe
+		}
+		return "[redacted-url]"
+	})
+	cleaned = secretTokenPattern.ReplaceAllString(cleaned, "[redacted]")
+	return clipText(cleaned, maxErrorSnippetBytes)
+}
+
+func providerUnavailableErr(prefix, rawDetail string) *apperr.Error {
+	detail := sanitizeProviderSnippet(rawDetail)
+	msg := prefix
+	if detail != "" {
+		msg = prefix + ": " + detail
+	}
+	return apperr.Unavailable(msg).WithMsg("errors.mediagen.provider_error", map[string]any{"detail": msg})
+}
+
+func writeMultipartField(mw *multipart.Writer, name, value string) error {
+	if err := mw.WriteField(name, value); err != nil {
+		return apperr.Internal(err)
+	}
+	return nil
 }
 
 func clipText(s string, max int) string {
@@ -1004,21 +1086,27 @@ type localImageData struct {
 }
 
 func (s *Service) readReferenceImage(path string) (localImageData, error) {
+	baseName := filepath.Base(path)
 	info, err := os.Stat(path)
 	if err != nil {
-		return localImageData{}, apperr.Wrap(apperr.CodeValidation, "Cannot access reference image: "+filepath.Base(path), err).
-			WithMsg("errors.mediagen.reference_unreadable", map[string]any{"name": filepath.Base(path)})
+		code := apperr.CodeUnavailable
+		if os.IsNotExist(err) {
+			code = apperr.CodeNotFound
+		}
+		return localImageData{}, apperr.Wrap(code, "Cannot access reference image", err).
+			WithMsg("errors.mediagen.reference_unreadable", map[string]any{"name": baseName})
 	}
 	if info.IsDir() {
-		return localImageData{}, apperr.Validation("Reference path is a directory: " + filepath.Base(path))
+		return localImageData{}, apperr.Validation("Reference path must be an image file")
 	}
 	if info.Size() > s.cfg.MaxReferenceBytes {
 		return localImageData{}, apperr.Validation("Reference image exceeds maximum allowed size").
-			WithMsg("errors.mediagen.reference_too_large", map[string]any{"name": filepath.Base(path)})
+			WithMsg("errors.mediagen.reference_too_large", map[string]any{"name": baseName})
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return localImageData{}, apperr.Wrap(apperr.CodeValidation, "Cannot read reference image", err)
+		return localImageData{}, apperr.Wrap(apperr.CodeUnavailable, "Cannot read reference image", err).
+			WithMsg("errors.mediagen.reference_unreadable", map[string]any{"name": baseName})
 	}
 	mimeType := strings.Split(http.DetectContentType(raw), ";")[0]
 	if mimeType == "application/octet-stream" || !strings.HasPrefix(mimeType, "image/") {
@@ -1033,7 +1121,7 @@ func (s *Service) readReferenceImage(path string) (localImageData, error) {
 		Base64:   b64,
 		MimeType: mimeType,
 		DataURI:  "data:" + mimeType + ";base64," + b64,
-		Filename: filepath.Base(path),
+		Filename: baseName,
 	}, nil
 }
 
@@ -1083,7 +1171,7 @@ func parseDataURI(uri string) ([]byte, string, error) {
 	return raw, mimeType, nil
 }
 
-func (s *Service) saveOutput(kind domainmedia.Kind, outputDir, prefix, mimeType, fallbackExt string, data []byte, t targetSpec) (domainmedia.Result, error) {
+func (s *Service) saveOutput(ctx context.Context, kind domainmedia.Kind, outputDir, prefix, mimeType, fallbackExt string, data []byte, t targetSpec) (domainmedia.Result, error) {
 	if mimeType == "" || mimeType == "application/octet-stream" {
 		if kind == domainmedia.KindImage {
 			sniff := strings.Split(http.DetectContentType(data), ";")[0]
@@ -1116,16 +1204,16 @@ func (s *Service) saveOutput(kind domainmedia.Kind, outputDir, prefix, mimeType,
 		dir = filepath.Join(mediaDir, dir)
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return domainmedia.Result{}, apperr.Internal(err)
+		return domainmedia.Result{}, apperr.Wrap(apperr.CodeUnavailable, "Failed creating media output directory", err)
 	}
 
 	name := uniqueFilename(prefix, ext)
 	fullPath := filepath.Join(dir, name)
 	if err := fsutil.WriteFileAtomic(fullPath, data, 0o600); err != nil {
-		return domainmedia.Result{}, apperr.Internal(err)
+		return domainmedia.Result{}, apperr.Wrap(apperr.CodeUnavailable, "Failed writing generated media output", err)
 	}
 
-	if s.registrar != nil {
+	if reg := s.getRegistrar(); reg != nil {
 		sourceNode := "mediagen"
 		switch kind {
 		case domainmedia.KindImage:
@@ -1142,7 +1230,7 @@ func (s *Service) saveOutput(kind domainmedia.Kind, outputDir, prefix, mimeType,
 		if regRoot == "" {
 			regRoot = dir
 		}
-		asset, err := s.registrar.RegisterAsset(context.Background(), media.RegisterAssetParams{
+		asset, err := reg.RegisterAsset(ctx, media.RegisterAssetParams{
 			Kind:           string(kind),
 			SourceNode:     sourceNode,
 			FilePath:       fullPath,
@@ -1151,7 +1239,11 @@ func (s *Service) saveOutput(kind domainmedia.Kind, outputDir, prefix, mimeType,
 			SizeBytes:      int64(len(data)),
 		})
 		if err != nil {
-			s.log.Warn("failed to register generated media asset", "path", fullPath, "err", err)
+			s.log.WarnContext(ctx, "mediagen: failed to register generated media asset",
+				"kind", string(kind),
+				"source_node", sourceNode,
+				"error", err,
+			)
 		} else if asset != nil {
 			s.setAssetID(fullPath, asset.ID)
 		}
@@ -1174,6 +1266,19 @@ func (s *Service) setAssetID(path, assetID string) {
 	if s.assets == nil {
 		s.assets = make(map[string]string)
 	}
+	if _, exists := s.assets[path]; !exists {
+		if len(s.assets) >= maxCachedAssetIDs && len(s.assetsOrder) > 0 {
+			evict := s.assetsOrder[0]
+			delete(s.assets, evict)
+			s.assetsOrder = s.assetsOrder[1:]
+			if cap(s.assetsOrder) > maxCachedAssetIDs*2 {
+				compacted := make([]string, len(s.assetsOrder), maxCachedAssetIDs)
+				copy(compacted, s.assetsOrder)
+				s.assetsOrder = compacted
+			}
+		}
+		s.assetsOrder = append(s.assetsOrder, path)
+	}
 	s.assets[path] = assetID
 }
 
@@ -1187,9 +1292,17 @@ func (s *Service) AssetID(path string) string {
 	return s.assets[path]
 }
 
-// SetRegistrar sets or updates the media asset registrar.
+// SetRegistrar sets or updates the media asset registrar thread-safely.
 func (s *Service) SetRegistrar(r MediaRegistrar) {
+	s.mediaMu.Lock()
+	defer s.mediaMu.Unlock()
 	s.registrar = r
+}
+
+func (s *Service) getRegistrar() MediaRegistrar {
+	s.mediaMu.RLock()
+	defer s.mediaMu.RUnlock()
+	return s.registrar
 }
 
 func uniqueFilename(prefix, ext string) string {
@@ -1199,9 +1312,13 @@ func uniqueFilename(prefix, ext string) string {
 	return fmt.Sprintf("%s-%s-%s%s", prefix, ts, hex.EncodeToString(rnd[:]), ext)
 }
 
-func (s *Service) pollUntil(ctx context.Context, msgKey string, fallbackMsg string, fn func() (done bool, err error)) error {
+func (s *Service) pollUntil(ctx context.Context, msgKey string, fallbackMsg string, extraParams map[string]string, fn func() (done bool, err error)) error {
 	start := time.Now()
 	pollNum := 0
+	rampSec := s.cfg.VideoTimeout.Seconds()
+	if rampSec <= 0 {
+		rampSec = config.Default(config.ModeDesktop).MediaGen.VideoTimeout.Seconds()
+	}
 	for {
 		pollNum++
 		done, err := fn()
@@ -1212,15 +1329,22 @@ func (s *Service) pollUntil(ctx context.Context, msgKey string, fallbackMsg stri
 			return nil
 		}
 		elapsed := time.Since(start)
-		pct := 20.0 + (elapsed.Seconds()/180.0)*(defaultPollPercentCap-20.0)
+		pct := defaultPollStartPercent + (elapsed.Seconds()/rampSec)*(defaultPollPercentCap-defaultPollStartPercent)
 		if pct > defaultPollPercentCap {
 			pct = defaultPollPercentCap
 		}
+		params := make(map[string]string, len(extraParams)+1)
+		for k, v := range extraParams {
+			if v != "" {
+				params[k] = v
+			}
+		}
+		params["attempt"] = strconv.Itoa(pollNum)
 		progress.Report(ctx, progress.Update{
 			Percent: pct,
 			Message: fallbackMsg,
 			Key:     msgKey,
-			Params:  map[string]string{"attempt": fmt.Sprintf("%d", pollNum)},
+			Params:  params,
 		})
 
 		t := time.NewTimer(s.cfg.VideoPollInterval)
@@ -1267,67 +1391,67 @@ func (s *Service) StagingDir() string {
 // StageFile writes data to a unique file in the staging directory and acquires an active lease on it.
 // The caller must invoke the returned release function when the job completes.
 func (s *Service) StageFile(subDir, name string, data []byte) (string, func(), error) {
+	if s.cfg.MaxOutputBytes > 0 && int64(len(data)) > s.cfg.MaxOutputBytes {
+		return "", nil, apperr.New(apperr.CodeUnavailable, "Staged media payload exceeded size limit").
+			WithMsg("errors.mediagen.output_too_large", nil)
+	}
 	stagingDir := s.StagingDir()
 	if stagingDir == "" {
-		return "", nil, apperr.Validation("mediagen: StagingDir or MediaDir must be configured before staging files")
+		return "", nil, apperr.Validation("Staging directory is not configured")
 	}
 	if strings.TrimSpace(subDir) != "" {
 		stagingDir = filepath.Join(stagingDir, subDir)
 	}
 	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
-		return "", nil, apperr.Internal(err)
+		return "", nil, apperr.Wrap(apperr.CodeUnavailable, "Failed creating staging directory", err)
 	}
 	if strings.TrimSpace(name) == "" {
 		name = uniqueFilename("staged", ".bin")
 	}
 	stagedPath := filepath.Join(stagingDir, name)
 	if err := fsutil.WriteFileAtomic(stagedPath, data, 0o600); err != nil {
-		return "", nil, apperr.Internal(err)
+		return "", nil, apperr.Wrap(apperr.CodeUnavailable, "Failed writing staged media file", err)
 	}
 	release := s.LeaseFile(stagedPath)
 	return stagedPath, release, nil
 }
 
-// StageStream streams bounded content from reader r into a staging file and acquires an active lease on it.
+// StageStream streams bounded content from reader r into a staging file atomically and acquires an active lease on it.
 func (s *Service) StageStream(subDir, name string, r io.Reader, maxBytes int64) (string, func(), error) {
+	if maxBytes <= 0 {
+		maxBytes = s.cfg.MaxOutputBytes
+	}
 	stagingDir := s.StagingDir()
 	if stagingDir == "" {
-		return "", nil, apperr.Validation("mediagen: StagingDir or MediaDir must be configured before staging files")
+		return "", nil, apperr.Validation("Staging directory is not configured")
 	}
 	if strings.TrimSpace(subDir) != "" {
 		stagingDir = filepath.Join(stagingDir, subDir)
 	}
 	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
-		return "", nil, apperr.Internal(err)
+		return "", nil, apperr.Wrap(apperr.CodeUnavailable, "Failed creating staging directory", err)
 	}
 	if strings.TrimSpace(name) == "" {
 		name = uniqueFilename("staged", ".bin")
 	}
 	stagedPath := filepath.Join(stagingDir, name)
-	tmpPath := stagedPath + ".tmp"
 
-	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	err := fsutil.WriteAtomic(stagedPath, 0o600, func(w io.Writer) error {
+		n, copyErr := io.Copy(w, io.LimitReader(r, maxBytes+1))
+		if copyErr != nil {
+			return copyErr
+		}
+		if n > maxBytes {
+			return errStageTooLarge
+		}
+		return nil
+	})
 	if err != nil {
-		return "", nil, apperr.Internal(err)
-	}
-
-	lr := io.LimitReader(r, maxBytes+1)
-	n, copyErr := io.Copy(f, lr)
-	_ = f.Close()
-
-	if copyErr != nil {
-		_ = os.Remove(tmpPath)
-		return "", nil, apperr.Wrap(apperr.CodeUnavailable, "Failed streaming staged data", copyErr)
-	}
-	if n > maxBytes {
-		_ = os.Remove(tmpPath)
-		return "", nil, apperr.New(apperr.CodeUnavailable, "Staged media payload exceeded size limit").
-			WithMsg("errors.mediagen.output_too_large", nil)
-	}
-
-	if err := os.Rename(tmpPath, stagedPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return "", nil, apperr.Internal(err)
+		if errors.Is(err, errStageTooLarge) {
+			return "", nil, apperr.New(apperr.CodeUnavailable, "Staged media payload exceeded size limit").
+				WithMsg("errors.mediagen.output_too_large", nil)
+		}
+		return "", nil, apperr.Wrap(apperr.CodeUnavailable, "Failed streaming staged data", err)
 	}
 
 	release := s.LeaseFile(stagedPath)
@@ -1351,9 +1475,14 @@ func (s *Service) leaseInputs(paths ...string) func() {
 	}
 }
 
-// prepareJobContext sets up timeout context and progress KeepAlive for image/video/TTS generation.
+// prepareJobContext sets up a bounded request timeout context.
+// Single-shot requests (isVideo == false) attach progress.KeepAlive, whereas long async video/lip-sync
+// polling flows report real progress ticks via pollUntil so a hung socket is never masked (§6).
 func (s *Service) prepareJobContext(ctx context.Context, isVideo bool) (context.Context, func()) {
 	callCtx, cancel := s.requestTimeoutCtx(ctx, isVideo)
+	if isVideo {
+		return callCtx, cancel
+	}
 	stopKA := progress.KeepAlive(callCtx)
 	cleanup := func() {
 		stopKA()
@@ -1608,7 +1737,9 @@ func StartStagingGC(ctx context.Context, dir string, ttl, interval time.Duration
 	if interval <= 0 {
 		interval = defMedia.StagingGCInterval
 	}
-	_, _ = PruneStaging(dir, ttl)
+	if _, err := PruneStaging(dir, ttl); err != nil {
+		slog.Default().WarnContext(ctx, "mediagen: staging GC prune failed", "error", err)
+	}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -1618,7 +1749,9 @@ func StartStagingGC(ctx context.Context, dir string, ttl, interval time.Duration
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_, _ = PruneStaging(dir, ttl)
+			if _, err := PruneStaging(dir, ttl); err != nil {
+				slog.Default().WarnContext(ctx, "mediagen: staging GC prune failed", "error", err)
+			}
 		}
 	}
 }
@@ -1689,7 +1822,9 @@ func (s *Service) StartStagingGC(ctx context.Context, dir string, ttl, interval 
 	if interval <= 0 {
 		interval = s.stagingGCInterval
 	}
-	_, _ = s.PruneStaging(dir, ttl)
+	if _, err := s.PruneStaging(dir, ttl); err != nil {
+		s.log.WarnContext(ctx, "mediagen: staging GC prune failed", "error", err)
+	}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -1699,7 +1834,9 @@ func (s *Service) StartStagingGC(ctx context.Context, dir string, ttl, interval 
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_, _ = s.PruneStaging(dir, ttl)
+			if _, err := s.PruneStaging(dir, ttl); err != nil {
+				s.log.WarnContext(ctx, "mediagen: staging GC prune failed", "error", err)
+			}
 		}
 	}
 }
