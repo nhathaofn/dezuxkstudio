@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"app/internal/apperr"
@@ -16,7 +17,9 @@ import (
 	"app/internal/contracts"
 	domainbinaries "app/internal/domain/binaries"
 	"app/internal/lookup"
+	"app/internal/progress"
 	"app/internal/runner"
+	"app/internal/safego"
 )
 
 // EventPublisher broadcasts realtime events to connected clients.
@@ -115,7 +118,7 @@ func (s *Service) getRetryMax() int {
 	if s.cfg != nil {
 		return s.cfg.BinariesDownloadRetryMax()
 	}
-	return 3
+	return config.Default(config.ModeDesktop).Binaries.DownloadRetryMax
 }
 
 func (s *Service) getRetryDelay() time.Duration {
@@ -128,14 +131,14 @@ func (s *Service) getRetryDelay() time.Duration {
 	if s.cfg != nil {
 		return s.cfg.BinariesDownloadRetryDelay()
 	}
-	return 1 * time.Second
+	return config.Default(config.ModeDesktop).Binaries.DownloadRetryDelay
 }
 
 func (s *Service) isResumeEnabled() bool {
 	if s.cfg != nil {
 		return s.cfg.BinariesDownloadResume()
 	}
-	return true
+	return config.Default(config.ModeDesktop).Binaries.DownloadResume
 }
 
 // New creates a new binaries Service.
@@ -154,28 +157,36 @@ func New(repo domainbinaries.Repository, toolsDir string, logger *slog.Logger, o
 	return s
 }
 
-// List inspects all registered binaries and returns their status.
+// List inspects all registered binaries concurrently and returns their status in canonical order.
 func (s *Service) List(ctx context.Context) ([]domainbinaries.BinaryInfo, error) {
+	defer progress.KeepAlive(ctx)()
 	allIDs := domainbinaries.AllIDs()
-	infos := make([]domainbinaries.BinaryInfo, 0, len(allIDs))
-	for _, id := range allIDs {
-		info, err := s.Probe(ctx, id)
-		if err != nil {
-			s.logger.WarnContext(ctx, "failed to probe binary", "id", id, "error", err)
-			spec := domainbinaries.Registry[id]
-			_, canDownload := spec.CurrentDownloadSpec()
-			infos = append(infos, domainbinaries.BinaryInfo{
-				ID:          id,
-				Name:        spec.Name,
-				Description: spec.Description,
-				Executable:  spec.ExecutableName(),
-				Status:      domainbinaries.StatusInvalid,
-				CanDownload: canDownload,
-			})
-			continue
-		}
-		infos = append(infos, info)
+	infos := make([]domainbinaries.BinaryInfo, len(allIDs))
+	var wg sync.WaitGroup
+	for i, id := range allIDs {
+		idx := i
+		binID := id
+		wg.Add(1)
+		safego.Go("binaries.list.probe", func() {
+			defer wg.Done()
+			info, err := s.Probe(ctx, binID)
+			if err != nil {
+				s.logger.WarnContext(ctx, "failed to probe binary", "id", binID, "error", err)
+				spec := domainbinaries.Registry[binID]
+				_, canDownload := spec.CurrentDownloadSpec()
+				info = domainbinaries.BinaryInfo{
+					ID:          binID,
+					Name:        spec.Name,
+					Description: spec.Description,
+					Executable:  spec.ExecutableName(),
+					Status:      domainbinaries.StatusInvalid,
+					CanDownload: canDownload,
+				}
+			}
+			infos[idx] = info
+		})
 	}
+	wg.Wait()
 	return infos, nil
 }
 
