@@ -97,7 +97,7 @@ tasks:
     cmds:
       - wails build -skipbindings -trimpath -nsis -ldflags "{{.LDFLAGS}}" -o "{{.APP_NAME}}-{{.VERSION_OR_DEV}}{{exeExt}}"
       # project.nsi writes <name>-<arch>-installer.exe; give it a versioned, stable name.
-      - powershell -NoProfile -Command "$inst = Get-ChildItem 'build/bin/{{.APP_NAME}}-*-installer.exe' | Select-Object -First 1; if (-not $inst) { throw 'NSIS installer not found in build/bin' }; Move-Item -Force $inst.FullName 'build/bin/{{.APP_NAME}}-setup-{{.VERSION_OR_DEV}}.exe'"
+      - 'for f in "build/bin/{{.APP_NAME}}-"*-installer.exe; do test -f "$f" || exit 1; mv -f "$f" "build/bin/{{.APP_NAME}}-setup-{{.VERSION_OR_DEV}}.exe"; break; done'
 
   build:server:
     desc: Build the headless server into bin
