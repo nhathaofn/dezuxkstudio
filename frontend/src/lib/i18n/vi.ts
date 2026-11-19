@@ -1234,7 +1234,8 @@ export const vi: Record<MessageKey, string> = {
   "studio.progress.export_nle": "Đang đóng gói bản nháp {format} ({current}/{total})…",
   "studio.progress.contact_sheet":
     "Đang tạo ảnh lưới contact sheet và tín hiệu FFmpeg ({current}/{total})…",
-  "studio.progress.queue_wait": "Đang đợi các tác vụ Studio hoàn tất ({current}/{total} xong)…",
+  "studio.progress.queue_wait":
+    "Đang đợi các tác vụ Studio ({succeeded} xong, {failed} lỗi, {active} đang chạy)…",
   "studio.progress.done": "Hoàn tất",
 
   "studio.agentDelegate.tooltip":

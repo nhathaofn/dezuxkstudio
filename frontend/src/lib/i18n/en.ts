@@ -1234,7 +1234,8 @@ export const en = {
   "studio.progress.export_nle": "Packaging {format} NLE draft ({current}/{total})…",
   "studio.progress.contact_sheet":
     "Generating contact sheet and FFmpeg signals ({current}/{total})…",
-  "studio.progress.queue_wait": "Waiting for active Studio jobs ({current}/{total} done)…",
+  "studio.progress.queue_wait":
+    "Waiting for active Studio jobs ({succeeded} done, {failed} failed, {active} active)…",
   "studio.progress.done": "Completed",
 
   "studio.agentDelegate.tooltip":

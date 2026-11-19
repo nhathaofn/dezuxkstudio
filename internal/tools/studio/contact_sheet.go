@@ -146,6 +146,10 @@ func NewVideoContactSheetNode(opts Options) engine.Node {
 			Percent: 10,
 			Message: "Analyzing video BLACK/FREEZE/CUT signals…",
 			Key:     "studio.progress.contact_sheet",
+			Params: map[string]string{
+				"current": "0",
+				"total":   "1",
+			},
 		})
 
 		var signals contracts.VideoSignals
@@ -197,6 +201,10 @@ func NewVideoContactSheetNode(opts Options) engine.Node {
 				Percent: 20.0 + float64(i)/float64(max(1, len(targets)))*55.0,
 				Message: fmt.Sprintf("Extracting contact sheet frame %d/%d…", i+1, len(targets)),
 				Key:     "studio.progress.contact_sheet",
+				Params: map[string]string{
+					"current": strconv.Itoa(i + 1),
+					"total":   strconv.Itoa(len(targets)),
+				},
 			})
 			frameFile := filepath.Join(tmpDir, fmt.Sprintf("f_%03d.png", i))
 			args := []string{"-y", "-ss", fmt.Sprintf("%.3f", tg.TimeSec), "-i", vidPath, "-frames:v", "1", frameFile}
