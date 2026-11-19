@@ -53,13 +53,16 @@ tasks:
       - internal/contracts/*.go
       - internal/apperr/*.go
       - internal/config/*.go
+      - internal/engine/*.go
       - internal/domain/**/*.go
     generates:
       - frontend/src/contracts/generated.ts
     cmds: [go run ./cmd/contractgen]
 
   version:sync:
-    desc: Mirror VERSION into wails.json and frontend/package.json
+    desc: Mirror VERSION into wails.json and frontend/package.json (skipped for local 0.0.0-dev builds)
+    status:
+      - test "{{.VERSION_OR_DEV}}" = "0.0.0-dev"
     cmds:
       - go run ./cmd/buildmeta sync -version {{.VERSION_OR_DEV}}
 
@@ -94,7 +97,7 @@ tasks:
     cmds:
       - wails build -skipbindings -trimpath -nsis -ldflags "{{.LDFLAGS}}" -o "{{.APP_NAME}}-{{.VERSION_OR_DEV}}{{exeExt}}"
       # project.nsi writes <name>-<arch>-installer.exe; give it a versioned, stable name.
-      - powershell -NoProfile -Command "Move-Item -Force 'build/bin/{{.APP_NAME}}-amd64-installer.exe' 'build/bin/{{.APP_NAME}}-setup-{{.VERSION_OR_DEV}}.exe'"
+      - powershell -NoProfile -Command "$inst = Get-ChildItem 'build/bin/{{.APP_NAME}}-*-installer.exe' | Select-Object -First 1; if (-not $inst) { throw 'NSIS installer not found in build/bin' }; Move-Item -Force $inst.FullName 'build/bin/{{.APP_NAME}}-setup-{{.VERSION_OR_DEV}}.exe'"
 
   build:server:
     desc: Build the headless server into bin
@@ -124,7 +127,7 @@ tasks:
     deps: [build:frontend]
     cmds:
       - go vet ./...
-      - cmd: test -z "$(gofmt -l cmd internal test main.go)" || (gofmt -l cmd internal test main.go; exit 1)
+      - cmd: test -z "$(gofmt -l cmd internal pkg test main.go)" || (gofmt -l cmd internal pkg test main.go; exit 1)
       - go mod tidy -diff
       - go run ./cmd/contractgen -check
       - task: lint:frontend
@@ -138,6 +141,7 @@ tasks:
 
   audit:
     desc: Vulnerability scan of Go and npm dependencies
+    deps: [build:frontend]
     cmds:
       - go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - task: audit:frontend
@@ -158,7 +162,7 @@ tasks:
   format:
     desc: Format Go and frontend sources
     cmds:
-      - gofmt -w cmd internal test main.go
+      - gofmt -w cmd internal pkg test main.go
       - task: format:frontend
 
   format:frontend:

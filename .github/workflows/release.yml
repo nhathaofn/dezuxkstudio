@@ -3,6 +3,13 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      allow_unsigned:
+        description: 'Allow unsigned release build (manual dispatch only)'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -20,20 +27,32 @@ jobs:
       # Taskfile reads these; the release feed lets the app find newer releases.
       VERSION: ${{ github.ref_name }}
       UPDATE_FEED_URL: https://api.github.com/repos/${{ github.repository }}/releases/latest
-      # Optional signing material. Signing is skipped when the secret is absent.
       WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
       WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
     steps:
-      - uses: actions/checkout@v5
+      - name: Verify signing secrets for tagged releases
+        shell: pwsh
+        run: |
+          $isManualUnsigned = "${{ github.event_name }}" -eq "workflow_dispatch" -and "${{ inputs.allow_unsigned }}" -eq "true"
+          if ([string]::IsNullOrEmpty($env:WINDOWS_CERT_PFX_BASE64) -or [string]::IsNullOrEmpty($env:WINDOWS_CERT_PASSWORD)) {
+            if ($isManualUnsigned) {
+              Write-Warning "Proceeding unsigned via manual workflow_dispatch allow_unsigned=true override."
+            } else {
+              Write-Error "WINDOWS_CERT_PFX_BASE64 and WINDOWS_CERT_PASSWORD secrets are required for tagged releases."
+              exit 1
+            }
+          }
+
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
           go-version-file: go.mod
           cache: true
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -51,23 +70,13 @@ jobs:
 
       - run: task setup
       - run: task check
-      - name: Build
+      - name: Build binaries
         shell: bash
         run: |
           task build VERSION="$VERSION" UPDATE_FEED_URL="$UPDATE_FEED_URL"
           task build:server VERSION="$VERSION" UPDATE_FEED_URL="$UPDATE_FEED_URL"
 
-      - name: Install NSIS
-        shell: pwsh
-        run: |
-          choco install nsis --no-progress -y
-          "${env:ProgramFiles(x86)}\NSIS" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
-
-      - name: Build Windows installer
-        shell: bash
-        run: task build:installer VERSION="$VERSION" UPDATE_FEED_URL="$UPDATE_FEED_URL"
-
-      - name: Sign Windows binaries
+      - name: Prepare Windows code signing
         if: env.WINDOWS_CERT_PFX_BASE64 != ''
         shell: pwsh
         run: |
@@ -75,11 +84,45 @@ jobs:
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
           $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
             Where-Object FullName -match 'x64' | Select-Object -Last 1
+          if (-not $signtool) { throw "signtool.exe not found" }
+          $signBat = Join-Path $env:RUNNER_TEMP 'sign-nsis.bat'
+          @"
+          @echo off
+          "$($signtool.FullName)" sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 /f "$pfx" /p "%WINDOWS_CERT_PASSWORD%" "%~1"
+          "@ | Set-Content -Encoding ASCII $signBat
+          "DEZUXK_NSIS_SIGN=$signBat" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          # Sign desktop and headless server executables BEFORE NSIS packages the desktop binary.
           Get-ChildItem build/bin, bin -Filter *.exe -Recurse | ForEach-Object {
             & $signtool.FullName sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 /f $pfx /p $env:WINDOWS_CERT_PASSWORD $_.FullName
             if ($LASTEXITCODE -ne 0) { exit 1 }
           }
-          Remove-Item $pfx
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress -y
+          "${env:ProgramFiles(x86)}\NSIS" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Build Windows installer (signs uninstall.exe & setup.exe when DEZUXK_NSIS_SIGN is set)
+        shell: bash
+        run: task build:installer VERSION="$VERSION" UPDATE_FEED_URL="$UPDATE_FEED_URL"
+
+      - name: Verify signatures & clean signing material
+        if: always()
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'cert.pfx'
+          $signBat = Join-Path $env:RUNNER_TEMP 'sign-nsis.bat'
+          if (Test-Path $pfx) { Remove-Item -Force $pfx }
+          if (Test-Path $signBat) { Remove-Item -Force $signBat }
+          if (-not [string]::IsNullOrEmpty($env:WINDOWS_CERT_PFX_BASE64)) {
+            Get-ChildItem build/bin, bin -Filter *.exe -Recurse | ForEach-Object {
+              $sig = Get-AuthenticodeSignature $_.FullName
+              if ($sig.Status -ne 'Valid') {
+                throw "Expected valid Authenticode signature on $($_.FullName), got $($sig.Status)"
+              }
+            }
+          }
 
       - name: Package artifacts
         shell: bash
@@ -96,7 +139,7 @@ jobs:
           for f in *.exe; do sha256sum "$f" > "$f.sha256"; done
           ls -l
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           generate_release_notes: true
           files: dist/*

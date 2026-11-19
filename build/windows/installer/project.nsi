@@ -66,9 +66,11 @@ ManifestDPIAware true
 
 !insertmacro MUI_LANGUAGE "English" # Set the Language of the installer
 
-## The following two statements can be used to sign the installer and the uninstaller. The path to the binaries are provided in %1
-#!uninstfinalize 'signtool --file "%1"'
-#!finalize 'signtool --file "%1"'
+## Sign uninstaller and final installer when CI/release provides DEZUXK_NSIS_SIGN.
+!if "$%DEZUXK_NSIS_SIGN%" != ""
+  !uninstfinalize '"$%DEZUXK_NSIS_SIGN%" "%1"'
+  !finalize '"$%DEZUXK_NSIS_SIGN%" "%1"'
+!endif
 
 Name "${INFO_PRODUCTNAME}"
 OutFile "..\..\bin\${INFO_PROJECTNAME}-${ARCH}-installer.exe" # Name of the installer's file.
@@ -106,11 +108,12 @@ Section
 SectionEnd
 
 Section "uninstall"
+    ; WebView2 user-data sits in per-user %LOCALAPPDATA%/%APPDATA%, not C:\ProgramData under SetShellVarContext all.
+    SetShellVarContext current
+    RMDir /r "$LOCALAPPDATA\${PRODUCT_EXECUTABLE}"
+    RMDir /r "$APPDATA\${PRODUCT_EXECUTABLE}"
+
     !insertmacro wails.setShellContext
-
-    RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
-
-    RMDir /r $INSTDIR
 
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
@@ -119,4 +122,7 @@ Section "uninstall"
     !insertmacro wails.unassociateCustomProtocols
 
     !insertmacro wails.deleteUninstaller
+
+    Delete "$INSTDIR\${PRODUCT_EXECUTABLE}"
+    RMDir "$INSTDIR"
 SectionEnd

@@ -208,7 +208,17 @@ RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
     CreateDirectory "$pluginsdir\webview2bootstrapper"
     SetOutPath "$pluginsdir\webview2bootstrapper"
     File "tmp\MicrosoftEdgeWebview2Setup.exe"
-    ExecWait '"$pluginsdir\webview2bootstrapper\MicrosoftEdgeWebview2Setup.exe" /silent /install'
+    ExecWait '"$pluginsdir\webview2bootstrapper\MicrosoftEdgeWebview2Setup.exe" /silent /install' $0
+    ${If} $0 != 0
+    ${AndIf} $0 != 3010
+        IfSilent silentWv2 notSilentWv2
+        silentWv2:
+            SetErrorLevel $0
+            DetailPrint "WebView2 Runtime installation failed (exit code: $0)"
+            Goto ok
+        notSilentWv2:
+            MessageBox MB_ICONEXCLAMATION|MB_OK "WebView2 Runtime installation failed (exit code: $0). The application may not work until Microsoft Edge WebView2 Runtime is installed."
+    ${EndIf}
 
     SetDetailsPrint both
     ok:
