@@ -30,6 +30,8 @@ interface WatermarkState {
   inputPaths: string[];
   /** Browser/client File objects staged via HTTP upload when processed. */
   queuedFiles: File[];
+  /** Parallel objectUrls keys aligned with queuedFiles indices to handle duplicate names safely. */
+  queuedObjectKeys: string[];
   /** Maps file identifiers to ephemeral ObjectURLs for fast local preview. */
   objectUrls: Record<string, string>;
   /** Maps uploaded server staging paths back to original client filenames for display. */
@@ -57,7 +59,7 @@ interface WatermarkState {
   setInputPath: (path: string) => void;
   setInputPaths: (paths: string[]) => void;
   setQueuedFiles: (files: File[]) => void;
-  removeQueuedFile: (fileName: string) => void;
+  removeQueuedFile: (target: number | string) => void;
   createTrackedObjectURL: (key: string, blob: Blob | File) => string;
   revokeTrackedObjectURL: (keyOrUrl: string) => void;
   revokeAllObjectURLs: () => void;
@@ -84,6 +86,7 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
   inputPath: "",
   inputPaths: [],
   queuedFiles: [],
+  queuedObjectKeys: [],
   objectUrls: {},
   remoteNameMap: {},
   inPlace: false,
@@ -168,6 +171,7 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
       inputPath,
       inputPaths: inputPath ? [inputPath] : [],
       queuedFiles: [],
+      queuedObjectKeys: [],
       objectUrls: {},
       remoteNameMap: {},
       error: null,
@@ -181,6 +185,7 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
       inputPaths,
       inputPath: inputPaths[0] || "",
       queuedFiles: [],
+      queuedObjectKeys: [],
       objectUrls: {},
       remoteNameMap: {},
       error: null,
@@ -191,11 +196,16 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
   setQueuedFiles: (queuedFiles) => {
     get().revokeAllObjectURLs();
     const newObjectUrls: Record<string, string> = {};
-    if (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") {
-      for (const file of queuedFiles) {
+    const queuedObjectKeys: string[] = [];
+    for (let idx = 0; idx < queuedFiles.length; idx++) {
+      const file = queuedFiles[idx];
+      const key = !Object.prototype.hasOwnProperty.call(newObjectUrls, file.name)
+        ? file.name
+        : `${idx}:${file.name}`;
+      queuedObjectKeys.push(key);
+      if (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") {
         try {
-          const url = URL.createObjectURL(file);
-          newObjectUrls[file.name] = url;
+          newObjectUrls[key] = URL.createObjectURL(file);
         } catch {
           // Ignored in test/node environments
         }
@@ -203,6 +213,7 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
     }
     set({
       queuedFiles,
+      queuedObjectKeys,
       inputPaths: queuedFiles.map((f) => f.name),
       inputPath: queuedFiles[0]?.name || "",
       objectUrls: newObjectUrls,
@@ -212,17 +223,41 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
     });
   },
 
-  removeQueuedFile: (fileName: string) => {
-    const { queuedFiles, objectUrls } = get();
-    const url = objectUrls[fileName];
-    if (url) {
-      safeRevokeObjectURL(url);
+  removeQueuedFile: (target: number | string) => {
+    const { queuedFiles, queuedObjectKeys, objectUrls } = get();
+    const removeIndices = new Set<number>();
+    if (typeof target === "number") {
+      if (target >= 0 && target < queuedFiles.length) {
+        removeIndices.add(target);
+      }
+    } else {
+      queuedFiles.forEach((f, idx) => {
+        if (f.name === target) removeIndices.add(idx);
+      });
     }
+    if (removeIndices.size === 0) return;
+
     const nextUrls = { ...objectUrls };
-    delete nextUrls[fileName];
-    const nextFiles = queuedFiles.filter((f) => f.name !== fileName);
+    const nextFiles: File[] = [];
+    const nextKeys: string[] = [];
+    for (let idx = 0; idx < queuedFiles.length; idx++) {
+      const key = queuedObjectKeys[idx] ?? queuedFiles[idx].name;
+      if (removeIndices.has(idx)) {
+        const url = nextUrls[key];
+        if (url) safeRevokeObjectURL(url);
+        delete nextUrls[key];
+      } else {
+        nextFiles.push(queuedFiles[idx]);
+        nextKeys.push(key);
+      }
+    }
+    if (typeof target === "string" && nextUrls[target]) {
+      safeRevokeObjectURL(nextUrls[target]);
+      delete nextUrls[target];
+    }
     set({
       queuedFiles: nextFiles,
+      queuedObjectKeys: nextKeys,
       inputPaths: nextFiles.map((f) => f.name),
       inputPath: nextFiles[0]?.name || "",
       objectUrls: nextUrls,
@@ -361,6 +396,7 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
       inputPath: "",
       inputPaths: [],
       queuedFiles: [],
+      queuedObjectKeys: [],
       objectUrls: {},
       remoteNameMap: {},
       downloadingPath: null,

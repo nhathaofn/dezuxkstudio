@@ -811,6 +811,46 @@ describe("Phase 1 Wave B Watermark Policy & Compare UX Enhancement", () => {
     html = renderToStaticMarkup(React.createElement(WatermarkView));
     expect(html).not.toContain("Test dismissable error");
   });
+
+  it("tracks duplicate queued file names distinctly and revokes removed index without collision", () => {
+    const createSpy = vi.spyOn(URL, "createObjectURL").mockImplementation(() => `blob:mock-${Math.random()}`);
+    const revokeSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    try {
+      const f1 = new File(["one"], "dup.png", { type: "image/png" });
+      const f2 = new File(["two"], "dup.png", { type: "image/png" });
+      useWatermarkStore.getState().setQueuedFiles([f1, f2]);
+      const keys = useWatermarkStore.getState().queuedObjectKeys;
+      expect(keys).toHaveLength(2);
+      expect(keys[0]).not.toBe(keys[1]);
+
+      useWatermarkStore.getState().removeQueuedFile(0);
+      expect(useWatermarkStore.getState().queuedFiles).toEqual([f2]);
+      expect(revokeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      createSpy.mockRestore();
+      revokeSpy.mockRestore();
+    }
+  });
+
+  it("subtracts failed items from cleanCount KPI in WatermarkResultsCard", () => {
+    useWatermarkStore.setState({
+      result: {
+        detected: true,
+        total_count: 5,
+        detected_count: 2,
+        results: [
+          { path: "a.png", out_path: "a_out.png", status: "processed", detected: true, score: 0.9 },
+          { path: "b.png", out_path: "b_out.png", status: "processed", detected: true, score: 0.9 },
+          { path: "c.png", out_path: "c_out.png", status: "clean", detected: false, score: 0.1 },
+          { path: "d.png", out_path: "", status: "error", detected: false, error: "corrupt file" },
+          { path: "e.png", out_path: "", status: "error", detected: false, error: "unreadable" },
+        ],
+      } as unknown as import("./useWatermarkStore").WatermarkNodeResult,
+    });
+    const html = renderToStaticMarkup(React.createElement(WatermarkResultsCard));
+    // total=5, detected=2, failed=2 => cleanCount=1 (not 3)
+    expect(html).toContain('>1<');
+  });
 });
 
 // Keep reference used in typecheck when media module is inspected by tests.

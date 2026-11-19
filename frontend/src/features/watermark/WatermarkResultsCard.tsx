@@ -1,5 +1,6 @@
 import { appConfig } from "../../config/appConfig";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useFlash } from "../../lib/hooks/useFlash";
 import {
   Layers,
@@ -19,10 +20,11 @@ import {
   X,
 } from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { MediaOutputNode } from "../../components/ui/MediaOutputNode";
 import { VirtualList } from "../../components/ui/VirtualList";
-import { translateServerMessage, useT, type MessageKey } from "../../lib/i18n";
+import { translateServerMessage, useT } from "../../lib/i18n";
 import { downloadMediaBlob, mediaBasename } from "../../lib/rtClient";
 import { askAgentAboutMediaAsset } from "../agent/screenContext";
 import { useConnectionStore } from "../connection/useConnectionStore";
@@ -37,22 +39,47 @@ function safeRevokeObjectURL(url: string | null | undefined): void {
   }
 }
 
-function usePreviewUrl(path: string): string | null {
+interface PreviewState {
+  url: string | null;
+  loading: boolean;
+  error: boolean;
+  retry: () => void;
+}
+
+function usePreviewUrl(path: string): PreviewState {
   const [url, setUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState<boolean>(Boolean(path));
+  const [error, setError] = useState<boolean>(false);
+  const [attempt, setAttempt] = useState(0);
+
+  const retry = useCallback(() => {
+    setAttempt((n) => n + 1);
+  }, []);
+
   useEffect(() => {
     if (!path || typeof URL === "undefined" || typeof URL.createObjectURL !== "function") {
+      setLoading(false);
+      setError(false);
+      setUrl(null);
       return;
     }
     let cancelled = false;
     let activeObjUrl: string | null = null;
+    setLoading(true);
+    setError(false);
     void downloadMediaBlob(path)
       .then(({ blob }) => {
         if (cancelled) return;
         activeObjUrl = URL.createObjectURL(blob);
         setUrl(activeObjUrl);
+        setLoading(false);
       })
       .catch(() => {
-        if (!cancelled) setUrl(null);
+        if (!cancelled) {
+          setUrl(null);
+          setLoading(false);
+          setError(true);
+        }
       });
     return () => {
       cancelled = true;
@@ -62,8 +89,8 @@ function usePreviewUrl(path: string): string | null {
       }
       setUrl(null);
     };
-  }, [path]);
-  return url;
+  }, [path, attempt]);
+  return { url, loading, error, retry };
 }
 
 const ComparisonViewer: React.FC<{
@@ -72,6 +99,7 @@ const ComparisonViewer: React.FC<{
   title: string;
   onClose: () => void;
 }> = ({ beforePath, afterPath, title, onClose }) => {
+  const t = useT();
   const {
     comparisonZoom,
     comparisonPan,
@@ -79,13 +107,24 @@ const ComparisonViewer: React.FC<{
     setComparisonZoom,
     setComparisonPan,
     setComparisonSliderPos,
-  } = useWatermarkStore();
+  } = useWatermarkStore(
+    useShallow((s) => ({
+      comparisonZoom: s.comparisonZoom,
+      comparisonPan: s.comparisonPan,
+      comparisonSliderPos: s.comparisonSliderPos,
+      setComparisonZoom: s.setComparisonZoom,
+      setComparisonPan: s.setComparisonPan,
+      setComparisonSliderPos: s.setComparisonSliderPos,
+    }))
+  );
 
   const [isPanning, setIsPanning] = useState(false);
   const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
 
-  const beforeUrl = usePreviewUrl(beforePath);
-  const afterUrl = usePreviewUrl(afterPath);
+  const beforeState = usePreviewUrl(beforePath);
+  const afterState = usePreviewUrl(afterPath);
+  const beforeUrl = beforeState.url;
+  const afterUrl = afterState.url;
 
   const { zoomMin, zoomMax, zoomStep } = appConfig.ui.watermarkCompare;
 
@@ -147,8 +186,8 @@ const ComparisonViewer: React.FC<{
           type="button"
           onClick={onClose}
           className="watermark-icon-btn"
-          aria-label="Close comparison"
-          title="Close comparison"
+          aria-label={t("watermark.comparison.close")}
+          title={t("watermark.comparison.close")}
         >
           <X size={14} />
         </button>
@@ -169,8 +208,8 @@ const ComparisonViewer: React.FC<{
             className="watermark-icon-btn"
             onClick={handleZoomOut}
             disabled={comparisonZoom <= zoomMin}
-            aria-label="Zoom out"
-            title="Zoom out"
+            aria-label={t("watermark.comparison.zoomOut")}
+            title={t("watermark.comparison.zoomOut")}
           >
             <ZoomOut size={13} />
           </button>
@@ -189,8 +228,8 @@ const ComparisonViewer: React.FC<{
             className="watermark-icon-btn"
             onClick={handleZoomIn}
             disabled={comparisonZoom >= zoomMax}
-            aria-label="Zoom in"
-            title="Zoom in"
+            aria-label={t("watermark.comparison.zoomIn")}
+            title={t("watermark.comparison.zoomIn")}
           >
             <ZoomIn size={13} />
           </button>
@@ -198,8 +237,8 @@ const ComparisonViewer: React.FC<{
             type="button"
             className="watermark-icon-btn"
             onClick={handleZoomReset}
-            aria-label="Reset zoom and pan"
-            title="Reset zoom"
+            aria-label={t("watermark.comparison.zoomReset")}
+            title={t("watermark.comparison.zoomReset")}
           >
             <RotateCcw size={12} />
           </button>
@@ -213,17 +252,17 @@ const ComparisonViewer: React.FC<{
             fontSize: "var(--text-xs)",
           }}
         >
-          <span className="muted-text">Before</span>
+          <span className="muted-text">{t("watermark.comparison.before")}</span>
           <input
             type="range"
             min={0}
             max={100}
             value={comparisonSliderPos}
             onChange={(e) => setComparisonSliderPos(Number(e.target.value))}
-            aria-label="Before/After split slider"
+            aria-label={t("watermark.comparison.slider")}
             style={{ width: "120px", cursor: "pointer" }}
           />
-          <span className="muted-text">After</span>
+          <span className="muted-text">{t("watermark.comparison.after")}</span>
         </div>
       </div>
 
@@ -260,7 +299,7 @@ const ComparisonViewer: React.FC<{
           {afterUrl ? (
             <img
               src={afterUrl}
-              alt="After cleaned"
+              alt={t("watermark.comparison.after")}
               style={{
                 maxHeight: "240px",
                 maxWidth: "100%",
@@ -268,6 +307,31 @@ const ComparisonViewer: React.FC<{
                 pointerEvents: "none",
               }}
             />
+          ) : afterState.error ? (
+            <div
+              style={{
+                padding: "var(--space-4)",
+                textAlign: "center",
+                fontSize: "var(--text-xs)",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: "var(--space-2)",
+              }}
+            >
+              <AlertCircle size={18} style={{ color: "var(--danger)" }} />
+              <span className="muted-text">{t("watermark.preview.error")}</span>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  afterState.retry();
+                  beforeState.retry();
+                }}
+              >
+                {t("watermark.preview.retry")}
+              </Button>
+            </div>
           ) : (
             <div
               style={{ padding: "var(--space-4)", textAlign: "center", fontSize: "var(--text-xs)" }}
@@ -292,7 +356,7 @@ const ComparisonViewer: React.FC<{
             >
               <img
                 src={beforeUrl}
-                alt="Before original"
+                alt={t("watermark.comparison.before")}
                 style={{
                   maxHeight: "240px",
                   maxWidth: "100%",
@@ -330,6 +394,7 @@ export const WatermarkResultsCard: React.FC = () => {
   const {
     inputPath,
     inputPaths,
+    queuedFiles,
     remoteNameMap,
     loading,
     downloadingPath,
@@ -341,7 +406,26 @@ export const WatermarkResultsCard: React.FC = () => {
     resetComparison,
     setInputPath,
     setInputPaths,
-  } = useWatermarkStore();
+    removeQueuedFile,
+  } = useWatermarkStore(
+    useShallow((s) => ({
+      inputPath: s.inputPath,
+      inputPaths: s.inputPaths,
+      queuedFiles: s.queuedFiles,
+      remoteNameMap: s.remoteNameMap,
+      loading: s.loading,
+      downloadingPath: s.downloadingPath,
+      progress: s.progress,
+      result: s.result,
+      comparisonItem: s.comparisonItem,
+      downloadOutput: s.downloadOutput,
+      setComparisonItem: s.setComparisonItem,
+      resetComparison: s.resetComparison,
+      setInputPath: s.setInputPath,
+      setInputPaths: s.setInputPaths,
+      removeQueuedFile: s.removeQueuedFile,
+    }))
+  );
 
   const ephemeralUrlsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -412,7 +496,8 @@ export const WatermarkResultsCard: React.FC = () => {
 
   const totalProcessed = result?.total_count ?? (result ? 1 : 0);
   const detectedCount = result?.detected_count ?? (result?.detected ? 1 : 0);
-  const cleanCount = Math.max(0, totalProcessed - detectedCount);
+  const failedCount = result?.results?.filter((r) => Boolean(r.error)).length ?? 0;
+  const cleanCount = Math.max(0, totalProcessed - detectedCount - failedCount);
 
   return (
     <Card
@@ -456,7 +541,9 @@ export const WatermarkResultsCard: React.FC = () => {
                     title={t("watermark.removeFile")}
                     aria-label={t("watermark.removeFile")}
                     onClick={() => {
-                      if (inputPaths.length > 0) {
+                      if (queuedFiles.length > 0) {
+                        removeQueuedFile(idx);
+                      } else if (inputPaths.length > 0) {
                         setInputPaths(inputPaths.filter((_, i) => i !== idx));
                       } else {
                         setInputPath("");
@@ -613,8 +700,8 @@ export const WatermarkResultsCard: React.FC = () => {
                         type="button"
                         onClick={() => setInputPath(item.out_path)}
                         className="watermark-icon-btn"
-                        title={t("cross.sendToWatermark" as MessageKey) || "Send to Watermark"}
-                        aria-label="Send to Watermark"
+                        title={t("cross.sendToWatermark")}
+                        aria-label={t("cross.sendToWatermark")}
                       >
                         <Sparkles size={12} />
                       </button>
@@ -630,8 +717,8 @@ export const WatermarkResultsCard: React.FC = () => {
                           })
                         }
                         className="watermark-icon-btn"
-                        title={t("cross.askAgent" as MessageKey) || "Ask Agent about this file"}
-                        aria-label="Ask Agent about this file"
+                        title={t("cross.askAgent")}
+                        aria-label={t("cross.askAgent")}
                       >
                         <Bot size={12} />
                       </button>

@@ -1,13 +1,14 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { type BinaryInfo, type SystemInfo } from "../../contracts/generated";
+import { type BinaryInfo, NodeTypes, type Spec, type SystemInfo } from "../../contracts/generated";
 import { ActionError } from "../../lib/rtClient";
 import { BinaryCard } from "../binaries/BinaryCard";
 import { HealthBadge } from "../providers/HealthBadge";
 import { SecretInput } from "../providers/SecretInput";
 import { SystemCard } from "../system/SystemCard";
 import { useSystemStore } from "../system/useSystemStore";
+import { useNodeSpecsStore } from "../workflow/useNodeSpecs";
 import { ImageGenView } from "./ImageGenView";
 import { MediaResultCard } from "./MediaResultCard";
 import { VideoGenView } from "./VideoGenView";
@@ -161,22 +162,76 @@ describe("Phase 1 Wave B - Feature Worker 4 Enhancements", () => {
   });
 
   describe("Task 4: MediaGen UX Polish", () => {
-    it("ImageGenView renders quick aspect ratio presets (1:1, 16:9, 9:16, 4:3)", () => {
-      const html = renderToStaticMarkup(React.createElement(ImageGenView));
-      expect(html).toContain("mediagen-aspect-presets");
-      expect(html).toContain(">1:1<");
-      expect(html).toContain(">16:9<");
-      expect(html).toContain(">9:16<");
-      expect(html).toContain(">4:3<");
+    it("ImageGenView renders quick aspect ratio presets (1:1, 16:9, 9:16, 4:3) from node spec", () => {
+      const spy = vi
+        .spyOn(React, "useSyncExternalStore")
+        .mockImplementation((_sub, getSnap) => getSnap());
+      try {
+        const specs: Spec[] = [
+          {
+            type: NodeTypes.IMAGE_GENERATE,
+            provider: "mediagen",
+            label: "Image",
+            description: "",
+            inputs: [],
+            outputs: [],
+            params: [
+              {
+                name: "aspect_ratio",
+                label: "Aspect",
+                kind: "enum",
+                default: "1:1",
+                options: ["1:1", "16:9", "9:16", "4:3"],
+              },
+            ],
+          },
+        ];
+        useNodeSpecsStore.setState({ specs });
+        const html = renderToStaticMarkup(React.createElement(ImageGenView));
+        expect(html).toContain("mediagen-aspect-presets");
+        expect(html).toContain(">1:1<");
+        expect(html).toContain(">16:9<");
+        expect(html).toContain(">9:16<");
+        expect(html).toContain(">4:3<");
+      } finally {
+        spy.mockRestore();
+      }
     });
 
-    it("VideoGenView renders quick aspect ratio presets (1:1, 16:9, 9:16, 4:3)", () => {
-      const html = renderToStaticMarkup(React.createElement(VideoGenView));
-      expect(html).toContain("mediagen-aspect-presets");
-      expect(html).toContain(">1:1<");
-      expect(html).toContain(">16:9<");
-      expect(html).toContain(">9:16<");
-      expect(html).toContain(">4:3<");
+    it("VideoGenView renders quick aspect ratio presets (1:1, 16:9, 9:16, 4:3) from node spec", () => {
+      const spy = vi
+        .spyOn(React, "useSyncExternalStore")
+        .mockImplementation((_sub, getSnap) => getSnap());
+      try {
+        const specs: Spec[] = [
+          {
+            type: NodeTypes.VIDEO_GENERATE,
+            provider: "mediagen",
+            label: "Video",
+            description: "",
+            inputs: [],
+            outputs: [],
+            params: [
+              {
+                name: "aspect_ratio",
+                label: "Aspect",
+                kind: "enum",
+                default: "16:9",
+                options: ["16:9", "9:16", "1:1", "4:3"],
+              },
+            ],
+          },
+        ];
+        useNodeSpecsStore.setState({ specs });
+        const html = renderToStaticMarkup(React.createElement(VideoGenView));
+        expect(html).toContain("mediagen-aspect-presets");
+        expect(html).toContain(">1:1<");
+        expect(html).toContain(">16:9<");
+        expect(html).toContain(">9:16<");
+        expect(html).toContain(">4:3<");
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it("MediaResultCard renders retry and dismiss buttons when error exists", () => {

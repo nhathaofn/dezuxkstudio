@@ -1,5 +1,6 @@
 import React, { useEffect } from "react";
 import { useInRouterContext, useLocation } from "react-router-dom";
+import { useShallow } from "zustand/react/shallow";
 import { Sparkles, Loader2, RotateCcw, X } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Badge } from "../../components/ui/Badge";
@@ -35,11 +36,37 @@ export const WatermarkView: React.FC = () => {
   const t = useT();
   const inRouter = useInRouterContext();
 
-  const { inputPath, inputPaths, loading, result, error, removeWatermark, reset, dismissError } =
-    useWatermarkStore();
+  const {
+    inputPath,
+    inputPaths,
+    loading,
+    result,
+    error,
+    inPlace,
+    outputDir,
+    workers,
+    corner,
+    removeWatermark,
+    reset,
+    dismissError,
+  } = useWatermarkStore(
+    useShallow((s) => ({
+      inputPath: s.inputPath,
+      inputPaths: s.inputPaths,
+      loading: s.loading,
+      result: s.result,
+      error: s.error,
+      inPlace: s.inPlace,
+      outputDir: s.outputDir,
+      workers: s.workers,
+      corner: s.corner,
+      removeWatermark: s.removeWatermark,
+      reset: s.reset,
+      dismissError: s.dismissError,
+    }))
+  );
 
   const totalFiles = inputPaths.length > 0 ? inputPaths.length : inputPath ? 1 : 0;
-  const { inPlace, outputDir, workers, corner } = useWatermarkStore();
 
   // Let the agent see this screen: loaded images, current settings (keyed by the node's param names), last run.
   useAgentScreenContext({

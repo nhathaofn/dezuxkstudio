@@ -1,7 +1,9 @@
-import React from "react";
+import React, { useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { Sparkles, Crosshair, Cpu, FolderOpen } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
+import { Dialog } from "../../components/ui/Dialog";
 import { Switch } from "../../components/ui/Switch";
 import { MediaInputNode } from "../../components/ui/MediaDropZone";
 import { getBridge } from "../../lib/bridge";
@@ -14,6 +16,8 @@ export const WatermarkConfigCard: React.FC = () => {
   const t = useT();
   const endpointMode = useConnectionStore((s) => s.endpoint?.mode);
   const isRemoteMode = endpointMode === "browser" || endpointMode === "client";
+
+  const [confirmInPlaceOpen, setConfirmInPlaceOpen] = useState(false);
 
   const {
     inputPath,
@@ -32,7 +36,26 @@ export const WatermarkConfigCard: React.FC = () => {
     setPreserveTree,
     setWorkers,
     setCorner,
-  } = useWatermarkStore();
+  } = useWatermarkStore(
+    useShallow((s) => ({
+      inputPath: s.inputPath,
+      inputPaths: s.inputPaths,
+      inPlace: s.inPlace,
+      outputDir: s.outputDir,
+      copyClean: s.copyClean,
+      preserveTree: s.preserveTree,
+      workers: s.workers,
+      corner: s.corner,
+      setInputPaths: s.setInputPaths,
+      setQueuedFiles: s.setQueuedFiles,
+      setInPlace: s.setInPlace,
+      setOutputDir: s.setOutputDir,
+      setCopyClean: s.setCopyClean,
+      setPreserveTree: s.setPreserveTree,
+      setWorkers: s.setWorkers,
+      setCorner: s.setCorner,
+    }))
+  );
 
   // Choices, limits and defaults come from the node's spec, never from the UI.
   const spec = useNodeSpec(WATERMARK_NODE);
@@ -143,7 +166,9 @@ export const WatermarkConfigCard: React.FC = () => {
               <Button
                 size="sm"
                 variant={inPlace ? "primary" : "secondary"}
-                onClick={() => setInPlace(true)}
+                onClick={() => {
+                  if (!inPlace) setConfirmInPlaceOpen(true);
+                }}
                 className="watermark-segmented__btn"
               >
                 {t("watermark.mode.inplace")}
@@ -215,6 +240,40 @@ export const WatermarkConfigCard: React.FC = () => {
           )}
         </div>
       </div>
+
+      {confirmInPlaceOpen && (
+        <Dialog
+          onClose={() => setConfirmInPlaceOpen(false)}
+          title={t("watermark.mode.inplaceConfirmTitle")}
+          size="sm"
+        >
+          <p className="muted-text" style={{ marginTop: 0 }}>
+            {t("watermark.mode.inplaceConfirmBody")}
+          </p>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "flex-end",
+              gap: "var(--space-2)",
+              marginTop: "var(--space-4)",
+            }}
+          >
+            <Button variant="secondary" size="sm" onClick={() => setConfirmInPlaceOpen(false)}>
+              {t("watermark.mode.inplaceCancelBtn")}
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => {
+                setInPlace(true);
+                setConfirmInPlaceOpen(false);
+              }}
+            >
+              {t("watermark.mode.inplaceConfirmBtn")}
+            </Button>
+          </div>
+        </Dialog>
+      )}
     </Card>
   );
 };
