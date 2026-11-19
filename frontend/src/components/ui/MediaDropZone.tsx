@@ -1,5 +1,5 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { UploadCloud } from "lucide-react";
+import { UploadCloud, type LucideIcon } from "lucide-react";
 import { isDesktop } from "../../lib/bridge";
 import { subscribeFileDrop } from "../../lib/fileDropDispatcher";
 import { pickMediaFiles } from "../../lib/filePicker";
@@ -23,7 +23,7 @@ export interface MediaDropZoneProps {
   /** Whether the dropzone is disabled. */
   disabled?: boolean;
   /** Optional custom icon component to display. */
-  icon?: React.ComponentType<{ size?: number; className?: string; style?: React.CSSProperties }>;
+  icon?: LucideIcon | React.ComponentType<{ size?: number; className?: string; style?: React.CSSProperties }>;
   /** Additional custom class names for the container. */
   className?: string;
   /** Number of currently selected items to reflect in the UI. */

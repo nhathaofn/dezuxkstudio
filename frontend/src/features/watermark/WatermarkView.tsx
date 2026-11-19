@@ -6,7 +6,12 @@ import { Button } from "../../components/ui/Button";
 import { Badge } from "../../components/ui/Badge";
 import { describeError, useT } from "../../lib/i18n";
 import { useAgentScreenContext } from "../agent/screenContext";
-import { WATERMARK_NODE, useWatermarkStore, type WatermarkNodeResult } from "./useWatermarkStore";
+import {
+  VIDEO_WATERMARK_NODE,
+  WATERMARK_NODE,
+  useWatermarkStore,
+  type WatermarkNodeResult,
+} from "./useWatermarkStore";
 import { WatermarkConfigCard } from "./WatermarkConfigCard";
 import { WatermarkResultsCard } from "./WatermarkResultsCard";
 
@@ -37,49 +42,81 @@ export const WatermarkView: React.FC = () => {
   const inRouter = useInRouterContext();
 
   const {
+    mediaKind,
     inputPath,
     inputPaths,
+    videoInputPath,
     loading,
     result,
+    videoResult,
     error,
     inPlace,
     outputDir,
     workers,
     corner,
+    videoMode,
     removeWatermark,
+    removeVideoWatermark,
     reset,
     dismissError,
   } = useWatermarkStore(
     useShallow((s) => ({
+      mediaKind: s.mediaKind,
       inputPath: s.inputPath,
       inputPaths: s.inputPaths,
+      videoInputPath: s.videoInputPath,
       loading: s.loading,
       result: s.result,
+      videoResult: s.videoResult,
       error: s.error,
       inPlace: s.inPlace,
       outputDir: s.outputDir,
       workers: s.workers,
       corner: s.corner,
+      videoMode: s.videoMode,
       removeWatermark: s.removeWatermark,
+      removeVideoWatermark: s.removeVideoWatermark,
       reset: s.reset,
       dismissError: s.dismissError,
     }))
   );
 
   const totalFiles = inputPaths.length > 0 ? inputPaths.length : inputPath ? 1 : 0;
+  const hasInputs = mediaKind === "video" ? Boolean(videoInputPath) : totalFiles > 0;
+  const hasOutputs = mediaKind === "video" ? Boolean(videoResult) : Boolean(result);
 
-  // Let the agent see this screen: loaded images, current settings (keyed by the node's param names), last run.
+  // Let the agent see this screen: loaded images/video, current settings, last run.
   useAgentScreenContext({
-    feature: WATERMARK_NODE,
-    selected_files: inputPaths.length > 0 ? inputPaths : inputPath ? [inputPath] : [],
-    // Only what the user changed; unset settings fall back to the node's defaults.
-    settings: {
-      ...(corner !== null ? { corner } : {}),
-      ...(workers !== null ? { workers: String(workers) } : {}),
-      inplace: String(inPlace),
-      output_dir: outputDir,
-    },
-    last_result: loading ? "running…" : error ? `error: ${error.message}` : summarizeResult(result),
+    feature: mediaKind === "video" ? VIDEO_WATERMARK_NODE : WATERMARK_NODE,
+    selected_files:
+      mediaKind === "video"
+        ? videoInputPath
+          ? [videoInputPath]
+          : []
+        : inputPaths.length > 0
+          ? inputPaths
+          : inputPath
+            ? [inputPath]
+            : [],
+    settings:
+      mediaKind === "video"
+        ? {
+            ...(videoMode ? { mode: videoMode } : {}),
+            output_dir: outputDir,
+          }
+        : {
+            ...(corner !== null ? { corner } : {}),
+            ...(workers !== null ? { workers: String(workers) } : {}),
+            inplace: String(inPlace),
+            output_dir: outputDir,
+          },
+    last_result: loading
+      ? "running…"
+      : error
+        ? `error: ${error.message}`
+        : mediaKind === "video"
+          ? videoResult?.path ?? ""
+          : summarizeResult(result),
   });
 
   return (
@@ -103,7 +140,7 @@ export const WatermarkView: React.FC = () => {
 
         {/* Global Action Bar */}
         <div className="watermark-hero-actions">
-          {(totalFiles > 0 || result) && (
+          {(hasInputs || hasOutputs) && (
             <Button size="sm" onClick={reset} disabled={loading}>
               <RotateCcw size={13} />
               {t("watermark.resetBtn")}
@@ -113,8 +150,10 @@ export const WatermarkView: React.FC = () => {
           <Button
             variant="primary"
             size="sm"
-            disabled={totalFiles === 0 || loading}
-            onClick={() => void removeWatermark()}
+            disabled={!hasInputs || loading}
+            onClick={() =>
+              void (mediaKind === "video" ? removeVideoWatermark() : removeWatermark())
+            }
           >
             {loading ? (
               <>
@@ -124,7 +163,9 @@ export const WatermarkView: React.FC = () => {
             ) : (
               <>
                 <Sparkles size={13} />
-                {t("watermark.startBtn")}
+                {mediaKind === "video"
+                  ? t("watermark.video.startBtn")
+                  : t("watermark.startBtn")}
               </>
             )}
           </Button>

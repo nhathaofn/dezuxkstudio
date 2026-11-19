@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { appConfig } from "../../config/appConfig";
+import { NodeTypes } from "../../contracts/generated";
 import { useWatermarkStore } from "./useWatermarkStore";
 import { WatermarkView } from "./WatermarkView";
 import WatermarkViewDefault from "./WatermarkView";
@@ -850,6 +851,45 @@ describe("Phase 1 Wave B Watermark Policy & Compare UX Enhancement", () => {
     const html = renderToStaticMarkup(React.createElement(WatermarkResultsCard));
     // total=5, detected=2, failed=2 => cleanCount=1 (not 3)
     expect(html).toContain('>1<');
+  });
+
+  it("supports video watermark removal mode, delogo/crop params, and invokes tool.video_watermark_remove", async () => {
+    const reqSpy = vi.spyOn(rtClient, "request").mockResolvedValue({
+      output: {
+        video: { localUrl: "D:/out/clean.mp4", kind: "video" },
+        path: "D:/out/clean.mp4",
+        asset_id: "vid-wm-1",
+        duration_sec: 12,
+      },
+    } as never);
+    useWatermarkStore.getState().setMediaKind("video");
+    useWatermarkStore.getState().setVideoInputPath("D:/in/clip.mp4");
+    useWatermarkStore.getState().setVideoMode("delogo");
+    useWatermarkStore.getState().setVideoX(10);
+    useWatermarkStore.getState().setVideoY(20);
+    useWatermarkStore.getState().setVideoWidth(120);
+    useWatermarkStore.getState().setVideoHeight(60);
+
+    await useWatermarkStore.getState().removeVideoWatermark();
+    expect(reqSpy).toHaveBeenCalledWith(
+      Actions.WORKFLOW_RUN_NODE,
+      expect.objectContaining({
+        type: NodeTypes.VIDEO_WATERMARK_REMOVE,
+        input: expect.objectContaining({
+          video_path: { localUrl: "D:/in/clip.mp4", kind: "video" },
+          mode: "delogo",
+          x: 10,
+          y: 20,
+          width: 120,
+          height: 60,
+        }),
+      }),
+      expect.any(Object)
+    );
+    expect(useWatermarkStore.getState().videoResult?.path).toBe("D:/out/clean.mp4");
+
+    const html = renderToStaticMarkup(React.createElement(WatermarkView));
+    expect(html).toContain("D:/out/clean.mp4");
   });
 });
 

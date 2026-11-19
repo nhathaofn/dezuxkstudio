@@ -4,6 +4,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useFlash } from "../../lib/hooks/useFlash";
 import {
   Layers,
+  Film,
   FileImage,
   Loader2,
   CheckCircle2,
@@ -392,37 +393,47 @@ export const WatermarkResultsCard: React.FC = () => {
   const isRemoteMode = endpointMode === "browser" || endpointMode === "client";
 
   const {
+    mediaKind,
     inputPath,
     inputPaths,
     queuedFiles,
+    videoInputPath,
+    objectUrls,
     remoteNameMap,
     loading,
     downloadingPath,
     progress,
     result,
+    videoResult,
     comparisonItem,
     downloadOutput,
     setComparisonItem,
     resetComparison,
     setInputPath,
     setInputPaths,
+    setVideoInputPath,
     removeQueuedFile,
   } = useWatermarkStore(
     useShallow((s) => ({
+      mediaKind: s.mediaKind,
       inputPath: s.inputPath,
       inputPaths: s.inputPaths,
       queuedFiles: s.queuedFiles,
+      videoInputPath: s.videoInputPath,
+      objectUrls: s.objectUrls,
       remoteNameMap: s.remoteNameMap,
       loading: s.loading,
       downloadingPath: s.downloadingPath,
       progress: s.progress,
       result: s.result,
+      videoResult: s.videoResult,
       comparisonItem: s.comparisonItem,
       downloadOutput: s.downloadOutput,
       setComparisonItem: s.setComparisonItem,
       resetComparison: s.resetComparison,
       setInputPath: s.setInputPath,
       setInputPaths: s.setInputPaths,
+      setVideoInputPath: s.setVideoInputPath,
       removeQueuedFile: s.removeQueuedFile,
     }))
   );
@@ -498,6 +509,7 @@ export const WatermarkResultsCard: React.FC = () => {
   const detectedCount = result?.detected_count ?? (result?.detected ? 1 : 0);
   const failedCount = result?.results?.filter((r) => Boolean(r.error)).length ?? 0;
   const cleanCount = Math.max(0, totalProcessed - detectedCount - failedCount);
+  const queuedVideoPreviewUrl = objectUrls["video:queued"] || null;
 
   return (
     <Card
@@ -505,7 +517,13 @@ export const WatermarkResultsCard: React.FC = () => {
       title={t("watermark.card.output")}
       className="card--flex-fill"
       actions={
-        result ? (
+        mediaKind === "video" ? (
+          videoResult ? (
+            <Badge className="watermark-badge-connected">{t("watermark.status.processed")}</Badge>
+          ) : videoInputPath ? (
+            <Badge>{t("watermark.status.ready")}</Badge>
+          ) : null
+        ) : result ? (
           <Badge className={detectedCount > 0 ? "watermark-badge-connected" : ""}>
             {t("watermark.stat.detected")}: {detectedCount}/{totalProcessed}
           </Badge>
@@ -514,7 +532,117 @@ export const WatermarkResultsCard: React.FC = () => {
         ) : null
       }
     >
-      {/* State 1: Nothing selected yet */}
+      {mediaKind === "video" ? (
+        <>
+          {!videoInputPath && !videoResult && !loading && (
+            <div className="empty-state">
+              <Film size={34} className="empty-state__icon" />
+              <div className="empty-state__title">{t("watermark.emptyQueue")}</div>
+              <div className="empty-state__desc">{t("watermark.video.emptyQueueDesc")}</div>
+            </div>
+          )}
+
+          {videoInputPath && !videoResult && !loading && (
+            <div className="watermark-results-body">
+              <div className="watermark-file-row">
+                <span className="watermark-file-path" title={videoInputPath}>
+                  {displayName(videoInputPath)}
+                </span>
+                <div className="watermark-file-actions">
+                  <Badge>{t("watermark.status.ready")}</Badge>
+                  <button
+                    type="button"
+                    className="watermark-icon-btn"
+                    title={t("watermark.removeFile")}
+                    aria-label={t("watermark.removeFile")}
+                    onClick={() => setVideoInputPath("")}
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              </div>
+              {queuedVideoPreviewUrl && (
+                <div>
+                  <div className="field-label">{t("watermark.video.beforeTitle")}</div>
+                  <video
+                    src={queuedVideoPreviewUrl}
+                    controls
+                    preload="metadata"
+                    ref={(el) => {
+                      if (!el) return;
+                      // Clean unmount handled via React node teardown & store revokeTrackedObjectURL
+                    }}
+                    style={{ maxWidth: "100%", maxHeight: "220px", borderRadius: "var(--radius-sm)" }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {loading && (
+            <div className="empty-state">
+              <Loader2 size={28} className="animate-spin" style={{ color: "var(--accent)" }} />
+              <div className="empty-state__title">
+                {(progress && translateServerMessage(t, progress.msg_key, progress.msg_params)) ||
+                  progress?.message ||
+                  t("watermark.processing")}
+              </div>
+              {progress && (
+                <div
+                  className="progress watermark-progress"
+                  role="progressbar"
+                  aria-valuenow={Math.round(progress.percent)}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                >
+                  <div className="progress__bar" style={{ width: `${progress.percent}%` }} />
+                </div>
+              )}
+            </div>
+          )}
+
+          {videoResult && !loading && (
+            <div className="watermark-results-body">
+              <MediaOutputNode
+                kind="video"
+                item={{
+                  outputPath: videoResult.path,
+                  sourcePath: videoInputPath || undefined,
+                  duration: videoResult.duration_sec,
+                  asset_id: videoResult.asset_id,
+                }}
+                downloading={downloadingPath === videoResult.path}
+                onDownload={
+                  isRemoteMode
+                    ? () => void downloadOutput(videoResult.path, mediaBasename(videoResult.path))
+                    : undefined
+                }
+                onAskAgent={(meta) =>
+                  askAgentAboutMediaAsset({
+                    assetId: meta.assetId,
+                    filePath: meta.filePath,
+                  })
+                }
+              />
+              {queuedVideoPreviewUrl && (
+                <details>
+                  <summary className="muted-text" style={{ cursor: "pointer", fontSize: "var(--text-xs)" }}>
+                    {t("watermark.video.beforeTitle")}
+                  </summary>
+                  <video
+                    src={queuedVideoPreviewUrl}
+                    controls
+                    preload="metadata"
+                    style={{ maxWidth: "100%", maxHeight: "200px", marginTop: "var(--space-2)" }}
+                  />
+                </details>
+              )}
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          {/* State 1: Nothing selected yet */}
       {totalFiles === 0 && !result && (
         <div className="empty-state">
           <FileImage size={34} className="empty-state__icon" />
@@ -759,6 +887,8 @@ export const WatermarkResultsCard: React.FC = () => {
             />
           )}
         </div>
+      )}
+        </>
       )}
     </Card>
   );

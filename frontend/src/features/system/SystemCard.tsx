@@ -1,9 +1,10 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Cpu, Folder, RefreshCw } from "lucide-react";
 import { FolderTargetValues, type FolderTarget } from "../../contracts/generated";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { ErrorText } from "../../components/ui/ErrorText";
+import { isDesktop } from "../../lib/bridge";
 import { useT } from "../../lib/i18n";
 import type { ActionError } from "../../lib/rtClient";
 import { useSystemStore } from "./useSystemStore";
@@ -12,11 +13,20 @@ import { formatDuration } from "../../lib/format";
 export const SystemCard: React.FC = () => {
   const t = useT();
   const info = useSystemStore((s) => s.info) ?? useSystemStore.getState().info;
+  const buildInfo = useSystemStore((s) => s.buildInfo) ?? useSystemStore.getState().buildInfo;
   const infoError = useSystemStore((s) => s.infoError);
   const loadInfo = useSystemStore((s) => s.loadInfo);
+  const loadBuildInfo = useSystemStore((s) => s.loadBuildInfo);
   const openFolder = useSystemStore((s) => s.openFolder);
   const [openError, setOpenError] = useState<ActionError | null>(null);
 
+  useEffect(() => {
+    if (isDesktop() && !buildInfo) {
+      void loadBuildInfo();
+    }
+  }, [buildInfo, loadBuildInfo]);
+
+  const effectiveBuild = info?.build ?? buildInfo;
   const isRemote = info?.mode === "server" || info?.mode === "client";
   const desktopOnlyTooltip = t("system.desktopOnly");
 
@@ -49,9 +59,9 @@ export const SystemCard: React.FC = () => {
           <dl className="kv-grid">
             <dt>{t("system.version")}</dt>
             <dd>
-              {info ? (
+              {effectiveBuild ? (
                 <>
-                  {info.build.version} <span className="muted-text">({info.build.commit})</span>
+                  {effectiveBuild.version} <span className="muted-text">({effectiveBuild.commit})</span>
                 </>
               ) : (
                 <span className="muted-text">—</span>
@@ -61,8 +71,8 @@ export const SystemCard: React.FC = () => {
             <dd>{info ? info.mode : <span className="muted-text">—</span>}</dd>
             <dt>{t("system.platform")}</dt>
             <dd>
-              {info ? (
-                `${info.build.os}/${info.build.arch} · ${info.build.go_version}`
+              {effectiveBuild ? (
+                `${effectiveBuild.os}/${effectiveBuild.arch} · ${effectiveBuild.go_version}`
               ) : (
                 <span className="muted-text">—</span>
               )}
