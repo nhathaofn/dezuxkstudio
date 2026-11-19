@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-import React from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -59,7 +58,6 @@ describe("Core views & P0-P2 regression DOM coverage", () => {
       dirtyPatch: {},
       error: null,
       prefs: {
-        schema_version: 1,
         theme: "light",
         language: "en",
         workspace_root: "/ws/original",
@@ -96,7 +94,16 @@ describe("Core views & P0-P2 regression DOM coverage", () => {
     useConnectionStore.setState({
       status: "reconnecting",
       resolved: true,
-      endpoint: { url: "ws://127.0.0.1:9999/ws", source: "bridge", mode: "client" },
+      endpoint: {
+        url: "ws://127.0.0.1:9999/ws",
+        source: "bridge",
+        mode: "client",
+        token: "",
+        actionTimeoutMs: 10000,
+        longActionTimeoutMs: 60000,
+        pingIntervalMs: 15000,
+        checkUpdatesOnStartup: false,
+      },
     });
     useSystemStore.setState({ info: null, buildInfo: null, infoError: null });
 
@@ -149,7 +156,7 @@ describe("Core views & P0-P2 regression DOM coverage", () => {
   });
 
   it("merges offline dirtyPatch onto incoming PREFERENCES_GET without clobbering workspace_root", async () => {
-    useConnectionStore.setState({ status: "disconnected" });
+    useConnectionStore.setState({ status: "idle" });
     await usePreferencesStore.getState().update({ theme: "dark" });
     expect(usePreferencesStore.getState().dirtyPatch).toEqual({ theme: "dark" });
 
@@ -194,8 +201,7 @@ describe("Core views & P0-P2 regression DOM coverage", () => {
       comparisonItem: null,
     });
 
-    const onRunVideo = vi.fn().mockResolvedValue(undefined);
-    const { rerender } = render(<WatermarkResultsCard onRun={vi.fn()} onRunVideo={onRunVideo} />);
+    const { rerender } = render(<WatermarkResultsCard />);
 
     // Remove the first queued file (/a.png) and ensure /b.png and /c.png remain.
     const removeButtons = screen.getAllByRole("button", { name: /remove|xóa/i });
@@ -211,18 +217,19 @@ describe("Core views & P0-P2 regression DOM coverage", () => {
           title: "y.png",
         },
         result: {
-          processed: 2,
-          detected: 1,
-          skipped: 1,
-          failed: 0,
+          image: { localUrl: "/y_clean.png", kind: "image" },
+          images: [{ localUrl: "/y_clean.png", kind: "image" }],
+          detected: true,
+          total_count: 2,
+          detected_count: 1,
           results: [
-            { path: "/x.png", out_path: "", detected: false, skipped: true },
-            { path: "/y.png", out_path: "/y_clean.png", detected: true, skipped: false },
+            { path: "/x.png", out_path: "", detected: false, score: 0 },
+            { path: "/y.png", out_path: "/y_clean.png", detected: true, score: 0.9 },
           ],
         },
       });
     });
-    rerender(<WatermarkResultsCard onRun={vi.fn()} onRunVideo={onRunVideo} />);
+    rerender(<WatermarkResultsCard />);
 
     await act(async () => {
       await Promise.resolve();
@@ -256,7 +263,7 @@ describe("Core views & P0-P2 regression DOM coverage", () => {
     });
     act(() => {
       useStudioStore.setState({
-        error: { code: "ERR_VALIDATION", message: "title required" },
+        error: { name: "ActionError", code: "ERR_VALIDATION", message: "title required" },
       });
     });
     const alert = screen.getByRole("alert");

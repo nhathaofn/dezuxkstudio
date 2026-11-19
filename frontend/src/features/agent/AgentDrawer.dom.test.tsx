@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render } from "@testing-library/react";
 
@@ -14,7 +13,7 @@ describe("AgentDrawer pointer resize cleanup", () => {
   });
 
   it("cleans up window pointer listeners when unmounted mid-resize drag", () => {
-    useConnectionStore.setState({ status: "disconnected" });
+    useConnectionStore.setState({ status: "idle" });
     useAgentDrawerStore.setState({ panelOpen: true, panelWidth: 420, activeTab: "connections" });
     const removeSpy = vi.spyOn(window, "removeEventListener");
 

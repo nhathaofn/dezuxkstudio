@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
@@ -25,13 +24,14 @@ import { useBinariesStore } from "./useBinariesStore";
 const missingBinary: BinaryInfo = {
   id: "ffmpeg",
   name: "FFmpeg",
-  status: "missing",
-  path: "",
-  version: "",
+  description: "FFmpeg binary",
+  executable: "ffmpeg.exe",
+  resolved_path: "",
   custom_path: "",
-  installed_by_app: false,
-  download_url: "https://example.com/ffmpeg.zip",
-  error: "",
+  source: "none",
+  version: "",
+  status: "missing",
+  can_download: true,
 };
 
 describe("BinaryCard tab-switch download persistence", () => {

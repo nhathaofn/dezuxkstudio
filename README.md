@@ -1,6 +1,6 @@
 # DezuxkStudio
 
-A desktop application base built with **Go + Wails v2 + React 19** (currently **Windows-only**; Linux/macOS unsupported) paired with a shared-codebase **headless core server**.
+A desktop application base built with **Go + Wails v2 + React 18** (currently **Windows-only**; Linux/macOS unsupported) paired with a shared-codebase **headless core server**.
 
 | Component | Entry Point | Build Command | Output |
 | :--- | :--- | :--- | :--- |
@@ -47,7 +47,7 @@ main.go / cmd/server            Entry points: load config → paths → logger �
        ├─ internal/realtime     WebSocket hub: auth, typed registry, dispatcher, cancellation
        │    └─ modules/         Thin adapters: payload → service → DTO (zero business logic)
        ├─ internal/service/*    Use cases (preferences, system, update, diagnostics, binaries,
-       │                        provider, mediagen, workflow, agent, agentcli)
+       │                        provider, media, mediagen, studio, workflow, agent, agentcli)
        ├─ internal/domain/*     Models, validation invariants, and repository interfaces
        ├─ internal/engine       Node/DAG graph runtime, MediaRef/ResolveMediaPath/FileGuard
        │    └─ internal/tools/* Implementation nodes (watermark, mediagen, provider)
@@ -98,9 +98,9 @@ Every configurable parameter is declared **exactly once** in `internal/config/fi
 
 - **Desktop Mode**: Ephemeral 256-bit token generated per session, compared in constant-time, bound exclusively to loopback (`127.0.0.1`).
 - **Server Mode (`--mode server`)**:
-  - **Host Administration Guard**: `server.allow_host_admin` defaults to `false`. Remote clients are blocked with `ERR_UNAVAILABLE` from mutating host executable paths (`binaries:set_path`, `agent:set_path`), triggering OS folder openers (`system:open_folder`), or editing skills/subagents (`agent:save_skill`, `agent:delete_skill`).
+  - **Host Administration Guard**: `server.allow_host_admin` defaults to `false`. Remote clients are blocked with `ERR_UNAVAILABLE` from mutating host executable paths (`binaries:set_path`, `agent:set_path`), downloading binaries (`binaries:download`), exporting diagnostics (`diagnostics:export`), checking updates (`system:check_update`), upserting pricing (`studio:pricing_upsert`), triggering OS folder openers (`system:open_folder`, `studio:open_export_folder`), mutating/probing provider credentials/models (`providers:*` except read-only `providers:list`/`providers:defaults`), or administering agent auth/links/customizations (`agent:{login,login_code,logout,connect,set_model,link_provider,unlink_provider,reload_customizations}`, `agent:{save,delete,restore}_{skill,subagent}`). Host paths are omitted from `system:info`.
   - **Trusted Folders**: `agent:add_allowed_dir` and `agent:remove_allowed_dir` are permanently disabled in server mode. All node file operations are confined within validated roots via `engine.CheckFile`.
-  - **AI Generation**: Authorized remote clients with bearer tokens retain full access to AI model providers (`providers:*`) and prompt execution; credentials stay securely hosted on the server.
+  - **AI & Studio Execution**: Authorized remote clients with bearer tokens retain read-only provider visibility (`providers:list`, `providers:defaults`) and full workflow, Studio, and agent prompt execution (`workflow:*`, `studio:*`, `agent:send_prompt`); credentials stay securely hosted on the server.
 - **Outbound HTTP Security**: Link-local, private, and multicast addresses are rejected to protect against SSRF; `WithRedirectGuard` restricts redirect chains to a maximum of 10 hops.
 
 ---
@@ -108,7 +108,7 @@ Every configurable parameter is declared **exactly once** in `internal/config/fi
 ## 5. Local Data Storage & Migrations
 
 - **SQLite Engine**: Running in WAL mode, single-connection, with `PRAGMA foreign_keys = ON` enforced.
-- **Append-Only Migrations**: Located in `internal/storage/sqlite/migrations/NNN_name.sql`, applied in discrete transactions. Migration `014_agent_foreign_keys.sql` guarantees `FOREIGN KEY ... ON DELETE CASCADE` on conversation messages and sessions, rescuing legacy orphan rows before rebuilding tables.
+- **Append-Only Migrations**: Located in `internal/storage/sqlite/migrations/NNN_name.sql` (`001`–`023`), applied in discrete transactions. Migration `014_agent_foreign_keys.sql` guarantees `FOREIGN KEY ... ON DELETE CASCADE` on conversation messages and sessions, and migrations `018`–`023` add the AI Studio pipeline, billing/queue tables, version/QC tracking, timeline editing, and performance indexes.
 - **Automated Backups**: Backups are created via `VACUUM INTO` prior to executing migrations on existing databases.
 - **Atomic File Operations**: All file modifications stream to disk atomically using `internal/fsutil`.
 
