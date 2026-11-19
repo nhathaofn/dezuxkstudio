@@ -12,31 +12,24 @@ const VI_DIACRITICS_REGEX =
 
 describe("Dictionary Lookups & Interpolation Robustness", () => {
   describe("1.1 Uncataloged Key Behavior", () => {
-    it("reports undefined when an uncataloged key is requested without vars", () => {
-      // TypeScript prevents this at compile time, but at runtime dynamic keys may be passed.
+    it("falls back safely to the key string when an uncataloged key is requested", () => {
       const uncataloged = "non.existent.key" as unknown as MessageKey;
-      const result = translate("en", uncataloged);
-      // Verify behavior: returns undefined because catalogs[lang]?.[key] ?? en[key] is undefined.
-      expect(result).toBeUndefined();
+      expect(translate("en", uncataloged)).toBe("non.existent.key");
+      expect(translate("en", uncataloged, { count: 5 })).toBe("non.existent.key");
     });
 
-    it("evaluates behavior when an uncataloged key is requested with vars", () => {
-      const uncataloged = "non.existent.key" as unknown as MessageKey;
-      // When template is undefined, template.replace(...) throws a TypeError.
-      expect(() => {
-        translate("en", uncataloged, { count: 5 });
-      }).toThrow(TypeError);
-    });
-
-    it("demonstrates prototype chain leakage in isMessageKey via 'in' operator", () => {
-      // Due to `key in en`, Object.prototype methods return true!
-      expect(isMessageKey("toString")).toBe(true);
-      expect(isMessageKey("valueOf")).toBe(true);
-      expect(isMessageKey("constructor")).toBe(true);
-      // And when called, translate returns the prototype function rather than a string!
-      const leaked = translate("en", "toString" as unknown as MessageKey);
-      expect(typeof leaked).toBe("function");
-      expect(leaked).toBe(Object.prototype.toString);
+    it("prevents prototype chain leakage in isMessageKey and translate via Object.hasOwn", () => {
+      expect(isMessageKey("toString")).toBe(false);
+      expect(isMessageKey("valueOf")).toBe(false);
+      expect(isMessageKey("constructor")).toBe(false);
+      const safe = translate("en", "toString" as unknown as MessageKey);
+      expect(safe).toBe("toString");
+      expect(
+        translate("en", "watermark.workers.count", {
+          count: 3,
+          constructor: "ignored",
+        } as unknown as Record<string, string | number>)
+      ).toBe("3 Workers");
     });
 
     it("verifies isMessageKey returns false for normal non-existent keys", () => {

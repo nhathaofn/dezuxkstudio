@@ -58,9 +58,9 @@ export const navRoutes: NavRoute[] = [
   },
 ];
 
-export const settingsRoute = {
+export const settingsRoute: Omit<NavRoute, "icon"> = {
   path: "/settings",
-  label: "header.settings" as MessageKey,
+  label: "header.settings",
   load: () => import("../features/preferences/SettingsView"),
 };
 

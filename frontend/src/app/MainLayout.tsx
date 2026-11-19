@@ -18,11 +18,10 @@ import { appConfig } from "../config/appConfig";
 export const MainLayout: React.FC = () => {
   const { pathname } = useLocation();
   const connected = useConnectionStore((s) => s.status === "connected");
-  const sysInfo = useSystemStore((s) => s.info);
+  const sysMode = useSystemStore((s) => s.info?.mode);
   const prefsLoaded = usePreferencesStore((s) => s.loaded);
   const onboardingCompleted = usePreferencesStore((s) => s.prefs.onboarding_completed);
-  const showOnboarding =
-    connected && sysInfo?.mode === "desktop" && prefsLoaded && !onboardingCompleted;
+  const showOnboarding = connected && sysMode === "desktop" && prefsLoaded && !onboardingCompleted;
   const screenContext = useScreenContextStore((s) => s.context);
   const t = useT();
 

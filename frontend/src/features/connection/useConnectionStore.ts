@@ -9,7 +9,7 @@ import {
   type ConnectionStatus,
   type Endpoint,
 } from "../../lib/rtClient";
-import { safeStorage } from "../../lib/storage";
+import { safeSessionStorage, safeStorage } from "../../lib/storage";
 
 interface ConnectionState {
   status: ConnectionStatus;
@@ -24,6 +24,8 @@ interface ConnectionState {
   setManualUrl: (url: string) => Promise<void>;
   /** Browser mode only: forget the manual endpoint. */
   resetToAuto: () => Promise<void>;
+  /** Saves an authentication token for remote server connection (--mode client or browser mode) and reconnects. */
+  setRemoteToken: (token: string) => Promise<void>;
   setLatency: (ms: number | null) => void;
   setFatal: (err: ActionError) => void;
 }
@@ -47,6 +49,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
         bridge: getBridge(),
         location: window.location,
         storage: { getItem: (k) => safeStorage.get(k) },
+        sessionToken: safeSessionStorage.get(appConfig.storageKeys.remoteToken),
         fetchJson,
         dev: import.meta.env.DEV,
       });
@@ -68,6 +71,19 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     await get().connect();
   },
 
+  setRemoteToken: async (token) => {
+    const clean = token.trim();
+    const bridge = getBridge();
+    if (bridge) {
+      await bridge.SetRemoteToken(clean);
+    } else if (clean) {
+      safeSessionStorage.set(appConfig.storageKeys.remoteToken, clean);
+    } else {
+      safeSessionStorage.remove(appConfig.storageKeys.remoteToken);
+    }
+    await get().connect();
+  },
+
   setLatency: (ms) => set({ latencyMs: ms }),
 
   setFatal: (err) => {
@@ -75,8 +91,3 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     set({ fatal: err });
   },
 }));
-
-// Mirror the client status into the store for the lifetime of the app.
-rtClient.onStatus((status) =>
-  useConnectionStore.setState(status === "connected" ? { status } : { status, latencyMs: null })
-);

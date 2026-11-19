@@ -1,4 +1,5 @@
 import { useId, useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
 import type { BuiltinProvider, ProviderCredential } from "../../contracts/generated";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
@@ -18,6 +19,8 @@ interface CredentialFormProps {
   disabled: boolean;
 }
 
+const MAX_CREDENTIAL_FILE_BYTES = 128 * 1024;
+
 export function CredentialForm({
   provider,
   credential,
@@ -31,6 +34,7 @@ export function CredentialForm({
   const update = useProvidersStore((s) => s.updateCredential);
   const [name, setName] = useState(credential?.name ?? "");
   const [inputs, setInputs] = useState<Record<string, string>>({ ...credential?.values });
+  const [showFileJson, setShowFileJson] = useState(false);
   const [group, setGroup] = useState(() => {
     const index = provider.credential_groups.findIndex((keys) =>
       keys.every((key) => credential?.secret_hints[key])
@@ -158,6 +162,16 @@ export function CredentialForm({
                       const file = e.target.files?.[0];
                       e.target.value = "";
                       if (!file) return;
+                      if (file.size > MAX_CREDENTIAL_FILE_BYTES) {
+                        setError(
+                          new ActionError(
+                            "ERR_VALIDATION",
+                            t("providers.credential.fileTooLarge", { maxKiB: 128 }),
+                            { field: field.key }
+                          )
+                        );
+                        return;
+                      }
                       setReadingFile(true);
                       try {
                         change(field.key, await file.text());
@@ -168,14 +182,42 @@ export function CredentialForm({
                       }
                     }}
                   />
-                  <label className="field-label" htmlFor={`${id}-${field.key}-json`}>
-                    {t("providers.pasteJson")}
-                  </label>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <label className="field-label" htmlFor={`${id}-${field.key}-json`}>
+                      {t("providers.pasteJson")}
+                    </label>
+                    <Button
+                      size="sm"
+                      type="button"
+                      iconOnly
+                      aria-label={
+                        showFileJson ? t("providers.credential.hide") : t("providers.credential.show")
+                      }
+                      title={
+                        showFileJson ? t("providers.credential.hide") : t("providers.credential.show")
+                      }
+                      onClick={() => setShowFileJson((v) => !v)}
+                    >
+                      {showFileJson ? <EyeOff size={13} /> : <Eye size={13} />}
+                    </Button>
+                  </div>
                   <textarea
                     id={`${id}-${field.key}-json`}
                     className="textarea-control"
                     rows={5}
                     autoComplete="off"
+                    spellCheck={false}
+                    style={
+                      showFileJson
+                        ? undefined
+                        : ({ WebkitTextSecurity: "disc" } as React.CSSProperties)
+                    }
                     value={inputs[field.key] ?? ""}
                     aria-invalid={invalid}
                     required={required}

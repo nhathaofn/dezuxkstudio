@@ -6,19 +6,24 @@ const catalogs: Record<Language, Record<MessageKey, string>> = { en, vi };
 
 export type Translate = (key: MessageKey, vars?: Record<string, string | number>) => string;
 
+const hasOwn = (obj: object, prop: string): boolean =>
+  Object.prototype.hasOwnProperty.call(obj, prop);
+
 /** Translates key for lang (falling back to English), interpolating {name} placeholders. */
 export function translate(
   lang: Language,
   key: MessageKey,
   vars?: Record<string, string | number>
 ): string {
-  const template = catalogs[lang]?.[key] ?? en[key];
+  const cat = catalogs[lang];
+  const template =
+    cat && hasOwn(cat, key) ? cat[key] : hasOwn(en, key) ? en[key] : String(key);
   if (!vars) return template;
   return template.replace(/\{(\w+)\}/g, (m, name: string) =>
-    name in vars ? String(vars[name]) : m
+    hasOwn(vars, name) ? String(vars[name]) : m
   );
 }
 
 export function isMessageKey(key: string): key is MessageKey {
-  return key in en;
+  return hasOwn(en, key);
 }

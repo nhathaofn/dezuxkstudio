@@ -25,3 +25,28 @@ export const safeStorage = {
     }
   },
 };
+
+/** Safe sessionStorage access for ephemeral per-tab session credentials in browser mode. */
+export const safeSessionStorage = {
+  get(key: string): string | null {
+    try {
+      return window.sessionStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  },
+  set(key: string, value: string): void {
+    try {
+      window.sessionStorage.setItem(key, value);
+    } catch {
+      // ignore
+    }
+  },
+  remove(key: string): void {
+    try {
+      window.sessionStorage.removeItem(key);
+    } catch {
+      // ignore
+    }
+  },
+};

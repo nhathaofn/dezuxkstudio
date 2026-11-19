@@ -28,7 +28,10 @@ export function bootstrap(): void {
   });
 
   rtClient.on(Events.PREFERENCES_UPDATED, (p) => usePreferencesStore.getState().receive(p));
-  rtClient.on(Events.PROVIDERS_CHANGED, (p) => useProvidersStore.getState().receive(p));
+  rtClient.on(Events.PROVIDERS_CHANGED, (p) => {
+    useProvidersStore.getState().receive(p);
+    void useAgentStore.getState().fetchProviderLinks();
+  });
   rtClient.on(Events.AGENT_STATUS_CHANGED, (p) => useAgentStore.getState().receiveStatus(p));
   rtClient.on(Events.AGENT_LOGIN_PROMPT, (p) => useAgentStore.getState().receiveLoginPrompt(p));
   rtClient.on(Events.AGENT_CHAT_EVENT, (p) => useAgentStore.getState().receiveChatEvent(p));
@@ -55,13 +58,30 @@ export function bootstrap(): void {
   rtClient.on(Events.MEDIA_ASSETS_CHANGED, () =>
     useMediaLibraryStore.getState().receiveAssetsChanged()
   );
+  rtClient.on(Events.BINARIES_PROGRESS, (bp) =>
+    useBinariesStore.getState().receiveBinaryProgress(bp)
+  );
+  let lastProgressLine = "";
+  let progressFlushTimer: ReturnType<typeof setTimeout> | null = null;
   rtClient.on(Events.ACTION_PROGRESS, (p) => {
-    // Heartbeats only keep a request alive; logging them would flood the live log buffer.
-    if (!p.heartbeat) uiLog.info(`progress ${Math.round(p.percent)}% ${p.message}`);
+    // Heartbeats only keep a request alive; coalesce non-heartbeat updates to avoid spamming uiLog.
+    if (p.heartbeat) return;
+    lastProgressLine = `progress ${Math.round(p.percent)}% ${p.message}`;
+    if (progressFlushTimer !== null) return;
+    progressFlushTimer = setTimeout(() => {
+      progressFlushTimer = null;
+      if (lastProgressLine) {
+        uiLog.info(lastProgressLine);
+        lastProgressLine = "";
+      }
+    }, 150);
   });
 
   let firstConnect = true;
   rtClient.onStatus((status) => {
+    useConnectionStore.setState(
+      status === "connected" ? { status } : { status, latencyMs: null }
+    );
     uiLog.info(`connection: ${status}`);
     if (status !== "connected") {
       useStudioStore.getState().clearTransientState();
@@ -75,6 +95,7 @@ export function bootstrap(): void {
     void useProvidersStore.getState().list();
     void useProvidersStore.getState().fetchDefaults();
     void useAgentStore.getState().fetchProviders();
+    void useAgentStore.getState().fetchProviderLinks();
     void useAgentStore.getState().fetchHistory();
     void useAgentStore.getState().fetchApprovals();
     void useAgentStore.getState().fetchAllowedDirs();

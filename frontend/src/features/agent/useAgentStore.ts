@@ -9,6 +9,7 @@ import {
   type AgentLoginPrompt,
   type AgentProviderID,
   type AgentProviderInfo,
+  type AgentProviderLinkItem,
   type SubagentInvocation,
 } from "../../contracts/generated";
 import { rtClient, toActionError, type ActionError } from "../../lib/rtClient";
@@ -63,6 +64,7 @@ interface AgentState {
   approvals: AgentApprovalRequest[];
   resolvingApprovalIds: Record<string, boolean>;
   allowedDirs: string[];
+  providerLinks: Record<string, AgentProviderLinkItem>;
   loadingProviders: boolean;
   busyAction: boolean;
   /** What the user must do to finish a sign-in that is running right now, by provider. */
@@ -80,6 +82,9 @@ interface AgentState {
   clearError: () => void;
 
   fetchProviders: () => Promise<void>;
+  fetchProviderLinks: () => Promise<void>;
+  linkProvider: (agentProviderId: string, providerId: string, credentialId: string) => Promise<void>;
+  unlinkProvider: (agentProviderId: string) => Promise<void>;
   fetchHistory: () => Promise<void>;
   fetchApprovals: () => Promise<void>;
   fetchAllowedDirs: () => Promise<void>;
@@ -137,6 +142,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   approvals: [],
   resolvingApprovalIds: {},
   allowedDirs: [],
+  providerLinks: {},
   loadingProviders: false,
   busyAction: false,
   loginPrompts: {},
@@ -188,6 +194,58 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       });
     } catch (err) {
       set({ error: toActionError(err), loadingProviders: false });
+    }
+  },
+
+  fetchProviderLinks: async () => {
+    try {
+      const res = await rtClient.request(Actions.AGENT_LIST_PROVIDER_LINKS, {});
+      const mapped: Record<string, AgentProviderLinkItem> = {};
+      for (const link of res.links ?? []) {
+        if (link.agent_provider_id) {
+          mapped[link.agent_provider_id] = link;
+        }
+      }
+      set({ providerLinks: mapped });
+    } catch (err) {
+      set({ error: toActionError(err) });
+    }
+  },
+
+  linkProvider: async (agentProviderId, providerId, credentialId) => {
+    try {
+      await rtClient.request(Actions.AGENT_LINK_PROVIDER, {
+        agent_provider_id: agentProviderId,
+        provider_id: providerId,
+        credential_id: credentialId,
+      });
+      const item: AgentProviderLinkItem = {
+        agent_provider_id: agentProviderId,
+        provider_id: providerId,
+        credential_id: credentialId,
+      };
+      set((s) => ({
+        providerLinks: { ...s.providerLinks, [agentProviderId]: item },
+      }));
+    } catch (err) {
+      set({ error: toActionError(err) });
+      throw err;
+    }
+  },
+
+  unlinkProvider: async (agentProviderId) => {
+    try {
+      await rtClient.request(Actions.AGENT_UNLINK_PROVIDER, {
+        id: agentProviderId as AgentProviderID,
+      });
+      set((s) => {
+        const next = { ...s.providerLinks };
+        delete next[agentProviderId];
+        return { providerLinks: next };
+      });
+    } catch (err) {
+      set({ error: toActionError(err) });
+      throw err;
     }
   },
 

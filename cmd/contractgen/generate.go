@@ -181,10 +181,16 @@ func (g *generator) tsType(t reflect.Type) (string, error) {
 	case reflect.Pointer:
 		inner, err := g.tsType(t.Elem())
 		return inner + " | null", err
-	case reflect.Slice, reflect.Array:
+	case reflect.Slice:
 		if t.Elem().Kind() == reflect.Uint8 {
 			return "string", nil
 		}
+		inner, err := g.tsType(t.Elem())
+		if strings.Contains(inner, "|") {
+			inner = "(" + inner + ")"
+		}
+		return inner + "[]", err
+	case reflect.Array:
 		inner, err := g.tsType(t.Elem())
 		if strings.Contains(inner, "|") {
 			inner = "(" + inner + ")"

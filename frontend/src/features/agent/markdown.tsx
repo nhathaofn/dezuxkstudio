@@ -84,89 +84,109 @@ const Notice: React.FC<{ noticeKey: string }> = ({ noticeKey }) => {
   );
 };
 
+function splitStableMarkdownPrefix(text: string): { settled: string; tail: string } {
+  const idx = text.lastIndexOf("\n\n");
+  if (idx <= 0) return { settled: "", tail: text };
+  const candidate = text.slice(0, idx);
+  // Only freeze prefix when no fenced code block spans across the split point.
+  const fenceMatches = candidate.match(/^[ \t]*```/gm);
+  if (fenceMatches && fenceMatches.length % 2 === 1) {
+    return { settled: "", tail: text };
+  }
+  return { settled: candidate, tail: text.slice(idx + 2) };
+}
+
+function renderBlocks(text: string, prefix: string): React.ReactNode {
+  if (!text) return null;
+  const blocks = parseBlocks(text);
+  return blocks.map((b, i) => {
+    const key = `${prefix}-b${i}`;
+    switch (b.type) {
+      case "p":
+        return <p key={key}>{renderLines(b.text, key)}</p>;
+      case "h": {
+        const Tag = `h${Math.min(b.level + 2, 6)}` as "h3" | "h4" | "h5" | "h6";
+        return (
+          <Tag key={key} className="md-heading">
+            {renderInline(b.text, key)}
+          </Tag>
+        );
+      }
+      case "ul":
+        return (
+          <ul key={key}>
+            {b.items.map((item, j) => (
+              <li key={j}>{renderLines(item, `${key}-${j}`)}</li>
+            ))}
+          </ul>
+        );
+      case "ol":
+        return (
+          <ol key={key} start={b.start}>
+            {b.items.map((item, j) => (
+              <li key={j}>{renderLines(item, `${key}-${j}`)}</li>
+            ))}
+          </ol>
+        );
+      case "quote":
+        return <blockquote key={key}>{renderLines(b.text, key)}</blockquote>;
+      case "code":
+        return <CodeBlock key={key} code={b.text} lang={b.lang} closed={b.closed} />;
+      case "table":
+        return (
+          <div key={key} className="md-table-wrap">
+            <table className="md-table">
+              <thead>
+                <tr>
+                  {b.headers.map((h, colIdx) => (
+                    <th
+                      key={colIdx}
+                      style={b.alignments[colIdx] ? { textAlign: b.alignments[colIdx] } : undefined}
+                    >
+                      {renderInline(h, `${key}-th-${colIdx}`)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {b.rows.map((row, rowIdx) => (
+                  <tr key={rowIdx}>
+                    {row.map((cell, colIdx) => (
+                      <td
+                        key={colIdx}
+                        style={
+                          b.alignments[colIdx] ? { textAlign: b.alignments[colIdx] } : undefined
+                        }
+                      >
+                        {renderInline(cell, `${key}-td-${rowIdx}-${colIdx}`)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      case "hr":
+        return <hr key={key} />;
+      case "notice":
+        return <Notice key={key} noticeKey={b.key} />;
+    }
+  });
+}
+
+const SettledMarkdownBlocks: React.FC<{ text: string }> = React.memo(({ text }) => (
+  <>{renderBlocks(text, "s")}</>
+));
+SettledMarkdownBlocks.displayName = "SettledMarkdownBlocks";
+
 export const Markdown: React.FC<{ text: string; className?: string }> = React.memo(
   ({ text, className }) => {
-    const blocks = parseBlocks(text);
+    const { settled, tail } = splitStableMarkdownPrefix(text);
     return (
       <div className={`md${className ? ` ${className}` : ""}`}>
-        {blocks.map((b, i) => {
-          const key = `b${i}`;
-          switch (b.type) {
-            case "p":
-              return <p key={key}>{renderLines(b.text, key)}</p>;
-            case "h": {
-              const Tag = `h${Math.min(b.level + 2, 6)}` as "h3" | "h4" | "h5" | "h6";
-              return (
-                <Tag key={key} className="md-heading">
-                  {renderInline(b.text, key)}
-                </Tag>
-              );
-            }
-            case "ul":
-              return (
-                <ul key={key}>
-                  {b.items.map((item, j) => (
-                    <li key={j}>{renderLines(item, `${key}-${j}`)}</li>
-                  ))}
-                </ul>
-              );
-            case "ol":
-              return (
-                <ol key={key} start={b.start}>
-                  {b.items.map((item, j) => (
-                    <li key={j}>{renderLines(item, `${key}-${j}`)}</li>
-                  ))}
-                </ol>
-              );
-            case "quote":
-              return <blockquote key={key}>{renderLines(b.text, key)}</blockquote>;
-            case "code":
-              return <CodeBlock key={key} code={b.text} lang={b.lang} closed={b.closed} />;
-            case "table":
-              return (
-                <div key={key} className="md-table-wrap">
-                  <table className="md-table">
-                    <thead>
-                      <tr>
-                        {b.headers.map((h, colIdx) => (
-                          <th
-                            key={colIdx}
-                            style={
-                              b.alignments[colIdx] ? { textAlign: b.alignments[colIdx] } : undefined
-                            }
-                          >
-                            {renderInline(h, `${key}-th-${colIdx}`)}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {b.rows.map((row, rowIdx) => (
-                        <tr key={rowIdx}>
-                          {row.map((cell, colIdx) => (
-                            <td
-                              key={colIdx}
-                              style={
-                                b.alignments[colIdx]
-                                  ? { textAlign: b.alignments[colIdx] }
-                                  : undefined
-                              }
-                            >
-                              {renderInline(cell, `${key}-td-${rowIdx}-${colIdx}`)}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              );
-            case "hr":
-              return <hr key={key} />;
-            case "notice":
-              return <Notice key={key} noticeKey={b.key} />;
-          }
-        })}
+        {settled && <SettledMarkdownBlocks text={settled} />}
+        {tail && renderBlocks(tail, "t")}
       </div>
     );
   }

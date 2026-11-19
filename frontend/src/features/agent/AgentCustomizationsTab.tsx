@@ -20,8 +20,10 @@ import {
   type SkillInfo,
   type SubagentInfo,
 } from "../../contracts/generated";
+import { isDesktop } from "../../lib/bridge";
 import { useT } from "../../lib/i18n";
 import { rtClient } from "../../lib/rtClient";
+import { useSystemStore } from "../system/useSystemStore";
 import { toolLabel } from "./toolLabels";
 import { useAgentCustomizationsStore } from "./useAgentCustomizationsStore";
 import { useAgentStore } from "./useAgentStore";
@@ -200,7 +202,10 @@ export const AgentCustomizationsTab: React.FC<AgentCustomizationsTabProps> = ({
     setEditor({ ...editor, [field]: next });
   };
 
+  const mode = useSystemStore((s) => s.info?.mode);
+  const canOpenFolder = isDesktop() && mode !== "server" && mode !== "client";
   const openCustomizationsFolder = () => {
+    if (!canOpenFolder) return;
     void rtClient.request(Actions.SYSTEM_OPEN_FOLDER, { target: "agent_customizations" });
   };
 
@@ -239,8 +244,8 @@ export const AgentCustomizationsTab: React.FC<AgentCustomizationsTabProps> = ({
             <Button
               size="sm"
               onClick={openCustomizationsFolder}
-              disabled={!coreConnected}
-              title={t("agent.cust.openFolder")}
+              disabled={!coreConnected || !canOpenFolder}
+              title={!canOpenFolder ? t("system.desktopOnly") : t("agent.cust.openFolder")}
             >
               <FolderOpen size={12} />
               {t("agent.cust.openFolder")}

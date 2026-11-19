@@ -303,4 +303,70 @@ describe("SignedMediaSession & useSignedMediaURL logic", () => {
     session.dispose();
     expect(removeListener).toHaveBeenCalledWith("loadedmetadata", expect.any(Function));
   });
+
+  it("ignores stale in-flight request when assetId changes and supports StrictMode revive after dispose", async () => {
+    let resolveA!: (val: MediaSignedURLResult) => void;
+    let resolveB!: (val: MediaSignedURLResult) => void;
+    const expSec = Math.floor(Date.now() / 1000) + 600;
+
+    signMediaURLSpy
+      .mockImplementationOnce(
+        () =>
+          new Promise<MediaSignedURLResult>((r) => {
+            resolveA = r;
+          })
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<MediaSignedURLResult>((r) => {
+            resolveB = r;
+          })
+      );
+
+    const session = new SignedMediaSession();
+    session.configure("asset-A");
+    expect(signMediaURLSpy).toHaveBeenCalledTimes(1);
+
+    // Switching assetId before asset-A resolves must start a new request instead of reusing asset-A's promise
+    session.configure("asset-B");
+    expect(signMediaURLSpy).toHaveBeenCalledTimes(2);
+
+    resolveA({
+      asset_id: "asset-A",
+      url: "http://example.com/A",
+      ticket: "tok-A",
+      expires_at: expSec,
+      purpose: "preview",
+    });
+    await flush();
+    // Stale A result must not overwrite current state for asset-B
+    expect(session.getState().url).toBeNull();
+    expect(session.getState().loading).toBe(true);
+
+    resolveB({
+      asset_id: "asset-B",
+      url: "http://example.com/B",
+      ticket: "tok-B",
+      expires_at: expSec,
+      purpose: "preview",
+    });
+    await flush();
+    expect(session.getState().url).toBe("http://example.com/B");
+    expect(session.getState().loading).toBe(false);
+
+    // StrictMode unmount -> remount: dispose() then revive() + configure()
+    signMediaURLSpy.mockResolvedValueOnce({
+      asset_id: "asset-C",
+      url: "http://example.com/C",
+      ticket: "tok-C",
+      expires_at: expSec,
+      purpose: "preview",
+    });
+    session.dispose();
+    session.revive();
+    session.configure("asset-C");
+    await flush();
+    expect(session.getState().url).toBe("http://example.com/C");
+    session.dispose();
+  });
 });

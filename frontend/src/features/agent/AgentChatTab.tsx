@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import type { AgentProviderInfo, SubagentInvocation } from "../../contracts/generated";
 import { Button } from "../../components/ui/Button";
+import { VirtualList, type VirtualListHandle } from "../../components/ui/VirtualList";
 import { translateServerMessage, useT, type MessageKey } from "../../lib/i18n";
 import { AgentHistoryList } from "./AgentHistoryList";
 import { Markdown } from "./markdown";
@@ -455,7 +456,8 @@ const AgentChatPane: React.FC<AgentChatTabProps> = ({ connectedToCore }) => {
   const retryLast = useAgentStore((s) => s.retryLast);
   const resolveApproval = useAgentStore((s) => s.resolveApproval);
 
-  const listRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<VirtualListHandle | null>(null);
+  const scrollRafRef = useRef<number | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const stickRef = useRef(true);
   const [showJump, setShowJump] = useState(false);
@@ -495,25 +497,52 @@ const AgentChatPane: React.FC<AgentChatTabProps> = ({ connectedToCore }) => {
   const activeSlashIdx = Math.min(slashIdx, Math.max(0, slashSkills.length - 1));
 
   // Follow new content only while the user is at the bottom; reading older messages is not interrupted.
-  const onScroll = useCallback(() => {
-    const el = listRef.current;
-    if (!el) return;
+  const onScroll = useCallback((_scrollTop: number, e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_TO_BOTTOM_PX;
     stickRef.current = atBottom;
     setShowJump(!atBottom);
   }, []);
 
-  const scrollToBottom = useCallback((smooth = false) => {
-    const el = listRef.current;
-    if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
-    stickRef.current = true;
-    setShowJump(false);
-  }, []);
+  const scrollToBottom = useCallback(
+    (smooth = false) => {
+      const handle = listRef.current;
+      const el = handle?.getContainer();
+      if (handle && messages.length > 0) {
+        handle.scrollToIndex(messages.length - 1, smooth ? "smooth" : "auto", "end");
+      }
+      if (el) {
+        el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+      }
+      stickRef.current = true;
+      setShowJump(false);
+    },
+    [messages.length]
+  );
 
-  useLayoutEffect(() => {
-    if (stickRef.current) scrollToBottom();
+  useEffect(() => {
+    if (!stickRef.current || messages.length === 0) return;
+    if (typeof requestAnimationFrame !== "function") {
+      scrollToBottom();
+      return;
+    }
+    if (scrollRafRef.current !== null) return;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      if (stickRef.current) {
+        scrollToBottom();
+      }
+    });
   }, [messages, approvals, scrollToBottom]);
+
+  useEffect(() => {
+    return () => {
+      if (scrollRafRef.current !== null && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+      }
+    };
+  }, []);
 
   // Grow the composer with its content.
   useLayoutEffect(() => {
@@ -595,25 +624,29 @@ const AgentChatPane: React.FC<AgentChatTabProps> = ({ connectedToCore }) => {
   return (
     <div className="agent-chat-tab">
       <div className="agent-chat-scroll">
-        <div
-          className="agent-chat-messages scrollable-pane"
-          ref={listRef}
-          onScroll={onScroll}
-          role="log"
-          aria-live="polite"
-          aria-busy={sending}
-        >
-          {messages.length === 0 ? (
+        {messages.length === 0 ? (
+          <div className="agent-chat-messages scrollable-pane" role="log" aria-live="polite" aria-busy={sending}>
             <EmptyState
               provider={activeProvider}
               onPick={pickSuggestion}
               onConnect={() => setActiveTab("connections")}
             />
-          ) : (
-            <div className="agent-msg-list">
-              {messages.map((m) => (
+          </div>
+        ) : (
+          <VirtualList<AgentChatMessage>
+            ref={listRef}
+            items={messages}
+            estimateSize={96}
+            variableHeight
+            height="100%"
+            getItemKey={(m) => m.id}
+            onScroll={onScroll}
+            className="agent-chat-messages scrollable-pane"
+            innerClassName="agent-msg-list"
+            role="log"
+            renderItem={(m) => (
+              <div style={{ paddingBottom: "var(--space-2)" }}>
                 <ChatBubble
-                  key={m.id}
                   msg={m}
                   agentName={
                     providers.find((p) => p.id === m.providerId)?.name ??
@@ -623,10 +656,10 @@ const AgentChatPane: React.FC<AgentChatTabProps> = ({ connectedToCore }) => {
                   canRetry={canRetry && m === lastMsg}
                   onRetry={() => void retryLast()}
                 />
-              ))}
-            </div>
-          )}
-        </div>
+              </div>
+            )}
+          />
+        )}
 
         {showJump && messages.length > 0 && (
           <button

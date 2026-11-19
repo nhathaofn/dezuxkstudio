@@ -35,6 +35,7 @@ export const LiveLogView: React.FC = () => {
           <VirtualList<LogEntry>
             items={entries}
             estimateSize={ROW_HEIGHT_PX}
+            variableHeight
             height="100%"
             className="flex-full-height"
             getItemKey={(e) => e.id}

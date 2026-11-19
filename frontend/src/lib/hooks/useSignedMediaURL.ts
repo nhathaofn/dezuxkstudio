@@ -60,6 +60,7 @@ export class SignedMediaSession {
   private skewMs: number = appConfig.media.ticketRenewSkewMs;
   private disposed: boolean = false;
   private inFlightPromise: Promise<string | null> | null = null;
+  private inFlightKey: string | null = null;
   private attachedMedia: HTMLMediaElement | null = null;
   private pendingLoadedCleanup: (() => void) | null = null;
   private mediaErrorRetries: number = 0;
@@ -166,28 +167,51 @@ export class SignedMediaSession {
     this.notify();
   }
 
+  /** React StrictMode remounts after simulated unmount: restore session from disposed state cleanly. */
+  public revive(): void {
+    if (!this.disposed) return;
+    this.disposed = false;
+    this.mediaErrorRetries = 0;
+    this.inFlightPromise = null;
+    this.inFlightKey = null;
+  }
+
   public async renew(): Promise<string | null> {
     if (this.disposed) return null;
-    if (!this.currentAssetId) {
+    const requestedId = this.currentAssetId;
+    const requestedPurpose = this.purpose;
+    const requestedTtl = this.ttlSeconds;
+    if (!requestedId) {
+      this.inFlightPromise = null;
+      this.inFlightKey = null;
       this.updateState({ url: null, ticket: null, expiresAt: null, loading: false, error: null });
       return null;
     }
 
-    if (this.inFlightPromise) {
+    const reqKey = `${requestedId}:${requestedPurpose}:${requestedTtl ?? ""}`;
+    if (this.inFlightPromise && this.inFlightKey === reqKey) {
       return this.inFlightPromise;
     }
 
     this.updateState({ loading: true, error: null });
 
-    const promise = (async () => {
+    let promise!: Promise<string | null>;
+    promise = (async () => {
       try {
         const result = await signMediaURL({
-          asset_id: this.currentAssetId!,
-          purpose: this.purpose,
-          ttl_seconds: this.ttlSeconds,
+          asset_id: requestedId,
+          purpose: requestedPurpose,
+          ttl_seconds: requestedTtl,
         });
 
-        if (this.disposed) return null;
+        if (
+          this.disposed ||
+          this.currentAssetId !== requestedId ||
+          this.purpose !== requestedPurpose ||
+          this.ttlSeconds !== requestedTtl
+        ) {
+          return null;
+        }
 
         // Convert seconds to milliseconds if timestamp is Unix seconds (< 1e11)
         const expMs = result.expires_at < 1e11 ? result.expires_at * 1000 : result.expires_at;
@@ -209,7 +233,7 @@ export class SignedMediaSession {
             expMs - now - this.skewMs
           );
           this.renewTimer = setTimeout(() => {
-            if (!this.disposed) {
+            if (!this.disposed && this.currentAssetId === requestedId) {
               this.mediaErrorRetries = 0;
               void this.renew();
             }
@@ -254,16 +278,27 @@ export class SignedMediaSession {
 
         return result.url;
       } catch (err) {
-        if (this.disposed) return null;
+        if (
+          this.disposed ||
+          this.currentAssetId !== requestedId ||
+          this.purpose !== requestedPurpose ||
+          this.ttlSeconds !== requestedTtl
+        ) {
+          return null;
+        }
         const errObj = err instanceof Error ? err : new Error(String(err));
         this.updateState({ loading: false, error: errObj });
         return null;
       } finally {
-        this.inFlightPromise = null;
+        if (this.inFlightPromise === promise) {
+          this.inFlightPromise = null;
+          this.inFlightKey = null;
+        }
       }
     })();
 
     this.inFlightPromise = promise;
+    this.inFlightKey = reqKey;
     return promise;
   }
 
@@ -285,6 +320,8 @@ export class SignedMediaSession {
 
   public dispose(): void {
     this.disposed = true;
+    this.inFlightPromise = null;
+    this.inFlightKey = null;
     this.clearRenewTimer();
     this.clearPendingLoadedListener();
     this.listeners.clear();
@@ -319,10 +356,12 @@ export function useSignedMediaURL(
   });
 
   useEffect(() => {
+    session.revive();
     return session.subscribe(setState);
   }, [session]);
 
   useEffect(() => {
+    session.revive();
     session.configure(assetId, { purpose, autoRenew, skewMs, ttlSeconds });
   }, [session, assetId, purpose, autoRenew, skewMs, ttlSeconds]);
 

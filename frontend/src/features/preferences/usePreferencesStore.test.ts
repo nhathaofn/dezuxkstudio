@@ -40,8 +40,34 @@ describe("usePreferencesStore", () => {
       },
       loaded: false,
       dirty: false,
+      dirtyPatch: null,
       error: null,
     });
+  });
+
+  it("merges offline theme/language changes onto server preferences on reconnect without overwriting workspace_root", async () => {
+    vi.spyOn(rtClient, "getStatus").mockReturnValue("idle");
+    await usePreferencesStore.getState().update({ theme: "dark" });
+    expect(usePreferencesStore.getState().dirtyPatch).toEqual({ theme: "dark" });
+
+    const serverPrefs: Preferences = {
+      theme: "light",
+      language: "vi",
+      workspace_root: "D:/SavedWorkspace",
+      onboarding_completed: true,
+      agent_skip_trusted_approval: false,
+    };
+    const reqSpy = vi
+      .spyOn(rtClient, "request")
+      .mockResolvedValueOnce(serverPrefs)
+      .mockResolvedValueOnce({ ...serverPrefs, theme: "dark" });
+
+    await usePreferencesStore.getState().load();
+
+    expect(reqSpy).toHaveBeenNthCalledWith(1, Actions.PREFERENCES_GET, {});
+    expect(reqSpy).toHaveBeenNthCalledWith(2, Actions.PREFERENCES_UPDATE, { theme: "dark" });
+    expect(usePreferencesStore.getState().prefs.workspace_root).toBe("D:/SavedWorkspace");
+    expect(usePreferencesStore.getState().dirtyPatch).toBeNull();
   });
 
   it("initializes with default schema v2 properties", () => {

@@ -47,6 +47,8 @@ export class ConnectionManager {
     const ws = this.ws;
     this.ws = null;
     if (ws) {
+      ws.onopen = null;
+      ws.onmessage = null;
       ws.onclose = null;
       ws.close();
       this.handlers.onClosed();
@@ -77,11 +79,13 @@ export class ConnectionManager {
     this.ws = ws;
 
     ws.onopen = () => {
+      if (this.ws !== ws) return;
       this.attempts = 0;
       this.setStatus("connected");
       this.startLiveness(ws);
     };
     ws.onmessage = (ev: MessageEvent) => {
+      if (this.ws !== ws) return;
       this.lastInbound = Date.now();
       this.probeSentAt = 0;
       if (typeof ev.data !== "string") return;
@@ -98,6 +102,7 @@ export class ConnectionManager {
   /** Forgets a socket that closed or stopped answering, then reconnects. */
   private dropSocket(ws: WebSocket): void {
     this.stopLiveness();
+    ws.onopen = null;
     ws.onclose = null;
     ws.onmessage = null;
     this.ws = null;

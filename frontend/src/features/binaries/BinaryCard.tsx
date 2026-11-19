@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useRef, useState } from "react";
 import {
   CheckCircle2,
   Cpu,
@@ -67,29 +67,24 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
   const t = useT();
   const storeProbe = useBinariesStore((s) => s.probe);
   const storeDownload = useBinariesStore((s) => s.download);
+  const storeCancelDownload = useBinariesStore((s) => s.cancelDownload);
   const storeSetCustomPath = useBinariesStore((s) => s.setCustomPath);
   const storeProgress = useBinariesStore((s) => s.activeProgress[binary.id]);
 
   const [isProbing, setIsProbing] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<ActionProgress | null>(null);
   const [customPathDraft, setCustomPathDraft] = useState<string | null>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const customAbortRef = useRef<AbortController | null>(null);
 
   const activeProgress = downloadProgress ?? storeProgress ?? null;
   const customPathInput = customPathDraft ?? (binary.custom_path || "");
-
-  useEffect(() => {
-    return () => {
-      abortControllerRef.current?.abort();
-    };
-  }, []);
 
   const isDownloading = activeProgress !== null;
   const isDirty = customPathDraft !== null && customPathDraft !== (binary.custom_path || "");
   const badge = getStatusBadge(binary.status, t);
 
-  const systemInfo = useSystemStore((s) => s.info) ?? useSystemStore.getState().info;
-  const isRemote = systemInfo?.mode === "server" || systemInfo?.mode === "client";
+  const sysMode = useSystemStore((s) => s.info?.mode);
+  const isRemote = sysMode === "server" || sysMode === "client";
   const desktopOnlyTooltip = t("system.desktopOnly");
   const canBrowse = isDesktop() && !isRemote;
 
@@ -118,22 +113,22 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
     if (customPathDraft !== null) {
       const trimmed = customPathDraft.trim();
       if (trimmed.length === 0) {
-        return "Custom binary path cannot be empty. Enter an executable path or click Reset.";
+        return t("tools.pathWarning.empty");
       }
       const pathWithoutDrive = trimmed.replace(/^[a-zA-Z]:/, "");
       if (/[<>"|?*]/.test(pathWithoutDrive)) {
-        return 'Path contains invalid characters (< > " | ? *).';
+        return t("tools.pathWarning.invalidChars");
       }
       if (
         !trimmed.toLowerCase().endsWith(".exe") &&
         !trimmed.toLowerCase().endsWith(binary.executable.toLowerCase())
       ) {
-        return `Expected an executable file (${binary.executable}).`;
+        return t("tools.pathWarning.expectedExe", { executable: binary.executable });
       }
       return null;
     }
     if (binary.custom_path && binary.status === "invalid") {
-      return "The configured custom executable path is invalid or not executable.";
+      return t("tools.pathWarning.invalidConfigured");
     }
     return null;
   };
@@ -165,23 +160,34 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
   };
 
   const handleDownload = async () => {
-    const ctrl = new AbortController();
-    abortControllerRef.current = ctrl;
-    setDownloadProgress({ percent: 0, message: "" });
+    if (onDownload) {
+      const ctrl = new AbortController();
+      customAbortRef.current = ctrl;
+      setDownloadProgress({ percent: 0, message: "" });
+      try {
+        await onDownload(binary.id, ctrl.signal, (p) => setDownloadProgress(p));
+      } catch {
+        // Error handled by caller/store
+      } finally {
+        customAbortRef.current = null;
+        setDownloadProgress(null);
+      }
+      return;
+    }
 
     try {
-      const runner = onDownload ?? storeDownload;
-      await runner(binary.id, ctrl.signal, (p) => setDownloadProgress(p));
+      await storeDownload(binary.id);
     } catch {
       // Error handled in store
-    } finally {
-      abortControllerRef.current = null;
-      setDownloadProgress(null);
     }
   };
 
   const handleCancelDownload = () => {
-    abortControllerRef.current?.abort();
+    if (customAbortRef.current) {
+      customAbortRef.current.abort();
+      return;
+    }
+    storeCancelDownload(binary.id);
   };
 
   const handleSaveCustomPath = async () => {
@@ -192,6 +198,8 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
       const runner = onSetCustomPath ?? storeSetCustomPath;
       await runner(binary.id, customPath);
       setCustomPathDraft(null);
+    } catch {
+      // Error handled in store
     } finally {
       setIsProbing(false);
     }
@@ -218,6 +226,8 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
     try {
       const runner = onSetCustomPath ?? storeSetCustomPath;
       await runner(binary.id, "");
+    } catch {
+      // Error handled in store
     } finally {
       setIsProbing(false);
     }
@@ -289,7 +299,9 @@ export const BinaryCard: React.FC<BinaryCardProps> = ({
                     color: "var(--status-connecting)",
                   }}
                 >
-                  {resumedFromMB ? `Resumed from ${resumedFromMB} MB` : "Resumed"}
+                  {resumedFromMB
+                    ? t("tools.resumedFrom", { mb: resumedFromMB })
+                    : t("tools.resumed")}
                 </Badge>
               )}
             </span>

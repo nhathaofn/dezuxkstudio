@@ -8,6 +8,7 @@ export const appConfig = {
   /** localStorage keys (per-viewer conveniences only — never credentials). */
   storageKeys: {
     manualWsUrl: "dezuxk.manual_ws_url",
+    remoteToken: "dezuxk.session_token",
     themeHint: "dezuxk.theme_hint",
     languageHint: "dezuxk.language_hint",
     agentDrawerWidth: "dezuxk-agent-drawer-width",

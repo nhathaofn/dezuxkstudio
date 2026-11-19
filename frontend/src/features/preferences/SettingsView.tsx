@@ -37,18 +37,20 @@ export const SettingsView: React.FC = () => {
   const t = useT();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const prefs = usePreferencesStore((s) => s.prefs);
+  const theme = usePreferencesStore((s) => s.prefs.theme);
+  const language = usePreferencesStore((s) => s.prefs.language);
+  const workspaceRootPref = usePreferencesStore((s) => s.prefs.workspace_root);
   const update = usePreferencesStore((s) => s.update);
   const prefError = usePreferencesStore((s) => s.error);
-  const sysInfo = useSystemStore((s) => s.info);
+  const sysMode = useSystemStore((s) => s.info?.mode);
+  const activeWorkspaceRoot = useSystemStore((s) => s.info?.paths?.workspace_root ?? "");
   const openFolder = useSystemStore((s) => s.openFolder);
 
   const [workspaceError, setWorkspaceError] = useState<ActionError | null>(null);
   const activeWorkspaceError = workspaceError ?? prefError;
 
-  const isDesktopApp = isDesktop() && sysInfo?.mode === "desktop";
-  const activeWorkspaceRoot = sysInfo?.paths?.workspace_root ?? "";
-  const isCustomRoot = Boolean(prefs.workspace_root && prefs.workspace_root.trim() !== "");
+  const isDesktopApp = isDesktop() && sysMode === "desktop";
+  const isCustomRoot = Boolean(workspaceRootPref && workspaceRootPref.trim() !== "");
 
   const handleChangeWorkspaceRoot = async () => {
     const bridge = getBridge();
@@ -158,7 +160,7 @@ export const SettingsView: React.FC = () => {
                     </div>
                     <div className="settings-btn-group">
                       {ThemeValues.map((themeOption) => {
-                        const isSelected = prefs.theme === themeOption;
+                        const isSelected = theme === themeOption;
                         const Icon =
                           themeOption === "light" ? Sun : themeOption === "dark" ? Moon : Monitor;
                         return (
@@ -184,7 +186,7 @@ export const SettingsView: React.FC = () => {
                     </div>
                     <div className="settings-btn-group">
                       {LanguageValues.map((langOption) => {
-                        const isSelected = prefs.language === langOption;
+                        const isSelected = language === langOption;
                         return (
                           <Button
                             key={langOption}
