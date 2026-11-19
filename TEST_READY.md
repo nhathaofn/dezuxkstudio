@@ -1,8 +1,8 @@
 # Test Suite Readiness Report (`TEST_READY.md`)
 
-**Date**: 2026-11-14 (counts refreshed on branch `refactor/phase-5-db-cleanup-docs` after Wave 5A merge)  
+**Date**: 2026-11-19 (counts refreshed on branch `fix/360-audit-remediation` after Phases 1–6 audit remediation)  
 **Status**: **ALL AUTOMATED TESTS PASSING (GREEN)**  
-**Milestone**: Phases 1–5 Hardening, Boundary Decoupling & Cleanup
+**Milestone**: 360° Audit Remediation (Phases 1–6)
 
 ---
 
@@ -10,10 +10,10 @@
 
 | Test Track | Scope | Passed | Failed | Skipped |
 |:---|:---|:---:|:---:|:---:|
-| **Go — full repo** (`task test` / `go test -count=1 ./...`) | 50 packages (46 with test suites + 4 `[no test files]`), 566 top-level tests | 558 | 0 | 8 (7 live CLI/agent tests + `TestRealGoogleFlowLiveImage`) |
-| **Go — cross-package suite** (`go test -count=1 ./test/...`) | 7 `*_test.go` files, 31 top-level tests | 31 | 0 | 0 |
-| **Frontend Vitest** (`npm.cmd --prefix frontend run test:run`) | 27 test files | 227 | 0 | 0 |
-| **Frontend typecheck, lint & build** | `tsc --noEmit`, `tsc -p tsconfig.node.json`, `eslint`, `check-styles.mjs`, `prettier --check`, `vite build` | clean | 0 | — |
+| **Go — full repo** (`task test` / `go test -count=1 ./...`) | 56 packages (51 with test suites + 5 `[no test files]`), 786 top-level tests | 778 | 0 | 8 (7 live agent/CLI tests + `TestRealGoogleFlowLiveImage`) |
+| **Go — cross-package suite** (`go test -count=1 ./test/...`) | 8 `*_test.go` files, 48 top-level tests | 48 | 0 | 0 |
+| **Frontend Vitest** (`npm.cmd --prefix frontend run test:run`) | 44 test files | 371 | 0 | 0 |
+| **Frontend typecheck, lint & build** | `tsc --noEmit`, `tsc -p tsconfig.node.json`, `eslint --max-warnings 0`, `check-styles.mjs` (18 stylesheets, 4077 declarations), `prettier --check`, `vite build` | clean | 0 | — |
 
 Numbers change with every feature; regenerate them with the commands in §4 rather than editing by hand.
 
@@ -24,15 +24,16 @@ Numbers change with every feature; regenerate them with the commands in §4 rath
 Test files are named after the domain/behaviour they cover (never after the process that produced them).
 
 ### Backend (Go) — `test/`
-- `e2e_test.go`, `e2e_refactor_test.go` — headless core end to end: routing, preferences, diagnostics, HTTP/WS endpoints, binaries, English error contracts.
-- `server_authz_test.go` — `--mode server` authorization boundary: `server.allow_host_admin` default `false` (locks `system:open_folder`, `binaries:set_path`, `agent:set_path`, and all 6 skill/subagent mutators), `AllowHostAdmin=true` unlocks host-admin/customizations while keeping `agent:add_allowed_dir` / `agent:remove_allowed_dir` locked and `providers:*` accessible.
-- `resilience_migrations_binaries_watermark_test.go` — migration resilience, binary SHA-256 tampering, watermark MIME/transcode integrity.
+- `e2e_test.go`, `e2e_refactor_test.go`, `e2e_studio_queue_test.go` — headless core end to end: routing, preferences, diagnostics, HTTP/WS endpoints, binaries, English error contracts, and Studio queue + HTTP media serving E2E.
+- `server_authz_test.go` — `--mode server` authorization boundary: `LockHostAdmin` (`server.allow_host_admin=false`) locks mutating `providers:*`, `agent:{login,login_code,logout,connect,set_model,set_provider_link,link_provider,unlink_provider,reload_customizations}`, `binaries:download`, `diagnostics:export`, `studio:pricing_upsert`, `system:check_update`, host paths in `system:info`, and host-admin/customization mutators, while keeping read-only queries and workflow/studio/chat execution accessible.
+- `resilience_migrations_binaries_watermark_test.go` — migration resilience, binary SHA-256 tampering (isolated via `binaries.WithManifest`), watermark MIME/transcode integrity.
 - `edgecases_manifest_engine_secrets_download_test.go` — binaries manifest regexes, engine cycle detection and errors, DPAPI multi-byte data, crash-safe downloads.
 - `edgecases_sqlite_preferences_test.go` — clean database migration, preferences persistence.
 - `migration_version_test.go` — `latestMigrationVersion` helper dynamically tracking `NNN_*.sql` migrations.
 
 Package tests live next to the code (`internal/**/_test.go`, `pkg/**/_test.go`). Notable:
 - `internal/service/system/service_test.go` — `New`, `Info()` (`Mode`, `Build`, `Runtime`, `Paths.Diagnostics`), and `OpenFolder` (all 5 `FolderTarget`s, invalid target validation, opener errors).
+- `internal/safego/safego_test.go`, `internal/server/server_test.go`, `internal/desktop/shell_test.go`, `internal/contracts/validation_test.go` — panic recovery, server lifecycle/auth/CSP/ticket replay, desktop CSP (`style-src-attr 'unsafe-inline'`), and contract DTO validation.
 - `internal/tools/watermark/node_guard_test.go`, `node_collision_test.go` — file guard for remote clients, streaming order, per-image progress, and collision-safe output paths.
 - `internal/service/agent/access_test.go`, `code_guard_test.go`, `hardening_test.go`, `limits_test.go` — access policy incl. `CheckTrustedFile`, `code_guard`, prompt rules (`TestPolicyIsRulesOnly`), and subagent/concurrency limits.
 - `internal/docparse/docparse_test.go` — bounded plain-text extraction for `.docx`, `.odt`, `.rtf`, `.pdf`.
@@ -40,16 +41,17 @@ Package tests live next to the code (`internal/**/_test.go`, `pkg/**/_test.go`).
 - `internal/engine/media_input_test.go`, `media_path_test.go`, `spec_validate_test.go` — shared `ImageInputRef`, `ResolveMediaPath`, and startup `ValidateSpec` invariants.
 - `internal/server/handlers/media_test.go` — media upload body cap (`server.max_media_upload_bytes`) and expired staging pruning (`server.media_staging_ttl`).
 - `internal/realtime/hub_test.go` — auth, protocol version negotiation (`SupportedProtocolVersions`).
-- `internal/realtime/modules/agent_test.go`, `binaries_test.go`, `system_test.go` — trusted folders, host-admin, and customization locks in server mode.
-- `internal/storage/sqlite/migrations_test.go`, `sqlite_test.go`, `agent_redact_test.go` — versioned schema upgrades (incl. `014_agent_foreign_keys.sql` `ON DELETE CASCADE` & pre-014 orphan rescue) and secret scrubbing.
+- `internal/realtime/modules/agent_test.go`, `binaries_test.go`, `system_test.go`, `studio_test.go`, `coverage_test.go` — trusted folders, host-admin, customization locks, Studio approval gates, and module coverage.
+- `internal/storage/sqlite/migrations_test.go`, `sqlite_test.go`, `agent_redact_test.go` — versioned schema upgrades (incl. `001`–`023` migrations) and secret scrubbing.
 
-### Frontend (TypeScript / Vitest)
+### Frontend (TypeScript / Vitest + jsdom / Testing Library)
 - `lib/i18n/` — `i18n.test.ts`, `localization_audit.test.ts`, `serverMessages.test.ts`, `i18n_robustness.test.ts`.
-- `lib/rtClient/` — `rtClient.test.ts`, `connection.test.ts` (half-open detection), `media.test.ts`; `lib/bridge.test.ts`; `lib/hooks/flash.test.ts`.
-- `features/agent/` — `useAgentStore.test.ts`, `useAgentDrawerStore.test.ts`, `useAgentCustomizationsStore.test.ts`, `AgentDrawer.folders.test.ts`, `markdown.test.ts`.
+- `lib/rtClient/` — `rtClient.test.ts`, `connection.test.ts` (half-open detection), `media.test.ts`; `lib/bridge.test.ts`; `lib/hooks/flash.test.ts`, `lib/hooks/useSignedMediaURL.dom.test.tsx` (React `StrictMode` mount/unmount cancellation).
+- `components/ui/MediaDropZone.dom.test.tsx`, `features/app/coreViews.dom.test.tsx`.
+- `features/agent/` — `useAgentStore.test.ts`, `useAgentDrawerStore.test.ts`, `useAgentCustomizationsStore.test.ts`, `AgentDrawer.folders.test.ts`, `AgentDrawer.dom.test.tsx`, `markdown.test.ts`.
 - `features/mediagen/` — `mediagen.test.ts`.
 - `features/providers/` — `health.test.ts`, `useProvidersStore.test.ts`, `layout.test.ts`, `customModels.test.ts`, `credentialPayload.test.ts`, `modelPresentation.test.ts`, `modelGroups.test.ts`, `settings.test.ts`.
-- `features/binaries/` — `useBinariesStore.test.ts`; `features/preferences/` — `usePreferencesStore.test.ts`; `features/watermark/` — `watermark.test.ts`; `features/workflow/` — `useNodeSpecs.test.ts`.
+- `features/binaries/` — `useBinariesStore.test.ts`, `BinaryCard.dom.test.tsx`; `features/preferences/` — `usePreferencesStore.test.ts`; `features/watermark/` — `watermark.test.ts`; `features/workflow/` — `useNodeSpecs.test.ts`.
 
 ---
 
@@ -76,12 +78,12 @@ Package tests live next to the code (`internal/**/_test.go`, `pkg/**/_test.go`).
 - [x] **Store Integration**: Frontend Zustand `useBinariesStore` actions (`fetchBinaries`, `probe`, `setCustomPath`, `download`) properly interface with the manifest actions.
 
 ### R4. Automated Verification & Project Health
-- [x] `go test -count=1 ./test/...` passes (`31/31` top-level tests).
-- [x] `go test -count=1 ./...` passes across all 50 Go packages (`558` top-level tests passed, `8` opt-in live tests skipped, `0` failures).
-- [x] `npm.cmd --prefix frontend run test:run` passes (`27` files, `227/227` tests).
+- [x] `go test -count=1 ./test/...` passes (`48/48` top-level tests across `8` files).
+- [x] `go test -count=1 ./...` passes across all `56` Go packages (`778` top-level tests passed, `8` opt-in live tests skipped, `0` failures).
+- [x] `npm.cmd --prefix frontend run test:run` passes (`44` files, `371/371` tests).
 - [x] `npm.cmd --prefix frontend run typecheck` passes with `0` errors.
 - [x] `npm.cmd --prefix frontend run lint` and `format:check` pass with `0` warnings/errors.
-- [x] Full `task check` (`lint` + `test` + `audit`) and `task test:race` pass on integration branch `refactor/phase-5-db-cleanup-docs`.
+- [x] Full `task check` (`lint` + `test` + `audit`) and `task test:race` pass on integration branch `fix/360-audit-remediation`.
 
 ---
 
