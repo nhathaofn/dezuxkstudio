@@ -483,6 +483,7 @@ type Phase2Repository interface {
 	ClaimNextPollJob(ctx context.Context, nowMs, leaseMs int64) (Job, bool, error)
 	SetJobProviderSubmission(ctx context.Context, id, providerJobID, submitTokenJSON string, status JobStatus, nextPollAt int64) (Job, error)
 	UpdateJob(ctx context.Context, job Job) (Job, error)
+	TransitionJobControl(ctx context.Context, job Job) (Job, error)
 	PauseEpisodeJobs(ctx context.Context, projectID, episodeID string) (int, error)
 	ResumeEpisodeJobs(ctx context.Context, projectID, episodeID string) (int, error)
 	CancelJob(ctx context.Context, id string) (Job, error)

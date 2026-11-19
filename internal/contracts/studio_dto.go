@@ -686,6 +686,12 @@ func StudioQueueStageActions() []string {
 		string(StudioStageGenerateVideos),
 		string(StudioStageGenerateTTS),
 		"lipsync",
+		"tts_dub_mux",
+		"video_watermark_remove",
+		"mask_edit",
+		"grid_split",
+		"extract_frames",
+		"qc_review",
 	}
 }
 
@@ -742,6 +748,7 @@ type StudioQueueControlPayload struct {
 	ProjectID string            `json:"project_id,omitempty"`
 	EpisodeID string            `json:"episode_id,omitempty"`
 	JobID     string            `json:"job_id,omitempty"`
+	Approved  bool              `json:"approved,omitempty"`
 }
 
 // Validate checks StudioQueueControlPayload.
@@ -951,6 +958,7 @@ type StudioMaskEditPayload struct {
 	ModelRef       string                       `json:"model_ref,omitempty"`
 	AspectRatio    string                       `json:"aspect_ratio,omitempty"`
 	Resolution     string                       `json:"resolution,omitempty"`
+	Approved       bool                         `json:"approved,omitempty"`
 }
 
 // Validate checks StudioMaskEditPayload.
@@ -1011,6 +1019,7 @@ type StudioQCReviewPayload struct {
 	VisionModelRef string                       `json:"vision_model_ref,omitempty"`
 	SampleCount    int                          `json:"sample_count,omitempty"`
 	SkipVision     bool                         `json:"skip_vision,omitempty"`
+	Approved       bool                         `json:"approved,omitempty"`
 }
 
 // Validate checks StudioQCReviewPayload.

@@ -16,8 +16,6 @@ import (
 	domainstudio "app/internal/domain/studio"
 	"app/internal/engine"
 	"app/internal/safego"
-	mediagennodes "app/internal/tools/mediagen"
-	studionodes "app/internal/tools/studio"
 )
 
 // maxRetryShiftExp prevents 64-bit integer overflow when computing 1<<attempt exponential backoff;
@@ -34,6 +32,7 @@ type activeJobEntry struct {
 	projectID string
 	episodeID string
 	cancel    context.CancelFunc
+	done      chan struct{}
 }
 
 type queuedImageJobRequest struct {
@@ -47,6 +46,35 @@ type queuedTTSJobRequest struct {
 
 type queuedLipSyncJobRequest struct {
 	Input contracts.LipSyncGenerateInput `json:"input"`
+}
+
+type queuedTTSDubMuxJobRequest struct {
+	Input contracts.TTSDubMuxInput `json:"input"`
+}
+
+type queuedVideoWatermarkJobRequest struct {
+	Input contracts.VideoWatermarkRemoveInput `json:"input"`
+}
+
+type queuedMaskEditJobRequest struct {
+	TargetKind domainstudio.MediaTargetKind `json:"target_kind"`
+	Input      contracts.MaskEditInput      `json:"input"`
+}
+
+type queuedGridSplitJobRequest struct {
+	TargetKind domainstudio.MediaTargetKind `json:"target_kind,omitempty"`
+	Input      contracts.GridSplitInput     `json:"input"`
+}
+
+type queuedExtractFramesJobRequest struct {
+	TargetShotID string                       `json:"target_shot_id,omitempty"`
+	Input        contracts.ExtractFramesInput `json:"input"`
+}
+
+type queuedQCReviewJobRequest struct {
+	TargetKind domainstudio.MediaTargetKind `json:"target_kind"`
+	MediaPath  string                       `json:"media_path"`
+	Input      contracts.QCReviewInput      `json:"input"`
 }
 
 func (s *Service) wakeWorker() {
@@ -71,10 +99,12 @@ func (s *Service) withWorkerGuard(ctx context.Context) context.Context {
 
 func (s *Service) trackActiveJob(ctx context.Context, j domainstudio.Job) (context.Context, func()) {
 	jobCtx, cancel := context.WithCancel(ctx)
+	doneCh := make(chan struct{})
 	entry := &activeJobEntry{
 		projectID: j.ProjectID,
 		episodeID: j.EpisodeID,
 		cancel:    cancel,
+		done:      doneCh,
 	}
 	s.jobMu.Lock()
 	if s.activeJobs == nil {
@@ -90,7 +120,61 @@ func (s *Service) trackActiveJob(ctx context.Context, j domainstudio.Job) (conte
 			delete(s.activeJobs, j.ID)
 		}
 		s.jobMu.Unlock()
+		close(doneCh)
 	}
+}
+
+func (s *Service) waitProjectActiveJobs(projectID string, timeout time.Duration) {
+	pID := strings.TrimSpace(projectID)
+	var waits []chan struct{}
+	s.jobMu.Lock()
+	for _, entry := range s.activeJobs {
+		if entry == nil || entry.done == nil {
+			continue
+		}
+		if pID != "" && entry.projectID != pID {
+			continue
+		}
+		waits = append(waits, entry.done)
+	}
+	s.jobMu.Unlock()
+	if len(waits) == 0 {
+		return
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for _, ch := range waits {
+		select {
+		case <-ch:
+		case <-timer.C:
+			return
+		}
+	}
+}
+
+func (s *Service) recordPollError(jobID string) int {
+	id := strings.TrimSpace(jobID)
+	if id == "" {
+		return 0
+	}
+	s.jobMu.Lock()
+	if s.pollErrors == nil {
+		s.pollErrors = make(map[string]int)
+	}
+	s.pollErrors[id]++
+	cnt := s.pollErrors[id]
+	s.jobMu.Unlock()
+	return cnt
+}
+
+func (s *Service) clearPollErrors(jobID string) {
+	id := strings.TrimSpace(jobID)
+	if id == "" {
+		return
+	}
+	s.jobMu.Lock()
+	delete(s.pollErrors, id)
+	s.jobMu.Unlock()
 }
 
 func (s *Service) cancelActiveJob(jobID string) {
@@ -283,6 +367,18 @@ func (s *Service) EnqueueBatch(ctx context.Context, p contracts.StudioQueueEnque
 		created, skipped, totalEst, err = s.enqueueShotTTS(ctx, proj, ep, epRoot, p)
 	case "lipsync":
 		created, skipped, totalEst, err = s.enqueueShotLipSync(ctx, proj, ep, epRoot, p)
+	case "tts_dub_mux":
+		created, skipped, totalEst, err = s.enqueueShotTTSDubMux(ctx, proj, ep, epRoot, p)
+	case "video_watermark_remove":
+		created, skipped, totalEst, err = s.enqueueShotVideoWatermark(ctx, proj, ep, epRoot, p)
+	case "mask_edit":
+		created, skipped, totalEst, err = s.enqueueShotMaskEdit(ctx, proj, ep, epRoot, p)
+	case "grid_split":
+		created, skipped, totalEst, err = s.enqueueShotGridSplit(ctx, proj, ep, epRoot, p)
+	case "extract_frames":
+		created, skipped, totalEst, err = s.enqueueShotExtractFrames(ctx, proj, ep, epRoot, p)
+	case "qc_review":
+		created, skipped, totalEst, err = s.enqueueShotQCReview(ctx, proj, ep, p)
 	default:
 		return contracts.StudioQueueEnqueueResult{}, apperr.Validation("unsupported queue enqueue stage")
 	}
@@ -349,11 +445,12 @@ func (s *Service) ControlQueue(ctx context.Context, p contracts.StudioQueueContr
 			}
 			if !j.Status.IsTerminal() {
 				j.Status = domainstudio.JobPaused
-				j, err = s.repo.UpdateJob(ctx, j)
+				j, err = s.repo.TransitionJobControl(ctx, j)
 				if err != nil {
 					return contracts.StudioQueueControlResult{}, err
 				}
 				s.cancelActiveJob(p.JobID)
+				s.clearPollErrors(p.JobID)
 				dto := jobToDTO(j)
 				s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{ProjectID: j.ProjectID, EpisodeID: j.EpisodeID, Job: &dto, Summary: "Job paused"})
 				return contracts.StudioQueueControlResult{Affected: 1, Job: &dto}, nil
@@ -382,10 +479,11 @@ func (s *Service) ControlQueue(ctx context.Context, p contracts.StudioQueueContr
 				} else {
 					j.Status = domainstudio.JobQueued
 				}
-				j, err = s.repo.UpdateJob(ctx, j)
+				j, err = s.repo.TransitionJobControl(ctx, j)
 				if err != nil {
 					return contracts.StudioQueueControlResult{}, err
 				}
+				s.clearPollErrors(p.JobID)
 				s.wakeWorker()
 				dto := jobToDTO(j)
 				s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{ProjectID: j.ProjectID, EpisodeID: j.EpisodeID, Job: &dto, Summary: "Job resumed"})
@@ -410,14 +508,30 @@ func (s *Service) ControlQueue(ctx context.Context, p contracts.StudioQueueContr
 			return contracts.StudioQueueControlResult{}, err
 		}
 		s.cancelActiveJob(p.JobID)
+		s.clearPollErrors(p.JobID)
 		dto := jobToDTO(j)
 		s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{ProjectID: j.ProjectID, EpisodeID: j.EpisodeID, Job: &dto, Summary: "Job canceled"})
 		return contracts.StudioQueueControlResult{Affected: 1, Job: &dto}, nil
 
 	case contracts.QueueActionRetry:
+		if strings.TrimSpace(p.JobID) == "" {
+			return contracts.StudioQueueControlResult{}, apperr.Validation("job_id is required for retry")
+		}
 		j, err := s.repo.GetJob(ctx, p.JobID)
 		if err != nil {
 			return contracts.StudioQueueControlResult{}, err
+		}
+		if j.Status == domainstudio.JobSucceeded {
+			return contracts.StudioQueueControlResult{}, apperr.Validation("cannot retry a job that already succeeded")
+		}
+		if proj, perr := s.repo.GetProject(ctx, j.ProjectID); perr == nil {
+			if !proj.AutoApproveBatches && !p.Approved {
+				return contracts.StudioQueueControlResult{}, apperr.Validation("Retrying studio job requires approval when auto_approve_batches is disabled").
+					WithMsg("errors.studio.approval_required", nil).
+					WithDetails(map[string]any{"approval_required": true, "project_id": proj.ID, "job_id": j.ID})
+			}
+		} else {
+			return contracts.StudioQueueControlResult{}, perr
 		}
 		if j.ProviderJobID != "" {
 			// Already submitted remotely: resume polling instead of double-billing
@@ -429,10 +543,11 @@ func (s *Service) ControlQueue(ctx context.Context, p contracts.StudioQueueContr
 		}
 		j.ErrorText = ""
 		j.FinishedAt = 0
-		j, err = s.repo.UpdateJob(ctx, j)
+		j, err = s.repo.TransitionJobControl(ctx, j)
 		if err != nil {
 			return contracts.StudioQueueControlResult{}, err
 		}
+		s.clearPollErrors(p.JobID)
 		s.wakeWorker()
 		dto := jobToDTO(j)
 		s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{ProjectID: j.ProjectID, EpisodeID: j.EpisodeID, Job: &dto, Summary: "Job retried"})
@@ -808,6 +923,387 @@ func (s *Service) enqueueShotLipSync(ctx context.Context, proj domainstudio.Proj
 	return out, skipped, estTotal, nil
 }
 
+func (s *Service) enqueueShotTTSDubMux(ctx context.Context, proj domainstudio.Project, ep domainstudio.Episode, epRoot string, p contracts.StudioQueueEnqueuePayload) ([]domainstudio.Job, int, float64, error) {
+	shots, err := s.repo.ListShots(ctx, ep.ID)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	assets, _ := s.repo.ListAssets(ctx, proj.ID)
+	voiceBySpeaker := map[string]domainstudio.AssetEntry{}
+	for _, a := range assets {
+		if a.Kind == domainstudio.AssetCharacter && (a.VoiceID != "" || a.VoiceProvider != "") {
+			voiceBySpeaker[strings.ToLower(strings.TrimSpace(a.Name))] = a
+			voiceBySpeaker[strings.ToLower(strings.TrimSpace(a.CodeTag))] = a
+		}
+	}
+	wantIDs := toSet(p.ShotIDs)
+	outDir := ""
+	if epRoot != "" {
+		outDir = filepath.Join(epRoot, "media", "videos")
+	}
+	var out []domainstudio.Job
+	skipped := 0
+	estTotal := 0.0
+	for _, sh := range shots {
+		if len(wantIDs) > 0 && !wantIDs[sh.ID] {
+			continue
+		}
+		txt := shotSpeechText(sh)
+		if strings.TrimSpace(sh.VideoPath) == "" || (txt == "" && strings.TrimSpace(sh.AudioPath) == "") {
+			skipped++
+			continue
+		}
+		modelRef, voiceID := resolveShotVoiceConfig(sh, p.Model, proj.DefaultTTSModel, "", voiceBySpeaker)
+		provID, modID := domainstudio.SplitModelRefForPricing(modelRef)
+		unitPrice, _, _ := s.EstimateUnitPriceUSD(ctx, provID, modID, "tts", "1k_chars")
+		est := math.Round((float64(len([]rune(txt)))/1000.0)*unitPrice*10000) / 10000
+		payload := queuedTTSDubMuxJobRequest{
+			Input: contracts.TTSDubMuxInput{
+				VideoPath: engine.InputRef(sh.VideoPath, engine.MediaVideo),
+				Text:      txt,
+				AudioPath: engine.InputRef(sh.AudioPath, engine.MediaAudio),
+				ModelRef:  modelRef,
+				Voice:     voiceID,
+				OutputDir: outDir,
+			},
+		}
+		reqBytes, merr := json.Marshal(payload)
+		if merr != nil {
+			return nil, skipped, estTotal, apperr.Internal(merr)
+		}
+		j, createdNew, err := s.createIdempotentJob(ctx, domainstudio.Job{
+			ProjectID:      proj.ID,
+			EpisodeID:      ep.ID,
+			ShotID:         sh.ID,
+			JobKind:        domainstudio.JobTTSDubMux,
+			ProviderID:     provID,
+			ModelRef:       modelRef,
+			IdempotencyKey: fmt.Sprintf("studio:%s:tts_dub_mux:%s", ep.ID, sh.ID),
+			RequestJSON:    string(reqBytes),
+			MaxAttempts:    s.cfg.QueueMaxAttempts,
+			EstimatedUSD:   est,
+		}, p.Force)
+		if err != nil {
+			return nil, skipped, estTotal, err
+		}
+		if !createdNew {
+			skipped++
+			continue
+		}
+		out = append(out, j)
+		estTotal += est
+	}
+	return out, skipped, estTotal, nil
+}
+
+func (s *Service) enqueueShotVideoWatermark(ctx context.Context, proj domainstudio.Project, ep domainstudio.Episode, epRoot string, p contracts.StudioQueueEnqueuePayload) ([]domainstudio.Job, int, float64, error) {
+	shots, err := s.repo.ListShots(ctx, ep.ID)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	wantIDs := toSet(p.ShotIDs)
+	outDir := ""
+	if epRoot != "" {
+		outDir = filepath.Join(epRoot, "media", "videos")
+	}
+	var out []domainstudio.Job
+	skipped := 0
+	for _, sh := range shots {
+		if len(wantIDs) > 0 && !wantIDs[sh.ID] {
+			continue
+		}
+		if strings.TrimSpace(sh.VideoPath) == "" {
+			skipped++
+			continue
+		}
+		payload := queuedVideoWatermarkJobRequest{
+			Input: contracts.VideoWatermarkRemoveInput{
+				VideoPath: engine.InputRef(sh.VideoPath, engine.MediaVideo),
+				Mode:      "auto",
+				OutputDir: outDir,
+			},
+		}
+		reqBytes, merr := json.Marshal(payload)
+		if merr != nil {
+			return nil, skipped, 0, apperr.Internal(merr)
+		}
+		j, createdNew, err := s.createIdempotentJob(ctx, domainstudio.Job{
+			ProjectID:      proj.ID,
+			EpisodeID:      ep.ID,
+			ShotID:         sh.ID,
+			JobKind:        domainstudio.JobVideoWatermarkRemove,
+			IdempotencyKey: fmt.Sprintf("studio:%s:video_wm_remove:%s", ep.ID, sh.ID),
+			RequestJSON:    string(reqBytes),
+			MaxAttempts:    s.cfg.QueueMaxAttempts,
+		}, p.Force)
+		if err != nil {
+			return nil, skipped, 0, err
+		}
+		if !createdNew {
+			skipped++
+			continue
+		}
+		out = append(out, j)
+	}
+	return out, skipped, 0, nil
+}
+
+func (s *Service) enqueueShotMaskEdit(ctx context.Context, proj domainstudio.Project, ep domainstudio.Episode, epRoot string, p contracts.StudioQueueEnqueuePayload) ([]domainstudio.Job, int, float64, error) {
+	shots, err := s.repo.ListShots(ctx, ep.ID)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	wantIDs := toSet(p.ShotIDs)
+	outDir := ""
+	if epRoot != "" {
+		outDir = filepath.Join(epRoot, "media", "keyframes")
+	}
+	modelRef := firstNonEmpty(p.Model, proj.DefaultImageModel)
+	provID, modID := domainstudio.SplitModelRefForPricing(modelRef)
+	unitPrice, _, _ := s.EstimateUnitPriceUSD(ctx, provID, modID, "image", "image")
+	var out []domainstudio.Job
+	skipped := 0
+	estTotal := 0.0
+	for _, sh := range shots {
+		if len(wantIDs) > 0 && !wantIDs[sh.ID] {
+			continue
+		}
+		if strings.TrimSpace(sh.KeyframePath) == "" {
+			skipped++
+			continue
+		}
+		payload := queuedMaskEditJobRequest{
+			TargetKind: domainstudio.TargetKeyframe,
+			Input: contracts.MaskEditInput{
+				ImagePath:   engine.InputRef(sh.KeyframePath, engine.MediaImage),
+				MaskPath:    engine.InputRef(sh.KeyframePath, engine.MediaImage),
+				Prompt:      firstNonEmpty(sh.ImagePrompt, sh.Title),
+				ModelRef:    modelRef,
+				AspectRatio: proj.AspectRatio,
+				OutputDir:   outDir,
+			},
+		}
+		reqBytes, merr := json.Marshal(payload)
+		if merr != nil {
+			return nil, skipped, estTotal, apperr.Internal(merr)
+		}
+		j, createdNew, err := s.createIdempotentJob(ctx, domainstudio.Job{
+			ProjectID:      proj.ID,
+			EpisodeID:      ep.ID,
+			ShotID:         sh.ID,
+			JobKind:        domainstudio.JobMaskEdit,
+			ProviderID:     provID,
+			ModelRef:       modelRef,
+			IdempotencyKey: fmt.Sprintf("studio:%s:mask_edit:%s", ep.ID, sh.ID),
+			RequestJSON:    string(reqBytes),
+			MaxAttempts:    s.cfg.QueueMaxAttempts,
+			EstimatedUSD:   unitPrice,
+		}, p.Force)
+		if err != nil {
+			return nil, skipped, estTotal, err
+		}
+		if !createdNew {
+			skipped++
+			continue
+		}
+		out = append(out, j)
+		estTotal += unitPrice
+	}
+	return out, skipped, estTotal, nil
+}
+
+func (s *Service) enqueueShotGridSplit(ctx context.Context, proj domainstudio.Project, ep domainstudio.Episode, epRoot string, p contracts.StudioQueueEnqueuePayload) ([]domainstudio.Job, int, float64, error) {
+	shots, err := s.repo.ListShots(ctx, ep.ID)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	wantIDs := toSet(p.ShotIDs)
+	outDir := ""
+	if epRoot != "" {
+		outDir = filepath.Join(epRoot, "media", "keyframes")
+	}
+	var out []domainstudio.Job
+	skipped := 0
+	for _, sh := range shots {
+		if len(wantIDs) > 0 && !wantIDs[sh.ID] {
+			continue
+		}
+		if strings.TrimSpace(sh.KeyframePath) == "" {
+			skipped++
+			continue
+		}
+		payload := queuedGridSplitJobRequest{
+			TargetKind: domainstudio.TargetKeyframe,
+			Input: contracts.GridSplitInput{
+				ImagePath: engine.InputRef(sh.KeyframePath, engine.MediaImage),
+				Rows:      2,
+				Cols:      2,
+				OutputDir: outDir,
+			},
+		}
+		reqBytes, merr := json.Marshal(payload)
+		if merr != nil {
+			return nil, skipped, 0, apperr.Internal(merr)
+		}
+		j, createdNew, err := s.createIdempotentJob(ctx, domainstudio.Job{
+			ProjectID:      proj.ID,
+			EpisodeID:      ep.ID,
+			ShotID:         sh.ID,
+			JobKind:        domainstudio.JobGridSplit,
+			IdempotencyKey: fmt.Sprintf("studio:%s:grid_split:%s", ep.ID, sh.ID),
+			RequestJSON:    string(reqBytes),
+			MaxAttempts:    s.cfg.QueueMaxAttempts,
+		}, p.Force)
+		if err != nil {
+			return nil, skipped, 0, err
+		}
+		if !createdNew {
+			skipped++
+			continue
+		}
+		out = append(out, j)
+	}
+	return out, skipped, 0, nil
+}
+
+func (s *Service) enqueueShotExtractFrames(ctx context.Context, proj domainstudio.Project, ep domainstudio.Episode, epRoot string, p contracts.StudioQueueEnqueuePayload) ([]domainstudio.Job, int, float64, error) {
+	shots, err := s.repo.ListShots(ctx, ep.ID)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	wantIDs := toSet(p.ShotIDs)
+	outDir := ""
+	if epRoot != "" {
+		outDir = filepath.Join(epRoot, "media", "keyframes")
+	}
+	var out []domainstudio.Job
+	skipped := 0
+	for _, sh := range shots {
+		if len(wantIDs) > 0 && !wantIDs[sh.ID] {
+			continue
+		}
+		if strings.TrimSpace(sh.VideoPath) == "" {
+			skipped++
+			continue
+		}
+		payload := queuedExtractFramesJobRequest{
+			TargetShotID: sh.ID,
+			Input: contracts.ExtractFramesInput{
+				VideoPath: engine.InputRef(sh.VideoPath, engine.MediaVideo),
+				Mode:      "last",
+				OutputDir: outDir,
+			},
+		}
+		reqBytes, merr := json.Marshal(payload)
+		if merr != nil {
+			return nil, skipped, 0, apperr.Internal(merr)
+		}
+		j, createdNew, err := s.createIdempotentJob(ctx, domainstudio.Job{
+			ProjectID:      proj.ID,
+			EpisodeID:      ep.ID,
+			ShotID:         sh.ID,
+			JobKind:        domainstudio.JobExtractFrames,
+			IdempotencyKey: fmt.Sprintf("studio:%s:extract_frames:%s", ep.ID, sh.ID),
+			RequestJSON:    string(reqBytes),
+			MaxAttempts:    s.cfg.QueueMaxAttempts,
+		}, p.Force)
+		if err != nil {
+			return nil, skipped, 0, err
+		}
+		if !createdNew {
+			skipped++
+			continue
+		}
+		out = append(out, j)
+	}
+	return out, skipped, 0, nil
+}
+
+func (s *Service) enqueueShotQCReview(ctx context.Context, proj domainstudio.Project, ep domainstudio.Episode, p contracts.StudioQueueEnqueuePayload) ([]domainstudio.Job, int, float64, error) {
+	shots, err := s.repo.ListShots(ctx, ep.ID)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	wantIDs := toSet(p.ShotIDs)
+	var out []domainstudio.Job
+	skipped := 0
+	for _, sh := range shots {
+		if len(wantIDs) > 0 && !wantIDs[sh.ID] {
+			continue
+		}
+		mediaPath := firstNonEmpty(sh.VideoPath, sh.KeyframePath)
+		if mediaPath == "" {
+			skipped++
+			continue
+		}
+		kind := domainstudio.TargetVideo
+		mediaType := engine.MediaVideo
+		if sh.VideoPath == "" {
+			kind = domainstudio.TargetKeyframe
+			mediaType = engine.MediaImage
+		}
+		payload := queuedQCReviewJobRequest{
+			TargetKind: kind,
+			MediaPath:  mediaPath,
+			Input: contracts.QCReviewInput{
+				MediaPath:      engine.InputRef(mediaPath, mediaType),
+				TargetKind:     string(kind),
+				TargetID:       sh.ID,
+				PromptExpected: firstNonEmpty(sh.VideoPrompt, sh.ImagePrompt, sh.Title),
+				VisionModelRef: firstNonEmpty(p.Model, proj.DefaultTextModel),
+			},
+		}
+		reqBytes, merr := json.Marshal(payload)
+		if merr != nil {
+			return nil, skipped, 0, apperr.Internal(merr)
+		}
+		j, createdNew, err := s.createIdempotentJob(ctx, domainstudio.Job{
+			ProjectID:      proj.ID,
+			EpisodeID:      ep.ID,
+			ShotID:         sh.ID,
+			JobKind:        domainstudio.JobQCReview,
+			ModelRef:       payload.Input.VisionModelRef,
+			IdempotencyKey: fmt.Sprintf("studio:%s:qc_review:%s", ep.ID, sh.ID),
+			RequestJSON:    string(reqBytes),
+			MaxAttempts:    s.cfg.QueueMaxAttempts,
+		}, p.Force)
+		if err != nil {
+			return nil, skipped, 0, err
+		}
+		if !createdNew {
+			skipped++
+			continue
+		}
+		out = append(out, j)
+	}
+	return out, skipped, 0, nil
+}
+
+func (s *Service) runQueuedWorkflowNode(ctx, runCtx context.Context, j domainstudio.Job, nodeType string, input any, out any) bool {
+	if s.wf == nil {
+		s.failJob(ctx, j, apperr.Unavailable("workflow engine unavailable"))
+		return false
+	}
+	inBytes, merr := json.Marshal(input)
+	if merr != nil {
+		s.failJob(ctx, j, apperr.Internal(merr))
+		return false
+	}
+	rawOut, err := s.wf.RunNode(runCtx, nodeType, inBytes)
+	if err != nil {
+		if s.isJobCanceledOrPaused(ctx, j.ID) || ctx.Err() != nil {
+			return false
+		}
+		s.handleSubmitError(ctx, j, err)
+		return false
+	}
+	if merr := decodeNodeOutput(rawOut, out); merr != nil {
+		s.failJob(ctx, j, merr)
+		return false
+	}
+	return !s.isJobCanceledOrPaused(ctx, j.ID)
+}
+
 func (s *Service) executeQueuedJob(ctx context.Context, j domainstudio.Job) {
 	if s.isJobCanceledOrPaused(ctx, j.ID) {
 		return
@@ -845,13 +1341,15 @@ func (s *Service) executeQueuedJob(ctx context.Context, j domainstudio.Job) {
 			return
 		}
 		tokJSON, _ := json.Marshal(tok)
-		// Durable submit checkpoint: once provider_job_id is stored, restarts only resume polling!
-		updated, err := s.repo.SetJobProviderSubmission(ctx, j.ID, tok.ProviderJobID, string(tokJSON), domainstudio.JobPolling, now)
+		// Durable submit checkpoint: once provider_job_id is returned, persist it even if ctx was canceled right at return.
+		persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancelPersist()
+		updated, err := s.repo.SetJobProviderSubmission(persistCtx, j.ID, tok.ProviderJobID, string(tokJSON), domainstudio.JobPolling, now)
 		if err != nil {
-			s.log.ErrorContext(ctx, "studio: failed to persist provider_job_id", "job_id", j.ID, "provider_job_id", tok.ProviderJobID, "error", err)
+			s.log.ErrorContext(persistCtx, "studio: failed to persist provider_job_id", "job_id", j.ID, "provider_job_id", tok.ProviderJobID, "error", err)
 			j.ProviderJobID = tok.ProviderJobID
 			j.SubmitTokenJSON = string(tokJSON)
-			s.failJob(ctx, j, apperr.Wrap(apperr.CodeUnavailable, "Failed to persist submitted provider job state", err))
+			s.failJob(persistCtx, j, apperr.Wrap(apperr.CodeUnavailable, "Failed to persist submitted provider job state", err))
 			return
 		}
 		dto := jobToDTO(updated)
@@ -860,118 +1358,191 @@ func (s *Service) executeQueuedJob(ctx context.Context, j domainstudio.Job) {
 		})
 
 	case domainstudio.JobImage:
-		if s.wf == nil {
-			s.failJob(ctx, j, apperr.Unavailable("workflow engine unavailable"))
-			return
-		}
 		var qReq queuedImageJobRequest
 		if err := json.Unmarshal([]byte(j.RequestJSON), &qReq); err != nil {
 			s.failJob(ctx, j, err)
 			return
 		}
-		inBytes, merr := json.Marshal(qReq.Input)
-		if merr != nil {
-			s.failJob(ctx, j, apperr.Internal(merr))
-			return
-		}
-		rawOut, err := s.wf.RunNode(runCtx, mediagennodes.NodeTypeImage, inBytes)
-		if err != nil {
-			if s.isJobCanceledOrPaused(ctx, j.ID) || ctx.Err() != nil {
-				return
-			}
-			s.handleSubmitError(ctx, j, err)
-			return
-		}
-		var out mediagennodes.ImageGenerateOutput
-		if merr := decodeNodeOutput(rawOut, &out); merr != nil {
-			s.failJob(ctx, j, merr)
-			return
-		}
-		if s.isJobCanceledOrPaused(ctx, j.ID) {
+		var out contracts.ImageGenerateOutput
+		if !s.runQueuedWorkflowNode(ctx, runCtx, j, contracts.NodeTypeImageGenerate, qReq.Input, &out) {
 			return
 		}
 		targetID := firstNonEmpty(j.AssetID, j.ShotID)
-		regID := s.registerMedia(ctx, "image", mediagennodes.NodeTypeImage, out.Path, qReq.Input.OutputDir, 0)
-		s.recordSelectedVersion(ctx, j.ProjectID, j.EpisodeID, qReq.TargetKind, targetID, out.Path, mediagennodes.NodeTypeImage, qReq.Input.Prompt, j.ModelRef)
+		regID := s.registerMedia(ctx, "image", contracts.NodeTypeImageGenerate, out.Path, qReq.Input.OutputDir, 0)
+		s.recordSelectedVersion(ctx, j.ProjectID, j.EpisodeID, qReq.TargetKind, targetID, out.Path, contracts.NodeTypeImageGenerate, qReq.Input.Prompt, j.ModelRef)
 		if _, aerr := s.applyMediaPathToTarget(ctx, j.ProjectID, j.EpisodeID, qReq.TargetKind, targetID, out.Path, regID, "queue_image_done"); aerr != nil {
 			s.log.WarnContext(ctx, "studio: failed to apply image output to target", "job_id", j.ID, "target_id", targetID, "error", aerr)
 		}
 		s.succeedJob(ctx, j, out.Path)
 
 	case domainstudio.JobTTS:
-		if s.wf == nil {
-			s.failJob(ctx, j, apperr.Unavailable("workflow engine unavailable"))
-			return
-		}
 		var qReq queuedTTSJobRequest
 		if err := json.Unmarshal([]byte(j.RequestJSON), &qReq); err != nil {
 			s.failJob(ctx, j, err)
 			return
 		}
-		inBytes, merr := json.Marshal(qReq.Input)
-		if merr != nil {
-			s.failJob(ctx, j, apperr.Internal(merr))
+		var out contracts.TTSGenerateOutput
+		if !s.runQueuedWorkflowNode(ctx, runCtx, j, contracts.NodeTypeTTSGenerate, qReq.Input, &out) {
 			return
 		}
-		rawOut, err := s.wf.RunNode(runCtx, mediagennodes.NodeTypeTTS, inBytes)
-		if err != nil {
-			if s.isJobCanceledOrPaused(ctx, j.ID) || ctx.Err() != nil {
-				return
-			}
-			s.handleSubmitError(ctx, j, err)
-			return
-		}
-		var out mediagennodes.TTSGenerateOutput
-		if merr := decodeNodeOutput(rawOut, &out); merr != nil {
-			s.failJob(ctx, j, merr)
-			return
-		}
-		if s.isJobCanceledOrPaused(ctx, j.ID) {
-			return
-		}
-		regID := s.registerMedia(ctx, "audio", mediagennodes.NodeTypeTTS, out.Path, qReq.Input.OutputDir, 0)
-		s.recordSelectedVersion(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetDubAudio, j.ShotID, out.Path, mediagennodes.NodeTypeTTS, qReq.Input.Text, j.ModelRef)
+		regID := s.registerMedia(ctx, "audio", contracts.NodeTypeTTSGenerate, out.Path, qReq.Input.OutputDir, 0)
+		s.recordSelectedVersion(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetDubAudio, j.ShotID, out.Path, contracts.NodeTypeTTSGenerate, qReq.Input.Text, j.ModelRef)
 		if _, aerr := s.applyMediaPathToTarget(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetDubAudio, j.ShotID, out.Path, regID, "queue_tts_done"); aerr != nil {
 			s.log.WarnContext(ctx, "studio: failed to apply TTS output to shot", "job_id", j.ID, "shot_id", j.ShotID, "error", aerr)
 		}
 		s.succeedJob(ctx, j, out.Path)
 
 	case domainstudio.JobLipSync:
-		if s.wf == nil {
-			s.failJob(ctx, j, apperr.Unavailable("workflow engine unavailable"))
-			return
-		}
 		var qReq queuedLipSyncJobRequest
 		if err := json.Unmarshal([]byte(j.RequestJSON), &qReq); err != nil {
 			s.failJob(ctx, j, err)
 			return
 		}
-		inBytes, merr := json.Marshal(qReq.Input)
-		if merr != nil {
-			s.failJob(ctx, j, apperr.Internal(merr))
-			return
-		}
-		rawOut, err := s.wf.RunNode(runCtx, studionodes.NodeTypeLipSyncGenerate, inBytes)
-		if err != nil {
-			if s.isJobCanceledOrPaused(ctx, j.ID) || ctx.Err() != nil {
-				return
-			}
-			s.handleSubmitError(ctx, j, err)
-			return
-		}
 		var out contracts.LipSyncGenerateOutput
-		if merr := decodeNodeOutput(rawOut, &out); merr != nil {
-			s.failJob(ctx, j, merr)
+		if !s.runQueuedWorkflowNode(ctx, runCtx, j, contracts.NodeTypeLipSyncGenerate, qReq.Input, &out) {
 			return
 		}
-		if s.isJobCanceledOrPaused(ctx, j.ID) {
-			return
-		}
-		s.recordSelectedVersion(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetLipSyncVideo, j.ShotID, out.Path, studionodes.NodeTypeLipSyncGenerate, qReq.Input.Prompt, j.ModelRef)
+		s.recordSelectedVersion(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetLipSyncVideo, j.ShotID, out.Path, contracts.NodeTypeLipSyncGenerate, qReq.Input.Prompt, j.ModelRef)
 		if _, aerr := s.applyMediaPathToTarget(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetLipSyncVideo, j.ShotID, out.Path, out.AssetID, "queue_lipsync_done"); aerr != nil {
 			s.log.WarnContext(ctx, "studio: failed to apply lipsync output to shot", "job_id", j.ID, "shot_id", j.ShotID, "error", aerr)
 		}
 		s.succeedJob(ctx, j, out.Path)
+
+	case domainstudio.JobTTSDubMux:
+		var qReq queuedTTSDubMuxJobRequest
+		if err := json.Unmarshal([]byte(j.RequestJSON), &qReq); err != nil {
+			s.failJob(ctx, j, err)
+			return
+		}
+		var out contracts.TTSDubMuxOutput
+		if !s.runQueuedWorkflowNode(ctx, runCtx, j, contracts.NodeTypeTTSDubMux, qReq.Input, &out) {
+			return
+		}
+		s.recordSelectedVersion(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetVideo, j.ShotID, out.Path, contracts.NodeTypeTTSDubMux, qReq.Input.Text, j.ModelRef)
+		if _, aerr := s.applyMediaPathToTarget(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetVideo, j.ShotID, out.Path, out.AssetID, "queue_tts_dub_mux_done"); aerr != nil {
+			s.log.WarnContext(ctx, "studio: failed to apply tts_dub_mux output to shot", "job_id", j.ID, "shot_id", j.ShotID, "error", aerr)
+		}
+		s.succeedJob(ctx, j, out.Path)
+
+	case domainstudio.JobVideoWatermarkRemove:
+		var qReq queuedVideoWatermarkJobRequest
+		if err := json.Unmarshal([]byte(j.RequestJSON), &qReq); err != nil {
+			s.failJob(ctx, j, err)
+			return
+		}
+		var out contracts.VideoWatermarkRemoveOutput
+		if !s.runQueuedWorkflowNode(ctx, runCtx, j, contracts.NodeTypeVideoWMRemove, qReq.Input, &out) {
+			return
+		}
+		s.recordSelectedVersion(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetVideo, j.ShotID, out.Path, contracts.NodeTypeVideoWMRemove, "", "")
+		if _, aerr := s.applyMediaPathToTarget(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetVideo, j.ShotID, out.Path, out.AssetID, "queue_video_wm_done"); aerr != nil {
+			s.log.WarnContext(ctx, "studio: failed to apply video_wm_remove output to shot", "job_id", j.ID, "shot_id", j.ShotID, "error", aerr)
+		}
+		s.succeedJob(ctx, j, out.Path)
+
+	case domainstudio.JobMaskEdit:
+		var qReq queuedMaskEditJobRequest
+		if err := json.Unmarshal([]byte(j.RequestJSON), &qReq); err != nil {
+			s.failJob(ctx, j, err)
+			return
+		}
+		var out contracts.MaskEditOutput
+		if !s.runQueuedWorkflowNode(ctx, runCtx, j, contracts.NodeTypeMaskEdit, qReq.Input, &out) {
+			return
+		}
+		targetID := firstNonEmpty(j.AssetID, j.ShotID)
+		kind := qReq.TargetKind
+		if !kind.Valid() {
+			kind = domainstudio.TargetKeyframe
+		}
+		s.recordSelectedVersion(ctx, j.ProjectID, j.EpisodeID, kind, targetID, out.Path, contracts.NodeTypeMaskEdit, qReq.Input.Prompt, j.ModelRef)
+		if _, aerr := s.applyMediaPathToTarget(ctx, j.ProjectID, j.EpisodeID, kind, targetID, out.Path, out.AssetID, "queue_mask_edit_done"); aerr != nil {
+			s.log.WarnContext(ctx, "studio: failed to apply mask_edit output to target", "job_id", j.ID, "target_id", targetID, "error", aerr)
+		}
+		s.succeedJob(ctx, j, out.Path)
+
+	case domainstudio.JobGridSplit:
+		var qReq queuedGridSplitJobRequest
+		if err := json.Unmarshal([]byte(j.RequestJSON), &qReq); err != nil {
+			s.failJob(ctx, j, err)
+			return
+		}
+		var out contracts.GridSplitOutput
+		if !s.runQueuedWorkflowNode(ctx, runCtx, j, contracts.NodeTypeGridSplit, qReq.Input, &out) {
+			return
+		}
+		firstPath := ""
+		if len(out.Panels) > 0 {
+			firstPath = out.Panels[0].Path
+		}
+		s.succeedJob(ctx, j, firstPath)
+
+	case domainstudio.JobExtractFrames:
+		var qReq queuedExtractFramesJobRequest
+		if err := json.Unmarshal([]byte(j.RequestJSON), &qReq); err != nil {
+			s.failJob(ctx, j, err)
+			return
+		}
+		var out contracts.ExtractFramesOutput
+		if !s.runQueuedWorkflowNode(ctx, runCtx, j, contracts.NodeTypeExtractFrames, qReq.Input, &out) {
+			return
+		}
+		assetID := ""
+		if len(out.Frames) > 0 {
+			assetID = out.Frames[len(out.Frames)-1].AssetID
+		}
+		targetShotID := firstNonEmpty(qReq.TargetShotID, j.ShotID)
+		if targetShotID != "" && out.LastFramePath != "" {
+			s.recordSelectedVersion(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetKeyframe, targetShotID, out.LastFramePath, contracts.NodeTypeExtractFrames, "extracted last frame continuity", "")
+			if _, aerr := s.applyMediaPathToTarget(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetKeyframe, targetShotID, out.LastFramePath, assetID, "queue_extract_frames_done"); aerr != nil {
+				s.log.WarnContext(ctx, "studio: failed to apply extracted frame to shot", "job_id", j.ID, "shot_id", targetShotID, "error", aerr)
+			}
+		}
+		s.succeedJob(ctx, j, out.LastFramePath)
+
+	case domainstudio.JobQCReview:
+		var qReq queuedQCReviewJobRequest
+		if err := json.Unmarshal([]byte(j.RequestJSON), &qReq); err != nil {
+			s.failJob(ctx, j, err)
+			return
+		}
+		var out contracts.QCReviewOutput
+		if !s.runQueuedWorkflowNode(ctx, runCtx, j, contracts.NodeTypeQCReview, qReq.Input, &out) {
+			return
+		}
+		targetID := firstNonEmpty(qReq.Input.TargetID, j.ShotID, j.AssetID, j.ProjectID)
+		kind := qReq.TargetKind
+		if !kind.Valid() {
+			kind = domainstudio.TargetVideo
+		}
+		verdict := domainstudio.QCStatus(strings.ToLower(strings.TrimSpace(out.Verdict)))
+		if !verdict.Valid() {
+			verdict = domainstudio.QCWarn
+		}
+		issues := make([]domainstudio.QCIssue, len(out.Issues))
+		for i, iss := range out.Issues {
+			issues[i] = domainstudio.QCIssue{
+				Severity: iss.Severity, Category: iss.Category, Message: iss.Message,
+				MsgKey: iss.MsgKey, MsgParams: iss.MsgParams, FramePath: iss.FramePath,
+			}
+		}
+		if _, rerr := s.repo.CreateQCReport(ctx, domainstudio.QCReport{
+			ProjectID:      j.ProjectID,
+			EpisodeID:      j.EpisodeID,
+			TargetKind:     kind,
+			TargetID:       targetID,
+			MediaPath:      firstNonEmpty(qReq.MediaPath, qReq.Input.MediaPath.LocalURL),
+			Verdict:        verdict,
+			OverallScore:   out.OverallScore,
+			FFprobeJSON:    out.FFprobeJSON,
+			Issues:         issues,
+			VisionSummary:  out.VisionSummary,
+			VisionModelRef: qReq.Input.VisionModelRef,
+			SampleFrames:   out.SampleFrames,
+		}); rerr != nil {
+			s.log.WarnContext(ctx, "studio: failed to persist queued qc report", "job_id", j.ID, "error", rerr)
+		}
+		s.succeedJob(ctx, j, string(verdict))
 
 	default:
 		s.failJob(ctx, j, apperr.Validation("unsupported job kind "+string(j.JobKind)))
@@ -1003,15 +1574,25 @@ func (s *Service) executePollJob(ctx context.Context, j domainstudio.Job) {
 		EstimatedUSD: j.EstimatedUSD,
 	})
 
-	st, err := s.videoMedia.PollVideoJobOnce(runCtx, tok)
 	now := time.Now().UnixMilli()
+	submittedAt := max(j.StartedAt, j.CreatedAt)
+	if s.cfg.QueueMaxPollAge > 0 && submittedAt > 0 && now-submittedAt >= s.cfg.QueueMaxPollAge.Milliseconds() {
+		s.clearPollErrors(j.ID)
+		s.failJob(ctx, j, apperr.Unavailable("video polling timed out after max poll age"))
+		return
+	}
+
+	st, err := s.videoMedia.PollVideoJobOnce(runCtx, tok)
+	now = time.Now().UnixMilli()
 	pollDelay := max(1, s.cfg.QueuePollInterval.Milliseconds())
 
 	if err != nil {
 		if s.isJobCanceledOrPaused(ctx, j.ID) || ctx.Err() != nil {
+			s.clearPollErrors(j.ID)
 			return
 		}
 		if st.Failed {
+			s.clearPollErrors(j.ID)
 			s.failJob(ctx, j, err)
 			if j.ShotID != "" {
 				if sh, serr := s.repo.GetShot(ctx, j.ShotID); serr == nil {
@@ -1024,6 +1605,12 @@ func (s *Service) executePollJob(ctx context.Context, j domainstudio.Job) {
 			}
 			return
 		}
+		errCount := s.recordPollError(j.ID)
+		if s.cfg.QueueMaxPollErrors > 0 && errCount >= s.cfg.QueueMaxPollErrors {
+			s.clearPollErrors(j.ID)
+			s.failJob(ctx, j, apperr.Wrap(apperr.CodeUnavailable, fmt.Sprintf("video polling failed after %d consecutive errors", errCount), err))
+			return
+		}
 		j.Status = domainstudio.JobPolling
 		j.ErrorText = err.Error()
 		j.NextPollAt = now + pollDelay
@@ -1032,6 +1619,7 @@ func (s *Service) executePollJob(ctx context.Context, j domainstudio.Job) {
 		}
 		return
 	}
+	s.clearPollErrors(j.ID)
 
 	if !st.Done {
 		if s.isJobCanceledOrPaused(ctx, j.ID) {
@@ -1062,8 +1650,8 @@ func (s *Service) executePollJob(ctx context.Context, j domainstudio.Job) {
 	var regID string
 	if j.ShotID != "" {
 		if sh, serr := s.repo.GetShot(ctx, j.ShotID); serr == nil {
-			regID = s.registerMedia(ctx, "video", mediagennodes.NodeTypeVideo, outPath, tok.OutputDir, st.Result.Duration)
-			s.recordSelectedVersion(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetVideo, sh.ID, outPath, mediagennodes.NodeTypeVideo, sh.VideoPrompt, j.ModelRef)
+			regID = s.registerMedia(ctx, "video", contracts.NodeTypeVideoGenerate, outPath, tok.OutputDir, st.Result.Duration)
+			s.recordSelectedVersion(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetVideo, sh.ID, outPath, contracts.NodeTypeVideoGenerate, sh.VideoPrompt, j.ModelRef)
 			if _, aerr := s.applyMediaPathToTarget(ctx, j.ProjectID, j.EpisodeID, domainstudio.TargetVideo, sh.ID, outPath, regID, "queue_video_done"); aerr != nil {
 				s.log.WarnContext(ctx, "studio: failed to apply polled video to shot", "job_id", j.ID, "shot_id", sh.ID, "error", aerr)
 			}
@@ -1148,6 +1736,7 @@ func resolveShotVoiceConfig(sh domainstudio.Shot, overrideModel, defaultModel, o
 }
 
 func (s *Service) succeedJob(ctx context.Context, j domainstudio.Job, outPath string) {
+	s.clearPollErrors(j.ID)
 	now := time.Now().UnixMilli()
 	j.Status = domainstudio.JobSucceeded
 	j.Progress = 100
@@ -1169,6 +1758,7 @@ func (s *Service) succeedJob(ctx context.Context, j domainstudio.Job, outPath st
 }
 
 func (s *Service) failJob(ctx context.Context, j domainstudio.Job, err error) {
+	s.clearPollErrors(j.ID)
 	j.Status = domainstudio.JobFailed
 	j.ErrorText = err.Error()
 	j.FinishedAt = time.Now().UnixMilli()

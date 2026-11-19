@@ -34,11 +34,17 @@ func (s *Service) GetTimeline(ctx context.Context, episodeID string) (contracts.
 	if err != nil {
 		return contracts.StudioTimelineResult{}, err
 	}
+	timelinePath := s.resolveTimelineJSONPath(proj, ep)
+	if timelinePath == "" {
+		_, timelinePath = s.persistTimelineJSON(ctx, proj, ep, rec.Timeline)
+	} else if _, statErr := os.Stat(timelinePath); os.IsNotExist(statErr) {
+		_, timelinePath = s.persistTimelineJSON(ctx, proj, ep, rec.Timeline)
+	}
 	revs, err := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
 	if err != nil {
 		return contracts.StudioTimelineResult{}, err
 	}
-	return timelineResultToDTO(proj.ID, s.resolveTimelineJSONPath(proj, ep), rec, revs), nil
+	return timelineResultToDTO(proj.ID, timelinePath, rec, revs), nil
 }
 
 // ApplyTimelineOps applies atomic timeline edits under optimistic expected_revision concurrency control.
@@ -104,6 +110,77 @@ func (s *Service) ApplyTimelineOps(ctx context.Context, p contracts.StudioTimeli
 	return timelineResultToDTO(proj.ID, timelinePath, saved, revs), nil
 }
 
+func snapshotClipPeaks(tl domainstudio.EditTimeline) map[string][]float64 {
+	out := make(map[string][]float64)
+	for _, tr := range tl.Tracks {
+		for _, cl := range tr.Clips {
+			if len(cl.Peaks) > 0 && strings.TrimSpace(cl.FilePath) != "" {
+				out[filepath.Clean(cl.FilePath)] = append([]float64(nil), cl.Peaks...)
+			}
+		}
+	}
+	return out
+}
+
+func (s *Service) restoreTimelineClipPeaks(epRoot string, cached map[string][]float64, tl *domainstudio.EditTimeline) {
+	if tl == nil {
+		return
+	}
+	var diskPeaks map[string][]float64
+	loadDiskPeaks := func() map[string][]float64 {
+		if diskPeaks != nil {
+			return diskPeaks
+		}
+		diskPeaks = make(map[string][]float64)
+		if epRoot == "" {
+			return diskPeaks
+		}
+		peaksDir := filepath.Join(epRoot, "media", "peaks")
+		entries, err := os.ReadDir(peaksDir)
+		if err != nil {
+			return diskPeaks
+		}
+		for _, ent := range entries {
+			if ent.IsDir() || !strings.HasSuffix(strings.ToLower(ent.Name()), "_peaks.json") {
+				continue
+			}
+			raw, rErr := os.ReadFile(filepath.Join(peaksDir, ent.Name()))
+			if rErr != nil {
+				continue
+			}
+			var parsed struct {
+				Peaks []float64 `json:"peaks"`
+			}
+			if json.Unmarshal(raw, &parsed) == nil && len(parsed.Peaks) > 0 {
+				stem := strings.TrimSuffix(ent.Name(), "_peaks.json")
+				diskPeaks[stem] = parsed.Peaks
+			}
+		}
+		return diskPeaks
+	}
+
+	for ti := range tl.Tracks {
+		for ci := range tl.Tracks[ti].Clips {
+			cl := &tl.Tracks[ti].Clips[ci]
+			if len(cl.Peaks) > 0 || strings.TrimSpace(cl.FilePath) == "" {
+				continue
+			}
+			if pks, ok := cached[filepath.Clean(cl.FilePath)]; ok && len(pks) > 0 {
+				cl.Peaks = append([]float64(nil), pks...)
+				continue
+			}
+			dp := loadDiskPeaks()
+			stem := strings.TrimSuffix(filepath.Base(cl.FilePath), filepath.Ext(cl.FilePath))
+			for k, pks := range dp {
+				if k == stem || strings.HasPrefix(k, stem+"-") {
+					cl.Peaks = append([]float64(nil), pks...)
+					break
+				}
+			}
+		}
+	}
+}
+
 // UndoTimeline steps backward one revision while enforcing expected_revision.
 func (s *Service) UndoTimeline(ctx context.Context, p contracts.StudioTimelineRevisionNavPayload) (contracts.StudioTimelineResult, error) {
 	if s.repo == nil {
@@ -122,12 +199,18 @@ func (s *Service) UndoTimeline(ctx context.Context, p contracts.StudioTimelineRe
 	if err != nil {
 		return contracts.StudioTimelineResult{}, err
 	}
+	var cachedPeaks map[string][]float64
+	if curRec, curErr := s.loadEpisodeTimelineRecord(ctx, proj, ep); curErr == nil {
+		cachedPeaks = snapshotClipPeaks(curRec.Timeline)
+	}
 
 	rec, err := s.repo.UndoTimeline(ctx, ep.ID, p.ExpectedRevision)
 	if err != nil {
 		return contracts.StudioTimelineResult{}, err
 	}
-	s.hydrateTimelineClipAssets(ctx, s.resolveEpisodeRoot(proj, ep.Code), &rec.Timeline)
+	epRoot := s.resolveEpisodeRoot(proj, ep.Code)
+	s.hydrateTimelineClipAssets(ctx, epRoot, &rec.Timeline)
+	s.restoreTimelineClipPeaks(epRoot, cachedPeaks, &rec.Timeline)
 	_, timelinePath := s.persistTimelineJSON(ctx, proj, ep, rec.Timeline)
 	revs, rerr := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
 	if rerr != nil {
@@ -155,12 +238,18 @@ func (s *Service) RedoTimeline(ctx context.Context, p contracts.StudioTimelineRe
 	if err != nil {
 		return contracts.StudioTimelineResult{}, err
 	}
+	var cachedPeaks map[string][]float64
+	if curRec, curErr := s.loadEpisodeTimelineRecord(ctx, proj, ep); curErr == nil {
+		cachedPeaks = snapshotClipPeaks(curRec.Timeline)
+	}
 
 	rec, err := s.repo.RedoTimeline(ctx, ep.ID, p.ExpectedRevision)
 	if err != nil {
 		return contracts.StudioTimelineResult{}, err
 	}
-	s.hydrateTimelineClipAssets(ctx, s.resolveEpisodeRoot(proj, ep.Code), &rec.Timeline)
+	epRoot := s.resolveEpisodeRoot(proj, ep.Code)
+	s.hydrateTimelineClipAssets(ctx, epRoot, &rec.Timeline)
+	s.restoreTimelineClipPeaks(epRoot, cachedPeaks, &rec.Timeline)
 	_, timelinePath := s.persistTimelineJSON(ctx, proj, ep, rec.Timeline)
 	revs, rerr := s.repo.ListTimelineRevisions(ctx, ep.ID, s.cfg.TimelineRevisionLimit)
 	if rerr != nil {
@@ -808,11 +897,25 @@ func parseResolutionDims(res, fallback string) (int, int) {
 }
 
 func isWithinBaseDir(baseDir, target string) bool {
-	rel, err := filepath.Rel(filepath.Clean(baseDir), filepath.Clean(target))
-	if err != nil {
+	cleanBase := filepath.Clean(strings.TrimSpace(baseDir))
+	cleanTarget := filepath.Clean(strings.TrimSpace(target))
+	if cleanBase == "" || cleanTarget == "" {
 		return false
 	}
-	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..")
+	if !fsutil.IsSubpath(cleanBase, cleanTarget, true) {
+		return false
+	}
+	resolvedBase, err := filepath.EvalSymlinks(cleanBase)
+	if err != nil {
+		resolvedBase = cleanBase
+	}
+	if resolvedTarget, err := filepath.EvalSymlinks(cleanTarget); err == nil {
+		return fsutil.IsSubpath(resolvedBase, resolvedTarget, true)
+	}
+	if resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(cleanTarget)); err == nil {
+		return fsutil.IsSubpath(resolvedBase, resolvedParent, false)
+	}
+	return true
 }
 
 func resolveExistingDirOrParent(cleanPath string) string {

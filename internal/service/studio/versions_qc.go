@@ -15,7 +15,6 @@ import (
 	domainstudio "app/internal/domain/studio"
 	"app/internal/engine"
 	"app/internal/fsutil"
-	studionodes "app/internal/tools/studio"
 )
 
 func (s *Service) recordSelectedVersion(ctx context.Context, projectID, episodeID string, kind domainstudio.MediaTargetKind, targetID, mediaPath, sourceNode, prompt, modelRef string) *domainstudio.MediaVersion {
@@ -135,7 +134,7 @@ func (s *Service) SplitGrid(ctx context.Context, p contracts.StudioGridSplitPayl
 	if merr != nil {
 		return contracts.StudioGridSplitResult{}, apperr.Internal(merr)
 	}
-	rawOut, err := s.wf.RunNode(ctx, studionodes.NodeTypeGridSplit, inBytes)
+	rawOut, err := s.wf.RunNode(ctx, contracts.NodeTypeGridSplit, inBytes)
 	if err != nil {
 		return contracts.StudioGridSplitResult{}, err
 	}
@@ -159,7 +158,7 @@ func (s *Service) SplitGrid(ctx context.Context, p contracts.StudioGridSplitPayl
 			TargetKind: targetKind,
 			TargetID:   targetID,
 			MediaPath:  panel.Path,
-			SourceNode: studionodes.NodeTypeGridSplit,
+			SourceNode: contracts.NodeTypeGridSplit,
 			IsSelected: false,
 		})
 		if verr != nil {
@@ -190,6 +189,11 @@ func (s *Service) ApplyMaskEdit(ctx context.Context, p contracts.StudioMaskEditP
 	proj, err := s.repo.GetProject(ctx, strings.TrimSpace(p.ProjectID))
 	if err != nil {
 		return contracts.StudioMaskEditResult{}, err
+	}
+	if !proj.AutoApproveBatches && !p.Approved {
+		return contracts.StudioMaskEditResult{}, apperr.Validation("Mask edit requires approval when auto_approve_batches is disabled").
+			WithMsg("errors.studio.approval_required", nil).
+			WithDetails(map[string]any{"approval_required": true, "project_id": proj.ID, "stage": "mask_edit"})
 	}
 
 	projRoot := s.resolveProjectRoot(proj)
@@ -245,7 +249,7 @@ func (s *Service) ApplyMaskEdit(ctx context.Context, p contracts.StudioMaskEditP
 	if merr != nil {
 		return contracts.StudioMaskEditResult{}, apperr.Internal(merr)
 	}
-	rawOut, err := s.wf.RunNode(ctx, studionodes.NodeTypeMaskEdit, inBytes)
+	rawOut, err := s.wf.RunNode(ctx, contracts.NodeTypeMaskEdit, inBytes)
 	if err != nil {
 		return contracts.StudioMaskEditResult{}, err
 	}
@@ -257,7 +261,7 @@ func (s *Service) ApplyMaskEdit(ctx context.Context, p contracts.StudioMaskEditP
 	var verDTO *contracts.StudioMediaVersion
 	var epDetail *contracts.StudioEpisodeDetailResult
 	if kind.Valid() && strings.TrimSpace(p.TargetID) != "" {
-		if v := s.recordSelectedVersion(ctx, proj.ID, p.EpisodeID, kind, p.TargetID, out.Path, studionodes.NodeTypeMaskEdit, p.Prompt, modelRef); v != nil {
+		if v := s.recordSelectedVersion(ctx, proj.ID, p.EpisodeID, kind, p.TargetID, out.Path, contracts.NodeTypeMaskEdit, p.Prompt, modelRef); v != nil {
 			dto := mediaVersionToDTO(*v)
 			verDTO = &dto
 		}
@@ -313,7 +317,7 @@ func (s *Service) ExtractLastFrame(ctx context.Context, p contracts.StudioExtrac
 	if merr != nil {
 		return contracts.StudioExtractLastFrameResult{}, apperr.Internal(merr)
 	}
-	rawOut, err := s.wf.RunNode(ctx, studionodes.NodeTypeExtractFrames, inBytes)
+	rawOut, err := s.wf.RunNode(ctx, contracts.NodeTypeExtractFrames, inBytes)
 	if err != nil {
 		return contracts.StudioExtractLastFrameResult{}, err
 	}
@@ -333,7 +337,7 @@ func (s *Service) ExtractLastFrame(ctx context.Context, p contracts.StudioExtrac
 	var verDTO *contracts.StudioMediaVersion
 	var epDetail *contracts.StudioEpisodeDetailResult
 	if targetID := strings.TrimSpace(p.TargetShotID); targetID != "" {
-		if v := s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetKeyframe, targetID, out.LastFramePath, studionodes.NodeTypeExtractFrames, "extracted last frame continuity", ""); v != nil {
+		if v := s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetKeyframe, targetID, out.LastFramePath, contracts.NodeTypeExtractFrames, "extracted last frame continuity", ""); v != nil {
 			dto := mediaVersionToDTO(*v)
 			verDTO = &dto
 		}
@@ -372,6 +376,11 @@ func (s *Service) RunQCReview(ctx context.Context, p contracts.StudioQCReviewPay
 	if err != nil {
 		return contracts.StudioQCReport{}, err
 	}
+	if !proj.AutoApproveBatches && !p.SkipVision && !p.Approved {
+		return contracts.StudioQCReport{}, apperr.Validation("Vision QC review requires approval when auto_approve_batches is disabled").
+			WithMsg("errors.studio.approval_required", nil).
+			WithDetails(map[string]any{"approval_required": true, "project_id": proj.ID, "stage": "qc_review"})
+	}
 	visionModel := firstNonEmpty(p.VisionModelRef, proj.DefaultTextModel)
 	inBytes, merr := json.Marshal(contracts.QCReviewInput{
 		MediaPath:      engine.InputRef(p.MediaPath, engine.MediaImage),
@@ -386,7 +395,7 @@ func (s *Service) RunQCReview(ctx context.Context, p contracts.StudioQCReviewPay
 	if merr != nil {
 		return contracts.StudioQCReport{}, apperr.Internal(merr)
 	}
-	rawOut, err := s.wf.RunNode(ctx, studionodes.NodeTypeQCReview, inBytes)
+	rawOut, err := s.wf.RunNode(ctx, contracts.NodeTypeQCReview, inBytes)
 	if err != nil {
 		return contracts.StudioQCReport{}, err
 	}

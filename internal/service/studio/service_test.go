@@ -24,8 +24,6 @@ import (
 	"app/internal/service/studio"
 	"app/internal/service/workflow"
 	"app/internal/storage/sqlite"
-	mediagennodes "app/internal/tools/mediagen"
-	studionodes "app/internal/tools/studio"
 )
 
 type fakeWorkflow struct {
@@ -42,7 +40,7 @@ func (f *fakeWorkflow) RunNode(_ context.Context, nodeType string, input json.Ra
 	f.mu.Unlock()
 
 	switch nodeType {
-	case studionodes.NodeTypeScriptNormalize:
+	case contracts.NodeTypeScriptNormalize:
 		var in contracts.ScriptNormalizeInput
 		_ = json.Unmarshal(input, &in)
 		outJSON := `{"title":"Episode 1","genre":"drama","aspect_ratio":"16:9","logline":"Courier delivers key","scenes":[{"code":"S01","title":"Cafe","beats":[{"code":"B01","description":"Enters cafe","duration_sec":5,"asset_tags":["@Minh"]}]}]}`
@@ -59,7 +57,7 @@ func (f *fakeWorkflow) RunNode(_ context.Context, nodeType string, input json.Ra
 			BeatCount:            1,
 		}, nil
 
-	case studionodes.NodeTypeExtractAssets:
+	case contracts.NodeTypeExtractAssets:
 		var in contracts.ExtractAssetsInput
 		_ = json.Unmarshal(input, &in)
 		outJSON := `{"style_prompt":"Neo-noir","assets":[{"kind":"character","name":"Minh","code_tag":"@Minh","description":"Courier","prompt":"3-view turnaround of @Minh"}]}`
@@ -75,7 +73,7 @@ func (f *fakeWorkflow) RunNode(_ context.Context, nodeType string, input json.Ra
 			AssetCount:     1,
 		}, nil
 
-	case studionodes.NodeTypeAuthorShotPrompts:
+	case contracts.NodeTypeAuthorShotPrompts:
 		var in contracts.AuthorShotPromptsInput
 		_ = json.Unmarshal(input, &in)
 		outJSON := `{"production_mode":"storyboard_i2v","shots":[{"seq":1,"scene_code":"S01","title":"Cafe Entrance","shot_mode":"single","duration_sec":5,"image_prompt":"Close-up of @Minh","video_prompt":"Slow push in","narration_text":"Heavy rain outside.","ref_asset_tags":["@Minh"]}]}`
@@ -91,26 +89,26 @@ func (f *fakeWorkflow) RunNode(_ context.Context, nodeType string, input json.Ra
 			ShotCount: 1,
 		}, nil
 
-	case mediagennodes.NodeTypeImage:
-		var in mediagennodes.ImageGenerateInput
+	case contracts.NodeTypeImageGenerate:
+		var in contracts.ImageGenerateInput
 		_ = json.Unmarshal(input, &in)
 		p := filepath.Join(in.OutputDir, fmt.Sprintf("img_%d.png", seq))
 		_ = os.MkdirAll(filepath.Dir(p), 0o755)
 		_ = os.WriteFile(p, []byte("png-data"), 0o644)
-		return mediagennodes.ImageGenerateOutput{
+		return contracts.ImageGenerateOutput{
 			Image:     engine.RefFor(p, engine.MediaImage),
 			Path:      p,
 			MimeType:  "image/png",
 			SizeBytes: 8,
 		}, nil
 
-	case mediagennodes.NodeTypeVideo:
-		var in mediagennodes.VideoGenerateInput
+	case contracts.NodeTypeVideoGenerate:
+		var in contracts.VideoGenerateInput
 		_ = json.Unmarshal(input, &in)
 		p := filepath.Join(in.OutputDir, fmt.Sprintf("vid_%d.mp4", seq))
 		_ = os.MkdirAll(filepath.Dir(p), 0o755)
 		_ = os.WriteFile(p, []byte("mp4-data"), 0o644)
-		return mediagennodes.VideoGenerateOutput{
+		return contracts.VideoGenerateOutput{
 			Video:     engine.RefFor(p, engine.MediaVideo),
 			Path:      p,
 			MimeType:  "video/mp4",
@@ -118,20 +116,20 @@ func (f *fakeWorkflow) RunNode(_ context.Context, nodeType string, input json.Ra
 			SizeBytes: 8,
 		}, nil
 
-	case mediagennodes.NodeTypeTTS:
-		var in mediagennodes.TTSGenerateInput
+	case contracts.NodeTypeTTSGenerate:
+		var in contracts.TTSGenerateInput
 		_ = json.Unmarshal(input, &in)
 		p := filepath.Join(in.OutputDir, fmt.Sprintf("tts_%d.wav", seq))
 		_ = os.MkdirAll(filepath.Dir(p), 0o755)
 		_ = os.WriteFile(p, []byte("wav-data"), 0o644)
-		return mediagennodes.TTSGenerateOutput{
+		return contracts.TTSGenerateOutput{
 			Audio:     engine.RefFor(p, engine.MediaAudio),
 			Path:      p,
 			MimeType:  "audio/wav",
 			SizeBytes: 8,
 		}, nil
 
-	case studionodes.NodeTypeVideoConcatBasic:
+	case contracts.NodeTypeVideoConcatBasic:
 		var in contracts.VideoConcatBasicInput
 		_ = json.Unmarshal(input, &in)
 		p := filepath.Join(in.OutputDir, "final_movie.mp4")

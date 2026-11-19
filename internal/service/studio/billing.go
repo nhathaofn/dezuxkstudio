@@ -12,12 +12,14 @@ import (
 	domainmedia "app/internal/domain/mediagen"
 	domainprovider "app/internal/domain/provider"
 	domainstudio "app/internal/domain/studio"
-	studionodes "app/internal/tools/studio"
 )
 
 func isHeavyGenerationStage(stage contracts.StudioRunStageAction) bool {
 	switch stage {
-	case contracts.StudioStageGenerateAssets,
+	case contracts.StudioStageScriptNormalize,
+		contracts.StudioStageExtractAssets,
+		contracts.StudioStageAuthorShots,
+		contracts.StudioStageGenerateAssets,
 		contracts.StudioStageGenerateKeyframes,
 		contracts.StudioStageGenerateVideos,
 		contracts.StudioStageGenerateTTS:
@@ -104,7 +106,7 @@ func (s *Service) HandleMediaUsage(ctx context.Context, ev domainmedia.UsageEven
 	}
 }
 
-// EstimateUnitPriceUSD satisfies studionodes.CostEstimator using studio_pricing_catalog.
+// EstimateUnitPriceUSD satisfies tool CostEstimator using studio_pricing_catalog.
 func (s *Service) EstimateUnitPriceUSD(ctx context.Context, providerID, modelID, capability, unit string) (float64, bool, error) {
 	if s.repo == nil {
 		return 0, true, nil
@@ -221,7 +223,7 @@ func (s *Service) RunBatchPreflight(ctx context.Context, p contracts.StudioBatch
 		if merr != nil {
 			return contracts.BatchPreflightOutput{}, apperr.Internal(merr)
 		}
-		rawOut, rerr := s.wf.RunNode(ctx, studionodes.NodeTypeBatchPreflight, inBytes)
+		rawOut, rerr := s.wf.RunNode(ctx, contracts.NodeTypeBatchPreflight, inBytes)
 		if rerr != nil {
 			return contracts.BatchPreflightOutput{}, rerr
 		}

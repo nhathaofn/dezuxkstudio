@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,8 +25,6 @@ import (
 	"app/internal/progress"
 	"app/internal/safego"
 	"app/internal/service/media"
-	mediagennodes "app/internal/tools/mediagen"
-	studionodes "app/internal/tools/studio"
 )
 
 // WorkflowRunner executes registered engine nodes shared by UI and agent.
@@ -75,6 +72,7 @@ type Service struct {
 
 	jobMu      sync.Mutex
 	activeJobs map[string]*activeJobEntry
+	pollErrors map[string]int
 
 	wakeCh chan struct{}
 }
@@ -114,6 +112,7 @@ func New(opts Options) *Service {
 		projectsDir:   projectsDir,
 		runningEps:    make(map[string]bool),
 		activeJobs:    make(map[string]*activeJobEntry),
+		pollErrors:    make(map[string]int),
 		wakeCh:        make(chan struct{}, 1),
 	}
 }
@@ -381,18 +380,22 @@ func (s *Service) DeleteProject(ctx context.Context, p contracts.StudioProjectDe
 			if cerr := engine.CheckFile(ctx, proj.RootDir, true); cerr != nil {
 				return cerr
 			}
+			s.cancelEpisodeActiveJobs(proj.ID, "")
+			s.waitProjectActiveJobs(proj.ID, time.Second)
+			if rerr := removeDirWithRetry(proj.RootDir); rerr != nil {
+				return apperr.Wrap(apperr.CodeUnavailable, "Failed to remove deleted project directory", rerr).
+					WithMsg("errors.studio.io_failed", nil)
+			}
+		} else {
+			s.cancelEpisodeActiveJobs(proj.ID, "")
+			s.waitProjectActiveJobs(proj.ID, time.Second)
 		}
+	} else {
+		s.cancelEpisodeActiveJobs(proj.ID, "")
+		s.waitProjectActiveJobs(proj.ID, time.Second)
 	}
 	if err := s.repo.DeleteProject(ctx, proj.ID); err != nil {
 		return err
-	}
-	s.cancelEpisodeActiveJobs(proj.ID, "")
-	if p.DeleteFiles && proj.RootDir != "" {
-		if pDir := s.ProjectsDir(); pDir != "" && isDirectOrSubpath(pDir, proj.RootDir) {
-			if rerr := os.RemoveAll(proj.RootDir); rerr != nil {
-				s.log.WarnContext(ctx, "studio: failed to remove deleted project directory", "project_id", proj.ID, "error", rerr)
-			}
-		}
 	}
 	s.emit(contracts.EventStudioProjectChanged, contracts.StudioProjectChangedEvent{
 		ProjectID: proj.ID,
@@ -1354,7 +1357,7 @@ func (s *Service) runScriptNormalize(ctx context.Context, proj domainstudio.Proj
 	if err != nil {
 		return contracts.StudioRunStageResult{}, apperr.Internal(err)
 	}
-	rawOut, err := s.wf.RunNode(ctx, studionodes.NodeTypeScriptNormalize, inBytes)
+	rawOut, err := s.wf.RunNode(ctx, contracts.NodeTypeScriptNormalize, inBytes)
 	if err != nil {
 		return contracts.StudioRunStageResult{}, err
 	}
@@ -1410,7 +1413,7 @@ func (s *Service) runExtractAssets(ctx context.Context, proj domainstudio.Projec
 	if err != nil {
 		return contracts.StudioRunStageResult{}, apperr.Internal(err)
 	}
-	rawOut, err := s.wf.RunNode(ctx, studionodes.NodeTypeExtractAssets, inBytes)
+	rawOut, err := s.wf.RunNode(ctx, contracts.NodeTypeExtractAssets, inBytes)
 	if err != nil {
 		return contracts.StudioRunStageResult{}, err
 	}
@@ -1513,7 +1516,7 @@ func (s *Service) runAuthorShots(ctx context.Context, proj domainstudio.Project,
 	if err != nil {
 		return contracts.StudioRunStageResult{}, apperr.Internal(err)
 	}
-	rawOut, err := s.wf.RunNode(ctx, studionodes.NodeTypeAuthorShotPrompts, inBytes)
+	rawOut, err := s.wf.RunNode(ctx, contracts.NodeTypeAuthorShotPrompts, inBytes)
 	if err != nil {
 		return contracts.StudioRunStageResult{}, err
 	}
@@ -1603,7 +1606,7 @@ func (s *Service) runGenerateAssets(ctx context.Context, proj domainstudio.Proje
 		s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), idx+1, len(targets), completed, failed, asset.ID, asset.Name, fmt.Sprintf("Generating asset reference: %s", asset.Name), contracts.BatchStatusRunning)
 
 		prompt := composePrompt(proj.StylePrompt, firstNonEmpty(asset.Prompt, asset.Description, asset.Name))
-		reqBytes, merr := json.Marshal(mediagennodes.ImageGenerateInput{
+		reqBytes, merr := json.Marshal(contracts.ImageGenerateInput{
 			Prompt:      prompt,
 			Model:       model,
 			AspectRatio: proj.AspectRatio,
@@ -1615,20 +1618,20 @@ func (s *Service) runGenerateAssets(ctx context.Context, proj domainstudio.Proje
 			lastErr = apperr.Internal(merr)
 			continue
 		}
-		rawOut, rerr := s.wf.RunNode(ctx, mediagennodes.NodeTypeImage, reqBytes)
+		rawOut, rerr := s.wf.RunNode(ctx, contracts.NodeTypeImageGenerate, reqBytes)
 		if rerr != nil {
 			failed++
 			lastErr = rerr
 			continue
 		}
-		var out mediagennodes.ImageGenerateOutput
+		var out contracts.ImageGenerateOutput
 		if merr := decodeNodeOutput(rawOut, &out); merr != nil {
 			failed++
 			lastErr = merr
 			continue
 		}
 		asset.PrimaryPath = out.Path
-		if regID := s.registerMedia(ctx, "image", mediagennodes.NodeTypeImage, out.Path, outDir, 0); regID != "" {
+		if regID := s.registerMedia(ctx, "image", contracts.NodeTypeImageGenerate, out.Path, outDir, 0); regID != "" {
 			asset.PrimaryAssetID = regID
 		}
 		if _, uerr := s.repo.UpsertAsset(ctx, asset); uerr != nil {
@@ -1636,7 +1639,7 @@ func (s *Service) runGenerateAssets(ctx context.Context, proj domainstudio.Proje
 			lastErr = uerr
 			continue
 		}
-		s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetAsset, asset.ID, out.Path, mediagennodes.NodeTypeImage, prompt, model)
+		s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetAsset, asset.ID, out.Path, contracts.NodeTypeImageGenerate, prompt, model)
 		completed++
 	}
 
@@ -1714,7 +1717,7 @@ func (s *Service) runGenerateKeyframes(ctx context.Context, proj domainstudio.Pr
 
 		refs := collectRefImages(shot.RefAssetTags, tagPathMap)
 		prompt := composePrompt(proj.StylePrompt, firstNonEmpty(shot.ImagePrompt, shot.Title))
-		reqBytes, merr := json.Marshal(mediagennodes.ImageGenerateInput{
+		reqBytes, merr := json.Marshal(contracts.ImageGenerateInput{
 			Prompt:          prompt,
 			ReferenceImages: refs,
 			Model:           model,
@@ -1727,7 +1730,7 @@ func (s *Service) runGenerateKeyframes(ctx context.Context, proj domainstudio.Pr
 			lastErr = apperr.Internal(merr)
 			continue
 		}
-		rawOut, rerr := s.wf.RunNode(ctx, mediagennodes.NodeTypeImage, reqBytes)
+		rawOut, rerr := s.wf.RunNode(ctx, contracts.NodeTypeImageGenerate, reqBytes)
 		if rerr != nil {
 			failed++
 			lastErr = rerr
@@ -1738,14 +1741,14 @@ func (s *Service) runGenerateKeyframes(ctx context.Context, proj domainstudio.Pr
 			}
 			continue
 		}
-		var out mediagennodes.ImageGenerateOutput
+		var out contracts.ImageGenerateOutput
 		if merr := decodeNodeOutput(rawOut, &out); merr != nil {
 			failed++
 			lastErr = merr
 			continue
 		}
 		shot.KeyframePath = out.Path
-		if regID := s.registerMedia(ctx, "image", mediagennodes.NodeTypeImage, out.Path, outDir, 0); regID != "" {
+		if regID := s.registerMedia(ctx, "image", contracts.NodeTypeImageGenerate, out.Path, outDir, 0); regID != "" {
 			shot.KeyframeAssetID = regID
 		}
 		if shot.Status == domainstudio.ShotPending || shot.Status == domainstudio.ShotFailed {
@@ -1758,7 +1761,7 @@ func (s *Service) runGenerateKeyframes(ctx context.Context, proj domainstudio.Pr
 			lastErr = uerr
 			continue
 		}
-		s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetKeyframe, shot.ID, out.Path, mediagennodes.NodeTypeImage, prompt, model)
+		s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetKeyframe, shot.ID, out.Path, contracts.NodeTypeImageGenerate, prompt, model)
 		completed++
 	}
 
@@ -1868,7 +1871,7 @@ func (s *Service) runGenerateVideos(ctx context.Context, proj domainstudio.Proje
 					return
 				}
 
-				vidIn := mediagennodes.VideoGenerateInput{
+				vidIn := contracts.VideoGenerateInput{
 					Prompt:        composePrompt(proj.StylePrompt, firstNonEmpty(shot.VideoPrompt, shot.ImagePrompt, shot.Title)),
 					Model:         model,
 					AspectRatio:   proj.AspectRatio,
@@ -1896,7 +1899,7 @@ func (s *Service) runGenerateVideos(ctx context.Context, proj domainstudio.Proje
 					stateMu.Unlock()
 					continue
 				}
-				rawOut, rerr := s.wf.RunNode(ctx, mediagennodes.NodeTypeVideo, reqBytes)
+				rawOut, rerr := s.wf.RunNode(ctx, contracts.NodeTypeVideoGenerate, reqBytes)
 				if rerr != nil {
 					shot.Status = domainstudio.ShotFailed
 					shot.ErrorText = rerr.Error()
@@ -1913,7 +1916,7 @@ func (s *Service) runGenerateVideos(ctx context.Context, proj domainstudio.Proje
 					continue
 				}
 
-				var out mediagennodes.VideoGenerateOutput
+				var out contracts.VideoGenerateOutput
 				if merr := decodeNodeOutput(rawOut, &out); merr != nil {
 					stateMu.Lock()
 					failed++
@@ -1924,7 +1927,7 @@ func (s *Service) runGenerateVideos(ctx context.Context, proj domainstudio.Proje
 				}
 
 				shot.VideoPath = out.Path
-				if regID := s.registerMedia(ctx, "video", mediagennodes.NodeTypeVideo, out.Path, outDir, out.Duration); regID != "" {
+				if regID := s.registerMedia(ctx, "video", contracts.NodeTypeVideoGenerate, out.Path, outDir, out.Duration); regID != "" {
 					shot.VideoAssetID = regID
 				}
 				shot.Status = domainstudio.ShotVideoReady
@@ -1940,7 +1943,7 @@ func (s *Service) runGenerateVideos(ctx context.Context, proj domainstudio.Proje
 					s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), curDone, len(targets), curOK, curFail, shot.ID, shot.Title, fmt.Sprintf("Shot #%d video save failed", shot.Seq), contracts.BatchStatusRunning)
 					continue
 				}
-				s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetVideo, shot.ID, out.Path, mediagennodes.NodeTypeVideo, shot.VideoPrompt, model)
+				s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetVideo, shot.ID, out.Path, contracts.NodeTypeVideoGenerate, shot.VideoPrompt, model)
 
 				stateMu.Lock()
 				completed++
@@ -2044,7 +2047,7 @@ func (s *Service) runGenerateTTS(ctx context.Context, proj domainstudio.Project,
 		}
 		shotModel, shotVoice := resolveShotVoiceConfig(shot, p.Model, proj.DefaultTTSModel, p.Voice, voiceBySpeaker)
 		s.reportBatchProgress(ctx, proj.ID, ep.ID, string(p.Stage), idx+1, len(targets), completed, failed, shot.ID, shot.Title, fmt.Sprintf("Synthesizing TTS for shot #%d", shot.Seq), contracts.BatchStatusRunning)
-		reqBytes, merr := json.Marshal(mediagennodes.TTSGenerateInput{
+		reqBytes, merr := json.Marshal(contracts.TTSGenerateInput{
 			Text:      shotSpeechText(shot),
 			Model:     shotModel,
 			Voice:     shotVoice,
@@ -2055,20 +2058,20 @@ func (s *Service) runGenerateTTS(ctx context.Context, proj domainstudio.Project,
 			lastErr = apperr.Internal(merr)
 			continue
 		}
-		rawOut, rerr := s.wf.RunNode(ctx, mediagennodes.NodeTypeTTS, reqBytes)
+		rawOut, rerr := s.wf.RunNode(ctx, contracts.NodeTypeTTSGenerate, reqBytes)
 		if rerr != nil {
 			failed++
 			lastErr = rerr
 			continue
 		}
-		var out mediagennodes.TTSGenerateOutput
+		var out contracts.TTSGenerateOutput
 		if merr := decodeNodeOutput(rawOut, &out); merr != nil {
 			failed++
 			lastErr = merr
 			continue
 		}
 		shot.AudioPath = out.Path
-		if regID := s.registerMedia(ctx, "audio", mediagennodes.NodeTypeTTS, out.Path, outDir, 0); regID != "" {
+		if regID := s.registerMedia(ctx, "audio", contracts.NodeTypeTTSGenerate, out.Path, outDir, 0); regID != "" {
 			shot.AudioAssetID = regID
 		}
 		if shot.Status == domainstudio.ShotPending || shot.Status == domainstudio.ShotKeyframeReady {
@@ -2080,7 +2083,7 @@ func (s *Service) runGenerateTTS(ctx context.Context, proj domainstudio.Project,
 			lastErr = uerr
 			continue
 		}
-		s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetDubAudio, shot.ID, out.Path, mediagennodes.NodeTypeTTS, shotSpeechText(shot), shotModel)
+		s.recordSelectedVersion(ctx, proj.ID, ep.ID, domainstudio.TargetDubAudio, shot.ID, out.Path, contracts.NodeTypeTTSGenerate, shotSpeechText(shot), shotModel)
 		completed++
 	}
 
@@ -2149,7 +2152,7 @@ func (s *Service) runProbeShots(ctx context.Context, proj domainstudio.Project, 
 			lastErr = apperr.Internal(merr)
 			continue
 		}
-		rawOut, rerr := s.wf.RunNode(ctx, studionodes.NodeTypeProbeMedia, inBytes)
+		rawOut, rerr := s.wf.RunNode(ctx, contracts.NodeTypeProbeMedia, inBytes)
 		if rerr != nil {
 			failed++
 			lastErr = rerr
@@ -2250,7 +2253,7 @@ func (s *Service) runConcatVideo(ctx context.Context, proj domainstudio.Project,
 	if err != nil {
 		return contracts.StudioRunStageResult{}, apperr.Internal(err)
 	}
-	rawOut, err := s.wf.RunNode(ctx, studionodes.NodeTypeVideoConcatBasic, inBytes)
+	rawOut, err := s.wf.RunNode(ctx, contracts.NodeTypeVideoConcatBasic, inBytes)
 	if err != nil {
 		return contracts.StudioRunStageResult{}, err
 	}
@@ -2754,16 +2757,16 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// ListProjectSlugs returns sorted slugs for diagnostics or inspection if needed.
-func (s *Service) ListProjectSlugs(ctx context.Context) ([]string, error) {
-	list, err := s.repo.ListProjects(ctx)
-	if err != nil {
-		return nil, err
+func removeDirWithRetry(dir string) error {
+	var err error
+	for attempt := range 5 {
+		err = os.RemoveAll(dir)
+		if err == nil {
+			return nil
+		}
+		if attempt < 4 {
+			time.Sleep(time.Duration(attempt+1) * 40 * time.Millisecond)
+		}
 	}
-	slugs := make([]string, 0, len(list))
-	for _, pr := range list {
-		slugs = append(slugs, pr.Slug)
-	}
-	sort.Strings(slugs)
-	return slugs, nil
+	return err
 }

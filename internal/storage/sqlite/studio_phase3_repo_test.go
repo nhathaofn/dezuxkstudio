@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"path/filepath"
@@ -196,5 +197,35 @@ func TestStudioPhase3TimelineRevisionsUndoRedoAndConflict(t *testing.T) {
 	prunedRevs, err := limRepo.ListTimelineRevisions(ctx, ep.ID, 10)
 	if err != nil || len(prunedRevs) != 2 || prunedRevs[0].Revision != 4 || prunedRevs[1].Revision != 3 {
 		t.Fatalf("expected newest 2 revisions [4, 3], got %+v err=%v", prunedRevs, err)
+	}
+
+	// 8. Migration 023 indexes exist, and SaveTimelineRevision strips clip peaks from revision snapshots while preserving active timeline peaks.
+	for _, idxName := range []string{
+		"idx_media_assets_created_at",
+		"idx_studio_projects_updated_at",
+		"idx_studio_jobs_ep_shot_kind",
+		"idx_studio_pricing_cap",
+	} {
+		var found string
+		if err := db.read().QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, idxName).Scan(&found); err != nil {
+			t.Fatalf("expected index %s to exist: %v", idxName, err)
+		}
+	}
+	tlWithPeaks := tlNew3.Clone()
+	tlWithPeaks.Tracks[0].Clips[0].Peaks = []float64{0.1, 0.8, 0.3}
+	saved5, err := limRepo.SaveTimelineRevision(ctx, ep.ID, 4, studio.ActorUser, "with peaks", tlWithPeaks)
+	if err != nil || len(saved5.Timeline.Tracks[0].Clips[0].Peaks) != 3 {
+		t.Fatalf("expected active timeline to retain peaks, got %+v err=%v", saved5.Timeline.Tracks[0].Clips[0].Peaks, err)
+	}
+	var revJSON string
+	if err := db.read().QueryRowContext(ctx, `SELECT timeline_json FROM studio_timeline_revisions WHERE episode_id = ? AND revision = 5`, ep.ID).Scan(&revJSON); err != nil {
+		t.Fatalf("query rev 5 timeline_json: %v", err)
+	}
+	var revTL studio.EditTimeline
+	if err := json.Unmarshal([]byte(revJSON), &revTL); err != nil {
+		t.Fatal(err)
+	}
+	if len(revTL.Tracks[0].Clips[0].Peaks) != 0 {
+		t.Fatalf("expected revision snapshot to strip peaks, got %+v", revTL.Tracks[0].Clips[0].Peaks)
 	}
 }

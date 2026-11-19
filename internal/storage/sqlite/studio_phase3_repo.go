@@ -148,6 +148,18 @@ func (r *StudioRepository) SaveTimelineRevision(
 		return studio.TimelineRecord{}, fmt.Errorf("sqlite: marshal timeline: %w", err)
 	}
 	rawJSON := string(rawBytes)
+
+	revTL := tl.Clone()
+	for ti := range revTL.Tracks {
+		for ci := range revTL.Tracks[ti].Clips {
+			revTL.Tracks[ti].Clips[ci].Peaks = nil
+		}
+	}
+	revBytes, err := json.Marshal(revTL)
+	if err != nil {
+		return studio.TimelineRecord{}, fmt.Errorf("sqlite: marshal timeline revision: %w", err)
+	}
+	revJSON := string(revBytes)
 	now := time.Now().UnixMilli()
 	var out studio.TimelineRecord
 
@@ -178,7 +190,7 @@ func (r *StudioRepository) SaveTimelineRevision(
 		if _, ierr := tx.ExecContext(ctx, `
 			INSERT INTO studio_timeline_revisions (id, episode_id, revision, actor, summary, timeline_json, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			uuid.NewString(), epID, nextRev, string(actor), strings.TrimSpace(summary), rawJSON, now,
+			uuid.NewString(), epID, nextRev, string(actor), strings.TrimSpace(summary), revJSON, now,
 		); ierr != nil {
 			return ierr
 		}

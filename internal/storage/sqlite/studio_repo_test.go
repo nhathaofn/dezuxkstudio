@@ -377,4 +377,32 @@ func TestStudioPhase2JobsBillingVersionsQC(t *testing.T) {
 	if _, err := repo.GetLatestQCReport(ctx, studio.TargetKeyframe, "shot-1"); !apperr.IsCode(err, apperr.CodeIntegrity) {
 		t.Fatalf("expected CodeIntegrity on corrupt qc report JSON, got %v", err)
 	}
+
+	// P0-4 CAS guard: UpdateJob must NOT overwrite JobPaused/JobCanceled, while TransitionJobControl can.
+	pausedJob, err := repo.CreateJob(ctx, studio.Job{
+		ProjectID:      proj.ID,
+		EpisodeID:      ep.ID,
+		JobKind:        studio.JobImage,
+		IdempotencyKey: "cas-guard-job-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pausedJob.Status = studio.JobPaused
+	pausedJob, err = repo.TransitionJobControl(ctx, pausedJob)
+	if err != nil || pausedJob.Status != studio.JobPaused {
+		t.Fatalf("TransitionJobControl to paused failed: %+v err=%v", pausedJob, err)
+	}
+	overwriteAttempt := pausedJob
+	overwriteAttempt.Status = studio.JobSucceeded
+	overwriteAttempt.OutputPath = "/tmp/raced.png"
+	afterCAS, err := repo.UpdateJob(ctx, overwriteAttempt)
+	if err != nil || afterCAS.Status != studio.JobPaused {
+		t.Fatalf("expected UpdateJob CAS guard to preserve JobPaused, got %+v err=%v", afterCAS, err)
+	}
+	overwriteAttempt.Status = studio.JobQueued
+	resumedCAS, err := repo.TransitionJobControl(ctx, overwriteAttempt)
+	if err != nil || resumedCAS.Status != studio.JobQueued {
+		t.Fatalf("expected TransitionJobControl to resume out of paused, got %+v err=%v", resumedCAS, err)
+	}
 }

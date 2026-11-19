@@ -801,6 +801,8 @@ export interface MediaPeaksThumbsOutput {
   peaks_thumbs_json: string;
   sprite_sheet_path?: string;
   sprite_asset_id?: string;
+  sprite_cols?: number;
+  sprite_rows?: number;
   peaks_json_path: string;
   peaks: number[];
   thumb_count: number;
@@ -940,6 +942,7 @@ export interface ProbeMediaOutput {
   video_codec?: string;
   audio_codec?: string;
   format_name?: string;
+  warnings?: string[];
 }
 
 export interface ProviderCredential {
@@ -1441,6 +1444,7 @@ export interface StudioMaskEditPayload {
   model_ref?: string;
   aspect_ratio?: string;
   resolution?: string;
+  approved?: boolean;
 }
 
 export interface StudioMaskEditResult {
@@ -1615,6 +1619,7 @@ export interface StudioQCReviewPayload {
   vision_model_ref?: string;
   sample_count?: number;
   skip_vision?: boolean;
+  approved?: boolean;
 }
 
 export interface StudioQueueControlPayload {
@@ -1622,6 +1627,7 @@ export interface StudioQueueControlPayload {
   project_id?: string;
   episode_id?: string;
   job_id?: string;
+  approved?: boolean;
 }
 
 export interface StudioQueueControlResult {
@@ -2040,6 +2046,7 @@ export interface TimelineAutoAssembleOutput {
   track_count: number;
   clip_count: number;
   subtitle_count: number;
+  warnings?: string[];
 }
 
 export interface UpdateCredentialPayload {

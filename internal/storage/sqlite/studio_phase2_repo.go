@@ -391,7 +391,8 @@ func (r *StudioRepository) SetJobProviderSubmission(ctx context.Context, id, pro
 	return r.GetJob(ctx, id)
 }
 
-// UpdateJob saves mutable state/output fields of a studio job.
+// UpdateJob saves mutable state/output fields of a studio job while preserving canceled/paused status
+// if controlled concurrently by the user.
 func (r *StudioRepository) UpdateJob(ctx context.Context, j studio.Job) (studio.Job, error) {
 	if err := j.ValidateWithMaxAttempts(r.cfg.QueueMaxAttempts); err != nil {
 		return studio.Job{}, err
@@ -399,7 +400,8 @@ func (r *StudioRepository) UpdateJob(ctx context.Context, j studio.Job) (studio.
 	j.UpdatedAt = time.Now().UnixMilli()
 	res, err := r.db.sql.ExecContext(ctx, `
 		UPDATE studio_jobs SET
-			status = ?, provider_job_id = ?, submit_token_json = ?, progress = ?,
+			status = CASE WHEN status IN ('canceled', 'paused') THEN status ELSE ? END,
+			provider_job_id = ?, submit_token_json = ?, progress = ?,
 			attempts = ?, max_attempts = ?, next_poll_at = ?, output_path = ?, output_json = ?,
 			error_text = ?, estimated_usd = ?, actual_usd = ?, updated_at = ?, started_at = ?, finished_at = ?
 		WHERE id = ?`,
@@ -415,7 +417,41 @@ func (r *StudioRepository) UpdateJob(ctx context.Context, j studio.Job) (studio.
 			WithDetails(map[string]any{"id": j.ID}).
 			WithMsg("errors.studio.job_not_found", nil)
 	}
+	return r.GetJob(ctx, j.ID)
+}
+
+// TransitionJobControl applies explicit user control state changes (resume/retry) across paused or terminal states.
+func (r *StudioRepository) TransitionJobControl(ctx context.Context, j studio.Job) (studio.Job, error) {
+	if err := j.ValidateWithMaxAttempts(r.cfg.QueueMaxAttempts); err != nil {
+		return studio.Job{}, err
+	}
+	j.UpdatedAt = time.Now().UnixMilli()
+	res, err := r.db.sql.ExecContext(ctx, `
+		UPDATE studio_jobs SET
+			status = ?, provider_job_id = ?, submit_token_json = ?, progress = ?,
+			attempts = ?, max_attempts = ?, next_poll_at = ?, output_path = ?, output_json = ?,
+			error_text = ?, estimated_usd = ?, actual_usd = ?, updated_at = ?, started_at = ?, finished_at = ?
+		WHERE id = ?`,
+		string(j.Status), j.ProviderJobID, j.SubmitTokenJSON, j.Progress,
+		j.Attempts, j.MaxAttempts, j.NextPollAt, j.OutputPath, j.OutputJSON,
+		j.ErrorText, j.EstimatedUSD, j.ActualUSD, j.UpdatedAt, j.StartedAt, j.FinishedAt, j.ID,
+	)
+	if err != nil {
+		return studio.Job{}, wrapStudioWriteErr(err, "control studio job status", nil, nil)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return studio.Job{}, apperr.New(apperr.CodeNotFound, "Studio job not found").
+			WithDetails(map[string]any{"id": j.ID}).
+			WithMsg("errors.studio.job_not_found", nil)
+	}
 	return j, nil
+}
+
+func appendJobScopeWhere(pid, eid string) (string, []any) {
+	if eid != "" {
+		return "project_id = ? AND episode_id = ?", []any{pid, eid}
+	}
+	return "project_id = ?", []any{pid}
 }
 
 // PauseEpisodeJobs pauses active queued/submitted/polling jobs for an episode (or entire project if episodeID == "").
@@ -423,11 +459,13 @@ func (r *StudioRepository) PauseEpisodeJobs(ctx context.Context, projectID, epis
 	now := time.Now().UnixMilli()
 	pid := strings.TrimSpace(projectID)
 	eid := strings.TrimSpace(episodeID)
+	scopeSQL, scopeArgs := appendJobScopeWhere(pid, eid)
+	args := append([]any{now}, scopeArgs...)
 	res, err := r.db.sql.ExecContext(ctx, `
 		UPDATE studio_jobs
 		SET status = 'paused', updated_at = ?
-		WHERE project_id = ? AND (? = '' OR episode_id = ?) AND status IN ('queued', 'submitted', 'polling')`,
-		now, pid, eid, eid,
+		WHERE `+scopeSQL+` AND status IN ('queued', 'submitted', 'polling')`,
+		args...,
 	)
 	if err != nil {
 		return 0, wrapStudioWriteErr(err, "pause studio jobs", nil, nil)
@@ -441,22 +479,25 @@ func (r *StudioRepository) ResumeEpisodeJobs(ctx context.Context, projectID, epi
 	now := time.Now().UnixMilli()
 	pid := strings.TrimSpace(projectID)
 	eid := strings.TrimSpace(episodeID)
+	scopeSQL, scopeArgs := appendJobScopeWhere(pid, eid)
 	var total int64
 	err := r.db.inTx(ctx, func(tx *sql.Tx) error {
+		pollArgs := append([]any{now, now}, scopeArgs...)
 		resPoll, err := tx.ExecContext(ctx, `
 			UPDATE studio_jobs
 			SET status = 'polling', next_poll_at = ?, updated_at = ?
-			WHERE project_id = ? AND (? = '' OR episode_id = ?) AND status = 'paused' AND provider_job_id <> ''`,
-			now, now, pid, eid, eid,
+			WHERE `+scopeSQL+` AND status = 'paused' AND provider_job_id <> ''`,
+			pollArgs...,
 		)
 		if err != nil {
 			return err
 		}
+		queueArgs := append([]any{now}, scopeArgs...)
 		resQueue, err := tx.ExecContext(ctx, `
 			UPDATE studio_jobs
 			SET status = 'queued', updated_at = ?
-			WHERE project_id = ? AND (? = '' OR episode_id = ?) AND status = 'paused' AND provider_job_id = ''`,
-			now, pid, eid, eid,
+			WHERE `+scopeSQL+` AND status = 'paused' AND provider_job_id = ''`,
+			queueArgs...,
 		)
 		if err != nil {
 			return err

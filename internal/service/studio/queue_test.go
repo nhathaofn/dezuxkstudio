@@ -23,8 +23,6 @@ import (
 	"app/internal/engine"
 	studiosvc "app/internal/service/studio"
 	"app/internal/storage/sqlite"
-	mediagennodes "app/internal/tools/mediagen"
-	studionodes "app/internal/tools/studio"
 )
 
 type crashTestVideoDriver struct {
@@ -69,7 +67,7 @@ type phase2NodeStubWorkflow struct {
 
 func (w *phase2NodeStubWorkflow) RunNode(_ context.Context, nodeType string, raw json.RawMessage) (any, error) {
 	switch nodeType {
-	case studionodes.NodeTypeMaskEdit:
+	case contracts.NodeTypeMaskEdit:
 		var in contracts.MaskEditInput
 		_ = json.Unmarshal(raw, &in)
 		w.lastMaskPath = in.MaskPath.LocalURL
@@ -77,7 +75,7 @@ func (w *phase2NodeStubWorkflow) RunNode(_ context.Context, nodeType string, raw
 		outPath := filepath.Join(w.outDir, "edited_frame.png")
 		_ = os.WriteFile(outPath, []byte("PNGEDITED"), 0o600)
 		return contracts.MaskEditOutput{Path: outPath, MimeType: "image/png", Provider: "openai", Model: "gpt-image-1"}, nil
-	case studionodes.NodeTypeExtractFrames:
+	case contracts.NodeTypeExtractFrames:
 		outPath := filepath.Join(w.outDir, "last_frame.png")
 		_ = os.WriteFile(outPath, []byte("PNGLASTFRAME"), 0o600)
 		return contracts.ExtractFramesOutput{
@@ -85,7 +83,7 @@ func (w *phase2NodeStubWorkflow) RunNode(_ context.Context, nodeType string, raw
 			LastFramePath: outPath,
 			OutputDir:     w.outDir,
 		}, nil
-	case studionodes.NodeTypeQCReview:
+	case contracts.NodeTypeQCReview:
 		return contracts.QCReviewOutput{
 			Verdict:       "pass",
 			OverallScore:  9.1,
@@ -246,6 +244,17 @@ func TestStudioCrashRecoveryQueueSubmitsExactlyOnceAcrossRestart(t *testing.T) {
 	_ = mf.Close()
 	maskRaw, _ := os.ReadFile(maskBufPath)
 
+	if _, err := svc2.ApplyMaskEdit(ctx, contracts.StudioMaskEditPayload{
+		ProjectID:      created.Project.ID,
+		EpisodeID:      epID,
+		TargetKind:     "keyframe",
+		TargetID:       shotID,
+		ImagePath:      kfPath,
+		MaskDataBase64: "data:image/png;base64," + base64.StdEncoding.EncodeToString(maskRaw),
+		Prompt:         "change sky to sunset",
+	}); err == nil || !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected approval error on unapproved ApplyMaskEdit, got %v", err)
+	}
 	maskRes, err := svc2.ApplyMaskEdit(ctx, contracts.StudioMaskEditPayload{
 		ProjectID:      created.Project.ID,
 		EpisodeID:      epID,
@@ -254,6 +263,7 @@ func TestStudioCrashRecoveryQueueSubmitsExactlyOnceAcrossRestart(t *testing.T) {
 		ImagePath:      kfPath,
 		MaskDataBase64: "data:image/png;base64," + base64.StdEncoding.EncodeToString(maskRaw),
 		Prompt:         "change sky to sunset",
+		Approved:       true,
 	})
 	if err != nil || maskRes.Version == nil || wf.lastMaskPath == "" {
 		t.Fatalf("ApplyMaskEdit = %+v err=%v maskPath=%q", maskRes, err, wf.lastMaskPath)
@@ -270,12 +280,22 @@ func TestStudioCrashRecoveryQueueSubmitsExactlyOnceAcrossRestart(t *testing.T) {
 		t.Fatalf("ExtractLastFrame = %+v err=%v", efRes, err)
 	}
 
+	if _, err := svc2.RunQCReview(ctx, contracts.StudioQCReviewPayload{
+		ProjectID:  created.Project.ID,
+		EpisodeID:  epID,
+		TargetKind: "video",
+		TargetID:   shotID,
+		MediaPath:  epAfter.Shots[0].VideoPath,
+	}); err == nil || !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected approval error on unapproved Vision RunQCReview, got %v", err)
+	}
 	qcRes, err := svc2.RunQCReview(ctx, contracts.StudioQCReviewPayload{
 		ProjectID:  created.Project.ID,
 		EpisodeID:  epID,
 		TargetKind: "video",
 		TargetID:   shotID,
 		MediaPath:  epAfter.Shots[0].VideoPath,
+		Approved:   true,
 	})
 	if err != nil || qcRes.Verdict != "pass" {
 		t.Fatalf("RunQCReview = %+v err=%v", qcRes, err)
@@ -283,7 +303,7 @@ func TestStudioCrashRecoveryQueueSubmitsExactlyOnceAcrossRestart(t *testing.T) {
 
 	// Verify ApplyMaskEdit runs FileGuard BEFORE creating outDir on disk
 	deniedProjRoot := filepath.Join(tmp, "guarded-proj")
-	guardedProj, err := svc2.CreateProject(ctx, contracts.StudioProjectCreatePayload{Title: "Guarded Mask Proj"})
+	guardedProj, err := svc2.CreateProject(ctx, contracts.StudioProjectCreatePayload{Title: "Guarded Mask Proj", AutoApproveBatches: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,24 +362,24 @@ func (d *programmableVideoDriver) PollVideoJobOnce(_ context.Context, _ domainme
 
 type hookableQueueWorkflow struct {
 	outDir    string
-	onImage   func(ctx context.Context, in mediagennodes.ImageGenerateInput) (mediagennodes.ImageGenerateOutput, error)
-	onTTS     func(ctx context.Context, in mediagennodes.TTSGenerateInput) (mediagennodes.TTSGenerateOutput, error)
-	lastTTSIn mediagennodes.TTSGenerateInput
+	onImage   func(ctx context.Context, in contracts.ImageGenerateInput) (contracts.ImageGenerateOutput, error)
+	onTTS     func(ctx context.Context, in contracts.TTSGenerateInput) (contracts.TTSGenerateOutput, error)
+	lastTTSIn contracts.TTSGenerateInput
 }
 
 func (w *hookableQueueWorkflow) RunNode(ctx context.Context, nodeType string, raw json.RawMessage) (any, error) {
 	switch nodeType {
-	case mediagennodes.NodeTypeImage:
-		var in mediagennodes.ImageGenerateInput
+	case contracts.NodeTypeImageGenerate:
+		var in contracts.ImageGenerateInput
 		_ = json.Unmarshal(raw, &in)
 		if w.onImage != nil {
 			return w.onImage(ctx, in)
 		}
 		p := filepath.Join(w.outDir, "img.png")
 		_ = os.WriteFile(p, []byte("PNG"), 0o600)
-		return mediagennodes.ImageGenerateOutput{Path: p, MimeType: "image/png"}, nil
-	case mediagennodes.NodeTypeTTS:
-		var in mediagennodes.TTSGenerateInput
+		return contracts.ImageGenerateOutput{Path: p, MimeType: "image/png"}, nil
+	case contracts.NodeTypeTTSGenerate:
+		var in contracts.TTSGenerateInput
 		_ = json.Unmarshal(raw, &in)
 		w.lastTTSIn = in
 		if w.onTTS != nil {
@@ -367,7 +387,7 @@ func (w *hookableQueueWorkflow) RunNode(ctx context.Context, nodeType string, ra
 		}
 		p := filepath.Join(w.outDir, "tts.wav")
 		_ = os.WriteFile(p, []byte("WAV"), 0o600)
-		return mediagennodes.TTSGenerateOutput{Path: p, MimeType: "audio/wav"}, nil
+		return contracts.TTSGenerateOutput{Path: p, MimeType: "audio/wav"}, nil
 	default:
 		return map[string]any{}, nil
 	}
@@ -449,8 +469,8 @@ func TestStudioQueuePermanentFastFailTransientBackoffPauseRaceAndVoiceLookup(t *
 	shotID := shotRes.Shot.ID
 
 	// 1. Permanent error (CodeValidation) fast-fails on attempt 1 without retrying
-	wf.onImage = func(_ context.Context, _ mediagennodes.ImageGenerateInput) (mediagennodes.ImageGenerateOutput, error) {
-		return mediagennodes.ImageGenerateOutput{}, apperr.Validation("prompt violates policy")
+	wf.onImage = func(_ context.Context, _ contracts.ImageGenerateInput) (contracts.ImageGenerateOutput, error) {
+		return contracts.ImageGenerateOutput{}, apperr.Validation("prompt violates policy")
 	}
 	enqImg, err := svc.EnqueueBatch(ctx, contracts.StudioQueueEnqueuePayload{
 		EpisodeID: epID, Stage: "generate_keyframes", Force: true,
@@ -508,13 +528,13 @@ func TestStudioQueuePermanentFastFailTransientBackoffPauseRaceAndVoiceLookup(t *
 	// 3. Multi-dialogue voice lookup resolves @Lan (second speaker) when @Minh has no voice,
 	//    AND pause race guard prevents overwriting "paused" with "succeeded" or updating shot AudioPath.
 	var pauseJobID string
-	wf.onTTS = func(c context.Context, _ mediagennodes.TTSGenerateInput) (mediagennodes.TTSGenerateOutput, error) {
+	wf.onTTS = func(c context.Context, _ contracts.TTSGenerateInput) (contracts.TTSGenerateOutput, error) {
 		if pauseJobID != "" {
 			_, _ = svc.ControlQueue(c, contracts.StudioQueueControlPayload{JobID: pauseJobID, Action: "pause"})
 		}
 		p := filepath.Join(tmp, "paused_tts.wav")
 		_ = os.WriteFile(p, []byte("WAV"), 0o600)
-		return mediagennodes.TTSGenerateOutput{Path: p, MimeType: "audio/wav"}, nil
+		return contracts.TTSGenerateOutput{Path: p, MimeType: "audio/wav"}, nil
 	}
 	enqTTS, err := svc.EnqueueBatch(ctx, contracts.StudioQueueEnqueuePayload{
 		EpisodeID: epID, Stage: "generate_tts", Force: true,
@@ -583,14 +603,14 @@ func TestStudioQueueInFlightCancelFailedReEnqueueAndSubmissionCheckpoint(t *test
 	canceledCh := make(chan error, 2)
 	wf := &hookableQueueWorkflow{
 		outDir: tmp,
-		onImage: func(runCtx context.Context, in mediagennodes.ImageGenerateInput) (mediagennodes.ImageGenerateOutput, error) {
+		onImage: func(runCtx context.Context, in contracts.ImageGenerateInput) (contracts.ImageGenerateOutput, error) {
 			select {
 			case startedCh <- in.OutputDir:
 			default:
 			}
 			<-runCtx.Done()
 			canceledCh <- runCtx.Err()
-			return mediagennodes.ImageGenerateOutput{}, runCtx.Err()
+			return contracts.ImageGenerateOutput{}, runCtx.Err()
 		},
 	}
 
@@ -688,8 +708,8 @@ func TestStudioQueueInFlightCancelFailedReEnqueueAndSubmissionCheckpoint(t *test
 	<-workerDone
 
 	// Canceled/Failed jobs MUST allow re-enqueue with Force: false!
-	wf.onImage = func(_ context.Context, _ mediagennodes.ImageGenerateInput) (mediagennodes.ImageGenerateOutput, error) {
-		return mediagennodes.ImageGenerateOutput{}, apperr.Validation("bad prompt")
+	wf.onImage = func(_ context.Context, _ contracts.ImageGenerateInput) (contracts.ImageGenerateOutput, error) {
+		return contracts.ImageGenerateOutput{}, apperr.Validation("bad prompt")
 	}
 	enqAfterCancel, err := svc.EnqueueBatch(ctx, contracts.StudioQueueEnqueuePayload{
 		EpisodeID: epID, Stage: "generate_keyframes", Force: false,
@@ -738,5 +758,189 @@ func TestStudioQueueInFlightCancelFailedReEnqueueAndSubmissionCheckpoint(t *test
 	svc.StepQueueOnce(ctx)
 	if vidDrv.submitCalls.Load() != 1 {
 		t.Fatalf("SubmitVideoJob called %d times; expected strictly 1 (no double billing)", vidDrv.submitCalls.Load())
+	}
+}
+
+type failingPollVideoDriver struct {
+	pollErr   error
+	pollCalls atomic.Int32
+}
+
+func (d *failingPollVideoDriver) SubmitVideoJob(_ context.Context, req domainmedia.VideoRequest) (domainmedia.VideoSubmitToken, error) {
+	return domainmedia.VideoSubmitToken{ProviderJobID: "remote-fail-poll", OutputDir: req.OutputDir}, nil
+}
+
+func (d *failingPollVideoDriver) PollVideoJobOnce(_ context.Context, _ domainmedia.VideoSubmitToken) (domainmedia.VideoPollStatus, error) {
+	d.pollCalls.Add(1)
+	return domainmedia.VideoPollStatus{}, d.pollErr
+}
+
+type allNodeStubWorkflow struct {
+	outDir string
+	calls  []string
+}
+
+func (w *allNodeStubWorkflow) RunNode(_ context.Context, nodeType string, raw json.RawMessage) (any, error) {
+	w.calls = append(w.calls, nodeType)
+	switch nodeType {
+	case contracts.NodeTypeTTSDubMux:
+		p := filepath.Join(w.outDir, "dub.mp4")
+		_ = os.WriteFile(p, []byte("MP4DUB"), 0o600)
+		return contracts.TTSDubMuxOutput{Path: p, AudioPath: p, AssetID: "dub-1"}, nil
+	case contracts.NodeTypeVideoWMRemove:
+		p := filepath.Join(w.outDir, "clean.mp4")
+		_ = os.WriteFile(p, []byte("MP4CLEAN"), 0o600)
+		return contracts.VideoWatermarkRemoveOutput{Path: p, AssetID: "wm-1"}, nil
+	case contracts.NodeTypeMaskEdit:
+		p := filepath.Join(w.outDir, "mask_out.png")
+		_ = os.WriteFile(p, []byte("PNGMASK"), 0o600)
+		return contracts.MaskEditOutput{Path: p, AssetID: "mask-1"}, nil
+	case contracts.NodeTypeGridSplit:
+		p := filepath.Join(w.outDir, "panel_0.png")
+		_ = os.WriteFile(p, []byte("PNGPANEL"), 0o600)
+		return contracts.GridSplitOutput{Panels: []contracts.GridPanel{{Index: 0, Path: p}}}, nil
+	case contracts.NodeTypeExtractFrames:
+		p := filepath.Join(w.outDir, "frame_last.png")
+		_ = os.WriteFile(p, []byte("PNGFRAME"), 0o600)
+		return contracts.ExtractFramesOutput{
+			LastFramePath: p,
+			Frames:        []contracts.ExtractedFrame{{Path: p, AssetID: "frame-1"}},
+		}, nil
+	case contracts.NodeTypeQCReview:
+		return contracts.QCReviewOutput{Verdict: "pass", OverallScore: 9.4}, nil
+	default:
+		return map[string]any{}, nil
+	}
+}
+
+func TestStudioQueuePollLimitsRetryApprovalAndAllJobKinds(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	db, err := sqlite.Open(ctx, sqlite.Options{
+		Path:          filepath.Join(tmp, "queue_limits.db"),
+		BackupDir:     filepath.Join(tmp, "backups"),
+		BackupsToKeep: 1,
+		BusyTimeout:   time.Second,
+		Logger:        slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	cfg := config.Default(config.ModeDesktop).Studio
+	cfg.QueuePollInterval = time.Millisecond
+	cfg.QueuePollLeaseMin = time.Millisecond
+	cfg.QueueMaxPollErrors = 2
+	cfg.QueueMaxPollAge = time.Hour
+
+	repo := sqlite.NewStudioRepository(db, sqlite.WithStudioConfig(cfg))
+	drv := &failingPollVideoDriver{pollErr: apperr.Unavailable("transient network reset")}
+	wf := &allNodeStubWorkflow{outDir: tmp}
+	svc := studiosvc.New(studiosvc.Options{
+		Repo:         repo,
+		Workflow:     wf,
+		VideoMedia:   drv,
+		StudioConfig: cfg,
+		ProjectsDir:  filepath.Join(tmp, "projects"),
+		Logger:       slog.New(slog.DiscardHandler),
+	})
+
+	projRes, err := svc.CreateProject(ctx, contracts.StudioProjectCreatePayload{
+		Title:              "Limits Test",
+		AutoApproveBatches: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	epID := projRes.Episodes[0].ID
+
+	// LLM stage ScriptNormalize enforces approval gate when AutoApproveBatches=false
+	_, err = svc.RunStage(ctx, contracts.StudioEpisodeRunStagePayload{
+		EpisodeID: epID,
+		Stage:     contracts.StudioStageScriptNormalize,
+	})
+	if !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected ScriptNormalize without Approved=true to require approval, got %v", err)
+	}
+
+	// Create media artifacts for shot & enqueue remaining 6 JobKinds + test Retry approval gate
+	kf := filepath.Join(tmp, "kf.png")
+	vid := filepath.Join(tmp, "vid.mp4")
+	_ = os.WriteFile(kf, []byte("PNG"), 0o600)
+	_ = os.WriteFile(vid, []byte("MP4"), 0o600)
+	shotRes, err := svc.UpsertShot(ctx, contracts.StudioShotUpsertPayload{
+		EpisodeID:     epID,
+		Title:         "Shot 1",
+		NarrationText: ptrStr("Narration"),
+		KeyframePath:  ptrStr(kf),
+		VideoPath:     ptrStr(vid),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create polling job directly that fails after 2 transient poll errors
+	pollJob, err := repo.CreateJob(ctx, domainstudio.Job{
+		ProjectID:       projRes.Project.ID,
+		EpisodeID:       epID,
+		ShotID:          shotRes.Shot.ID,
+		JobKind:         domainstudio.JobVideo,
+		IdempotencyKey:  "poll-max-err-1",
+		Status:          domainstudio.JobPolling,
+		ProviderJobID:   "remote-fail-poll",
+		SubmitTokenJSON: `{"provider_job_id":"remote-fail-poll"}`,
+		StartedAt:       time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.StepQueueOnce(ctx) // error 1 -> remains polling
+	after1, _ := repo.GetJob(ctx, pollJob.ID)
+	if after1.Status != domainstudio.JobPolling {
+		t.Fatalf("expected polling after 1 transient error, got %+v", after1)
+	}
+	time.Sleep(5 * time.Millisecond)
+	svc.StepQueueOnce(ctx) // error 2 -> hits QueueMaxPollErrors=2 -> failed
+	after2, _ := repo.GetJob(ctx, pollJob.ID)
+	if after2.Status != domainstudio.JobFailed {
+		t.Fatalf("expected JobFailed after QueueMaxPollErrors=2, got %+v", after2)
+	}
+
+	// Retry on failed job when AutoApproveBatches=false requires Approved=true
+	if _, err := svc.ControlQueue(ctx, contracts.StudioQueueControlPayload{
+		Action: contracts.QueueActionRetry,
+		JobID:  pollJob.ID,
+	}); !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected ControlQueue(retry) without Approved=true to fail validation, got %v", err)
+	}
+	retried, err := svc.ControlQueue(ctx, contracts.StudioQueueControlPayload{
+		Action:   contracts.QueueActionRetry,
+		JobID:    pollJob.ID,
+		Approved: true,
+	})
+	if err != nil || retried.Job == nil || retried.Job.Status != domainstudio.JobPolling {
+		t.Fatalf("expected approved Retry to resume polling, got %+v err=%v", retried, err)
+	}
+	// Cancel before running the 6 processing stages
+	_, _ = svc.ControlQueue(ctx, contracts.StudioQueueControlPayload{Action: contracts.QueueActionCancel, JobID: pollJob.ID})
+
+	// Enqueue & execute all 6 remaining JobKind stages end-to-end
+	for _, stage := range []string{"tts_dub_mux", "video_watermark_remove", "mask_edit", "grid_split", "extract_frames", "qc_review"} {
+		enq, eerr := svc.EnqueueBatch(ctx, contracts.StudioQueueEnqueuePayload{
+			EpisodeID: epID,
+			Stage:     stage,
+			Approved:  true,
+		})
+		if eerr != nil || len(enq.Jobs) != 1 {
+			t.Fatalf("EnqueueBatch(%s): %+v err=%v", stage, enq, eerr)
+		}
+		if !svc.StepQueueOnce(ctx) {
+			t.Fatalf("StepQueueOnce(%s) did not execute", stage)
+		}
+		got, gerr := repo.GetJob(ctx, enq.Jobs[0].ID)
+		if gerr != nil || got.Status != domainstudio.JobSucceeded {
+			t.Fatalf("job %s (%s) status = %s err=%q gerr=%v", stage, got.ID, got.Status, got.ErrorText, gerr)
+		}
 	}
 }
