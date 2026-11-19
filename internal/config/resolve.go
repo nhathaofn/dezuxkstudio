@@ -342,6 +342,57 @@ func ResolveStudioConfig(cfg StudioConfig) StudioConfig {
 	if cfg.TimelineRevisionLimit <= 0 {
 		cfg.TimelineRevisionLimit = def.TimelineRevisionLimit
 	}
+	if cfg.LongScriptChunkChars <= 0 {
+		cfg.LongScriptChunkChars = def.LongScriptChunkChars
+	}
+	if cfg.MaxBatchShotsUpsert <= 0 {
+		cfg.MaxBatchShotsUpsert = def.MaxBatchShotsUpsert
+	}
+	if cfg.ContactSheetFramesPerSheet <= 0 {
+		cfg.ContactSheetFramesPerSheet = def.ContactSheetFramesPerSheet
+	}
+	if cfg.ContactSheetMaxFramesPerShot <= 0 {
+		cfg.ContactSheetMaxFramesPerShot = def.ContactSheetMaxFramesPerShot
+	}
+	if cfg.ContactSheetMaxEdgePx < 64 {
+		cfg.ContactSheetMaxEdgePx = def.ContactSheetMaxEdgePx
+	}
+	if cfg.ContactSheetJPEGQuality < 1 || cfg.ContactSheetJPEGQuality > 100 {
+		cfg.ContactSheetJPEGQuality = def.ContactSheetJPEGQuality
+	}
+	if math.IsNaN(cfg.SignalBlackMinSec) || math.IsInf(cfg.SignalBlackMinSec, 0) || cfg.SignalBlackMinSec <= 0 {
+		cfg.SignalBlackMinSec = def.SignalBlackMinSec
+	}
+	if math.IsNaN(cfg.SignalBlackPixelThresh) || math.IsInf(cfg.SignalBlackPixelThresh, 0) || cfg.SignalBlackPixelThresh <= 0 || cfg.SignalBlackPixelThresh > 1 {
+		cfg.SignalBlackPixelThresh = def.SignalBlackPixelThresh
+	}
+	if math.IsNaN(cfg.SignalFreezeMinSec) || math.IsInf(cfg.SignalFreezeMinSec, 0) || cfg.SignalFreezeMinSec <= 0 {
+		cfg.SignalFreezeMinSec = def.SignalFreezeMinSec
+	}
+	if strings.TrimSpace(cfg.SignalFreezeNoiseDB) == "" {
+		cfg.SignalFreezeNoiseDB = def.SignalFreezeNoiseDB
+	}
+	if math.IsNaN(cfg.SignalSceneCutThresh) || math.IsInf(cfg.SignalSceneCutThresh, 0) || cfg.SignalSceneCutThresh <= 0 || cfg.SignalSceneCutThresh >= 1 {
+		cfg.SignalSceneCutThresh = def.SignalSceneCutThresh
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.TimelineOverrunPolicy)) {
+	case "warn", "freeze_last_frame", "speed_fit":
+		cfg.TimelineOverrunPolicy = strings.ToLower(strings.TrimSpace(cfg.TimelineOverrunPolicy))
+	default:
+		cfg.TimelineOverrunPolicy = def.TimelineOverrunPolicy
+	}
+	if math.IsNaN(cfg.TimelineMaxSpeedFitRatio) || math.IsInf(cfg.TimelineMaxSpeedFitRatio, 0) || cfg.TimelineMaxSpeedFitRatio < 1.0 || cfg.TimelineMaxSpeedFitRatio > 4.0 {
+		cfg.TimelineMaxSpeedFitRatio = def.TimelineMaxSpeedFitRatio
+	}
+	if cfg.QueueWaitMaxDuration <= 0 {
+		cfg.QueueWaitMaxDuration = def.QueueWaitMaxDuration
+	}
+	if cfg.QueueWaitPollInterval <= 0 {
+		cfg.QueueWaitPollInterval = def.QueueWaitPollInterval
+	}
+	if cfg.QueueWaitPollInterval > cfg.QueueWaitMaxDuration {
+		cfg.QueueWaitPollInterval = cfg.QueueWaitMaxDuration
+	}
 	return cfg
 }
 

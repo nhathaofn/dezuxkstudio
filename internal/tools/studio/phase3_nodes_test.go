@@ -142,8 +142,8 @@ func makeTestPCMBytes() []byte {
 
 func TestPhase3ValidateSpecs(t *testing.T) {
 	nodes := NewNodes(Options{})
-	if len(nodes) != 16 {
-		t.Fatalf("expected 16 studio nodes, got %d", len(nodes))
+	if len(nodes) != 17 {
+		t.Fatalf("expected 17 studio nodes, got %d", len(nodes))
 	}
 	for _, n := range nodes {
 		if err := engine.ValidateSpec(n.Spec()); err != nil {

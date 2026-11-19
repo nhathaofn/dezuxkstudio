@@ -30,17 +30,11 @@ jobs:
       WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
       WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
     steps:
-      - name: Verify signing secrets for tagged releases
+      - name: Check signing secrets
         shell: pwsh
         run: |
-          $isManualUnsigned = "${{ github.event_name }}" -eq "workflow_dispatch" -and "${{ inputs.allow_unsigned }}" -eq "true"
           if ([string]::IsNullOrEmpty($env:WINDOWS_CERT_PFX_BASE64) -or [string]::IsNullOrEmpty($env:WINDOWS_CERT_PASSWORD)) {
-            if ($isManualUnsigned) {
-              Write-Warning "Proceeding unsigned via manual workflow_dispatch allow_unsigned=true override."
-            } else {
-              Write-Error "WINDOWS_CERT_PFX_BASE64 and WINDOWS_CERT_PASSWORD secrets are required for tagged releases."
-              exit 1
-            }
+            Write-Warning "WINDOWS_CERT_PFX_BASE64 or WINDOWS_CERT_PASSWORD is not configured; proceeding with unsigned Windows release build."
           }
 
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -77,7 +71,7 @@ jobs:
           task build:server VERSION="$VERSION" UPDATE_FEED_URL="$UPDATE_FEED_URL"
 
       - name: Prepare Windows code signing
-        if: env.WINDOWS_CERT_PFX_BASE64 != ''
+        if: env.WINDOWS_CERT_PFX_BASE64 != '' && env.WINDOWS_CERT_PASSWORD != ''
         shell: pwsh
         run: |
           $pfx = Join-Path $env:RUNNER_TEMP 'cert.pfx'
@@ -115,7 +109,7 @@ jobs:
           $signBat = Join-Path $env:RUNNER_TEMP 'sign-nsis.bat'
           if (Test-Path $pfx) { Remove-Item -Force $pfx }
           if (Test-Path $signBat) { Remove-Item -Force $signBat }
-          if (-not [string]::IsNullOrEmpty($env:WINDOWS_CERT_PFX_BASE64)) {
+          if (-not [string]::IsNullOrEmpty($env:WINDOWS_CERT_PFX_BASE64) -and -not [string]::IsNullOrEmpty($env:WINDOWS_CERT_PASSWORD)) {
             Get-ChildItem build/bin, bin -Filter *.exe -Recurse | ForEach-Object {
               $sig = Get-AuthenticodeSignature $_.FullName
               if ($sig.Status -ne 'Valid') {

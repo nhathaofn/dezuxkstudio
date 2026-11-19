@@ -13,5 +13,7 @@ When writing or refining Asset Bible entries (`studio_asset_upsert`) and Storybo
 2. **Separate still composition from motion**:
    - `image_prompt`: concrete composition, subject pose, facial expression, wardrobe, environment, camera lens, and lighting (avoid temporal words like "then" or "walks across").
    - `video_prompt`: camera movement (`slow dolly in`, `pan left`, `tracking shot`), micro-actions over the shot duration, facial performance, and spoken dialogue cues when `drama`.
-3. **Link explicit `@Tag` references**: populate `ref_asset_tags` accurately on every shot so `storyboard_i2v` keyframes and `r2v` video generation attach the matching generated Asset Bible sheets.
-4. **Never wipe user edits**: update only targeted shots with `studio_shot_upsert` and call `studio_sync_workspace` if disk `shots.json` was edited manually.
+3. **Link explicit `@Tag` & Asset IDs**: populate `asset_ids` (plus `@Tags` / `audio_speaker_id`) accurately on every shot so `storyboard_i2v` keyframes and `r2v` video generation attach matching Asset Bible sheets and TTS speakers. Use `studio_asset_rename` / `studio_asset_merge` when unifying asset names instead of manually hunting every shot.
+4. **Author cleanly in batches without wiping edits**:
+   - Prefer `studio_shots_batch_upsert` (`replace_all: false`) to create or patch multiple shots by `id` or `seq` in one atomic transaction (`replace_all: true` is reserved for intentional full storyboard replacement and invokes approval if shots exist).
+   - For single-shot tweaks use `studio_shot_upsert`, and call `studio_sync_workspace` if disk `shots.json` was edited manually.

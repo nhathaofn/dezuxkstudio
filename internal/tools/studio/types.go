@@ -41,6 +41,7 @@ const (
 	NodeTypeMediaPeaksThumbs  = contracts.NodeTypeMediaPeaksThumbs
 	NodeTypeRenderTimeline    = contracts.NodeTypeRenderTimeline
 	NodeTypeExportNLEDraft    = contracts.NodeTypeExportNLEDraft
+	NodeTypeVideoContactSheet = contracts.NodeTypeVideoContactSheet
 )
 
 const (
@@ -143,6 +144,7 @@ func NewNodes(opts Options) []engine.Node {
 		NewMediaPeaksThumbsNode(opts),
 		NewRenderTimelineNode(opts),
 		NewExportNLEDraftNode(opts),
+		NewVideoContactSheetNode(opts),
 	}
 }
 

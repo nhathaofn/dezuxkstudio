@@ -235,6 +235,21 @@ type StudioConfig struct {
 	TimelineWaveSampleRate       int           // PCM sample rate in Hz when computing timeline waveform peaks
 	TimelineWaveBlockSamples     int           // samples per RMS window block during peak extraction
 	TimelineRevisionLimit        int           // default number of timeline revisions returned by timeline queries
+	LongScriptChunkChars         int           // character threshold above which scripts should be chunked via Agent authoring
+	MaxBatchShotsUpsert          int           // safety cap per studio:shots_batch_upsert call
+	ContactSheetFramesPerSheet   int           // max frames rendered per JPEG contact sheet
+	ContactSheetMaxFramesPerShot int           // max sampled frames per shot in contact sheet generation
+	ContactSheetMaxEdgePx        int           // max width/height edge in pixels of generated JPEG contact sheets
+	ContactSheetJPEGQuality      int           // JPEG encode quality (1..100) for contact sheets
+	SignalBlackMinSec            float64       // minimum continuous black duration in seconds for FFmpeg blackdetect
+	SignalBlackPixelThresh       float64       // pixel luma threshold (0..1] for FFmpeg blackdetect
+	SignalFreezeMinSec           float64       // minimum freeze duration in seconds for FFmpeg freezedetect
+	SignalFreezeNoiseDB          string        // noise tolerance for FFmpeg freezedetect (e.g. "-60dB")
+	SignalSceneCutThresh         float64       // scene cut detection score threshold (0..1) for FFmpeg select filter
+	TimelineOverrunPolicy        string        // narration overrun policy: warn | freeze_last_frame | speed_fit
+	TimelineMaxSpeedFitRatio     float64       // max allowed speed multiplier (>= 1.0) when overrun_policy == speed_fit
+	QueueWaitMaxDuration         time.Duration // max wait duration for studio:queue_wait
+	QueueWaitPollInterval        time.Duration // poll/heartbeat fallback interval for studio:queue_wait
 }
 
 // MediaConfig tunes the media assets library, signed ticket streaming, and staging GC.

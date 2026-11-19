@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	domainstudio "app/internal/domain/studio"
 	"app/internal/engine"
 )
 
@@ -41,6 +42,7 @@ const (
 	NodeTypeMediaPeaksThumbs      = "tool.media_peaks_thumbs"
 	NodeTypeRenderTimeline        = "tool.render_timeline"
 	NodeTypeExportNLEDraft        = "tool.export_nle_draft"
+	NodeTypeVideoContactSheet     = "tool.video_contact_sheet"
 )
 
 // RemoverInput is the input payload for the watermark remover node.
@@ -501,27 +503,43 @@ type VideoWatermarkRemoveOutput struct {
 
 // TimelineAutoAssembleInput is the input+params contract for tool.timeline_auto_assemble.
 type TimelineAutoAssembleInput struct {
-	ShotsJSON         string   `json:"shots_json"`
-	AudioManifestJSON string   `json:"audio_manifest_json,omitempty"`
-	EpisodeID         string   `json:"episode_id,omitempty"`
-	Resolution        string   `json:"resolution,omitempty"`
-	FPS               int      `json:"fps,omitempty"`
-	TransitionDefault string   `json:"transition_default,omitempty"`
-	TransitionMs      *int64   `json:"transition_ms,omitempty"`
-	BGMPath           string   `json:"bgm_path,omitempty"`
-	BGMVolume         *float64 `json:"bgm_volume,omitempty"`
-	ProjectDir        string   `json:"project_dir,omitempty"`
+	ShotsJSON         string                     `json:"shots_json"`
+	AudioManifestJSON string                     `json:"audio_manifest_json,omitempty"`
+	EpisodeID         string                     `json:"episode_id,omitempty"`
+	Resolution        string                     `json:"resolution,omitempty"`
+	FPS               int                        `json:"fps,omitempty"`
+	TransitionDefault string                     `json:"transition_default,omitempty"`
+	TransitionMs      *int64                     `json:"transition_ms,omitempty"`
+	BGMPath           string                     `json:"bgm_path,omitempty"`
+	BGMVolume         *float64                   `json:"bgm_volume,omitempty"`
+	OverrunPolicy     domainstudio.OverrunPolicy `json:"overrun_policy,omitempty"`
+	MaxSpeedFitRatio  *float64                   `json:"max_speed_fit_ratio,omitempty"`
+	ProjectDir        string                     `json:"project_dir,omitempty"`
+}
+
+// TimelineAssembleIssue describes a speech overrun or source collision encountered during timeline assembly.
+type TimelineAssembleIssue struct {
+	Code       string `json:"code"`
+	ShotID     string `json:"shot_id,omitempty"`
+	ClipID     string `json:"clip_id,omitempty"`
+	TrackID    string `json:"track_id,omitempty"`
+	OverflowMs int64  `json:"overflow_ms,omitempty"`
+	OverlapMs  int64  `json:"overlap_ms,omitempty"`
+	Policy     string `json:"policy,omitempty"`
+	Resolved   bool   `json:"resolved,omitempty"`
+	Message    string `json:"message"`
 }
 
 // TimelineAutoAssembleOutput is returned by tool.timeline_auto_assemble.
 type TimelineAutoAssembleOutput struct {
-	TimelineJSON  string   `json:"timeline_json"`
-	TimelinePath  string   `json:"timeline_path,omitempty"`
-	DurationMs    int64    `json:"duration_ms"`
-	TrackCount    int      `json:"track_count"`
-	ClipCount     int      `json:"clip_count"`
-	SubtitleCount int      `json:"subtitle_count"`
-	Warnings      []string `json:"warnings,omitempty"`
+	TimelineJSON  string                  `json:"timeline_json"`
+	TimelinePath  string                  `json:"timeline_path,omitempty"`
+	DurationMs    int64                   `json:"duration_ms"`
+	TrackCount    int                     `json:"track_count"`
+	ClipCount     int                     `json:"clip_count"`
+	SubtitleCount int                     `json:"subtitle_count"`
+	Warnings      []string                `json:"warnings,omitempty"`
+	Issues        []TimelineAssembleIssue `json:"issues,omitempty"`
 }
 
 // MediaPeaksThumbsInput is the input+params contract for tool.media_peaks_thumbs.
@@ -587,6 +605,70 @@ type ExportNLEDraftOutput struct {
 	Format     string `json:"format"`
 	FileCount  int    `json:"file_count"`
 	TotalBytes int64  `json:"total_bytes"`
+}
+
+// VideoContactSheetInput is the input+params contract for tool.video_contact_sheet.
+type VideoContactSheetInput struct {
+	VideoPath      engine.ImageInputRef `json:"video_path"`
+	ShotID         string               `json:"shot_id,omitempty"`
+	SourceInMs     int64                `json:"source_in_ms,omitempty"`
+	SourceOutMs    int64                `json:"source_out_ms,omitempty"`
+	MaxFrames      int                  `json:"max_frames,omitempty"`
+	FramesPerSheet int                  `json:"frames_per_sheet,omitempty"`
+	MaxEdgePx      int                  `json:"max_edge_px,omitempty"`
+	JPEGQuality    int                  `json:"jpeg_quality,omitempty"`
+	IncludeSignals *bool                `json:"include_signals,omitempty"`
+	OutputDir      string               `json:"output_dir,omitempty"`
+}
+
+// VideoSignalBlack marks a continuous black interval detected by FFmpeg blackdetect.
+type VideoSignalBlack struct {
+	StartSec    float64 `json:"start_sec"`
+	EndSec      float64 `json:"end_sec"`
+	DurationSec float64 `json:"duration_sec"`
+}
+
+// VideoSignalFreeze marks a continuous frozen-frame interval detected by FFmpeg freezedetect.
+type VideoSignalFreeze struct {
+	StartSec    float64 `json:"start_sec"`
+	EndSec      float64 `json:"end_sec"`
+	DurationSec float64 `json:"duration_sec"`
+}
+
+// VideoSignalCut marks a detected shot/scene transition timestamp.
+type VideoSignalCut struct {
+	TimeSec float64 `json:"time_sec"`
+	Score   float64 `json:"score,omitempty"`
+}
+
+// VideoSignals summarizes FFmpeg black/freeze/cut signal analysis for a video clip.
+type VideoSignals struct {
+	DurationSec float64             `json:"duration_sec"`
+	Width       int                 `json:"width,omitempty"`
+	Height      int                 `json:"height,omitempty"`
+	FPS         float64             `json:"fps,omitempty"`
+	Blacks      []VideoSignalBlack  `json:"blacks"`
+	Freezes     []VideoSignalFreeze `json:"freezes"`
+	Cuts        []VideoSignalCut    `json:"cuts"`
+	Cached      bool                `json:"cached,omitempty"`
+}
+
+// ContactSheetFrameMeta describes one sampled tile rendered on a contact sheet.
+type ContactSheetFrameMeta struct {
+	Index      int      `json:"index"`
+	SheetIndex int      `json:"sheet_index"`
+	TimeSec    float64  `json:"time_sec"`
+	TimelineMs int64    `json:"timeline_ms"`
+	Signals    []string `json:"signals,omitempty"`
+}
+
+// VideoContactSheetOutput is returned by tool.video_contact_sheet.
+type VideoContactSheetOutput struct {
+	Sheets     []engine.MediaRef       `json:"sheets"`
+	SheetPaths []string                `json:"sheet_paths"`
+	Signals    VideoSignals            `json:"signals"`
+	Frames     []ContactSheetFrameMeta `json:"frames"`
+	Summary    string                  `json:"summary"`
 }
 
 func decodeTextOrJSON(raw json.RawMessage) string {
@@ -914,16 +996,18 @@ func (in *TTSDubMuxInput) UnmarshalJSON(data []byte) error {
 // UnmarshalJSON accepts shots_json/audio_manifest_json as strings or inline JSON and numeric strings for floats.
 func (in *TimelineAutoAssembleInput) UnmarshalJSON(data []byte) error {
 	type raw struct {
-		ShotsJSON         json.RawMessage `json:"shots_json"`
-		AudioManifestJSON json.RawMessage `json:"audio_manifest_json,omitempty"`
-		EpisodeID         string          `json:"episode_id,omitempty"`
-		Resolution        string          `json:"resolution,omitempty"`
-		FPS               int             `json:"fps,omitempty"`
-		TransitionDefault string          `json:"transition_default,omitempty"`
-		TransitionMs      any             `json:"transition_ms,omitempty"`
-		BGMPath           string          `json:"bgm_path,omitempty"`
-		BGMVolume         any             `json:"bgm_volume,omitempty"`
-		ProjectDir        string          `json:"project_dir,omitempty"`
+		ShotsJSON         json.RawMessage            `json:"shots_json"`
+		AudioManifestJSON json.RawMessage            `json:"audio_manifest_json,omitempty"`
+		EpisodeID         string                     `json:"episode_id,omitempty"`
+		Resolution        string                     `json:"resolution,omitempty"`
+		FPS               int                        `json:"fps,omitempty"`
+		TransitionDefault string                     `json:"transition_default,omitempty"`
+		TransitionMs      any                        `json:"transition_ms,omitempty"`
+		BGMPath           string                     `json:"bgm_path,omitempty"`
+		BGMVolume         any                        `json:"bgm_volume,omitempty"`
+		OverrunPolicy     domainstudio.OverrunPolicy `json:"overrun_policy,omitempty"`
+		MaxSpeedFitRatio  any                        `json:"max_speed_fit_ratio,omitempty"`
+		ProjectDir        string                     `json:"project_dir,omitempty"`
 	}
 	var r raw
 	if err := json.Unmarshal(data, &r); err != nil {
@@ -937,6 +1021,10 @@ func (in *TimelineAutoAssembleInput) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return err
 	}
+	speedFit, err := parseOptionalFlexibleFloat(r.MaxSpeedFitRatio)
+	if err != nil {
+		return err
+	}
 	in.ShotsJSON = decodeTextOrJSON(r.ShotsJSON)
 	in.AudioManifestJSON = decodeTextOrJSON(r.AudioManifestJSON)
 	in.EpisodeID = r.EpisodeID
@@ -946,6 +1034,8 @@ func (in *TimelineAutoAssembleInput) UnmarshalJSON(data []byte) error {
 	in.TransitionMs = transMs
 	in.BGMPath = r.BGMPath
 	in.BGMVolume = vol
+	in.OverrunPolicy = r.OverrunPolicy
+	in.MaxSpeedFitRatio = speedFit
 	in.ProjectDir = r.ProjectDir
 	return nil
 }

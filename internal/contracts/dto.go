@@ -302,6 +302,29 @@ type WorkflowRunGraphResult struct {
 	Result engine.GraphResult `json:"result"`
 }
 
+// WorkflowTemplateParam describes one configurable placeholder in a WorkflowTemplate.
+type WorkflowTemplateParam struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Required    bool   `json:"required,omitempty"`
+	Default     string `json:"default,omitempty"`
+}
+
+// WorkflowTemplate defines a reusable verified Studio workflow DAG blueprint.
+type WorkflowTemplate struct {
+	ID          string                  `json:"id"`
+	Name        string                  `json:"name"`
+	Description string                  `json:"description"`
+	Category    string                  `json:"category"`
+	Params      []WorkflowTemplateParam `json:"params"`
+	Graph       engine.Graph            `json:"graph"`
+}
+
+// WorkflowTemplatesResult returns verified Studio DAG templates.
+type WorkflowTemplatesResult struct {
+	Templates []WorkflowTemplate `json:"templates"`
+}
+
 // AgentProviderInfo describes an external isolated agent provider and its live connection state.
 type AgentProviderInfo struct {
 	ID                  agent.ProviderID      `json:"id"`

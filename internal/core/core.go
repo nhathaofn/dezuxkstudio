@@ -508,6 +508,7 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		Workflow:      wfSvc,
 		Media:         mediaSvc,
 		VideoMedia:    mediaGenSvc,
+		TextReadiness: preflightAdapter,
 		OpenDirectory: o.OpenDirectory,
 		StudioConfig:  cfg.Studio,
 		ProjectsDir:   tree.ProjectsDir,
@@ -767,6 +768,22 @@ func (a *studioPreflightAdapter) EstimateUnitPriceUSD(ctx context.Context, provi
 	}
 	wildcard := entry.ProviderID == "*" || entry.ModelID == "*"
 	return entry.UnitPriceUSD, wildcard, nil
+}
+
+func (a *studioPreflightAdapter) IsTextProviderReady(ctx context.Context) bool {
+	if a == nil || a.provSvc == nil {
+		return false
+	}
+	defaults, err := a.provSvc.Defaults(ctx)
+	if err != nil {
+		return false
+	}
+	for _, p := range defaults {
+		if p.Purpose == domainprovider.PurposeText {
+			return len(p.Candidates) > 0 || strings.TrimSpace(p.Effective.String()) != ""
+		}
+	}
+	return false
 }
 
 const chatCoalesceMaxBytes = 4096

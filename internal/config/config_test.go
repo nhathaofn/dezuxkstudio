@@ -967,6 +967,16 @@ func TestCentralizedWave1TunablesAndValidation(t *testing.T) {
 		"zero cli_session_persist_timeout":  func(c *Config) { c.Agent.CLISessionPersistTimeout = 0 },
 		"zero studio queue_max_poll_errors": func(c *Config) { c.Studio.QueueMaxPollErrors = 0 },
 		"zero studio queue_max_poll_age":    func(c *Config) { c.Studio.QueueMaxPollAge = 0 },
+		"zero long_script_chunk_chars":      func(c *Config) { c.Studio.LongScriptChunkChars = 0 },
+		"zero max_batch_shots_upsert":       func(c *Config) { c.Studio.MaxBatchShotsUpsert = 0 },
+		"bad contact_sheet_jpeg_quality":    func(c *Config) { c.Studio.ContactSheetJPEGQuality = 101 },
+		"small contact_sheet_max_edge_px":   func(c *Config) { c.Studio.ContactSheetMaxEdgePx = 32 },
+		"bad signal_scene_cut_thresh":       func(c *Config) { c.Studio.SignalSceneCutThresh = 1.0 },
+		"bad signal_black_pixel_thresh":     func(c *Config) { c.Studio.SignalBlackPixelThresh = 1.2 },
+		"empty signal_freeze_noise_db":      func(c *Config) { c.Studio.SignalFreezeNoiseDB = "  " },
+		"bad timeline_overrun_policy":       func(c *Config) { c.Studio.TimelineOverrunPolicy = "drop" },
+		"low timeline_max_speed_fit_ratio":  func(c *Config) { c.Studio.TimelineMaxSpeedFitRatio = 0.8 },
+		"queue_wait_poll > max_duration":    func(c *Config) { c.Studio.QueueWaitPollInterval = c.Studio.QueueWaitMaxDuration + time.Second },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := Default(ModeDesktop)

@@ -47,5 +47,6 @@ func Nodes() []NodeSpec {
 		{"MEDIA_PEAKS_THUMBS", NodeTypeMediaPeaksThumbs, t[MediaPeaksThumbsInput](), t[MediaPeaksThumbsOutput]()},
 		{"RENDER_TIMELINE", NodeTypeRenderTimeline, t[RenderTimelineInput](), t[RenderTimelineOutput]()},
 		{"EXPORT_NLE_DRAFT", NodeTypeExportNLEDraft, t[ExportNLEDraftInput](), t[ExportNLEDraftOutput]()},
+		{"VIDEO_CONTACT_SHEET", NodeTypeVideoContactSheet, t[VideoContactSheetInput](), t[VideoContactSheetOutput]()},
 	}
 }

@@ -118,6 +118,8 @@ type studioTimelineAutoAssembleToolInput struct {
 	TransitionMs      int64   `json:"transition_ms,omitempty" jsonschema:"Transition duration in ms"`
 	BGMPath           string  `json:"bgm_path,omitempty" jsonschema:"Optional workspace BGM audio file path"`
 	BGMVolume         float64 `json:"bgm_volume,omitempty" jsonschema:"Optional BGM track gain (0..2)"`
+	OverrunPolicy     string  `json:"overrun_policy,omitempty" jsonschema:"warn|freeze_last_frame|speed_fit when narration exceeds video duration"`
+	MaxSpeedFitRatio  float64 `json:"max_speed_fit_ratio,omitempty" jsonschema:"Maximum audio speed-up ratio when overrun_policy=speed_fit (default from StudioConfig)"`
 }
 
 type studioMediaPeaksThumbsToolInput struct {
@@ -272,6 +274,8 @@ func (s *Service) registerStudioTimelineTools(server *mcpToolset) {
 				TransitionMs:      in.TransitionMs,
 				BGMPath:           bgmPath,
 				BGMVolume:         in.BGMVolume,
+				OverrunPolicy:     domainstudio.OverrunPolicy(strings.TrimSpace(in.OverrunPolicy)),
+				MaxSpeedFitRatio:  in.MaxSpeedFitRatio,
 			}
 			if err := p.Validate(); err != nil {
 				return mcpError(err.Error())

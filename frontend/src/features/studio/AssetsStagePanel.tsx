@@ -24,7 +24,12 @@ import {
   type StudioEpisodeDetailResult,
 } from "../../contracts/generated";
 import { useT } from "../../lib/i18n";
-import { askAgentAboutMediaAsset } from "../agent/screenContext";
+import {
+  askAgentAboutMediaAsset,
+  delegateStudioStageToAgent,
+  isTextProviderConfigured,
+} from "../agent/screenContext";
+import { useProvidersStore } from "../providers/useProvidersStore";
 import { useNodeSpec } from "../workflow/useNodeSpecs";
 import { SignedStudioImage } from "./SignedStudioMedia";
 import { useStudioStore } from "./useStudioStore";
@@ -328,6 +333,24 @@ export const AssetsStagePanel: React.FC<{
   const toggleSelected = useStudioStore((s) => s.toggleSelectedAssetId);
 
   const busy = saving || runningStage !== null;
+  const providerDefaults = useProvidersStore((s) => s.defaults);
+  const hasTextProvider = isTextProviderConfigured(providerDefaults, textModel);
+
+  const handleExtractAssets = async () => {
+    if (!hasTextProvider) {
+      delegateStudioStageToAgent({
+        projectId: detail.project.id,
+        episodeId: detail.episode.id,
+        stage: "extract_assets",
+        prompt: t("studio.agentDelegate.extractAssets", {
+          episodeId: detail.episode.id,
+          projectId: detail.project.id,
+        }),
+      });
+      return;
+    }
+    await runStage("extract_assets", textModel ? { model: textModel } : {});
+  };
 
   const handleAddBlankAsset = async () => {
     await upsertAsset({
@@ -345,9 +368,13 @@ export const AssetsStagePanel: React.FC<{
           <Button
             variant="secondary"
             size="sm"
-            onClick={() => void runStage("extract_assets", textModel ? { model: textModel } : {})}
-            disabled={busy || !detail.normalized_script}
-            title={extractSpec?.description}
+            onClick={() => void handleExtractAssets()}
+            disabled={
+              busy ||
+              (!detail.normalized_script &&
+                (hasTextProvider || (detail.raw_script ?? "").trim() === ""))
+            }
+            title={!hasTextProvider ? t("studio.agentDelegate.tooltip") : extractSpec?.description}
           >
             {runningStage === "extract_assets" ? (
               <Loader2 size={13} className="animate-spin" />

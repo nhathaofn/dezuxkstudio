@@ -428,3 +428,29 @@ func (s *stubWorkflowMediaGen) GenerateVideo(context.Context, mediagen.VideoRequ
 func (s *stubWorkflowMediaGen) GenerateTTS(context.Context, mediagen.TTSRequest) (mediagen.Result, error) {
 	return mediagen.Result{}, nil
 }
+
+func TestWorkflowService_Templates(t *testing.T) {
+	svc, err := workflow.New(workflow.Options{
+		Paths:  paths.Paths{Data: t.TempDir()},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("workflow.New: %v", err)
+	}
+	tpls := svc.Templates()
+	if len(tpls) != 3 {
+		t.Fatalf("expected 3 verified studio templates, got %d", len(tpls))
+	}
+	ids := map[string]bool{}
+	for _, tpl := range tpls {
+		ids[tpl.ID] = true
+		if len(tpl.Graph.Nodes) < 2 || len(tpl.Graph.Edges) < 1 {
+			t.Fatalf("template %s has incomplete graph: %+v", tpl.ID, tpl.Graph)
+		}
+	}
+	for _, want := range []string{"studio.clean_and_inspect", "studio.dub_and_master", "studio.grid_to_timeline"} {
+		if !ids[want] {
+			t.Fatalf("missing template %q in %v", want, ids)
+		}
+	}
+}

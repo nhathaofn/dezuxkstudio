@@ -151,6 +151,7 @@ func (s *Service) ControlQueue(ctx context.Context, p contracts.StudioQueueContr
 				s.clearPollErrors(p.JobID)
 				dto := jobToDTO(j)
 				s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{ProjectID: j.ProjectID, EpisodeID: j.EpisodeID, Job: &dto, Summary: "Job paused"})
+				s.notifyQueueWaiters()
 				return contracts.StudioQueueControlResult{Affected: 1, Job: &dto}, nil
 			}
 			dto := jobToDTO(j)
@@ -162,6 +163,7 @@ func (s *Service) ControlQueue(ctx context.Context, p contracts.StudioQueueContr
 		}
 		s.cancelEpisodeActiveJobs(p.ProjectID, p.EpisodeID)
 		s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{ProjectID: p.ProjectID, EpisodeID: p.EpisodeID, Summary: fmt.Sprintf("Paused %d job(s)", n)})
+		s.notifyQueueWaiters()
 		return contracts.StudioQueueControlResult{Affected: n}, nil
 
 	case contracts.QueueActionResume:
@@ -209,6 +211,7 @@ func (s *Service) ControlQueue(ctx context.Context, p contracts.StudioQueueContr
 		s.clearPollErrors(p.JobID)
 		dto := jobToDTO(j)
 		s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{ProjectID: j.ProjectID, EpisodeID: j.EpisodeID, Job: &dto, Summary: "Job canceled"})
+		s.notifyQueueWaiters()
 		return contracts.StudioQueueControlResult{Affected: 1, Job: &dto}, nil
 
 	case contracts.QueueActionRetry:

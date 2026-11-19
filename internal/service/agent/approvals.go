@@ -662,6 +662,28 @@ func (s *Service) executeApprovedStudioTool(guardedCtx context.Context, toolName
 		}
 		res, err := ext.ExportNLEDraft(guardedCtx, p)
 		return res, true, err
+	case "studio_shots_batch_upsert":
+		t123, ok := s.studio.(StudioTier123Manager)
+		if !ok {
+			return nil, true, fmt.Errorf("studio batch shot upsert unavailable")
+		}
+		var p contracts.StudioShotsBatchUpsertPayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio batch shot upsert input: %w", err)
+		}
+		res, err := t123.BatchUpsertShots(guardedCtx, p)
+		return res, true, err
+	case "studio_asset_merge":
+		t123, ok := s.studio.(StudioTier123Manager)
+		if !ok {
+			return nil, true, fmt.Errorf("studio asset merge unavailable")
+		}
+		var p contracts.StudioAssetMergePayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio asset merge input: %w", err)
+		}
+		res, err := t123.MergeAssets(guardedCtx, p)
+		return res, true, err
 	default:
 		return nil, false, nil
 	}

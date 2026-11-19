@@ -9,6 +9,7 @@ import (
 	"log/slog"
 
 	"app/internal/config"
+	"app/internal/contracts"
 	"app/internal/engine"
 	"app/internal/paths"
 	mediagennodes "app/internal/tools/mediagen"
@@ -44,9 +45,10 @@ type Options struct {
 
 // Service manages DezuxkStudio's workflow runtime and registered nodes.
 type Service struct {
-	registry *engine.Registry
-	paths    paths.Paths
-	log      *slog.Logger
+	registry  *engine.Registry
+	templates []contracts.WorkflowTemplate
+	paths     paths.Paths
+	log       *slog.Logger
 }
 
 // New creates and initializes the workflow service with built-in nodes.
@@ -162,11 +164,16 @@ func New(o Options) (*Service, error) {
 	if err := reg.Check(); err != nil {
 		return nil, fmt.Errorf("workflow: %w", err)
 	}
+	templates, err := buildStudioTemplates(reg)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: %w", err)
+	}
 
 	return &Service{
-		registry: reg,
-		paths:    o.Paths,
-		log:      o.Logger,
+		registry:  reg,
+		templates: templates,
+		paths:     o.Paths,
+		log:       o.Logger,
 	}, nil
 }
 

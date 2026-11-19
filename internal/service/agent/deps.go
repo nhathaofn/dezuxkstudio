@@ -112,3 +112,19 @@ type StudioExtendedManager interface {
 	RenderTimeline(ctx context.Context, p contracts.StudioTimelineRenderPayload) (contracts.StudioTimelineRenderResult, error)
 	ExportNLEDraft(ctx context.Context, p contracts.StudioTimelineExportNLEPayload) (contracts.ExportNLEDraftOutput, error)
 }
+
+// StudioTier123Manager exposes agent-ergonomic workflow planning, batch refactoring,
+// contact-sheet visual inspection, and queue wait operations.
+type StudioTier123Manager interface {
+	GetWorkflowPlan(ctx context.Context, episodeID string) (contracts.StudioWorkflowPlanResult, error)
+	BatchUpsertShots(ctx context.Context, p contracts.StudioShotsBatchUpsertPayload) (contracts.StudioShotListResult, error)
+	RenameAsset(ctx context.Context, p contracts.StudioAssetRenamePayload) (contracts.StudioAssetRefactorResult, error)
+	MergeAssets(ctx context.Context, p contracts.StudioAssetMergePayload) (contracts.StudioAssetRefactorResult, error)
+	InspectShots(ctx context.Context, p contracts.StudioInspectShotsPayload) (contracts.StudioInspectShotsResult, error)
+	WaitForQueue(ctx context.Context, p contracts.StudioQueueWaitPayload) (contracts.StudioQueueWaitResult, error)
+}
+
+// WorkflowTemplateLister optionally lists canonical workflow templates built into WorkflowService.
+type WorkflowTemplateLister interface {
+	Templates() []contracts.WorkflowTemplate
+}

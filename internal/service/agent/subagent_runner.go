@@ -19,7 +19,9 @@ var subagentDefaultReadOnlyTools = []string{
 	"workspace_read_document",
 	"workspace_search_text",
 	"studio_list_capabilities",
+	"studio_workflow_plan",
 	"workflow_list_specs",
+	"workflow_list_templates",
 	"binaries_list",
 }
 
@@ -85,7 +87,9 @@ func (s *Service) runSubagentTool(ctx context.Context, in subagentRunToolInput) 
 		}
 	}
 
-	targetProvider, resolvedExe, modelSel, linkedSecret, err := s.resolveSubagentExecutionTarget(subCtx, parentTurn, spec)
+	targetProvider, resolvedExe, modelSel, linkedSecret, err := s.resolveSubagentExecutionTargetWithOverrides(
+		subCtx, parentTurn, spec, in.Provider, in.Model,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -237,6 +241,16 @@ func (s *Service) resolveSubagentExecutionTarget(
 	parentTurn *turn,
 	spec domainagent.SubagentInfo,
 ) (domainagent.ProviderID, string, domainagent.ModelSelection, *providersvc.ResolvedLink, error) {
+	return s.resolveSubagentExecutionTargetWithOverrides(ctx, parentTurn, spec, "", "")
+}
+
+func (s *Service) resolveSubagentExecutionTargetWithOverrides(
+	ctx context.Context,
+	parentTurn *turn,
+	spec domainagent.SubagentInfo,
+	runtimeProvider string,
+	runtimeModel string,
+) (domainagent.ProviderID, string, domainagent.ModelSelection, *providersvc.ResolvedLink, error) {
 	s.mu.Lock()
 	rootProvider := s.activeID
 	s.mu.Unlock()
@@ -252,31 +266,25 @@ func (s *Service) resolveSubagentExecutionTarget(
 	var targetExe string
 	var linkedSecret *providersvc.ResolvedLink
 
-	if override := spec.Provider; override != "" && override != rootProvider {
-		ok := false
-		if domainagent.ValidateProviderID(override) == nil {
-			pSpec := domainagent.Registry[override]
-			if pSpec.Supported {
-				exe, _, _, resErr := s.resolveExecutable(ctx, pSpec)
-				if resErr == nil && exe != "" {
-					ovrLink, lErr := s.resolveSubagentLinkedSecret(ctx, override)
-					if lErr == nil && ovrLink != nil {
-						targetProvider = override
-						targetExe = exe
-						linkedSecret = ovrLink
-						ok = true
-					} else if lErr == nil {
-						authState, _ := s.probeProviderAuth(ctx, override, pSpec, exe)
-						if authState == domainagent.AuthAuthenticated {
-							targetProvider = override
-							targetExe = exe
-							ok = true
-						}
-					}
-				}
+	explicitProvider := domainagent.ProviderID(strings.TrimSpace(runtimeProvider))
+	if explicitProvider != "" {
+		if explicitProvider != rootProvider {
+			exe, link, ok := s.trySubagentProviderOverride(ctx, explicitProvider)
+			if !ok {
+				return "", "", domainagent.ModelSelection{}, nil, fmt.Errorf(
+					"requested subagent provider %q is unavailable or unauthenticated", explicitProvider)
 			}
+			targetProvider = explicitProvider
+			targetExe = exe
+			linkedSecret = link
 		}
-		if !ok {
+	} else if override := spec.Provider; override != "" && override != rootProvider {
+		exe, link, ok := s.trySubagentProviderOverride(ctx, override)
+		if ok {
+			targetProvider = override
+			targetExe = exe
+			linkedSecret = link
+		} else {
 			fellBackFromOverride = true
 			s.log.WarnContext(ctx, "agent: subagent override provider unavailable or unauthenticated; falling back to root provider",
 				"subagent", spec.Name, "requested_provider", override, "fallback_provider", rootProvider)
@@ -301,8 +309,14 @@ func (s *Service) resolveSubagentExecutionTarget(
 	}
 
 	sel := s.effectiveSelection(targetProvider)
-	requestedModel := strings.TrimSpace(spec.Model)
-	if requestedModel != "" && !fellBackFromOverride {
+	explicitModel := strings.TrimSpace(runtimeModel)
+	if explicitModel != "" {
+		if !modelMatchesProvider(targetProvider, explicitModel) {
+			return "", "", domainagent.ModelSelection{}, nil, fmt.Errorf(
+				"requested subagent model %q is incompatible with provider %s", explicitModel, targetProvider)
+		}
+		sel = domainagent.ModelSelection{Model: explicitModel}
+	} else if requestedModel := strings.TrimSpace(spec.Model); requestedModel != "" && !fellBackFromOverride {
 		if modelMatchesProvider(targetProvider, requestedModel) {
 			sel = domainagent.ModelSelection{Model: requestedModel}
 		} else {
@@ -311,6 +325,35 @@ func (s *Service) resolveSubagentExecutionTarget(
 		}
 	}
 	return targetProvider, targetExe, sel, linkedSecret, nil
+}
+
+func (s *Service) trySubagentProviderOverride(
+	ctx context.Context,
+	override domainagent.ProviderID,
+) (string, *providersvc.ResolvedLink, bool) {
+	if domainagent.ValidateProviderID(override) != nil {
+		return "", nil, false
+	}
+	pSpec := domainagent.Registry[override]
+	if !pSpec.Supported {
+		return "", nil, false
+	}
+	exe, _, _, resErr := s.resolveExecutable(ctx, pSpec)
+	if resErr != nil || exe == "" {
+		return "", nil, false
+	}
+	ovrLink, lErr := s.resolveSubagentLinkedSecret(ctx, override)
+	if lErr != nil {
+		return "", nil, false
+	}
+	if ovrLink != nil {
+		return exe, ovrLink, true
+	}
+	authState, _ := s.probeProviderAuth(ctx, override, pSpec, exe)
+	if authState == domainagent.AuthAuthenticated {
+		return exe, nil, true
+	}
+	return "", nil, false
 }
 
 func modelMatchesProvider(id domainagent.ProviderID, model string) bool {

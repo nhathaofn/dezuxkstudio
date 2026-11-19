@@ -337,6 +337,11 @@ func (s *Service) AutoAssembleTimeline(ctx context.Context, p contracts.StudioTi
 		bv := p.BGMVolume
 		bgmVolPtr = &bv
 	}
+	var maxSpeedPtr *float64
+	if p.MaxSpeedFitRatio > 0 {
+		ms := p.MaxSpeedFitRatio
+		maxSpeedPtr = &ms
+	}
 	inBytes, err := json.Marshal(contracts.TimelineAutoAssembleInput{
 		ShotsJSON:         string(shotsBytes),
 		EpisodeID:         ep.ID,
@@ -346,6 +351,8 @@ func (s *Service) AutoAssembleTimeline(ctx context.Context, p contracts.StudioTi
 		TransitionMs:      transMsPtr,
 		BGMPath:           bgmPath,
 		BGMVolume:         bgmVolPtr,
+		OverrunPolicy:     p.OverrunPolicy,
+		MaxSpeedFitRatio:  maxSpeedPtr,
 		ProjectDir:        epRoot,
 	})
 	if err != nil {
@@ -386,7 +393,9 @@ func (s *Service) AutoAssembleTimeline(ctx context.Context, p contracts.StudioTi
 		s.log.WarnContext(ctx, "studio: failed to list timeline revisions after auto_assemble", "episode_id", ep.ID, "error", rerr)
 	}
 	s.emitTimelineChanged(proj.ID, saved, domainstudio.ActorNode, summary)
-	return timelineResultToDTO(proj.ID, timelinePath, saved, revs), nil
+	dto := timelineResultToDTO(proj.ID, timelinePath, saved, revs)
+	dto.Issues = nodeOut.Issues
+	return dto, nil
 }
 
 // ComputeMediaPeaksThumbs extracts audio RMS peaks and a thumbnail sprite strip for a timeline clip or media file.

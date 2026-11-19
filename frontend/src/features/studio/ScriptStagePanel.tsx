@@ -5,6 +5,8 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { NodeTypes, type StudioEpisodeDetailResult } from "../../contracts/generated";
 import { useT } from "../../lib/i18n";
+import { delegateStudioStageToAgent, isTextProviderConfigured } from "../agent/screenContext";
+import { useProvidersStore } from "../providers/useProvidersStore";
 import { useNodeSpec } from "../workflow/useNodeSpecs";
 import { useStudioStore } from "./useStudioStore";
 
@@ -19,6 +21,8 @@ export const ScriptStagePanel: React.FC<{
   const setActiveStage = useStudioStore((s) => s.setActiveStage);
   const saving = useStudioStore((s) => s.saving);
   const runningStage = useStudioStore((s) => s.runningStage);
+  const providerDefaults = useProvidersStore((s) => s.defaults);
+  const hasTextProvider = isTextProviderConfigured(providerDefaults, modelOverride);
 
   const serverRaw = detail.raw_script ?? "";
   const [localDraft, setLocalDraft] = useState<string | null>(null);
@@ -50,6 +54,18 @@ export const ScriptStagePanel: React.FC<{
       const ok = await saveScript(draft);
       if (!ok) return;
       setLocalDraft(null);
+    }
+    if (!hasTextProvider) {
+      delegateStudioStageToAgent({
+        projectId: detail.project.id,
+        episodeId: detail.episode.id,
+        stage: "script_normalize",
+        prompt: t("studio.agentDelegate.scriptNormalize", {
+          episodeId: detail.episode.id,
+          projectId: detail.project.id,
+        }),
+      });
+      return;
     }
     await runStage("script_normalize", modelOverride ? { model: modelOverride } : {});
   };
@@ -104,7 +120,7 @@ export const ScriptStagePanel: React.FC<{
             size="sm"
             onClick={() => void handleNormalize()}
             disabled={busy || draft.trim().length === 0}
-            title={scriptSpec?.description}
+            title={!hasTextProvider ? t("studio.agentDelegate.tooltip") : scriptSpec?.description}
           >
             {runningStage === "script_normalize" ? (
               <Loader2 size={13} className="animate-spin" />

@@ -999,6 +999,111 @@ func ApplyTimelineOpsWithMaxDim(tl EditTimeline, ops []TimelineOp, maxDim int) (
 // DefaultRevisionHistoryLimit bounds ListTimelineRevisions when no positive limit is specified.
 const DefaultRevisionHistoryLimit = 30
 
+// TimelineSpeechIssue describes a speech overrun or source collision detected on an EditTimeline.
+type TimelineSpeechIssue struct {
+	Code       string `json:"code"`
+	ShotID     string `json:"shot_id,omitempty"`
+	ClipID     string `json:"clip_id,omitempty"`
+	TrackID    string `json:"track_id,omitempty"`
+	OverflowMs int64  `json:"overflow_ms,omitempty"`
+	OverlapMs  int64  `json:"overlap_ms,omitempty"`
+	Message    string `json:"message"`
+}
+
+// DetectTimelineSpeechIssues inspects speech tracks against video clip durations and adjacent speech windows.
+func DetectTimelineSpeechIssues(tl EditTimeline, audioDurationsMs map[string]int64, tolMs int64) []TimelineSpeechIssue {
+	if tolMs < 0 {
+		tolMs = 0
+	}
+	shotVideoSpanMs := make(map[string]int64)
+	for _, tr := range tl.Tracks {
+		if tr.Kind != TrackVideo {
+			continue
+		}
+		for _, cl := range tr.Clips {
+			if sid := strings.TrimSpace(cl.ShotID); sid != "" {
+				shotVideoSpanMs[sid] += cl.TimelineSpanMs()
+			}
+		}
+	}
+
+	var issues []TimelineSpeechIssue
+	seenSpeechShot := make(map[string]bool)
+
+	for _, tr := range tl.Tracks {
+		if tr.Kind != TrackAudioNarration && tr.Kind != TrackAudioDialogue {
+			continue
+		}
+		clips := append([]TimelineClip(nil), tr.Clips...)
+		slices.SortStableFunc(clips, func(a, b TimelineClip) int {
+			if a.TimelineStartMs != b.TimelineStartMs {
+				if a.TimelineStartMs < b.TimelineStartMs {
+					return -1
+				}
+				return 1
+			}
+			return strings.Compare(a.ID, b.ID)
+		})
+
+		var prevEndMs int64
+		for i, cl := range clips {
+			spanMs := cl.TimelineSpanMs()
+			if sid := strings.TrimSpace(cl.ShotID); sid != "" {
+				seenSpeechShot[sid] = true
+				if overrideMs, ok := audioDurationsMs[sid]; ok && overrideMs > 0 {
+					spd := cl.Speed
+					if spd <= 0 {
+						spd = 1.0
+					}
+					spanMs = int64(math.Round(float64(overrideMs) / spd))
+				}
+				if vidMs, ok := shotVideoSpanMs[sid]; ok && vidMs > 0 && spanMs > vidMs+tolMs {
+					overflow := spanMs - vidMs
+					issues = append(issues, TimelineSpeechIssue{
+						Code:       "narration_overrun",
+						ShotID:     sid,
+						ClipID:     cl.ID,
+						TrackID:    tr.ID,
+						OverflowMs: overflow,
+						Message:    fmt.Sprintf("Speech clip %s exceeds video shot %s duration by %dms", cl.ID, sid, overflow),
+					})
+				}
+			}
+			if i > 0 && prevEndMs > cl.TimelineStartMs {
+				overlap := prevEndMs - cl.TimelineStartMs
+				issues = append(issues, TimelineSpeechIssue{
+					Code:      "narration_source_collision",
+					ShotID:    cl.ShotID,
+					ClipID:    cl.ID,
+					TrackID:   tr.ID,
+					OverlapMs: overlap,
+					Message:   fmt.Sprintf("Speech clip %s overlaps previous speech clip by %dms on track %s", cl.ID, overlap, tr.ID),
+				})
+			}
+			endMs := cl.TimelineStartMs + spanMs
+			if endMs > prevEndMs {
+				prevEndMs = endMs
+			}
+		}
+	}
+
+	for sid, audMs := range audioDurationsMs {
+		if seenSpeechShot[sid] || audMs <= 0 {
+			continue
+		}
+		if vidMs, ok := shotVideoSpanMs[sid]; ok && vidMs > 0 && audMs > vidMs+tolMs {
+			overflow := audMs - vidMs
+			issues = append(issues, TimelineSpeechIssue{
+				Code:       "narration_overrun",
+				ShotID:     sid,
+				OverflowMs: overflow,
+				Message:    fmt.Sprintf("Shot %s audio exceeds video duration by %dms", sid, overflow),
+			})
+		}
+	}
+	return issues
+}
+
 // Phase3Repository defines persistence operations added in Studio Phase 3 (Timeline & Revisions).
 type Phase3Repository interface {
 	GetTimeline(ctx context.Context, episodeID string) (TimelineRecord, error)

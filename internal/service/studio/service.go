@@ -29,12 +29,18 @@ type MediaRegistrar interface {
 	AddAllowedRoot(root string)
 }
 
+// TextReadinessChecker reports whether at least one LLM text provider/model is usable for PurposeText.
+type TextReadinessChecker interface {
+	IsTextProviderReady(ctx context.Context) bool
+}
+
 // Options configures a studio.Service instance.
 type Options struct {
 	Repo          domainstudio.Repository
 	Workflow      WorkflowRunner
 	Media         MediaRegistrar
 	VideoMedia    VideoQueueMedia
+	TextReadiness TextReadinessChecker
 	FileGuard     engine.FileGuard
 	OpenDirectory func(dir string) error
 	StudioConfig  config.StudioConfig
@@ -49,6 +55,7 @@ type Service struct {
 	wf            WorkflowRunner
 	media         MediaRegistrar
 	videoMedia    VideoQueueMedia
+	textReadiness TextReadinessChecker
 	fileGuard     engine.FileGuard
 	openDirectory func(dir string) error
 	cfg           config.StudioConfig
@@ -64,6 +71,9 @@ type Service struct {
 	jobMu      sync.Mutex
 	activeJobs map[string]*activeJobEntry
 	pollErrors map[string]int
+
+	waitMu        sync.Mutex
+	waitListeners map[chan struct{}]struct{}
 
 	wakeCh chan struct{}
 }
@@ -88,6 +98,7 @@ func New(opts Options) *Service {
 		wf:            opts.Workflow,
 		media:         opts.Media,
 		videoMedia:    opts.VideoMedia,
+		textReadiness: opts.TextReadiness,
 		fileGuard:     opts.FileGuard,
 		openDirectory: opts.OpenDirectory,
 		cfg:           cfg,
@@ -97,6 +108,7 @@ func New(opts Options) *Service {
 		runningEps:    make(map[string]bool),
 		activeJobs:    make(map[string]*activeJobEntry),
 		pollErrors:    make(map[string]int),
+		waitListeners: make(map[chan struct{}]struct{}),
 		wakeCh:        make(chan struct{}, 1),
 	}
 }

@@ -210,3 +210,48 @@ func TestEditTimelineCloneAndNonFiniteRejections(t *testing.T) {
 		t.Fatalf("expected 8K accepted when maxDim=8192, got %v", err)
 	}
 }
+
+func TestDetectTimelineSpeechIssues(t *testing.T) {
+	tl := EditTimeline{
+		Version: 1,
+		FPS:     24,
+		Width:   1920,
+		Height:  1080,
+		Tracks: []Track{
+			{
+				ID:   "v1",
+				Kind: TrackVideo,
+				Clips: []TimelineClip{
+					{ID: "v-s1", ShotID: "s1", FilePath: "s1.mp4", TimelineStartMs: 0, SourceInMs: 0, SourceOutMs: 4000, Speed: 1.0, Volume: 1.0},
+					{ID: "v-s2", ShotID: "s2", FilePath: "s2.mp4", TimelineStartMs: 4000, SourceInMs: 0, SourceOutMs: 4000, Speed: 1.0, Volume: 1.0},
+				},
+			},
+			{
+				ID:   "a1",
+				Kind: TrackAudioNarration,
+				Clips: []TimelineClip{
+					{ID: "a-s1", ShotID: "s1", FilePath: "s1.wav", TimelineStartMs: 0, SourceInMs: 0, SourceOutMs: 5200, Speed: 1.0, Volume: 1.0},
+					{ID: "a-s2", ShotID: "s2", FilePath: "s2.wav", TimelineStartMs: 4000, SourceInMs: 0, SourceOutMs: 3000, Speed: 1.0, Volume: 1.0},
+				},
+			},
+		},
+	}
+
+	issues := DetectTimelineSpeechIssues(tl, nil, 150)
+	if len(issues) != 2 {
+		t.Fatalf("expected 2 issues (overrun + collision), got %d: %+v", len(issues), issues)
+	}
+	if issues[0].Code != "narration_overrun" || issues[0].ShotID != "s1" || issues[0].OverflowMs != 1200 {
+		t.Fatalf("unexpected first issue: %+v", issues[0])
+	}
+	if issues[1].Code != "narration_source_collision" || issues[1].ClipID != "a-s2" || issues[1].OverlapMs != 1200 {
+		t.Fatalf("unexpected second issue: %+v", issues[1])
+	}
+
+	// Speed-fitting a-s1 to 1.3x resolves both overrun and collision (5200/1.3 = 4000ms).
+	tl.Tracks[1].Clips[0].Speed = 1.3
+	resolved := DetectTimelineSpeechIssues(tl, nil, 150)
+	if len(resolved) != 0 {
+		t.Fatalf("expected 0 issues after speed fit, got %+v", resolved)
+	}
+}

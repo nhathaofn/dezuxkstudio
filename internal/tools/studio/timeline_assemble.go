@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -17,6 +18,8 @@ import (
 	domainstudio "app/internal/domain/studio"
 	"app/internal/engine"
 	"app/internal/progress"
+	"app/internal/runner"
+	"app/internal/tools/mediautil"
 )
 
 const (
@@ -85,6 +88,8 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 			{Name: "transition_ms", Label: "Transition Duration (ms)", Kind: engine.ParamInteger, Min: 0, Max: maxAssembleTransitionMs, Default: strconv.Itoa(opts.StudioConfig.TimelineDefaultTransitionMs)},
 			{Name: "bgm_path", Label: "Background Music File", Kind: engine.ParamText},
 			{Name: "bgm_volume", Label: "BGM Volume (0..2)", Kind: engine.ParamText, Default: fmt.Sprintf("%.2f", opts.StudioConfig.TimelineDefaultBGMVolume)},
+			{Name: "overrun_policy", Label: "Narration Overrun Policy", Kind: engine.ParamSelect, Options: optionStrings(domainstudio.OverrunPolicies()), Default: opts.StudioConfig.TimelineOverrunPolicy},
+			{Name: "max_speed_fit_ratio", Label: "Max Speed-Fit Ratio (>= 1.0)", Kind: engine.ParamText, Default: fmt.Sprintf("%.2f", opts.StudioConfig.TimelineMaxSpeedFitRatio)},
 			{Name: "project_dir", Label: "Episode Directory", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
 		},
 	}
@@ -143,6 +148,22 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 			bgmVol = *in.BGMVolume
 		}
 
+		overrunPolicy := domainstudio.OverrunPolicy(strings.ToLower(strings.TrimSpace(string(in.OverrunPolicy))))
+		if overrunPolicy == "" {
+			overrunPolicy = domainstudio.OverrunPolicy(opts.StudioConfig.TimelineOverrunPolicy)
+		}
+		if err := domainstudio.ValidateOverrunPolicy(overrunPolicy); err != nil {
+			return contracts.TimelineAutoAssembleOutput{}, err
+		}
+
+		maxSpeedFit := opts.StudioConfig.TimelineMaxSpeedFitRatio
+		if in.MaxSpeedFitRatio != nil {
+			if math.IsNaN(*in.MaxSpeedFitRatio) || math.IsInf(*in.MaxSpeedFitRatio, 0) || *in.MaxSpeedFitRatio < 1.0 || *in.MaxSpeedFitRatio > domainstudio.MaxClipSpeed {
+				return contracts.TimelineAutoAssembleOutput{}, apperr.Validation(fmt.Sprintf("max_speed_fit_ratio must be between 1.0 and %.1f", domainstudio.MaxClipSpeed))
+			}
+			maxSpeedFit = *in.MaxSpeedFitRatio
+		}
+
 		ready := make([]domainstudio.Shot, 0, len(shots))
 		for _, sh := range shots {
 			if strings.TrimSpace(sh.VideoPath) == "" {
@@ -174,12 +195,18 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 			},
 		})
 
-		var ffprobeExe string
+		var ffprobeExe, ffmpegExe string
 		if opts.Binaries != nil {
 			if exe, _, _, rerr := opts.Binaries.Resolve(ctx, domainbinaries.IDFFprobe); rerr == nil {
 				ffprobeExe = strings.TrimSpace(exe)
 			}
+			if exe, _, _, rerr := opts.Binaries.Resolve(ctx, domainbinaries.IDFFmpeg); rerr == nil {
+				ffmpegExe = strings.TrimSpace(exe)
+			}
 		}
+
+		tolMs := int64(math.Round(opts.StudioConfig.AudioOverflowToleranceSec * 1000))
+		var resolvedIssues []contracts.TimelineAssembleIssue
 
 		var assemblyWarnings []string
 		probeMs := func(path string, fallbackSec int) (int64, error) {
@@ -316,8 +343,73 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 			})
 
 			speechSpanMs := vidDurMs
+			shotCursorEndMs := startMs + vidDurMs
+			nextPrevClipDurMs := vidDurMs
 			if audPath != "" && audDurMs > 0 {
+				speechSpeed := 1.0
 				speechSpanMs = audDurMs
+				if audDurMs > vidDurMs+tolMs {
+					switch overrunPolicy {
+					case domainstudio.OverrunSpeedFit:
+						neededRatio := float64(audDurMs) / float64(vidDurMs)
+						speechSpeed = math.Round(math.Min(maxSpeedFit, neededRatio)*1000) / 1000
+						speechSpanMs = int64(math.Round(float64(audDurMs) / speechSpeed))
+						if speechSpanMs <= vidDurMs+tolMs {
+							resolvedIssues = append(resolvedIssues, contracts.TimelineAssembleIssue{
+								Code:       "narration_overrun",
+								ShotID:     sh.ID,
+								ClipID:     fmt.Sprintf("aud-%d", idx+1),
+								TrackID:    speechTrack.ID,
+								OverflowMs: audDurMs - vidDurMs,
+								Policy:     string(overrunPolicy),
+								Resolved:   true,
+								Message:    fmt.Sprintf("Speed-fitted speech clip to %.2fx to fit %dms video", speechSpeed, vidDurMs),
+							})
+						}
+					case domainstudio.OverrunFreezeLastFrame:
+						holdMs := audDurMs - vidDurMs
+						holdExtracted := false
+						if ffmpegExe != "" && !mediautil.IsSupportedImageExt(vidPath) {
+							if holdPath, herr := extractHoldLastFrame(ctx, opts, ffmpegExe, vidPath, in.ProjectDir, clipID); herr == nil && holdPath != "" {
+								videoTrack.Clips = append(videoTrack.Clips, domainstudio.TimelineClip{
+									ID:              clipID + "-hold",
+									ShotID:          sh.ID,
+									Label:           label + " Hold",
+									FilePath:        holdPath,
+									TimelineStartMs: startMs + vidDurMs,
+									SourceInMs:      0,
+									SourceOutMs:     holdMs,
+									Speed:           1.0,
+									Volume:          1.0,
+									TransitionIn:    domainstudio.TransitionNone,
+									TransitionMs:    0,
+									KenBurnsPreset:  domainstudio.KenBurnsNone,
+								})
+								holdExtracted = true
+								nextPrevClipDurMs = holdMs
+							}
+						}
+						if !holdExtracted && mediautil.IsSupportedImageExt(vidPath) {
+							videoTrack.Clips[len(videoTrack.Clips)-1].SourceOutMs = audDurMs
+							nextPrevClipDurMs = audDurMs
+							holdExtracted = true
+						}
+						if !holdExtracted {
+							assemblyWarnings = append(assemblyWarnings, fmt.Sprintf("freeze_last_frame hold extension flagged for shot %s (%dms) without FFmpeg frame extraction", sh.ID, holdMs))
+						}
+						shotCursorEndMs = startMs + audDurMs
+						resolvedIssues = append(resolvedIssues, contracts.TimelineAssembleIssue{
+							Code:       "narration_overrun",
+							ShotID:     sh.ID,
+							ClipID:     clipID,
+							TrackID:    videoTrack.ID,
+							OverflowMs: holdMs,
+							Policy:     string(overrunPolicy),
+							Resolved:   true,
+							Message:    fmt.Sprintf("Extended shot %s by %dms freeze hold to match narration", sh.ID, holdMs),
+						})
+					}
+				}
 				speechTrack.Clips = append(speechTrack.Clips, domainstudio.TimelineClip{
 					ID:              fmt.Sprintf("aud-%d", idx+1),
 					ShotID:          sh.ID,
@@ -327,18 +419,18 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 					TimelineStartMs: startMs,
 					SourceInMs:      0,
 					SourceOutMs:     audDurMs,
-					Speed:           1.0,
+					Speed:           speechSpeed,
 					Volume:          1.0,
 					TransitionIn:    domainstudio.TransitionNone,
 					TransitionMs:    0,
 				})
 			}
 
-			cues := buildSubtitleCuesForShot(sh, startMs, max(vidDurMs, speechSpanMs), idx+1)
+			cues := buildSubtitleCuesForShot(sh, startMs, max(shotCursorEndMs-startMs, speechSpanMs), idx+1)
 			tl.Subtitles = append(tl.Subtitles, cues...)
 
-			cursorMs = startMs + vidDurMs
-			prevClipDurMs = vidDurMs
+			cursorMs = shotCursorEndMs
+			prevClipDurMs = nextPrevClipDurMs
 		}
 
 		tl.Tracks = append(tl.Tracks, videoTrack)
@@ -451,6 +543,26 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 			return contracts.TimelineAutoAssembleOutput{}, err
 		}
 
+		detected := domainstudio.DetectTimelineSpeechIssues(tl, nil, tolMs)
+		issues := append([]contracts.TimelineAssembleIssue(nil), resolvedIssues...)
+		for _, di := range detected {
+			if overrunPolicy == domainstudio.OverrunFreezeLastFrame && di.Code == "narration_overrun" {
+				// Already resolved/flagged via freeze_last_frame cursor extension.
+				continue
+			}
+			issues = append(issues, contracts.TimelineAssembleIssue{
+				Code:       di.Code,
+				ShotID:     di.ShotID,
+				ClipID:     di.ClipID,
+				TrackID:    di.TrackID,
+				OverflowMs: di.OverflowMs,
+				OverlapMs:  di.OverlapMs,
+				Policy:     string(overrunPolicy),
+				Resolved:   false,
+				Message:    di.Message,
+			})
+		}
+
 		pretty, err := json.MarshalIndent(tl, "", "  ")
 		if err != nil {
 			return contracts.TimelineAutoAssembleOutput{}, apperr.Internal(err)
@@ -479,8 +591,54 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 			ClipCount:     clipCount,
 			SubtitleCount: len(tl.Subtitles),
 			Warnings:      assemblyWarnings,
+			Issues:        issues,
 		}, nil
 	})
+}
+
+func extractHoldLastFrame(ctx context.Context, opts Options, ffmpegExe, vidPath, projectDir, clipID string) (string, error) {
+	baseDir := strings.TrimSpace(projectDir)
+	var outDir string
+	if baseDir != "" {
+		resolved, err := resolveProjectDir(ctx, opts, baseDir)
+		if err != nil {
+			return "", err
+		}
+		outDir = filepath.Join(resolved, "media", "thumbs")
+	} else {
+		var err error
+		outDir, err = resolveNodeOutputDir(ctx, opts, "", filepath.Join("studio", "thumbs"))
+		if err != nil {
+			return "", err
+		}
+	}
+	if err := checkStudioFile(ctx, outDir, true); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(outDir, 0o750); err != nil {
+		return "", err
+	}
+	outPath := filepath.Join(outDir, uniqueExportFilename(clipID+"_hold", ".png"))
+	if err := checkStudioFile(ctx, outPath, true); err != nil {
+		return "", err
+	}
+	ffCtx, cancel := context.WithTimeout(ctx, opts.StudioConfig.FFmpegTimeout)
+	defer cancel()
+	stop := progress.KeepAlive(ctx)
+	res, err := runner.Run(ffCtx, ffmpegExe,
+		"-y", "-sseof", fmt.Sprintf("-%.2f", opts.StudioConfig.ExtractFrameEOFOffsetSec),
+		"-i", vidPath, "-frames:v", "1", outPath,
+	)
+	stop()
+	if err != nil || res == nil || res.ExitCode != 0 {
+		_ = os.Remove(outPath)
+		if err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("ffmpeg hold frame exit code %d", res.ExitCode)
+	}
+	_ = registerStudioAsset(ctx, opts, "image", NodeTypeTimelineAutoAssem, outPath, outDir)
+	return outPath, nil
 }
 
 func buildSubtitleCuesForShot(sh domainstudio.Shot, startMs, spanMs int64, shotIdx int) []domainstudio.SubtitleCue {

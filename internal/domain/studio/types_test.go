@@ -185,3 +185,68 @@ func TestJobValidationAndPricingCatalogParity(t *testing.T) {
 		t.Fatalf("PreflightSpecForCapabilityWithDuration(video, 8) = %v, want 8.0", vidSpec.DefaultUnitsPerItem)
 	}
 }
+
+func TestOverrunPolicyAndRewriteAssetTagReferences(t *testing.T) {
+	for _, p := range OverrunPolicies() {
+		if err := ValidateOverrunPolicy(p); err != nil {
+			t.Fatalf("ValidateOverrunPolicy(%q): %v", p, err)
+		}
+	}
+	if err := ValidateOverrunPolicy("drop"); !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected CodeValidation for invalid overrun policy, got %v", err)
+	}
+
+	script := &NormalizedScript{
+		Characters: []string{"Minh", "Lan"},
+		Scenes: []Scene{{
+			Code: "S01",
+			Beats: []Beat{{
+				Code:        "B01",
+				Description: "@Minh bước vào quán cùng @MinhAnh",
+				VisualHint:  "@Minh nhìn qua cửa sổ",
+				AssetTags:   []string{"@Minh", "@MinhPro", "@MinhAnh"},
+				Dialogues:   []DialogueLine{{Speaker: "Minh", Line: "Xin chào"}},
+			}},
+		}},
+	}
+	shots := []Shot{
+		{
+			ID:           "s1",
+			Title:        "@Minh opens door",
+			ImagePrompt:  "Close up of @Minh in rain, ignoring @MinhAnh",
+			VideoPrompt:  "@Minh walks forward",
+			RefAssetTags: []string{"@Minh", "@MinhPro"},
+			Dialogues:    []DialogueLine{{Speaker: "Minh", Line: "Xin chào"}},
+		},
+		{
+			ID:           "s2",
+			Title:        "Lan alone",
+			ImagePrompt:  "@Lan sitting",
+			RefAssetTags: []string{"@Lan"},
+		},
+	}
+
+	scriptMod, modShots := RewriteAssetTagReferences("@Minh", "@MinhPro", "Minh", "Minh Pro", script, shots)
+	if !scriptMod {
+		t.Fatal("expected scriptModified=true")
+	}
+	if len(modShots) != 1 || modShots[0] != "s1" {
+		t.Fatalf("modShots = %v, want [s1]", modShots)
+	}
+	bt := script.Scenes[0].Beats[0]
+	if bt.Description != "@MinhPro bước vào quán cùng @MinhAnh" {
+		t.Fatalf("beat description = %q (must not corrupt @MinhAnh)", bt.Description)
+	}
+	if len(bt.AssetTags) != 2 || bt.AssetTags[0] != "@MinhPro" || bt.AssetTags[1] != "@MinhAnh" {
+		t.Fatalf("beat asset_tags = %v, want [@MinhPro @MinhAnh]", bt.AssetTags)
+	}
+	if bt.Dialogues[0].Speaker != "Minh Pro" || script.Characters[0] != "Minh Pro" {
+		t.Fatalf("speaker/character not updated: char=%v dlg=%+v", script.Characters, bt.Dialogues)
+	}
+	if shots[0].ImagePrompt != "Close up of @MinhPro in rain, ignoring @MinhAnh" {
+		t.Fatalf("shot0 image_prompt = %q", shots[0].ImagePrompt)
+	}
+	if len(shots[0].RefAssetTags) != 1 || shots[0].RefAssetTags[0] != "@MinhPro" {
+		t.Fatalf("shot0 ref_asset_tags deduplication failed: %v", shots[0].RefAssetTags)
+	}
+}

@@ -32,9 +32,10 @@ const (
 	ActionBinariesSetPath  = "binaries:set_path"
 	ActionBinariesDownload = "binaries:download"
 
-	ActionWorkflowSpecs    = "workflow:specs"
-	ActionWorkflowRunNode  = "workflow:run_node"
-	ActionWorkflowRunGraph = "workflow:run_graph"
+	ActionWorkflowSpecs     = "workflow:specs"
+	ActionWorkflowRunNode   = "workflow:run_node"
+	ActionWorkflowRunGraph  = "workflow:run_graph"
+	ActionWorkflowTemplates = "workflow:templates"
 
 	ActionAgentList                 = "agent:list"
 	ActionAgentProbe                = "agent:probe"
@@ -100,6 +101,7 @@ func LongActions() []string {
 		ActionStudioMediaPeaksThumbs,
 		ActionStudioTimelineRender,
 		ActionStudioTimelineExportNLE,
+		ActionStudioQueueWait,
 	}
 }
 
@@ -182,6 +184,7 @@ func Actions() []ActionSpec {
 		{ActionWorkflowSpecs, "Returns the catalogue of registered workflow node types.", t[Empty](), t[WorkflowSpecsResult]()},
 		{ActionWorkflowRunNode, "Runs one node standalone by type with JSON input.", t[WorkflowRunNodePayload](), t[WorkflowRunNodeResult]()},
 		{ActionWorkflowRunGraph, "Runs a full workflow DAG graph in dependency order.", t[WorkflowRunGraphPayload](), t[WorkflowRunGraphResult]()},
+		{ActionWorkflowTemplates, "Returns verified reusable Studio workflow DAG templates.", t[Empty](), t[WorkflowTemplatesResult]()},
 		{ActionAgentList, "Lists supported isolated agent providers and their live connection status.", t[Empty](), t[AgentListResult]()},
 		{ActionAgentProbe, "Probes an agent provider executable, isolated auth, and version.", t[AgentProviderIDPayload](), t[AgentProviderInfo]()},
 		{ActionAgentSetPath, "Sets or clears a custom executable path for an agent provider.", t[AgentSetPathPayload](), t[AgentProviderInfo]()},
@@ -271,6 +274,12 @@ func Actions() []ActionSpec {
 		{ActionStudioTimelineExportNLE, "Exports the episode EditTimeline as a CapCut/Jianying draft zip, FCPXML, or OTIO file.", t[StudioTimelineExportNLEPayload](), t[ExportNLEDraftOutput]()},
 		{ActionStudioOpenExportFolder, "Reveals the episode exports folder in the OS file manager (desktop/host admin only).", t[StudioOpenExportFolderPayload](), t[Empty]()},
 		{ActionStudioSyncWorkspace, "Synchronizes workspace project.json, asset_bible.json, shots.json, and timeline.json files with SQLite.", t[StudioSyncWorkspacePayload](), t[StudioSyncWorkspaceResult]()},
+		{ActionStudioWorkflowPlan, "Projects deterministic episode production readiness, missing items, and next recommended action.", t[StudioWorkflowPlanPayload](), t[StudioWorkflowPlanResult]()},
+		{ActionStudioShotsBatchUpsert, "Batch creates, updates, or replaces storyboard shots for an episode.", t[StudioShotsBatchUpsertPayload](), t[StudioShotListResult]()},
+		{ActionStudioAssetRename, "Renames an Asset Bible entry and cascades @Tag and speaker references across scripts and shots.", t[StudioAssetRenamePayload](), t[StudioAssetRefactorResult]()},
+		{ActionStudioAssetMerge, "Merges a duplicate Asset Bible entry into a target asset and cascades @Tag references.", t[StudioAssetMergePayload](), t[StudioAssetRefactorResult]()},
+		{ActionStudioInspectShots, "Generates labeled JPEG contact sheets with BLACK/FREEZE/CUT signals for episode shots.", t[StudioInspectShotsPayload](), t[StudioInspectShotsResult]()},
+		{ActionStudioQueueWait, "Waits until active durable queue jobs for an episode or project reach terminal state.", t[StudioQueueWaitPayload](), t[StudioQueueWaitResult]()},
 	}
 }
 
@@ -364,6 +373,7 @@ func Enums() []EnumSpec {
 		{"StudioTimelineOpKind", t[domainstudio.TimelineOpKind](), stringsOf(domainstudio.TimelineOpKinds())},
 		{"StudioBatchStatus", t[StudioBatchStatus](), stringsOf(StudioBatchStatuses())},
 		{"StudioProjectChangedAction", t[StudioProjectChangedAction](), stringsOf(StudioProjectChangedActions())},
+		{"StudioOverrunPolicy", t[domainstudio.OverrunPolicy](), stringsOf(domainstudio.OverrunPolicies())},
 	}
 }
 

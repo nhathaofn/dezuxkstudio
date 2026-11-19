@@ -82,6 +82,32 @@ func (s *Service) wakeWorker() {
 	}
 }
 
+func (s *Service) subscribeQueueWait() (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	s.waitMu.Lock()
+	if s.waitListeners == nil {
+		s.waitListeners = make(map[chan struct{}]struct{})
+	}
+	s.waitListeners[ch] = struct{}{}
+	s.waitMu.Unlock()
+	return ch, func() {
+		s.waitMu.Lock()
+		delete(s.waitListeners, ch)
+		s.waitMu.Unlock()
+	}
+}
+
+func (s *Service) notifyQueueWaiters() {
+	s.waitMu.Lock()
+	for ch := range s.waitListeners {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+	s.waitMu.Unlock()
+}
+
 func (s *Service) withWorkerGuard(ctx context.Context) context.Context {
 	s.mu.RLock()
 	fg := s.fileGuard

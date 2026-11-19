@@ -489,6 +489,7 @@ func (s *Service) succeedJob(ctx context.Context, j domainstudio.Job, outPath st
 	s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{
 		ProjectID: updated.ProjectID, EpisodeID: updated.EpisodeID, Job: &dto, Summary: "Job completed",
 	})
+	s.notifyQueueWaiters()
 }
 
 func (s *Service) failJob(ctx context.Context, j domainstudio.Job, err error) {
@@ -505,4 +506,5 @@ func (s *Service) failJob(ctx context.Context, j domainstudio.Job, err error) {
 	s.emit(contracts.EventStudioQueueUpdated, contracts.StudioQueueUpdatedEvent{
 		ProjectID: updated.ProjectID, EpisodeID: updated.EpisodeID, Job: &dto, Summary: "Job failed",
 	})
+	s.notifyQueueWaiters()
 }

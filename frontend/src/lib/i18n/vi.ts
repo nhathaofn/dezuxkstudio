@@ -640,11 +640,18 @@ export const vi: Record<MessageKey, string> = {
   "agent.tool.studio_media_peaks_thumbs": "Tạo sóng âm & ảnh thu nhỏ",
   "agent.tool.studio_timeline_render": "Render video MP4 từ timeline",
   "agent.tool.studio_timeline_export_nle": "Xuất gói dự án dựng phim NLE",
+  "agent.tool.studio_workflow_plan": "Kiểm tra mức sẵn sàng quy trình tập phim",
+  "agent.tool.studio_shots_batch_upsert": "Cập nhật hàng loạt shot storyboard",
+  "agent.tool.studio_asset_rename": "Đổi tên tài sản & cập nhật @Tag",
+  "agent.tool.studio_asset_merge": "Gộp tài sản trùng lặp trong dự án",
+  "agent.tool.studio_inspect_shots": "Kiểm tra bảng ảnh contact sheet & tín hiệu video",
+  "agent.tool.studio_queue_wait": "Đợi hàng đợi sản xuất hoàn tất",
   "agent.tool.media_inspect_asset": "Kiểm tra thông số tài sản media",
   "agent.tool.media_list": "Liệt kê tài sản media",
   "agent.tool.media_delete": "Xóa tài sản media",
   "agent.tool.media_register_input": "Đăng ký tệp media đầu vào",
   "agent.tool.workflow_list_specs": "Đọc thiết lập tính năng",
+  "agent.tool.workflow_list_templates": "Liệt kê mẫu quy trình chuẩn",
   "agent.tool.workflow_run_node": "Chạy một tính năng",
   "agent.tool.workflow_run_graph": "Chạy một quy trình",
   "agent.tool.binaries_list": "Liệt kê công cụ",
@@ -1062,6 +1069,7 @@ export const vi: Record<MessageKey, string> = {
   "errors.studio.access_denied": "Truy cập tệp bị giới hạn bên trong thư mục làm việc hiện tại.",
   "errors.studio.approval_required":
     "Cần xác nhận phê duyệt trước khi chạy batch khi chưa bật tự động duyệt.",
+  "errors.studio.batch_too_large": "Số lượng shot trong một lô vượt quá giới hạn ({max}).",
   "errors.studio.clip_path_required": "Mỗi clip trên timeline đều cần đường dẫn tệp media hợp lệ.",
   "errors.studio.clips_required": "Cần có ít nhất một video clip đầu vào.",
   "errors.studio.corrupt_data": "Dữ liệu lưu trữ của Studio bị hỏng hoặc không đọc được.",
@@ -1101,6 +1109,8 @@ export const vi: Record<MessageKey, string> = {
   "errors.studio.invalid_mode": "Chế độ trích xuất khung hình không hợp lệ: {mode}.",
   "errors.studio.invalid_node_output": "Node xử lý trả về kết quả không hợp lệ.",
   "errors.studio.invalid_overflow_mode": "Chế độ khớp thời lượng lồng tiếng không hợp lệ: {mode}.",
+  "errors.studio.invalid_overrun_policy":
+    "Chính sách xử lý tràn lời thoại trên timeline không hợp lệ: {policy}.",
   "errors.studio.invalid_path": "Đường dẫn tệp media hoặc thư mục dự án không hợp lệ.",
   "errors.studio.invalid_peak_bins": "Số cột sóng âm thanh phải từ {min} đến {max}.",
   "errors.studio.invalid_preset": "Chế độ nén FFmpeg không hợp lệ: {preset}.",
@@ -1222,7 +1232,19 @@ export const vi: Record<MessageKey, string> = {
     "Đang kiểm tra các nguồn media trên timeline ({current}/{total})…",
   "studio.progress.render_timeline": "Đang render FFmpeg timeline đa track ({sec}s)…",
   "studio.progress.export_nle": "Đang đóng gói bản nháp {format} ({current}/{total})…",
+  "studio.progress.contact_sheet":
+    "Đang tạo ảnh lưới contact sheet và tín hiệu FFmpeg ({current}/{total})…",
+  "studio.progress.queue_wait": "Đang đợi các tác vụ Studio hoàn tất ({current}/{total} xong)…",
   "studio.progress.done": "Hoàn tất",
+
+  "studio.agentDelegate.tooltip":
+    "Chưa có API AI Text độc lập — bấm để soạn sẵn prompt giao việc cho Agent.",
+  "studio.agentDelegate.scriptNormalize":
+    "Hiện chưa có Text AI provider trong Cài đặt -> Nhà cung cấp. Hãy đóng vai chuyên gia chuẩn hóa kịch bản cho tập phim Studio {episodeId} (dự án {projectId}): dùng studio_episode_get và studio_workflow_plan đọc kịch bản gốc, phân tách cảnh/nhịp/thoại/@Tag theo skill screenplay-normalize và lưu lại kịch bản chuẩn hoặc tài sản/shot khởi đầu.",
+  "studio.agentDelegate.extractAssets":
+    "Hiện chưa có Text AI provider trong Cài đặt -> Nhà cung cấp. Hãy kiểm tra tập phim Studio {episodeId} (dự án {projectId}) bằng studio_workflow_plan và studio_episode_get, trích xuất các nhân vật/bối cảnh/đạo cụ kèm prompt tiếng Anh chi tiết rồi lưu qua studio_asset_upsert (dùng studio_asset_rename hoặc studio_asset_merge nếu cần gộp trùng lặp).",
+  "studio.agentDelegate.authorShots":
+    "Hiện chưa có Text AI provider trong Cài đặt -> Nhà cung cấp. Hãy đóng vai đạo diễn cho tập phim Studio {episodeId} (dự án {projectId}): đọc kịch bản và Asset Bible bằng studio_workflow_plan và studio_episode_get, viết image_prompt & video_prompt gắn @Tag chuẩn theo skill prompt-authoring rồi lưu hàng loạt bằng studio_shots_batch_upsert.",
 
   "studio.qc.issue.no_visual_stream": "Tệp media không có luồng hình ảnh hoặc kích thước hợp lệ",
   "studio.qc.issue.zero_duration": "Thời lượng video bằng 0 hoặc không đọc được",

@@ -123,6 +123,7 @@ type StudioTimelineResult struct {
 	TimelinePath string                          `json:"timeline_path,omitempty"`
 	Timeline     StudioEditTimeline              `json:"timeline"`
 	Revisions    []StudioTimelineRevisionSummary `json:"revisions"`
+	Issues       []TimelineAssembleIssue         `json:"issues,omitempty"`
 	UpdatedAt    int64                           `json:"updated_at"`
 }
 
@@ -176,6 +177,8 @@ type StudioTimelineAutoAssemblePayload struct {
 	TransitionMs      int64                       `json:"transition_ms,omitempty"`
 	BGMPath           string                      `json:"bgm_path,omitempty"`
 	BGMVolume         float64                     `json:"bgm_volume,omitempty"`
+	OverrunPolicy     domainstudio.OverrunPolicy  `json:"overrun_policy,omitempty"`
+	MaxSpeedFitRatio  float64                     `json:"max_speed_fit_ratio,omitempty"`
 }
 
 // Validate checks StudioTimelineAutoAssemblePayload.
@@ -197,6 +200,12 @@ func (p StudioTimelineAutoAssemblePayload) Validate() error {
 	}
 	if p.TransitionDefault != "" && !p.TransitionDefault.Valid() {
 		return apperr.Validation(fmt.Sprintf("unsupported transition_default %q", p.TransitionDefault))
+	}
+	if p.OverrunPolicy != "" && !p.OverrunPolicy.Valid() {
+		return apperr.Validation(fmt.Sprintf("unsupported overrun_policy %q", p.OverrunPolicy))
+	}
+	if math.IsNaN(p.MaxSpeedFitRatio) || math.IsInf(p.MaxSpeedFitRatio, 0) || p.MaxSpeedFitRatio < 0 || (p.MaxSpeedFitRatio > 0 && p.MaxSpeedFitRatio < 1.0) {
+		return apperr.Validation("max_speed_fit_ratio must be 0 or >= 1.0")
 	}
 	return nil
 }

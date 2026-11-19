@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"app/internal/apperr"
 	domainmedia "app/internal/domain/mediagen"
@@ -193,6 +194,34 @@ func EpisodeStages() []EpisodeStage {
 		StageVideo,
 		StageExport,
 	}
+}
+
+// OverrunPolicy defines how timeline_auto_assemble handles speech audio longer than its video shot.
+type OverrunPolicy string
+
+const (
+	OverrunWarn            OverrunPolicy = "warn"
+	OverrunFreezeLastFrame OverrunPolicy = "freeze_last_frame"
+	OverrunSpeedFit        OverrunPolicy = "speed_fit"
+)
+
+// OverrunPolicies returns all supported timeline speech overrun policies.
+func OverrunPolicies() []OverrunPolicy {
+	return []OverrunPolicy{OverrunWarn, OverrunFreezeLastFrame, OverrunSpeedFit}
+}
+
+// Valid reports whether p is a supported OverrunPolicy.
+func (p OverrunPolicy) Valid() bool {
+	return slices.Contains(OverrunPolicies(), p)
+}
+
+// ValidateOverrunPolicy checks that p is a supported OverrunPolicy.
+func ValidateOverrunPolicy(p OverrunPolicy) error {
+	if !p.Valid() {
+		return apperr.Validation(fmt.Sprintf("unsupported overrun policy %q", p)).
+			WithMsg("errors.studio.invalid_overrun_policy", map[string]any{"value": string(p)})
+	}
+	return nil
 }
 
 // Project represents a film studio project backed by SQLite + workspace JSON/media files.
@@ -625,6 +654,170 @@ func cleanTags(tags []string) []string {
 		out = append(out, norm)
 	}
 	return out
+}
+
+func isTagBoundaryRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-'
+}
+
+func replaceExactTagInText(text, oldTag, newTag string) (string, bool) {
+	if text == "" || oldTag == "" || strings.EqualFold(oldTag, newTag) {
+		return text, false
+	}
+	lowerText := strings.ToLower(text)
+	lowerOld := strings.ToLower(oldTag)
+	if !strings.Contains(lowerText, lowerOld) {
+		return text, false
+	}
+	var b strings.Builder
+	changed := false
+	i := 0
+	for i < len(text) {
+		idx := strings.Index(strings.ToLower(text[i:]), lowerOld)
+		if idx < 0 {
+			b.WriteString(text[i:])
+			break
+		}
+		absIdx := i + idx
+		endIdx := absIdx + len(oldTag)
+		// Check boundaries in original string.
+		prevOK := true
+		if absIdx > 0 {
+			r, _ := utf8.DecodeLastRuneInString(text[:absIdx])
+			prevOK = !isTagBoundaryRune(r)
+		}
+		nextOK := true
+		if endIdx < len(text) {
+			r, _ := utf8.DecodeRuneInString(text[endIdx:])
+			nextOK = !isTagBoundaryRune(r)
+		}
+		if prevOK && nextOK {
+			b.WriteString(text[i:absIdx])
+			b.WriteString(newTag)
+			changed = true
+			i = endIdx
+		} else {
+			b.WriteString(text[i : absIdx+1])
+			i = absIdx + 1
+		}
+	}
+	if !changed {
+		return text, false
+	}
+	return b.String(), true
+}
+
+// RewriteAssetTagReferences deterministically rewrites @OldTag -> @NewTag and character Speaker names
+// across an optional NormalizedScript and slice of Shots without performing any I/O.
+func RewriteAssetTagReferences(oldTag, newTag, oldSpeaker, newSpeaker string, script *NormalizedScript, shots []Shot) (scriptModified bool, modifiedShotIDs []string) {
+	normOld := NormalizeCodeTag(oldTag, "")
+	normNew := NormalizeCodeTag(newTag, "")
+	trimOldSpk := strings.TrimSpace(oldSpeaker)
+	trimNewSpk := strings.TrimSpace(newSpeaker)
+
+	rewriteTags := func(tags []string) ([]string, bool) {
+		if normOld == "" || normNew == "" || len(tags) == 0 {
+			return tags, false
+		}
+		changed := false
+		out := make([]string, len(tags))
+		for i, t := range tags {
+			nt := NormalizeCodeTag(t, "")
+			if strings.EqualFold(nt, normOld) {
+				out[i] = normNew
+				if !strings.EqualFold(nt, normNew) || t != normNew {
+					changed = true
+				}
+			} else {
+				out[i] = t
+			}
+		}
+		cleaned := cleanTags(out)
+		if !changed && len(cleaned) != len(tags) {
+			changed = true
+		}
+		return cleaned, changed
+	}
+
+	if script != nil {
+		if trimOldSpk != "" && trimNewSpk != "" && trimOldSpk != trimNewSpk {
+			seenChars := make(map[string]bool, len(script.Characters))
+			nextChars := make([]string, 0, len(script.Characters))
+			for _, ch := range script.Characters {
+				replaced := ch
+				if strings.EqualFold(strings.TrimSpace(ch), trimOldSpk) {
+					replaced = trimNewSpk
+					if ch != trimNewSpk {
+						scriptModified = true
+					}
+				}
+				key := strings.ToLower(strings.TrimSpace(replaced))
+				if key != "" && !seenChars[key] {
+					seenChars[key] = true
+					nextChars = append(nextChars, replaced)
+				} else if key != "" {
+					scriptModified = true
+				}
+			}
+			script.Characters = nextChars
+		}
+		for si := range script.Scenes {
+			for bi := range script.Scenes[si].Beats {
+				bt := &script.Scenes[si].Beats[bi]
+				if nextTags, ok := rewriteTags(bt.AssetTags); ok {
+					bt.AssetTags = nextTags
+					scriptModified = true
+				}
+				if normOld != "" && normNew != "" {
+					if v, ok := replaceExactTagInText(bt.Description, normOld, normNew); ok {
+						bt.Description = v
+						scriptModified = true
+					}
+					if v, ok := replaceExactTagInText(bt.VisualHint, normOld, normNew); ok {
+						bt.VisualHint = v
+						scriptModified = true
+					}
+				}
+				if trimOldSpk != "" && trimNewSpk != "" && trimOldSpk != trimNewSpk {
+					for di := range bt.Dialogues {
+						if strings.EqualFold(strings.TrimSpace(bt.Dialogues[di].Speaker), trimOldSpk) && bt.Dialogues[di].Speaker != trimNewSpk {
+							bt.Dialogues[di].Speaker = trimNewSpk
+							scriptModified = true
+						}
+					}
+				}
+			}
+		}
+	}
+
+	for i := range shots {
+		sh := &shots[i]
+		shotChanged := false
+		if nextTags, ok := rewriteTags(sh.RefAssetTags); ok {
+			sh.RefAssetTags = nextTags
+			shotChanged = true
+		}
+		if normOld != "" && normNew != "" {
+			for _, field := range []*string{&sh.Title, &sh.ImagePrompt, &sh.VideoPrompt, &sh.NarrationText} {
+				if v, ok := replaceExactTagInText(*field, normOld, normNew); ok {
+					*field = v
+					shotChanged = true
+				}
+			}
+		}
+		if trimOldSpk != "" && trimNewSpk != "" && trimOldSpk != trimNewSpk {
+			for di := range sh.Dialogues {
+				if strings.EqualFold(strings.TrimSpace(sh.Dialogues[di].Speaker), trimOldSpk) && sh.Dialogues[di].Speaker != trimNewSpk {
+					sh.Dialogues[di].Speaker = trimNewSpk
+					shotChanged = true
+				}
+			}
+		}
+		if shotChanged {
+			modifiedShotIDs = append(modifiedShotIDs, sh.ID)
+		}
+	}
+	return scriptModified, modifiedShotIDs
 }
 
 // Slugify produces a lowercase kebab-case filesystem-safe slug from title.

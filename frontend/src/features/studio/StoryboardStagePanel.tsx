@@ -24,6 +24,8 @@ import {
   type StudioShotMode,
 } from "../../contracts/generated";
 import { isMessageKey, useT } from "../../lib/i18n";
+import { delegateStudioStageToAgent, isTextProviderConfigured } from "../agent/screenContext";
+import { useProvidersStore } from "../providers/useProvidersStore";
 import { findParam, useNodeSpec } from "../workflow/useNodeSpecs";
 import { SignedStudioImage } from "./SignedStudioMedia";
 import { useStudioStore } from "./useStudioStore";
@@ -335,6 +337,24 @@ export const StoryboardStagePanel: React.FC<{
   const saving = useStudioStore((s) => s.saving);
 
   const busy = saving || runningStage !== null;
+  const providerDefaults = useProvidersStore((s) => s.defaults);
+  const hasTextProvider = isTextProviderConfigured(providerDefaults, textModel);
+
+  const handleAuthorShots = async () => {
+    if (!hasTextProvider) {
+      delegateStudioStageToAgent({
+        projectId: detail.project.id,
+        episodeId: detail.episode.id,
+        stage: "author_shots",
+        prompt: t("studio.agentDelegate.authorShots", {
+          episodeId: detail.episode.id,
+          projectId: detail.project.id,
+        }),
+      });
+      return;
+    }
+    await runStage("author_shots", textModel ? { model: textModel } : {});
+  };
 
   const handleMove = (index: number, delta: number) => {
     const nextIdx = index + delta;
@@ -353,9 +373,13 @@ export const StoryboardStagePanel: React.FC<{
           <Button
             variant="secondary"
             size="sm"
-            onClick={() => void runStage("author_shots", textModel ? { model: textModel } : {})}
-            disabled={busy || !detail.normalized_script}
-            title={shotSpec?.description}
+            onClick={() => void handleAuthorShots()}
+            disabled={
+              busy ||
+              (!detail.normalized_script &&
+                (hasTextProvider || (detail.raw_script ?? "").trim() === ""))
+            }
+            title={!hasTextProvider ? t("studio.agentDelegate.tooltip") : shotSpec?.description}
           >
             {runningStage === "author_shots" ? (
               <Loader2 size={13} className="animate-spin" />

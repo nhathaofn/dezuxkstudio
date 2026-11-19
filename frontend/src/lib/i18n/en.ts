@@ -637,11 +637,18 @@ export const en = {
   "agent.tool.studio_media_peaks_thumbs": "Generated waveform & thumbnails",
   "agent.tool.studio_timeline_render": "Rendered timeline MP4",
   "agent.tool.studio_timeline_export_nle": "Exported NLE draft package",
+  "agent.tool.studio_workflow_plan": "Planned episode workflow readiness",
+  "agent.tool.studio_shots_batch_upsert": "Batch-updated storyboard shots",
+  "agent.tool.studio_asset_rename": "Renamed studio asset & tags",
+  "agent.tool.studio_asset_merge": "Merged duplicate studio assets",
+  "agent.tool.studio_inspect_shots": "Inspected shot contact sheets & signals",
+  "agent.tool.studio_queue_wait": "Waited for studio queue completion",
   "agent.tool.media_inspect_asset": "Inspected media asset",
   "agent.tool.media_list": "Listed media assets",
   "agent.tool.media_delete": "Deleted media asset",
   "agent.tool.media_register_input": "Registered input media",
   "agent.tool.workflow_list_specs": "Read feature settings",
+  "agent.tool.workflow_list_templates": "Listed canonical workflow templates",
   "agent.tool.workflow_run_node": "Ran a feature",
   "agent.tool.workflow_run_graph": "Ran a workflow",
   "agent.tool.binaries_list": "Listed tools",
@@ -1059,6 +1066,7 @@ export const en = {
   "errors.studio.shot_duration_invalid": "Shot duration must be at least {min} second(s).",
   "errors.studio.access_denied": "File access is restricted outside the active workspace.",
   "errors.studio.approval_required": "Batch approval is required when auto-approve is disabled.",
+  "errors.studio.batch_too_large": "Shot batch exceeds the maximum size ({max}).",
   "errors.studio.clip_path_required": "Every timeline clip requires a valid media file path.",
   "errors.studio.clips_required": "At least one video clip is required.",
   "errors.studio.corrupt_data": "Stored Studio metadata is corrupted or unreadable.",
@@ -1099,6 +1107,7 @@ export const en = {
   "errors.studio.invalid_mode": "Unsupported frame extraction mode: {mode}.",
   "errors.studio.invalid_node_output": "Workflow node returned an invalid output.",
   "errors.studio.invalid_overflow_mode": "Unsupported dubbing overflow mode: {mode}.",
+  "errors.studio.invalid_overrun_policy": "Unsupported timeline overrun policy: {policy}.",
   "errors.studio.invalid_path": "Media or project path is invalid.",
   "errors.studio.invalid_peak_bins": "Waveform peak bins must be between {min} and {max}.",
   "errors.studio.invalid_preset": "Unsupported FFmpeg encoder preset: {preset}.",
@@ -1223,7 +1232,19 @@ export const en = {
   "studio.progress.render_prepare": "Validating timeline media inputs ({current}/{total})…",
   "studio.progress.render_timeline": "Rendering multi-track FFmpeg timeline ({sec}s)…",
   "studio.progress.export_nle": "Packaging {format} NLE draft ({current}/{total})…",
+  "studio.progress.contact_sheet":
+    "Generating contact sheet and FFmpeg signals ({current}/{total})…",
+  "studio.progress.queue_wait": "Waiting for active Studio jobs ({current}/{total} done)…",
   "studio.progress.done": "Completed",
+
+  "studio.agentDelegate.tooltip":
+    "No standalone Text AI API configured — click to prepare an Agent task in the drawer.",
+  "studio.agentDelegate.scriptNormalize":
+    "No Text AI API provider is configured in Settings -> Providers. Please act as the Screenplay Normalizer for Studio episode {episodeId} (project {projectId}): inspect the raw script with studio_episode_get (and studio_workflow_plan), normalize scenes/beats/dialogues/@Tags cleanly following /screenplay-normalize, and save the structured script and any initial assets or shots.",
+  "studio.agentDelegate.extractAssets":
+    "No Text AI API provider is configured in Settings -> Providers. Please inspect Studio episode {episodeId} (project {projectId}) using studio_workflow_plan and studio_episode_get, extract recurring characters, scenes, and props with English visual prompts, and persist them with studio_asset_upsert (and studio_asset_rename / studio_asset_merge if duplicates exist).",
+  "studio.agentDelegate.authorShots":
+    "No Text AI API provider is configured in Settings -> Providers. Please act as the Film Director for Studio episode {episodeId} (project {projectId}): inspect script and Asset Bible via studio_workflow_plan and studio_episode_get, author cinematic image_prompt & video_prompt shots with @Tag links following /prompt-authoring, and persist them in bulk via studio_shots_batch_upsert.",
 
   "studio.qc.issue.no_visual_stream": "Media contains no valid visual stream dimensions",
   "studio.qc.issue.zero_duration": "Video duration is zero or unreadable",

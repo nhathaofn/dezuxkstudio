@@ -199,4 +199,34 @@ func (s Studio) Register(r *realtime.Registry) {
 		func(ctx context.Context, _ *realtime.Request, p contracts.StudioSyncWorkspacePayload) (contracts.StudioSyncWorkspaceResult, error) {
 			return s.Service.SyncAndListWorkspace(engine.WithFileGuard(ctx, s.FileGuard), p.ProjectID)
 		})
+
+	realtime.Handle(r, contracts.ActionStudioWorkflowPlan,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioWorkflowPlanPayload) (contracts.StudioWorkflowPlanResult, error) {
+			return s.Service.GetWorkflowPlan(engine.WithFileGuard(ctx, s.FileGuard), p.EpisodeID)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioShotsBatchUpsert,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioShotsBatchUpsertPayload) (contracts.StudioShotListResult, error) {
+			return s.Service.BatchUpsertShots(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioAssetRename,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioAssetRenamePayload) (contracts.StudioAssetRefactorResult, error) {
+			return s.Service.RenameAsset(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioAssetMerge,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioAssetMergePayload) (contracts.StudioAssetRefactorResult, error) {
+			return s.Service.MergeAssets(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioInspectShots,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioInspectShotsPayload) (contracts.StudioInspectShotsResult, error) {
+			return s.Service.InspectShots(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
+
+	realtime.Handle(r, contracts.ActionStudioQueueWait,
+		func(ctx context.Context, _ *realtime.Request, p contracts.StudioQueueWaitPayload) (contracts.StudioQueueWaitResult, error) {
+			return s.Service.WaitForQueue(engine.WithFileGuard(ctx, s.FileGuard), p)
+		})
 }

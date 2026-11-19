@@ -136,6 +136,9 @@ export type StudioBatchStatus = (typeof StudioBatchStatusValues)[number];
 export const StudioProjectChangedActionValues = ["created", "updated", "deleted", "synced"] as const;
 export type StudioProjectChangedAction = (typeof StudioProjectChangedActionValues)[number];
 
+export const StudioOverrunPolicyValues = ["warn", "freeze_last_frame", "speed_fit"] as const;
+export type StudioOverrunPolicy = (typeof StudioOverrunPolicyValues)[number];
+
 export interface ActionProgress {
   percent: number;
   message: string;
@@ -496,6 +499,14 @@ export interface ConnectionInfo {
   long_action_timeout_ms: number;
   ping_interval_ms: number;
   check_updates_on_startup: boolean;
+}
+
+export interface ContactSheetFrameMeta {
+  index: number;
+  sheet_index: number;
+  time_sec: number;
+  timeline_ms: number;
+  signals?: string[];
 }
 
 export interface CreateCredentialPayload {
@@ -1204,6 +1215,33 @@ export interface StudioAsset {
   updated_at: number;
 }
 
+export interface StudioAssetMergePayload {
+  project_id: string;
+  source_asset_id: string;
+  target_asset_id: string;
+  dry_run?: boolean;
+}
+
+export interface StudioAssetRefactorResult {
+  dry_run: boolean;
+  old_code_tag: string;
+  new_code_tag: string;
+  impacted_episode_count: number;
+  impacted_shot_count: number;
+  updated_scripts_count: number;
+  updated_shots_count: number;
+  deleted_asset_id?: string;
+  assets?: StudioAsset[];
+}
+
+export interface StudioAssetRenamePayload {
+  project_id: string;
+  asset_id: string;
+  new_name?: string;
+  new_code_tag: string;
+  dry_run?: boolean;
+}
+
 export interface StudioAssetUpsertPayload {
   id?: string;
   project_id: string;
@@ -1405,6 +1443,20 @@ export interface StudioGridSplitResult {
 
 export interface StudioIDPayload {
   id: string;
+}
+
+export interface StudioInspectShotsPayload {
+  episode_id: string;
+  shot_ids?: string[];
+  max_frames?: number;
+  frames_per_sheet?: number;
+  include_signals?: boolean;
+}
+
+export interface StudioInspectShotsResult {
+  episode_id: string;
+  shots: StudioShotInspectionItem[];
+  summary: string;
 }
 
 export interface StudioJob {
@@ -1670,6 +1722,25 @@ export interface StudioQueueUpdatedEvent {
   summary?: string;
 }
 
+export interface StudioQueueWaitPayload {
+  project_id?: string;
+  episode_id?: string;
+  job_ids?: string[];
+  timeout_sec?: number;
+}
+
+export interface StudioQueueWaitResult {
+  all_done: boolean;
+  timed_out: boolean;
+  succeeded_count: number;
+  failed_count: number;
+  canceled_count: number;
+  pending_count: number;
+  paused_count: number;
+  jobs: StudioJob[];
+  summary: string;
+}
+
 export interface StudioRunStageResult {
   episode: StudioEpisodeDetailResult;
   output_path?: string;
@@ -1723,6 +1794,41 @@ export interface StudioShot {
   updated_at: number;
 }
 
+export interface StudioShotBatchItem {
+  id?: string;
+  seq?: number;
+  scene_code?: string;
+  title?: string;
+  shot_mode?: StudioShotMode;
+  duration_sec?: number;
+  image_prompt?: string;
+  video_prompt?: string;
+  narration_text?: string;
+  dialogues?: StudioDialogueLine[];
+  ref_asset_tags?: string[];
+  keyframe_asset_id?: string;
+  keyframe_path?: string;
+  video_asset_id?: string;
+  video_path?: string;
+  audio_asset_id?: string;
+  audio_path?: string;
+  status?: StudioShotStatus;
+  error_text?: string;
+}
+
+export interface StudioShotInspectionItem {
+  shot_id: string;
+  seq: number;
+  title: string;
+  video_path: string;
+  sheet_paths: string[];
+  sheet_asset_ids?: string[];
+  signals: VideoSignals;
+  frames: ContactSheetFrameMeta[];
+  summary: string;
+  error?: string;
+}
+
 export interface StudioShotListResult {
   shots: StudioShot[];
 }
@@ -1758,6 +1864,12 @@ export interface StudioShotUpsertPayload {
 export interface StudioShotUpsertResult {
   shot: StudioShot;
   shots: StudioShot[];
+}
+
+export interface StudioShotsBatchUpsertPayload {
+  episode_id: string;
+  replace_all?: boolean;
+  shots: StudioShotBatchItem[];
 }
 
 export interface StudioSubtitleCue {
@@ -1796,6 +1908,8 @@ export interface StudioTimelineAutoAssemblePayload {
   transition_ms?: number;
   bgm_path?: string;
   bgm_volume?: number;
+  overrun_policy?: StudioOverrunPolicy;
+  max_speed_fit_ratio?: number;
 }
 
 export interface StudioTimelineChangedEvent {
@@ -1906,6 +2020,7 @@ export interface StudioTimelineResult {
   timeline_path?: string;
   timeline: StudioEditTimeline;
   revisions: StudioTimelineRevisionSummary[];
+  issues?: TimelineAssembleIssue[];
   updated_at: number;
 }
 
@@ -1950,6 +2065,48 @@ export interface StudioVersionsListPayload {
 export interface StudioVersionsListResult {
   versions: StudioMediaVersion[];
   latest_qc?: StudioQCReport;
+}
+
+export interface StudioWorkflowNextAction {
+  action: string;
+  reason: string;
+  suggested_tool?: string;
+  suggested_args?: Record<string, unknown>;
+}
+
+export interface StudioWorkflowPlanCounts {
+  scenes: number;
+  beats: number;
+  assets: number;
+  assets_ready: number;
+  shots: number;
+  keyframes_ready: number;
+  videos_ready: number;
+  tts_ready: number;
+  queue_active: number;
+  queue_failed: number;
+}
+
+export interface StudioWorkflowPlanPayload {
+  episode_id: string;
+}
+
+export interface StudioWorkflowPlanResult {
+  project_id: string;
+  episode_id: string;
+  stage: StudioEpisodeStage;
+  raw_script_chars: number;
+  long_script_chunk_chars: number;
+  text_provider_ready: boolean;
+  recommended_authoring_mode: string;
+  counts: StudioWorkflowPlanCounts;
+  missing_asset_ids: string[];
+  missing_keyframe_shot_ids: string[];
+  missing_video_shot_ids: string[];
+  missing_tts_shot_ids: string[];
+  failed_job_ids: string[];
+  timeline_issues: TimelineAssembleIssue[];
+  next_action: StudioWorkflowNextAction;
 }
 
 export interface SubagentInfo {
@@ -2026,6 +2183,18 @@ export interface TTSGenerateOutput {
   asset_id?: string;
 }
 
+export interface TimelineAssembleIssue {
+  code: string;
+  shot_id?: string;
+  clip_id?: string;
+  track_id?: string;
+  overflow_ms?: number;
+  overlap_ms?: number;
+  policy?: string;
+  resolved?: boolean;
+  message: string;
+}
+
 export interface TimelineAutoAssembleInput {
   shots_json: string;
   audio_manifest_json?: string;
@@ -2036,6 +2205,8 @@ export interface TimelineAutoAssembleInput {
   transition_ms?: number;
   bgm_path?: string;
   bgm_volume?: number;
+  overrun_policy?: StudioOverrunPolicy;
+  max_speed_fit_ratio?: number;
   project_dir?: string;
 }
 
@@ -2047,6 +2218,7 @@ export interface TimelineAutoAssembleOutput {
   clip_count: number;
   subtitle_count: number;
   warnings?: string[];
+  issues?: TimelineAssembleIssue[];
 }
 
 export interface UpdateCredentialPayload {
@@ -2089,6 +2261,27 @@ export interface VideoConcatBasicOutput {
   clip_count: number;
 }
 
+export interface VideoContactSheetInput {
+  video_path: ImageInputRef;
+  shot_id?: string;
+  source_in_ms?: number;
+  source_out_ms?: number;
+  max_frames?: number;
+  frames_per_sheet?: number;
+  max_edge_px?: number;
+  jpeg_quality?: number;
+  include_signals?: boolean;
+  output_dir?: string;
+}
+
+export interface VideoContactSheetOutput {
+  sheets: MediaRef[];
+  sheet_paths: string[];
+  signals: VideoSignals;
+  frames: ContactSheetFrameMeta[];
+  summary: string;
+}
+
 export interface VideoGenerateInput {
   prompt?: string;
   start_image?: ImageInputRef;
@@ -2112,6 +2305,34 @@ export interface VideoGenerateOutput {
   duration: number;
   sizeBytes: number;
   asset_id?: string;
+}
+
+export interface VideoSignalBlack {
+  start_sec: number;
+  end_sec: number;
+  duration_sec: number;
+}
+
+export interface VideoSignalCut {
+  time_sec: number;
+  score?: number;
+}
+
+export interface VideoSignalFreeze {
+  start_sec: number;
+  end_sec: number;
+  duration_sec: number;
+}
+
+export interface VideoSignals {
+  duration_sec: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+  blacks: VideoSignalBlack[];
+  freezes: VideoSignalFreeze[];
+  cuts: VideoSignalCut[];
+  cached?: boolean;
 }
 
 export interface VideoWatermarkRemoveInput {
@@ -2156,6 +2377,26 @@ export interface WorkflowSpecsResult {
   specs: Spec[];
 }
 
+export interface WorkflowTemplate {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  params: WorkflowTemplateParam[];
+  graph: Graph;
+}
+
+export interface WorkflowTemplateParam {
+  name: string;
+  description: string;
+  required?: boolean;
+  default?: string;
+}
+
+export interface WorkflowTemplatesResult {
+  templates: WorkflowTemplate[];
+}
+
 export const Actions = {
   /** Round-trip latency probe. */
   SYSTEM_PING: "system:ping",
@@ -2187,6 +2428,8 @@ export const Actions = {
   WORKFLOW_RUN_NODE: "workflow:run_node",
   /** Runs a full workflow DAG graph in dependency order. */
   WORKFLOW_RUN_GRAPH: "workflow:run_graph",
+  /** Returns verified reusable Studio workflow DAG templates. */
+  WORKFLOW_TEMPLATES: "workflow:templates",
   /** Lists supported isolated agent providers and their live connection status. */
   AGENT_LIST: "agent:list",
   /** Probes an agent provider executable, isolated auth, and version. */
@@ -2365,6 +2608,18 @@ export const Actions = {
   STUDIO_OPEN_EXPORT_FOLDER: "studio:open_export_folder",
   /** Synchronizes workspace project.json, asset_bible.json, shots.json, and timeline.json files with SQLite. */
   STUDIO_SYNC_WORKSPACE: "studio:sync_workspace",
+  /** Projects deterministic episode production readiness, missing items, and next recommended action. */
+  STUDIO_WORKFLOW_PLAN: "studio:workflow_plan",
+  /** Batch creates, updates, or replaces storyboard shots for an episode. */
+  STUDIO_SHOTS_BATCH_UPSERT: "studio:shots_batch_upsert",
+  /** Renames an Asset Bible entry and cascades @Tag and speaker references across scripts and shots. */
+  STUDIO_ASSET_RENAME: "studio:asset_rename",
+  /** Merges a duplicate Asset Bible entry into a target asset and cascades @Tag references. */
+  STUDIO_ASSET_MERGE: "studio:asset_merge",
+  /** Generates labeled JPEG contact sheets with BLACK/FREEZE/CUT signals for episode shots. */
+  STUDIO_INSPECT_SHOTS: "studio:inspect_shots",
+  /** Waits until active durable queue jobs for an episode or project reach terminal state. */
+  STUDIO_QUEUE_WAIT: "studio:queue_wait",
 } as const;
 export type ActionName = (typeof Actions)[keyof typeof Actions];
 
@@ -2384,6 +2639,7 @@ export const LongActions: readonly ActionName[] = [
   "studio:media_peaks_thumbs",
   "studio:timeline_render",
   "studio:timeline_export_nle",
+  "studio:queue_wait",
 ];
 
 export interface ActionMap {
@@ -2402,6 +2658,7 @@ export interface ActionMap {
   "workflow:specs": { payload: Empty; result: WorkflowSpecsResult };
   "workflow:run_node": { payload: WorkflowRunNodePayload; result: WorkflowRunNodeResult };
   "workflow:run_graph": { payload: WorkflowRunGraphPayload; result: WorkflowRunGraphResult };
+  "workflow:templates": { payload: Empty; result: WorkflowTemplatesResult };
   "agent:list": { payload: Empty; result: AgentListResult };
   "agent:probe": { payload: AgentProviderIDPayload; result: AgentProviderInfo };
   "agent:set_path": { payload: AgentSetPathPayload; result: AgentProviderInfo };
@@ -2491,6 +2748,12 @@ export interface ActionMap {
   "studio:timeline_export_nle": { payload: StudioTimelineExportNLEPayload; result: ExportNLEDraftOutput };
   "studio:open_export_folder": { payload: StudioOpenExportFolderPayload; result: Empty };
   "studio:sync_workspace": { payload: StudioSyncWorkspacePayload; result: StudioSyncWorkspaceResult };
+  "studio:workflow_plan": { payload: StudioWorkflowPlanPayload; result: StudioWorkflowPlanResult };
+  "studio:shots_batch_upsert": { payload: StudioShotsBatchUpsertPayload; result: StudioShotListResult };
+  "studio:asset_rename": { payload: StudioAssetRenamePayload; result: StudioAssetRefactorResult };
+  "studio:asset_merge": { payload: StudioAssetMergePayload; result: StudioAssetRefactorResult };
+  "studio:inspect_shots": { payload: StudioInspectShotsPayload; result: StudioInspectShotsResult };
+  "studio:queue_wait": { payload: StudioQueueWaitPayload; result: StudioQueueWaitResult };
 }
 
 /** Built-in workflow node types (contracts.Nodes). Settings come from workflow:specs. */
@@ -2524,6 +2787,7 @@ export const NodeTypes = {
   MEDIA_PEAKS_THUMBS: "tool.media_peaks_thumbs",
   RENDER_TIMELINE: "tool.render_timeline",
   EXPORT_NLE_DRAFT: "tool.export_nle_draft",
+  VIDEO_CONTACT_SHEET: "tool.video_contact_sheet",
 } as const;
 export type NodeType = (typeof NodeTypes)[keyof typeof NodeTypes];
 
@@ -2557,6 +2821,7 @@ export interface NodeMap {
   "tool.media_peaks_thumbs": { input: MediaPeaksThumbsInput; output: MediaPeaksThumbsOutput };
   "tool.render_timeline": { input: RenderTimelineInput; output: RenderTimelineOutput };
   "tool.export_nle_draft": { input: ExportNLEDraftInput; output: ExportNLEDraftOutput };
+  "tool.video_contact_sheet": { input: VideoContactSheetInput; output: VideoContactSheetOutput };
 }
 
 export const Events = {

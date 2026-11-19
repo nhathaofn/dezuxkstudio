@@ -92,6 +92,8 @@ func (c *Config) Validate() error {
 			"studio.queue_poll_lease_min":           c.Studio.QueuePollLeaseMin,
 			"studio.queue_poll_backoff_max":         c.Studio.QueuePollBackoffMax,
 			"studio.queue_max_poll_age":             c.Studio.QueueMaxPollAge,
+			"studio.queue_wait_max_duration":        c.Studio.QueueWaitMaxDuration,
+			"studio.queue_wait_poll_interval":       c.Studio.QueueWaitPollInterval,
 			"network.idle_conn_timeout":             c.Network.IdleConnTimeout,
 			"agent.turn_timeout":                    c.Agent.TurnTimeout,
 			"agent.initialize_timeout":              c.Agent.InitializeTimeout,
@@ -105,50 +107,56 @@ func (c *Config) Validate() error {
 			"agent.approval_ttl":                    c.Agent.ApprovalTTL,
 		})
 		positiveInts(add, map[string]int{
-			"providers.check_concurrency":             c.Providers.CheckConcurrency,
-			"providers.default_max_workers":           c.Providers.DefaultMaxWorkers,
-			"realtime.max_concurrent_actions":         c.Realtime.MaxConcurrentActions,
-			"realtime.client_buffer_size":             c.Realtime.ClientBufferSize,
-			"storage.backups_to_keep":                 c.Storage.BackupsToKeep,
-			"diagnostics.keep":                        c.Diagnostics.Keep,
-			"network.max_idle_conns":                  c.Network.MaxIdleConns,
-			"network.max_idle_conns_per_host":         c.Network.MaxIdleConnsPerHost,
-			"agent.history_limit":                     c.Agent.HistoryLimit,
-			"agent.max_pending_approvals":             c.Agent.MaxPendingApprovals,
-			"agent.max_approval_continuations":        c.Agent.MaxApprovalContinuations,
-			"agent.max_concurrent_subagents":          c.Agent.MaxConcurrentSubagents,
-			"mediagen.text_max_tokens":                c.MediaGen.TextMaxTokens,
-			"media.library_max_items":                 c.Media.LibraryMaxItems,
-			"media.registered_roots_max":              c.Media.RegisteredRootsMax,
-			"watermark.max_workers":                   c.Watermark.MaxWorkers,
-			"watermark.decode_concurrency":            c.Watermark.DecodeConcurrency,
-			"watermark.video_default_crop_px":         c.Watermark.VideoDefaultCropPx,
-			"studio.default_fps":                      c.Studio.DefaultFPS,
-			"studio.ffmpeg_audio_sample_rate":         c.Studio.FFmpegAudioSampleRate,
-			"studio.max_video_dimension":              c.Studio.MaxVideoDimension,
-			"studio.default_shot_duration_sec":        c.Studio.DefaultShotDurationSec,
-			"studio.max_shot_duration_sec":            c.Studio.MaxShotDurationSec,
-			"studio.grid_split_max_count":             c.Studio.GridSplitMaxCount,
-			"studio.grid_split_max_margin_px":         c.Studio.GridSplitMaxMarginPx,
-			"studio.grid_split_max_gutter_px":         c.Studio.GridSplitMaxGutterPx,
-			"studio.extract_frame_default_count":      c.Studio.ExtractFrameDefaultCount,
-			"studio.extract_frame_max_count":          c.Studio.ExtractFrameMaxCount,
-			"studio.qc_sample_frame_default":          c.Studio.QCSampleFrameDefault,
-			"studio.qc_sample_frame_max":              c.Studio.QCSampleFrameMax,
-			"studio.qc_max_reference_images":          c.Studio.QCMaxReferenceImages,
-			"studio.lipsync_max_face_index":           c.Studio.LipSyncMaxFaceIndex,
-			"studio.preflight_max_items":              c.Studio.PreflightMaxItems,
-			"studio.preflight_large_batch_warn_count": c.Studio.PreflightLargeBatchWarnCount,
-			"studio.default_list_limit":               c.Studio.DefaultListLimit,
-			"studio.max_concurrent_batch":             c.Studio.MaxConcurrentBatch,
-			"studio.queue_workers":                    c.Studio.QueueWorkers,
-			"studio.queue_max_attempts":               c.Studio.QueueMaxAttempts,
-			"studio.queue_max_poll_errors":            c.Studio.QueueMaxPollErrors,
-			"studio.timeline_thumb_height":            c.Studio.TimelineThumbHeight,
-			"studio.timeline_max_strip_thumbs":        c.Studio.TimelineMaxStripThumbs,
-			"studio.timeline_wave_sample_rate":        c.Studio.TimelineWaveSampleRate,
-			"studio.timeline_wave_block_samples":      c.Studio.TimelineWaveBlockSamples,
-			"studio.timeline_revision_limit":          c.Studio.TimelineRevisionLimit,
+			"providers.check_concurrency":              c.Providers.CheckConcurrency,
+			"providers.default_max_workers":            c.Providers.DefaultMaxWorkers,
+			"realtime.max_concurrent_actions":          c.Realtime.MaxConcurrentActions,
+			"realtime.client_buffer_size":              c.Realtime.ClientBufferSize,
+			"storage.backups_to_keep":                  c.Storage.BackupsToKeep,
+			"diagnostics.keep":                         c.Diagnostics.Keep,
+			"network.max_idle_conns":                   c.Network.MaxIdleConns,
+			"network.max_idle_conns_per_host":          c.Network.MaxIdleConnsPerHost,
+			"agent.history_limit":                      c.Agent.HistoryLimit,
+			"agent.max_pending_approvals":              c.Agent.MaxPendingApprovals,
+			"agent.max_approval_continuations":         c.Agent.MaxApprovalContinuations,
+			"agent.max_concurrent_subagents":           c.Agent.MaxConcurrentSubagents,
+			"mediagen.text_max_tokens":                 c.MediaGen.TextMaxTokens,
+			"media.library_max_items":                  c.Media.LibraryMaxItems,
+			"media.registered_roots_max":               c.Media.RegisteredRootsMax,
+			"watermark.max_workers":                    c.Watermark.MaxWorkers,
+			"watermark.decode_concurrency":             c.Watermark.DecodeConcurrency,
+			"watermark.video_default_crop_px":          c.Watermark.VideoDefaultCropPx,
+			"studio.default_fps":                       c.Studio.DefaultFPS,
+			"studio.ffmpeg_audio_sample_rate":          c.Studio.FFmpegAudioSampleRate,
+			"studio.max_video_dimension":               c.Studio.MaxVideoDimension,
+			"studio.default_shot_duration_sec":         c.Studio.DefaultShotDurationSec,
+			"studio.max_shot_duration_sec":             c.Studio.MaxShotDurationSec,
+			"studio.grid_split_max_count":              c.Studio.GridSplitMaxCount,
+			"studio.grid_split_max_margin_px":          c.Studio.GridSplitMaxMarginPx,
+			"studio.grid_split_max_gutter_px":          c.Studio.GridSplitMaxGutterPx,
+			"studio.extract_frame_default_count":       c.Studio.ExtractFrameDefaultCount,
+			"studio.extract_frame_max_count":           c.Studio.ExtractFrameMaxCount,
+			"studio.qc_sample_frame_default":           c.Studio.QCSampleFrameDefault,
+			"studio.qc_sample_frame_max":               c.Studio.QCSampleFrameMax,
+			"studio.qc_max_reference_images":           c.Studio.QCMaxReferenceImages,
+			"studio.lipsync_max_face_index":            c.Studio.LipSyncMaxFaceIndex,
+			"studio.preflight_max_items":               c.Studio.PreflightMaxItems,
+			"studio.preflight_large_batch_warn_count":  c.Studio.PreflightLargeBatchWarnCount,
+			"studio.default_list_limit":                c.Studio.DefaultListLimit,
+			"studio.max_concurrent_batch":              c.Studio.MaxConcurrentBatch,
+			"studio.queue_workers":                     c.Studio.QueueWorkers,
+			"studio.queue_max_attempts":                c.Studio.QueueMaxAttempts,
+			"studio.queue_max_poll_errors":             c.Studio.QueueMaxPollErrors,
+			"studio.timeline_thumb_height":             c.Studio.TimelineThumbHeight,
+			"studio.timeline_max_strip_thumbs":         c.Studio.TimelineMaxStripThumbs,
+			"studio.timeline_wave_sample_rate":         c.Studio.TimelineWaveSampleRate,
+			"studio.timeline_wave_block_samples":       c.Studio.TimelineWaveBlockSamples,
+			"studio.timeline_revision_limit":           c.Studio.TimelineRevisionLimit,
+			"studio.long_script_chunk_chars":           c.Studio.LongScriptChunkChars,
+			"studio.max_batch_shots_upsert":            c.Studio.MaxBatchShotsUpsert,
+			"studio.contact_sheet_frames_per_sheet":    c.Studio.ContactSheetFramesPerSheet,
+			"studio.contact_sheet_max_frames_per_shot": c.Studio.ContactSheetMaxFramesPerShot,
+			"studio.contact_sheet_max_edge_px":         c.Studio.ContactSheetMaxEdgePx,
+			"studio.contact_sheet_jpeg_quality":        c.Studio.ContactSheetJPEGQuality,
 		})
 		switch strings.ToLower(strings.TrimSpace(c.Agent.Mode)) {
 		case "", "assistant":
@@ -381,6 +389,38 @@ func (c *Config) Validate() error {
 		}
 		if c.Studio.TimelinePeakBins < 16 || c.Studio.TimelinePeakBins > 4096 {
 			add("studio.timeline_peak_bins must be between 16 and 4096, got %d", c.Studio.TimelinePeakBins)
+		}
+		if c.Studio.ContactSheetMaxEdgePx < 64 {
+			add("studio.contact_sheet_max_edge_px must be >= 64, got %d", c.Studio.ContactSheetMaxEdgePx)
+		}
+		if c.Studio.ContactSheetJPEGQuality < 1 || c.Studio.ContactSheetJPEGQuality > 100 {
+			add("studio.contact_sheet_jpeg_quality must be between 1 and 100, got %d", c.Studio.ContactSheetJPEGQuality)
+		}
+		if math.IsNaN(c.Studio.SignalBlackMinSec) || math.IsInf(c.Studio.SignalBlackMinSec, 0) || c.Studio.SignalBlackMinSec <= 0 {
+			add("studio.signal_black_min_sec must be > 0, got %v", c.Studio.SignalBlackMinSec)
+		}
+		if math.IsNaN(c.Studio.SignalBlackPixelThresh) || math.IsInf(c.Studio.SignalBlackPixelThresh, 0) || c.Studio.SignalBlackPixelThresh <= 0 || c.Studio.SignalBlackPixelThresh > 1 {
+			add("studio.signal_black_pixel_thresh must be in (0, 1], got %v", c.Studio.SignalBlackPixelThresh)
+		}
+		if math.IsNaN(c.Studio.SignalFreezeMinSec) || math.IsInf(c.Studio.SignalFreezeMinSec, 0) || c.Studio.SignalFreezeMinSec <= 0 {
+			add("studio.signal_freeze_min_sec must be > 0, got %v", c.Studio.SignalFreezeMinSec)
+		}
+		if strings.TrimSpace(c.Studio.SignalFreezeNoiseDB) == "" {
+			add("studio.signal_freeze_noise_db must not be empty")
+		}
+		if math.IsNaN(c.Studio.SignalSceneCutThresh) || math.IsInf(c.Studio.SignalSceneCutThresh, 0) || c.Studio.SignalSceneCutThresh <= 0 || c.Studio.SignalSceneCutThresh >= 1 {
+			add("studio.signal_scene_cut_thresh must be in (0, 1), got %v", c.Studio.SignalSceneCutThresh)
+		}
+		switch strings.ToLower(strings.TrimSpace(c.Studio.TimelineOverrunPolicy)) {
+		case "warn", "freeze_last_frame", "speed_fit":
+		default:
+			add("studio.timeline_overrun_policy must be warn, freeze_last_frame, or speed_fit, got %q", c.Studio.TimelineOverrunPolicy)
+		}
+		if math.IsNaN(c.Studio.TimelineMaxSpeedFitRatio) || math.IsInf(c.Studio.TimelineMaxSpeedFitRatio, 0) || c.Studio.TimelineMaxSpeedFitRatio < 1.0 || c.Studio.TimelineMaxSpeedFitRatio > 4.0 {
+			add("studio.timeline_max_speed_fit_ratio must be between 1.0 and 4.0, got %v", c.Studio.TimelineMaxSpeedFitRatio)
+		}
+		if c.Studio.QueueWaitPollInterval > c.Studio.QueueWaitMaxDuration {
+			add("studio.queue_wait_poll_interval must be <= studio.queue_wait_max_duration")
 		}
 	}
 	if len(errs) > 0 {

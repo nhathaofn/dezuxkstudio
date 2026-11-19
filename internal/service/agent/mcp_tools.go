@@ -168,9 +168,11 @@ type mediaRegisterInputToolInput struct {
 }
 
 type subagentRunToolInput struct {
-	Name    string `json:"name" jsonschema:"Subagent slug listed in <subagents>"`
-	Task    string `json:"task" jsonschema:"Focused task brief for the subagent to execute in its isolated context"`
-	Context string `json:"context,omitempty" jsonschema:"Optional background context or constraints to pass to the subagent"`
+	Name     string `json:"name" jsonschema:"Subagent slug listed in <subagents>"`
+	Task     string `json:"task" jsonschema:"Focused task brief for the subagent to execute in its isolated context"`
+	Context  string `json:"context,omitempty" jsonschema:"Optional background context or constraints to pass to the subagent"`
+	Provider string `json:"provider,omitempty" jsonschema:"Optional explicit provider override (claude, codex, antigravity) validated against active auth"`
+	Model    string `json:"model,omitempty" jsonschema:"Optional explicit model override for the target provider"`
 }
 
 // mcpServerInstructions is the short MCP-level reminder (the full rules are the provider's system prompt).
@@ -299,6 +301,19 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 				return mcpError("workflow service is unavailable")
 			}
 			return mcpJSON(map[string]any{"specs": s.workflow.Specs(ctx)})
+		})
+
+	addMCPTool(server, "workflow_list_templates",
+		"Canonical validated multi-node Studio workflow DAG templates ready to adapt and run.",
+		func(_ context.Context, _ struct{}) (*mcp.CallToolResult, any, error) {
+			if s.workflow == nil {
+				return mcpError("workflow service is unavailable")
+			}
+			lister, ok := s.workflow.(WorkflowTemplateLister)
+			if !ok {
+				return mcpError("workflow templates are unavailable")
+			}
+			return mcpJSON(contracts.WorkflowTemplatesResult{Templates: lister.Templates()})
 		})
 
 	addMCPTool(server, "workflow_run_node",
@@ -725,7 +740,7 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 		})
 
 	addMCPTool(server, "subagent_run",
-		"Delegate a focused sub-task to a specialized isolated subagent worker (supports parallel calls).",
+		"Delegate a focused sub-task to a specialized isolated subagent worker (supports parallel calls and optional provider/model overrides).",
 		func(ctx context.Context, in subagentRunToolInput) (*mcp.CallToolResult, any, error) {
 			if _, isSub := subagentFromContext(ctx); isSub {
 				return mcpError("subagent_run cannot be invoked from inside a subagent")
