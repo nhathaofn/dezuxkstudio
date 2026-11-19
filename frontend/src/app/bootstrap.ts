@@ -79,9 +79,7 @@ export function bootstrap(): void {
 
   let firstConnect = true;
   rtClient.onStatus((status) => {
-    useConnectionStore.setState(
-      status === "connected" ? { status } : { status, latencyMs: null }
-    );
+    useConnectionStore.setState(status === "connected" ? { status } : { status, latencyMs: null });
     uiLog.info(`connection: ${status}`);
     if (status !== "connected") {
       useStudioStore.getState().clearTransientState();

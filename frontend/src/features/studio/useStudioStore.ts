@@ -2,7 +2,14 @@ import { create } from "zustand";
 import { createProjectSlice } from "./projectSlice";
 import { createQueueSlice } from "./queueSlice";
 import { createStageSlice } from "./stageSlice";
-import { targetVersionKey, type StudioState, type StudioVersionModalTarget, type StudioGridModalTarget, type StudioMaskModalTarget, type StudioPendingPreflight } from "./storeTypes";
+import {
+  targetVersionKey,
+  type StudioState,
+  type StudioVersionModalTarget,
+  type StudioGridModalTarget,
+  type StudioMaskModalTarget,
+  type StudioPendingPreflight,
+} from "./storeTypes";
 import { createTimelineSlice } from "./timelineSlice";
 import { createVersionsSlice } from "./versionsSlice";
 

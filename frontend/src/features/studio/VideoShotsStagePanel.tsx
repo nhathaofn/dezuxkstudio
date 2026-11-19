@@ -1,5 +1,14 @@
 import React, { useState } from "react";
-import { Bot, Film, Image as ImageIcon, Layers, Loader2, Play, Speech, Volume2 } from "lucide-react";
+import {
+  Bot,
+  Film,
+  Image as ImageIcon,
+  Layers,
+  Loader2,
+  Play,
+  Speech,
+  Volume2,
+} from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Switch } from "../../components/ui/Switch";

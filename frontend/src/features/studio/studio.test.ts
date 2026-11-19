@@ -13,11 +13,7 @@ import { ActionError, rtClient } from "../../lib/rtClient";
 import { usePreferencesStore } from "../preferences/usePreferencesStore";
 import { useNodeSpecsStore } from "../workflow/useNodeSpecs";
 import { StudioView } from "./StudioView";
-import {
-  CreateProjectDialog,
-  ScriptStagePanel,
-  VideoShotsStagePanel,
-} from "./StudioStages";
+import { CreateProjectDialog, ScriptStagePanel, VideoShotsStagePanel } from "./StudioStages";
 import { TimelineWorkspace } from "./timeline/TimelineWorkspace";
 import { targetVersionKey, useStudioStore } from "./useStudioStore";
 

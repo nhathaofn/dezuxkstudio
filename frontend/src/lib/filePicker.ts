@@ -43,7 +43,10 @@ export async function pickMediaFiles(options: PickMediaOptions = {}): Promise<Pi
         };
       }
 
-      if ((kind === "executable" || kind === "video" || kind === "audio") && bridge.BrowseExecutable) {
+      if (
+        (kind === "executable" || kind === "video" || kind === "audio") &&
+        bridge.BrowseExecutable
+      ) {
         const picked = await bridge.BrowseExecutable(title);
         return {
           paths: picked ? [picked] : [],

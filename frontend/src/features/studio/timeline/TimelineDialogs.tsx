@@ -368,8 +368,7 @@ export const AddClipDialog: React.FC<AddClipDialogProps> = ({
           <Button
             variant="primary"
             disabled={
-              busy ||
-              !(customPath.trim() || shotMediaOptions.find((o) => o.key === shotKey)?.path)
+              busy || !(customPath.trim() || shotMediaOptions.find((o) => o.key === shotKey)?.path)
             }
             onClick={(e) => onSubmit(e)}
           >

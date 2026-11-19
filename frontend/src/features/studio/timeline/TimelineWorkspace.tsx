@@ -449,7 +449,13 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
   };
 
   const shotMediaOptions = useMemo(() => {
-    const items: Array<{ key: string; label: string; path: string; assetId?: string; durationMs: number }> = [];
+    const items: Array<{
+      key: string;
+      label: string;
+      path: string;
+      assetId?: string;
+      durationMs: number;
+    }> = [];
     for (const sh of detail.shots) {
       if (sh.video_path) {
         items.push({

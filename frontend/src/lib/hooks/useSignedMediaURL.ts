@@ -61,6 +61,7 @@ export class SignedMediaSession {
   private disposed: boolean = false;
   private inFlightPromise: Promise<string | null> | null = null;
   private inFlightKey: string | null = null;
+  private inFlightSeq: number = 0;
   private attachedMedia: HTMLMediaElement | null = null;
   private pendingLoadedCleanup: (() => void) | null = null;
   private mediaErrorRetries: number = 0;
@@ -195,8 +196,8 @@ export class SignedMediaSession {
 
     this.updateState({ loading: true, error: null });
 
-    let promise!: Promise<string | null>;
-    promise = (async () => {
+    const reqSeq = ++this.inFlightSeq;
+    const promise: Promise<string | null> = (async () => {
       try {
         const result = await signMediaURL({
           asset_id: requestedId,
@@ -290,7 +291,7 @@ export class SignedMediaSession {
         this.updateState({ loading: false, error: errObj });
         return null;
       } finally {
-        if (this.inFlightPromise === promise) {
+        if (this.inFlightSeq === reqSeq) {
           this.inFlightPromise = null;
           this.inFlightKey = null;
         }

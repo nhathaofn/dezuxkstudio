@@ -9,8 +9,12 @@ import { useSignedMediaURL } from "../../lib/hooks/useSignedMediaURL";
 import { useT } from "../../lib/i18n";
 import { usePreferencesStore } from "../preferences/usePreferencesStore";
 import { findParam, useNodeSpec } from "../workflow/useNodeSpecs";
-import { buildMaskDataURLFromStrokes, strokeMaskPaths, type MaskStroke } from "./phase2Helpers";
-import { clampGridBound } from "./StudioGridSplitterModal";
+import {
+  buildMaskDataURLFromStrokes,
+  clampGridBound,
+  strokeMaskPaths,
+  type MaskStroke,
+} from "./phase2Helpers";
 import { useStudioStore, type StudioMaskModalTarget } from "./useStudioStore";
 
 export const StudioMaskEditorModal: React.FC = () => {
@@ -58,14 +62,18 @@ const StudioMaskEditorBody: React.FC<{ target: StudioMaskModalTarget }> = ({ tar
   const resolveBrushColor = useCallback(() => {
     const cvs = activeCanvasRef.current ?? committedCanvasRef.current;
     if (typeof window !== "undefined" && cvs) {
-      const tokenColor = getComputedStyle(cvs).getPropertyValue("--studio-mask-brush-stroke").trim();
+      const tokenColor = getComputedStyle(cvs)
+        .getPropertyValue("--studio-mask-brush-stroke")
+        .trim();
       if (tokenColor) {
         brushColorRef.current = tokenColor;
         return tokenColor;
       }
     }
     if (typeof document !== "undefined") {
-      const fallback = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
+      const fallback = getComputedStyle(document.documentElement)
+        .getPropertyValue("--accent")
+        .trim();
       brushColorRef.current = fallback;
       return fallback;
     }

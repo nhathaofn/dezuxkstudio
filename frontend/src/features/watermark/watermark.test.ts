@@ -814,7 +814,9 @@ describe("Phase 1 Wave B Watermark Policy & Compare UX Enhancement", () => {
   });
 
   it("tracks duplicate queued file names distinctly and revokes removed index without collision", () => {
-    const createSpy = vi.spyOn(URL, "createObjectURL").mockImplementation(() => `blob:mock-${Math.random()}`);
+    const createSpy = vi
+      .spyOn(URL, "createObjectURL")
+      .mockImplementation(() => `blob:mock-${Math.random()}`);
     const revokeSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
     try {
       const f1 = new File(["one"], "dup.png", { type: "image/png" });
@@ -850,7 +852,7 @@ describe("Phase 1 Wave B Watermark Policy & Compare UX Enhancement", () => {
     });
     const html = renderToStaticMarkup(React.createElement(WatermarkResultsCard));
     // total=5, detected=2, failed=2 => cleanCount=1 (not 3)
-    expect(html).toContain('>1<');
+    expect(html).toContain(">1<");
   });
 
   it("supports video watermark removal mode, delogo/crop params, and invokes tool.video_watermark_remove", async () => {

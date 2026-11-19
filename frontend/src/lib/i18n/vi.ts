@@ -374,10 +374,12 @@ export const vi: Record<MessageKey, string> = {
   "tools.location": "Vị trí",
   "tools.resumed": "Tiếp tục tải",
   "tools.resumedFrom": "Tiếp tục từ {mb} MB",
-  "tools.pathWarning.empty": "Đường dẫn không được để trống. Nhập đường dẫn file thực thi hoặc nhấn Đặt lại.",
-  "tools.pathWarning.invalidChars": "Đường dẫn chứa ký tự không hợp lệ (< > \" | ? *).",
+  "tools.pathWarning.empty":
+    "Đường dẫn không được để trống. Nhập đường dẫn file thực thi hoặc nhấn Đặt lại.",
+  "tools.pathWarning.invalidChars": 'Đường dẫn chứa ký tự không hợp lệ (< > " | ? *).',
   "tools.pathWarning.expectedExe": "Cần chọn tệp thực thi hợp lệ ({executable}).",
-  "tools.pathWarning.invalidConfigured": "Đường dẫn tệp thực thi đã lưu không hợp lệ hoặc không thể chạy.",
+  "tools.pathWarning.invalidConfigured":
+    "Đường dẫn tệp thực thi đã lưu không hợp lệ hoặc không thể chạy.",
 
   "watermark.title": "Xóa Watermark",
   "watermark.card.input": "Nguồn & Cấu hình",
@@ -955,7 +957,7 @@ export const vi: Record<MessageKey, string> = {
   "media.empty.desc": "Các tệp tạo ra hoặc nhập vào sẽ xuất hiện tại đây.",
   "media.action.refresh": "Làm mới",
   "media.deleteConfirm.title": "Xóa tài sản Media",
-  "media.deleteConfirm.desc": "Gỡ bỏ \"{name}\" khỏi danh sách thư viện media?",
+  "media.deleteConfirm.desc": 'Gỡ bỏ "{name}" khỏi danh sách thư viện media?',
   "media.deleteConfirm.deleteDisk": "Đồng thời xóa tệp gốc trên ổ đĩa",
 
   "agent.connections.billing": "Tính phí",

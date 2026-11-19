@@ -1,11 +1,15 @@
 import React, { useEffect, useRef } from "react";
 import { appConfig } from "../../../config/appConfig";
 
-
 export const WaveformCanvas: React.FC<{ peaks: number[] }> = React.memo(({ peaks }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const { waveformWidthStepPx, waveformHeightPx, waveformBarMinHeightPx, waveformBarMaxHeightPx, waveformBarWidthPx } =
-    appConfig.studio.timeline;
+  const {
+    waveformWidthStepPx,
+    waveformHeightPx,
+    waveformBarMinHeightPx,
+    waveformBarMaxHeightPx,
+    waveformBarWidthPx,
+  } = appConfig.studio.timeline;
   const width = Math.max(1, peaks.length * waveformWidthStepPx);
   const height = waveformHeightPx;
 
@@ -25,7 +29,15 @@ export const WaveformCanvas: React.FC<{ peaks: number[] }> = React.memo(({ peaks
       const h = Math.max(waveformBarMinHeightPx, Math.round(peaks[idx] * waveformBarMaxHeightPx));
       ctx.fillRect(idx * waveformWidthStepPx, height - h, waveformBarWidthPx, h);
     }
-  }, [peaks, width, height, waveformWidthStepPx, waveformBarMinHeightPx, waveformBarMaxHeightPx, waveformBarWidthPx]);
+  }, [
+    peaks,
+    width,
+    height,
+    waveformWidthStepPx,
+    waveformBarMinHeightPx,
+    waveformBarMaxHeightPx,
+    waveformBarWidthPx,
+  ]);
 
   return (
     <canvas

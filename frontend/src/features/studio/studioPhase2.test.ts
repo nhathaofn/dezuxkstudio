@@ -936,7 +936,15 @@ describe("Studio Phase 2 ArcReel helpers, store & modals", () => {
         can_undo: true,
         can_redo: false,
         duration_ms: 4000,
-        timeline: { version: 1, fps: 24, width: 1280, height: 720, tracks: [], subtitles: [], markers: [] },
+        timeline: {
+          version: 1,
+          fps: 24,
+          width: 1280,
+          height: 720,
+          tracks: [],
+          subtitles: [],
+          markers: [],
+        },
         revisions: [],
         updated_at: 2000,
       },
@@ -950,7 +958,15 @@ describe("Studio Phase 2 ArcReel helpers, store & modals", () => {
       duration_ms: 1000,
       actor: "user",
       summary: "stale",
-      timeline: { version: 1, fps: 24, width: 1280, height: 720, tracks: [], subtitles: [], markers: [] },
+      timeline: {
+        version: 1,
+        fps: 24,
+        width: 1280,
+        height: 720,
+        tracks: [],
+        subtitles: [],
+        markers: [],
+      },
     });
     expect(useStudioStore.getState().timelineResult?.revision).toBe(5);
   });

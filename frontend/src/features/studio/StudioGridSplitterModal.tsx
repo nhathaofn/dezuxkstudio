@@ -8,20 +8,13 @@ import { NodeTypes, type StudioMediaTargetKind } from "../../contracts/generated
 import { useSignedMediaURL } from "../../lib/hooks/useSignedMediaURL";
 import { useT } from "../../lib/i18n";
 import { findParam, useNodeSpec } from "../workflow/useNodeSpecs";
-import { computeGridDividerPercents } from "./phase2Helpers";
+import { clampGridBound, computeGridDividerPercents } from "./phase2Helpers";
 import { targetVersionKey, useStudioStore, type StudioGridModalTarget } from "./useStudioStore";
 
 const equalGridWeights = (count: number) =>
   Array.from({ length: count }, () =>
     Math.round(appConfig.studio.gridSplitter.weightTotalPct / Math.max(1, count))
   );
-
-export const clampGridBound = (val: number, minVal?: number, maxVal?: number) => {
-  let out = val;
-  if (minVal !== undefined) out = Math.max(minVal, out);
-  if (maxVal !== undefined) out = Math.min(maxVal, out);
-  return out;
-};
 
 export const StudioGridSplitterModal: React.FC = () => {
   const gridSpec = useNodeSpec(NodeTypes.GRID_SPLIT);

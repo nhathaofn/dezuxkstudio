@@ -16,8 +16,7 @@ export function translate(
   vars?: Record<string, string | number>
 ): string {
   const cat = catalogs[lang];
-  const template =
-    cat && hasOwn(cat, key) ? cat[key] : hasOwn(en, key) ? en[key] : String(key);
+  const template = cat && hasOwn(cat, key) ? cat[key] : hasOwn(en, key) ? en[key] : String(key);
   if (!vars) return template;
   return template.replace(/\{(\w+)\}/g, (m, name: string) =>
     hasOwn(vars, name) ? String(vars[name]) : m

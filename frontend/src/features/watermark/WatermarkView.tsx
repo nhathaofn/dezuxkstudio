@@ -115,7 +115,7 @@ export const WatermarkView: React.FC = () => {
       : error
         ? `error: ${error.message}`
         : mediaKind === "video"
-          ? videoResult?.path ?? ""
+          ? (videoResult?.path ?? "")
           : summarizeResult(result),
   });
 
@@ -163,9 +163,7 @@ export const WatermarkView: React.FC = () => {
             ) : (
               <>
                 <Sparkles size={13} />
-                {mediaKind === "video"
-                  ? t("watermark.video.startBtn")
-                  : t("watermark.startBtn")}
+                {mediaKind === "video" ? t("watermark.video.startBtn") : t("watermark.startBtn")}
               </>
             )}
           </Button>

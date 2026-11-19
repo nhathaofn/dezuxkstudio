@@ -8,6 +8,13 @@ export const MASK_PRESERVE_COLOR = "#000000" as const;
 export const MASK_EDIT_COLOR = "#ffffff" as const;
 export const MASK_DOT_EPSILON = 0.01;
 
+export const clampGridBound = (val: number, minVal?: number, maxVal?: number): number => {
+  let out = val;
+  if (minVal !== undefined) out = Math.max(minVal, out);
+  if (maxVal !== undefined) out = Math.min(maxVal, out);
+  return out;
+};
+
 /** Normalize weights into 0..100 percentages matching backend splitAxisSpans logic. */
 export function computeGridDividerPercents(weights: number[]): number[] {
   const sum = weights.reduce((acc, w) => acc + (w > 0 ? w : 1), 0);

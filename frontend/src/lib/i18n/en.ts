@@ -372,10 +372,12 @@ export const en = {
   "tools.location": "Location",
   "tools.resumed": "Resumed",
   "tools.resumedFrom": "Resumed from {mb} MB",
-  "tools.pathWarning.empty": "Custom binary path cannot be empty. Enter an executable path or click Reset.",
-  "tools.pathWarning.invalidChars": "Path contains invalid characters (< > \" | ? *).",
+  "tools.pathWarning.empty":
+    "Custom binary path cannot be empty. Enter an executable path or click Reset.",
+  "tools.pathWarning.invalidChars": 'Path contains invalid characters (< > " | ? *).',
   "tools.pathWarning.expectedExe": "Expected an executable file ({executable}).",
-  "tools.pathWarning.invalidConfigured": "The configured custom executable path is invalid or not executable.",
+  "tools.pathWarning.invalidConfigured":
+    "The configured custom executable path is invalid or not executable.",
 
   "watermark.title": "Watermark Remover",
   "watermark.card.input": "Source & Config",
@@ -954,7 +956,7 @@ export const en = {
   "media.empty.desc": "Generated and imported media files will appear here.",
   "media.action.refresh": "Refresh",
   "media.deleteConfirm.title": "Delete Media Asset",
-  "media.deleteConfirm.desc": "Remove \"{name}\" from the media library registry?",
+  "media.deleteConfirm.desc": 'Remove "{name}" from the media library registry?',
   "media.deleteConfirm.deleteDisk": "Also delete underlying file from disk",
 
   "agent.connections.billing": "Billing",

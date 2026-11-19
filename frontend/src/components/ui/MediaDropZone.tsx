@@ -23,7 +23,9 @@ export interface MediaDropZoneProps {
   /** Whether the dropzone is disabled. */
   disabled?: boolean;
   /** Optional custom icon component to display. */
-  icon?: LucideIcon | React.ComponentType<{ size?: number; className?: string; style?: React.CSSProperties }>;
+  icon?:
+    | LucideIcon
+    | React.ComponentType<{ size?: number; className?: string; style?: React.CSSProperties }>;
   /** Additional custom class names for the container. */
   className?: string;
   /** Number of currently selected items to reflect in the UI. */
@@ -116,9 +118,8 @@ export const MediaDropZone = forwardRef<MediaDropZoneHandle, MediaDropZoneProps>
 
       const unsub = subscribeFileDrop((x, y, paths) => {
         setIsDragging(false);
-        const target = typeof document.elementFromPoint === "function"
-          ? document.elementFromPoint(x, y)
-          : null;
+        const target =
+          typeof document.elementFromPoint === "function" ? document.elementFromPoint(x, y) : null;
         const rect = containerRef.current?.getBoundingClientRect();
         const isInsideRect =
           rect !== undefined &&

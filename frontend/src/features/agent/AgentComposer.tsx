@@ -1,11 +1,7 @@
 import React from "react";
 import { Check, Send, ShieldAlert, Sparkles, Square, X } from "lucide-react";
 import { Button } from "../../components/ui/Button";
-import type {
-  AgentApprovalRequest,
-  AgentProviderInfo,
-  SkillInfo,
-} from "../../contracts/generated";
+import type { AgentApprovalRequest, AgentProviderInfo, SkillInfo } from "../../contracts/generated";
 import { useT } from "../../lib/i18n";
 import { useAgentStore } from "./useAgentStore";
 
@@ -129,11 +125,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
                   <X size={12} />
                   {t("agent.chat.reject")}
                 </Button>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={() => onResolveApproval(ap.id, true)}
-                >
+                <Button variant="primary" size="sm" onClick={() => onResolveApproval(ap.id, true)}>
                   <Check size={12} />
                   {t("agent.chat.approve")}
                 </Button>

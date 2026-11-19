@@ -61,7 +61,8 @@ export const SystemCard: React.FC = () => {
             <dd>
               {effectiveBuild ? (
                 <>
-                  {effectiveBuild.version} <span className="muted-text">({effectiveBuild.commit})</span>
+                  {effectiveBuild.version}{" "}
+                  <span className="muted-text">({effectiveBuild.commit})</span>
                 </>
               ) : (
                 <span className="muted-text">—</span>

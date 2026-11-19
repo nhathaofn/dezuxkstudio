@@ -80,7 +80,10 @@ export const AudioWaveformPlayer: React.FC<{ src: string; duration?: number }> =
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(initialDuration ?? 0);
   const [isMuted, setIsMuted] = useState(false);
-  const [bars, setBars] = useState<readonly number[]>(NEUTRAL_PROGRESS_BARS);
+  const [decodedWave, setDecodedWave] = useState<{ src: string; bars: readonly number[] } | null>(
+    null
+  );
+  const bars = decodedWave?.src === src ? decodedWave.bars : NEUTRAL_PROGRESS_BARS;
 
   useEffect(() => {
     const el = audioRef.current;
@@ -103,7 +106,6 @@ export const AudioWaveformPlayer: React.FC<{ src: string; duration?: number }> =
           (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
         : undefined;
     if (!src || !AudioCtx || typeof fetch !== "function") {
-      setBars(NEUTRAL_PROGRESS_BARS);
       return;
     }
     const controller = new AbortController();
@@ -133,7 +135,10 @@ export const AudioWaveformPlayer: React.FC<{ src: string; duration?: number }> =
             if (rms > peakMax) peakMax = rms;
             sampled.push(rms);
           }
-          setBars(sampled.map((v) => Math.max(18, Math.min(100, Math.round((v / peakMax) * 100)))));
+          setDecodedWave({
+            src,
+            bars: sampled.map((v) => Math.max(18, Math.min(100, Math.round((v / peakMax) * 100)))),
+          });
         } finally {
           if (!closed) {
             closed = true;
@@ -146,7 +151,6 @@ export const AudioWaveformPlayer: React.FC<{ src: string; duration?: number }> =
     })();
     return () => {
       controller.abort();
-      setBars(NEUTRAL_PROGRESS_BARS);
     };
   }, [src]);
 

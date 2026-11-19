@@ -42,7 +42,9 @@ import type {
 } from "../../contracts/generated";
 import type { ActionError } from "../../lib/rtClient";
 
-export type StudioSet = (partial: Partial<StudioState> | ((s: StudioState) => Partial<StudioState>)) => void;
+export type StudioSet = (
+  partial: Partial<StudioState> | ((s: StudioState) => Partial<StudioState>)
+) => void;
 export type StudioGet = () => StudioState;
 
 export interface StudioState {

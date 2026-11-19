@@ -110,8 +110,12 @@ const AgentChatPane: React.FC<AgentChatTabProps> = ({ connectedToCore }) => {
   useEffect(() => {
     if (!stickRef.current || messages.length === 0) return;
     if (typeof requestAnimationFrame !== "function") {
-      scrollToBottom();
-      return;
+      const timer = setTimeout(() => {
+        if (stickRef.current) {
+          scrollToBottom();
+        }
+      }, 0);
+      return () => clearTimeout(timer);
     }
     if (scrollRafRef.current !== null) return;
     scrollRafRef.current = requestAnimationFrame(() => {
@@ -207,7 +211,6 @@ const AgentChatPane: React.FC<AgentChatTabProps> = ({ connectedToCore }) => {
 
   const lastMsg = messages[messages.length - 1];
   const canRetry = !sending && !!activeProvider && !wrongProvider && lastMsg?.role === "error";
-
 
   return (
     <div className="agent-chat-tab">

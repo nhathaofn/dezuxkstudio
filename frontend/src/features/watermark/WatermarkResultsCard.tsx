@@ -48,38 +48,37 @@ interface PreviewState {
 }
 
 function usePreviewUrl(path: string): PreviewState {
-  const [url, setUrl] = useState<string | null>(null);
-  const [loading, setLoading] = useState<boolean>(Boolean(path));
-  const [error, setError] = useState<boolean>(false);
   const [attempt, setAttempt] = useState(0);
+  const [result, setResult] = useState<{
+    path: string;
+    attempt: number;
+    url: string | null;
+    error: boolean;
+  }>({ path: "", attempt: 0, url: null, error: false });
 
   const retry = useCallback(() => {
     setAttempt((n) => n + 1);
   }, []);
 
+  const canLoad = Boolean(
+    path && typeof URL !== "undefined" && typeof URL.createObjectURL === "function"
+  );
+
   useEffect(() => {
-    if (!path || typeof URL === "undefined" || typeof URL.createObjectURL !== "function") {
-      setLoading(false);
-      setError(false);
-      setUrl(null);
+    if (!canLoad) {
       return;
     }
     let cancelled = false;
     let activeObjUrl: string | null = null;
-    setLoading(true);
-    setError(false);
     void downloadMediaBlob(path)
       .then(({ blob }) => {
         if (cancelled) return;
         activeObjUrl = URL.createObjectURL(blob);
-        setUrl(activeObjUrl);
-        setLoading(false);
+        setResult({ path, attempt, url: activeObjUrl, error: false });
       })
       .catch(() => {
         if (!cancelled) {
-          setUrl(null);
-          setLoading(false);
-          setError(true);
+          setResult({ path, attempt, url: null, error: true });
         }
       });
     return () => {
@@ -88,10 +87,19 @@ function usePreviewUrl(path: string): PreviewState {
         safeRevokeObjectURL(activeObjUrl);
         activeObjUrl = null;
       }
-      setUrl(null);
     };
-  }, [path, attempt]);
-  return { url, loading, error, retry };
+  }, [canLoad, path, attempt]);
+
+  if (!canLoad) {
+    return { url: null, loading: false, error: false, retry };
+  }
+  const settled = result.path === path && result.attempt === attempt;
+  return {
+    url: settled ? result.url : null,
+    loading: !settled,
+    error: settled ? result.error : false,
+    retry,
+  };
 }
 
 const ComparisonViewer: React.FC<{
@@ -572,7 +580,11 @@ export const WatermarkResultsCard: React.FC = () => {
                       if (!el) return;
                       // Clean unmount handled via React node teardown & store revokeTrackedObjectURL
                     }}
-                    style={{ maxWidth: "100%", maxHeight: "220px", borderRadius: "var(--radius-sm)" }}
+                    style={{
+                      maxWidth: "100%",
+                      maxHeight: "220px",
+                      borderRadius: "var(--radius-sm)",
+                    }}
                   />
                 </div>
               )}
@@ -626,7 +638,10 @@ export const WatermarkResultsCard: React.FC = () => {
               />
               {queuedVideoPreviewUrl && (
                 <details>
-                  <summary className="muted-text" style={{ cursor: "pointer", fontSize: "var(--text-xs)" }}>
+                  <summary
+                    className="muted-text"
+                    style={{ cursor: "pointer", fontSize: "var(--text-xs)" }}
+                  >
                     {t("watermark.video.beforeTitle")}
                   </summary>
                   <video
@@ -643,251 +658,255 @@ export const WatermarkResultsCard: React.FC = () => {
       ) : (
         <>
           {/* State 1: Nothing selected yet */}
-      {totalFiles === 0 && !result && (
-        <div className="empty-state">
-          <FileImage size={34} className="empty-state__icon" />
-          <div className="empty-state__title">{t("watermark.emptyQueue")}</div>
-          <div className="empty-state__desc">{t("watermark.emptyQueueDesc")}</div>
-        </div>
-      )}
-
-      {/* State 2: Files queued, not yet processed */}
-      {totalFiles > 0 && !result && !loading && (
-        <div className="watermark-results-body">
-          <div className="muted-text">{t("watermark.readyFiles", { count: totalFiles })}</div>
-          <div className="watermark-scroll-list">
-            {currentFilesList.map((p, idx) => (
-              <div key={`${p}-${idx}`} className="watermark-file-row">
-                <span className="watermark-file-path" title={p}>
-                  {p}
-                </span>
-                <div className="watermark-file-actions">
-                  <Badge>{t("watermark.status.ready")}</Badge>
-                  <button
-                    type="button"
-                    className="watermark-icon-btn"
-                    title={t("watermark.removeFile")}
-                    aria-label={t("watermark.removeFile")}
-                    onClick={() => {
-                      if (queuedFiles.length > 0) {
-                        removeQueuedFile(idx);
-                      } else if (inputPaths.length > 0) {
-                        setInputPaths(inputPaths.filter((_, i) => i !== idx));
-                      } else {
-                        setInputPath("");
-                      }
-                    }}
-                  >
-                    <X size={12} />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* State 3: Processing loading */}
-      {loading && (
-        <div className="empty-state">
-          <Loader2 size={28} className="animate-spin" style={{ color: "var(--accent)" }} />
-          <div className="empty-state__title">
-            {(progress && translateServerMessage(t, progress.msg_key, progress.msg_params)) ||
-              progress?.message ||
-              t("watermark.processing")}
-          </div>
-          {progress && (
-            <div
-              className="progress watermark-progress"
-              role="progressbar"
-              aria-valuenow={Math.round(progress.percent)}
-              aria-valuemin={0}
-              aria-valuemax={100}
-            >
-              <div className="progress__bar" style={{ width: `${progress.percent}%` }} />
+          {totalFiles === 0 && !result && (
+            <div className="empty-state">
+              <FileImage size={34} className="empty-state__icon" />
+              <div className="empty-state__title">{t("watermark.emptyQueue")}</div>
+              <div className="empty-state__desc">{t("watermark.emptyQueueDesc")}</div>
             </div>
           )}
-        </div>
-      )}
 
-      {/* State 4: Results ready */}
-      {result && !loading && (
-        <div className="watermark-results-body">
-          {/* Mini KPI Metric Stats */}
-          <div className="watermark-kpi-grid">
-            <div className="watermark-kpi-card">
-              <div className="watermark-kpi-label">{t("watermark.stat.total")}</div>
-              <div className="watermark-kpi-value">{totalProcessed}</div>
-            </div>
-
-            <div
-              className={`watermark-kpi-card ${
-                detectedCount > 0 ? "watermark-kpi-card--accent" : ""
-              }`}
-            >
-              <div className="watermark-kpi-label">{t("watermark.stat.detected")}</div>
-              <div className="watermark-kpi-value">{detectedCount}</div>
-            </div>
-
-            <div
-              className={`watermark-kpi-card ${cleanCount > 0 ? "watermark-kpi-card--clean" : ""}`}
-            >
-              <div className="watermark-kpi-label">{t("watermark.stat.clean")}</div>
-              <div className="watermark-kpi-value">{cleanCount}</div>
-            </div>
-          </div>
-
-          {/* Before/After Visual Comparison Slider (when an item is selected for comparison) */}
-          {comparisonItem && (
-            <ComparisonViewer
-              beforePath={comparisonItem.beforeUrl}
-              afterPath={comparisonItem.afterUrl}
-              title={comparisonItem.title}
-              onClose={resetComparison}
-            />
-          )}
-
-          {/* Single File Result Display */}
-          {(!result.results || result.results.length <= 1) && result.image && (
-            <MediaOutputNode
-              kind="image"
-              item={{
-                outputPath: result.image.localUrl,
-                sourcePath: inputPath || undefined,
-                mimeType: result.image.kind,
-                asset_id: result.results?.[0]?.asset_id,
-              }}
-              downloading={downloadingPath === result.image.localUrl}
-              onDownload={
-                isRemoteMode
-                  ? () =>
-                      void downloadOutput(
-                        result.image.localUrl,
-                        mediaBasename(result.image.localUrl)
-                      )
-                  : undefined
-              }
-              onSendToWatermark={() => setInputPath(result.image.localUrl)}
-              onAskAgent={(meta) =>
-                askAgentAboutMediaAsset({
-                  assetId: meta.assetId,
-                  filePath: meta.filePath,
-                })
-              }
-            />
-          )}
-
-          {/* Multiple Items Results List */}
-          {result.results && result.results.length > 1 && (
-            <VirtualList
-              items={result.results}
-              className="watermark-scroll-list"
-              style={{ display: "block" }}
-              height={Math.min(380, Math.max(160, result.results.length * 52))}
-              itemHeight={(_idx, item) =>
-                item.error ? 68 : item.out_path && item.out_path !== item.path ? 54 : 48
-              }
-              getItemKey={(item, idx) => `${item.path}-${idx}`}
-              renderItem={(item) => (
-                <div className="watermark-file-row">
-                  <div className="watermark-file-meta">
-                    <div className="watermark-file-path" title={item.path}>
-                      {displayName(item.path)}
-                    </div>
-                    {item.out_path && item.out_path !== item.path && (
-                      <div className="watermark-file-subpath" title={item.out_path}>
-                        → {displayName(item.out_path)}
-                      </div>
-                    )}
-                    {item.error && <div className="watermark-file-error">{item.error}</div>}
-                  </div>
-
-                  <div className="watermark-file-actions">
-                    {renderItemStatusBadge(item)}
-
-                    {item.out_path && (
+          {/* State 2: Files queued, not yet processed */}
+          {totalFiles > 0 && !result && !loading && (
+            <div className="watermark-results-body">
+              <div className="muted-text">{t("watermark.readyFiles", { count: totalFiles })}</div>
+              <div className="watermark-scroll-list">
+                {currentFilesList.map((p, idx) => (
+                  <div key={`${p}-${idx}`} className="watermark-file-row">
+                    <span className="watermark-file-path" title={p}>
+                      {p}
+                    </span>
+                    <div className="watermark-file-actions">
+                      <Badge>{t("watermark.status.ready")}</Badge>
                       <button
                         type="button"
-                        onClick={() =>
-                          setComparisonItem({
-                            beforeUrl: item.path,
-                            afterUrl: item.out_path,
-                            title: displayName(item.path),
-                          })
-                        }
                         className="watermark-icon-btn"
-                        title={t("watermark.compare")}
-                        aria-label={t("watermark.compare")}
-                      >
-                        <Eye size={12} />
-                      </button>
-                    )}
-
-                    {item.out_path && (
-                      <button
-                        type="button"
-                        onClick={() => setInputPath(item.out_path)}
-                        className="watermark-icon-btn"
-                        title={t("cross.sendToWatermark")}
-                        aria-label={t("cross.sendToWatermark")}
-                      >
-                        <Sparkles size={12} />
-                      </button>
-                    )}
-
-                    {item.out_path && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          askAgentAboutMediaAsset({
-                            assetId: item.asset_id,
-                            filePath: item.out_path,
-                          })
-                        }
-                        className="watermark-icon-btn"
-                        title={t("cross.askAgent")}
-                        aria-label={t("cross.askAgent")}
-                      >
-                        <Bot size={12} />
-                      </button>
-                    )}
-
-                    {item.out_path &&
-                      (isRemoteMode ? (
-                        <button
-                          type="button"
-                          disabled={downloadingPath === item.out_path}
-                          onClick={() =>
-                            void downloadOutput(item.out_path, mediaBasename(item.out_path))
+                        title={t("watermark.removeFile")}
+                        aria-label={t("watermark.removeFile")}
+                        onClick={() => {
+                          if (queuedFiles.length > 0) {
+                            removeQueuedFile(idx);
+                          } else if (inputPaths.length > 0) {
+                            setInputPaths(inputPaths.filter((_, i) => i !== idx));
+                          } else {
+                            setInputPath("");
                           }
-                          className="watermark-icon-btn"
-                          title={t("watermark.download")}
-                          aria-label={t("watermark.download")}
-                        >
-                          {downloadingPath === item.out_path ? (
-                            <Loader2 size={12} className="animate-spin" />
-                          ) : (
-                            <Download size={12} />
-                          )}
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => handleCopy(item.out_path)}
-                          className="watermark-icon-btn"
-                          title={t("watermark.copyPath")}
-                          aria-label={t("watermark.copyPath")}
-                        >
-                          {copiedPath === item.out_path ? <Check size={12} /> : <Copy size={12} />}
-                        </button>
-                      ))}
+                        }}
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
                   </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* State 3: Processing loading */}
+          {loading && (
+            <div className="empty-state">
+              <Loader2 size={28} className="animate-spin" style={{ color: "var(--accent)" }} />
+              <div className="empty-state__title">
+                {(progress && translateServerMessage(t, progress.msg_key, progress.msg_params)) ||
+                  progress?.message ||
+                  t("watermark.processing")}
+              </div>
+              {progress && (
+                <div
+                  className="progress watermark-progress"
+                  role="progressbar"
+                  aria-valuenow={Math.round(progress.percent)}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                >
+                  <div className="progress__bar" style={{ width: `${progress.percent}%` }} />
                 </div>
               )}
-            />
+            </div>
           )}
-        </div>
-      )}
+
+          {/* State 4: Results ready */}
+          {result && !loading && (
+            <div className="watermark-results-body">
+              {/* Mini KPI Metric Stats */}
+              <div className="watermark-kpi-grid">
+                <div className="watermark-kpi-card">
+                  <div className="watermark-kpi-label">{t("watermark.stat.total")}</div>
+                  <div className="watermark-kpi-value">{totalProcessed}</div>
+                </div>
+
+                <div
+                  className={`watermark-kpi-card ${
+                    detectedCount > 0 ? "watermark-kpi-card--accent" : ""
+                  }`}
+                >
+                  <div className="watermark-kpi-label">{t("watermark.stat.detected")}</div>
+                  <div className="watermark-kpi-value">{detectedCount}</div>
+                </div>
+
+                <div
+                  className={`watermark-kpi-card ${cleanCount > 0 ? "watermark-kpi-card--clean" : ""}`}
+                >
+                  <div className="watermark-kpi-label">{t("watermark.stat.clean")}</div>
+                  <div className="watermark-kpi-value">{cleanCount}</div>
+                </div>
+              </div>
+
+              {/* Before/After Visual Comparison Slider (when an item is selected for comparison) */}
+              {comparisonItem && (
+                <ComparisonViewer
+                  beforePath={comparisonItem.beforeUrl}
+                  afterPath={comparisonItem.afterUrl}
+                  title={comparisonItem.title}
+                  onClose={resetComparison}
+                />
+              )}
+
+              {/* Single File Result Display */}
+              {(!result.results || result.results.length <= 1) && result.image && (
+                <MediaOutputNode
+                  kind="image"
+                  item={{
+                    outputPath: result.image.localUrl,
+                    sourcePath: inputPath || undefined,
+                    mimeType: result.image.kind,
+                    asset_id: result.results?.[0]?.asset_id,
+                  }}
+                  downloading={downloadingPath === result.image.localUrl}
+                  onDownload={
+                    isRemoteMode
+                      ? () =>
+                          void downloadOutput(
+                            result.image.localUrl,
+                            mediaBasename(result.image.localUrl)
+                          )
+                      : undefined
+                  }
+                  onSendToWatermark={() => setInputPath(result.image.localUrl)}
+                  onAskAgent={(meta) =>
+                    askAgentAboutMediaAsset({
+                      assetId: meta.assetId,
+                      filePath: meta.filePath,
+                    })
+                  }
+                />
+              )}
+
+              {/* Multiple Items Results List */}
+              {result.results && result.results.length > 1 && (
+                <VirtualList
+                  items={result.results}
+                  className="watermark-scroll-list"
+                  style={{ display: "block" }}
+                  height={Math.min(380, Math.max(160, result.results.length * 52))}
+                  itemHeight={(_idx, item) =>
+                    item.error ? 68 : item.out_path && item.out_path !== item.path ? 54 : 48
+                  }
+                  getItemKey={(item, idx) => `${item.path}-${idx}`}
+                  renderItem={(item) => (
+                    <div className="watermark-file-row">
+                      <div className="watermark-file-meta">
+                        <div className="watermark-file-path" title={item.path}>
+                          {displayName(item.path)}
+                        </div>
+                        {item.out_path && item.out_path !== item.path && (
+                          <div className="watermark-file-subpath" title={item.out_path}>
+                            → {displayName(item.out_path)}
+                          </div>
+                        )}
+                        {item.error && <div className="watermark-file-error">{item.error}</div>}
+                      </div>
+
+                      <div className="watermark-file-actions">
+                        {renderItemStatusBadge(item)}
+
+                        {item.out_path && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setComparisonItem({
+                                beforeUrl: item.path,
+                                afterUrl: item.out_path,
+                                title: displayName(item.path),
+                              })
+                            }
+                            className="watermark-icon-btn"
+                            title={t("watermark.compare")}
+                            aria-label={t("watermark.compare")}
+                          >
+                            <Eye size={12} />
+                          </button>
+                        )}
+
+                        {item.out_path && (
+                          <button
+                            type="button"
+                            onClick={() => setInputPath(item.out_path)}
+                            className="watermark-icon-btn"
+                            title={t("cross.sendToWatermark")}
+                            aria-label={t("cross.sendToWatermark")}
+                          >
+                            <Sparkles size={12} />
+                          </button>
+                        )}
+
+                        {item.out_path && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              askAgentAboutMediaAsset({
+                                assetId: item.asset_id,
+                                filePath: item.out_path,
+                              })
+                            }
+                            className="watermark-icon-btn"
+                            title={t("cross.askAgent")}
+                            aria-label={t("cross.askAgent")}
+                          >
+                            <Bot size={12} />
+                          </button>
+                        )}
+
+                        {item.out_path &&
+                          (isRemoteMode ? (
+                            <button
+                              type="button"
+                              disabled={downloadingPath === item.out_path}
+                              onClick={() =>
+                                void downloadOutput(item.out_path, mediaBasename(item.out_path))
+                              }
+                              className="watermark-icon-btn"
+                              title={t("watermark.download")}
+                              aria-label={t("watermark.download")}
+                            >
+                              {downloadingPath === item.out_path ? (
+                                <Loader2 size={12} className="animate-spin" />
+                              ) : (
+                                <Download size={12} />
+                              )}
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleCopy(item.out_path)}
+                              className="watermark-icon-btn"
+                              title={t("watermark.copyPath")}
+                              aria-label={t("watermark.copyPath")}
+                            >
+                              {copiedPath === item.out_path ? (
+                                <Check size={12} />
+                              ) : (
+                                <Copy size={12} />
+                              )}
+                            </button>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+                />
+              )}
+            </div>
+          )}
         </>
       )}
     </Card>

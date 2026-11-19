@@ -56,7 +56,7 @@ export function computeVirtualLayout<T>(
   const isDynamic = typeof itemHeight === "function";
   const offsets = new Array<number>(count);
   const sizes = new Array<number>(count);
-  let totalHeight = 0;
+  let totalHeight: number;
 
   if (isDynamic) {
     let runningOffset = 0;
@@ -105,7 +105,14 @@ export function sliceVirtualRange<T>(
     for (let i = 0; i <= initialRenderLimit; i++) {
       visibleItems.push({ item: items[i], index: i, offset: offsets[i], size: sizes[i] });
     }
-    return { totalHeight, startIndex: 0, endIndex: initialRenderLimit, visibleItems, offsets, sizes };
+    return {
+      totalHeight,
+      startIndex: 0,
+      endIndex: initialRenderLimit,
+      visibleItems,
+      offsets,
+      sizes,
+    };
   }
 
   const clampedScrollTop = Math.max(0, scrollTop);
@@ -247,9 +254,10 @@ function VirtualListInner<T>(
   const containerRef = useRef<HTMLDivElement | null>(null);
   const scrollRafRef = useRef<number | null>(null);
   const pendingScrollTopRef = useRef<number>(0);
-  const measuredHeightsRef = useRef<Map<string | number, number>>(new Map());
   const rowObserverRef = useRef<ResizeObserver | null>(null);
-  const [measureVersion, setMeasureVersion] = useState(0);
+  const [measuredHeights, setMeasuredHeights] = useState<Map<string | number, number>>(
+    () => new Map()
+  );
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState<number>(() => {
     if (typeof height === "number" && height > 0) return height;
@@ -259,22 +267,23 @@ function VirtualListInner<T>(
   useEffect(() => {
     if (!variableHeight || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver((entries) => {
-      let changed = false;
-      for (const entry of entries) {
-        const el = entry.target as HTMLElement;
-        const rawKey = el.dataset.virtualMeasureKey;
-        if (!rawKey) continue;
-        const measured = Math.ceil(
-          entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height
-        );
-        if (measured > 0 && measuredHeightsRef.current.get(rawKey) !== measured) {
-          measuredHeightsRef.current.set(rawKey, measured);
-          changed = true;
+      setMeasuredHeights((prev) => {
+        let next: Map<string | number, number> | null = null;
+        for (const entry of entries) {
+          const el = entry.target as HTMLElement;
+          const rawKey = el.dataset.virtualMeasureKey;
+          if (!rawKey) continue;
+          const measured = Math.ceil(
+            entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height
+          );
+          const cur = (next ?? prev).get(rawKey);
+          if (measured > 0 && cur !== measured) {
+            if (!next) next = new Map(prev);
+            next.set(rawKey, measured);
+          }
         }
-      }
-      if (changed) {
-        setMeasureVersion((v) => v + 1);
-      }
+        return next ?? prev;
+      });
     });
     rowObserverRef.current = observer;
     return () => {
@@ -336,17 +345,13 @@ function VirtualListInner<T>(
       return computeVirtualLayout(items, effectiveItemHeight);
     }
     const baseFn =
-      typeof effectiveItemHeight === "function"
-        ? effectiveItemHeight
-        : () => effectiveItemHeight;
+      typeof effectiveItemHeight === "function" ? effectiveItemHeight : () => effectiveItemHeight;
     const heightResolver = (index: number, item: T) => {
       const key = String(getItemKey ? getItemKey(item, index) : index);
-      return measuredHeightsRef.current.get(key) ?? baseFn(index, item);
+      return measuredHeights.get(key) ?? baseFn(index, item);
     };
     return computeVirtualLayout(items, heightResolver);
-    // measureVersion intentionally invalidates offsets when ResizeObserver updates row sizes
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items, effectiveItemHeight, variableHeight, getItemKey, measureVersion]);
+  }, [items, effectiveItemHeight, variableHeight, getItemKey, measuredHeights]);
 
   const virtualRange = useMemo(() => {
     return sliceVirtualRange(items, layout, scrollTop, viewportHeight, overscan);

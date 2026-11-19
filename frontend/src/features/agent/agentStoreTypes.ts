@@ -35,7 +35,9 @@ export interface AgentChatMessage {
 export const COPY_FEEDBACK_MS = appConfig.ui.copyFeedbackMs;
 
 /** Maps a server history result to store state. */
-export function historyState(res: AgentHistoryResult): Pick<AgentState, "messages" | "conversationId"> {
+export function historyState(
+  res: AgentHistoryResult
+): Pick<AgentState, "messages" | "conversationId"> {
   return {
     conversationId: res.conversation_id ?? "",
     messages: (res.messages ?? []).map((m) => ({
@@ -78,7 +80,11 @@ export interface AgentState {
 
   fetchProviders: () => Promise<void>;
   fetchProviderLinks: () => Promise<void>;
-  linkProvider: (agentProviderId: string, providerId: string, credentialId: string) => Promise<void>;
+  linkProvider: (
+    agentProviderId: string,
+    providerId: string,
+    credentialId: string
+  ) => Promise<void>;
   unlinkProvider: (agentProviderId: string) => Promise<void>;
   fetchHistory: () => Promise<void>;
   fetchApprovals: () => Promise<void>;

@@ -197,10 +197,14 @@ export function CredentialForm({
                       type="button"
                       iconOnly
                       aria-label={
-                        showFileJson ? t("providers.credential.hide") : t("providers.credential.show")
+                        showFileJson
+                          ? t("providers.credential.hide")
+                          : t("providers.credential.show")
                       }
                       title={
-                        showFileJson ? t("providers.credential.hide") : t("providers.credential.show")
+                        showFileJson
+                          ? t("providers.credential.hide")
+                          : t("providers.credential.show")
                       }
                       onClick={() => setShowFileJson((v) => !v)}
                     >

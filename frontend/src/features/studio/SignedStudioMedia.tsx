@@ -7,17 +7,12 @@ function useMediaInViewport(lazy: boolean): {
   inView: boolean;
 } {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [inView, setInView] = useState(
+  const [observedInView, setObservedInView] = useState(
     () => !lazy || typeof IntersectionObserver === "undefined"
   );
 
   useEffect(() => {
-    if (!lazy) {
-      setInView(true);
-      return;
-    }
-    if (typeof IntersectionObserver === "undefined") {
-      setInView(true);
+    if (!lazy || typeof IntersectionObserver === "undefined") {
       return;
     }
     const el = containerRef.current;
@@ -26,7 +21,7 @@ function useMediaInViewport(lazy: boolean): {
       (entries) => {
         const entry = entries[0];
         if (entry) {
-          setInView(entry.isIntersecting);
+          setObservedInView(entry.isIntersecting);
         }
       },
       { rootMargin: "120px" }
@@ -35,7 +30,10 @@ function useMediaInViewport(lazy: boolean): {
     return () => observer.disconnect();
   }, [lazy]);
 
-  return { containerRef, inView };
+  return {
+    containerRef,
+    inView: !lazy || typeof IntersectionObserver === "undefined" || observedInView,
+  };
 }
 
 function useDecoderCleanup(

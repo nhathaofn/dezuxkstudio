@@ -1,5 +1,19 @@
 import React, { useRef, useState } from "react";
-import { Bot, Grid, Image as ImageIcon, Layers, Loader2, Paintbrush, Plus, Save, Sparkles, Speech, Trash2, Upload, Wand2 } from "lucide-react";
+import {
+  Bot,
+  Grid,
+  Image as ImageIcon,
+  Layers,
+  Loader2,
+  Paintbrush,
+  Plus,
+  Save,
+  Sparkles,
+  Speech,
+  Trash2,
+  Upload,
+  Wand2,
+} from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import {
