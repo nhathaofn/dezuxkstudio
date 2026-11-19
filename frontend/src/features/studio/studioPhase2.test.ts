@@ -901,4 +901,57 @@ describe("Studio Phase 2 ArcReel helpers, store & modals", () => {
     expect(blockerHtml).toContain("Chưa có provider hoặc model sẵn sàng cho chặng sản xuất này.");
     expect(blockerHtml).not.toContain("No active video provider");
   });
+
+  it("fails closed when runBatchPreflight fails and rejects stale receiveTimelineChanged revisions", async () => {
+    const detail = makeEpisodeDetail(false);
+    useStudioStore.setState({
+      activeProjectId: detail.project.id,
+      activeEpisodeId: detail.episode.id,
+      projectDetail: { project: detail.project, episodes: [detail.episode], assets: detail.assets },
+      episodeDetail: detail,
+    });
+
+    const reqSpy = vi
+      .spyOn(rtClient, "request")
+      .mockRejectedValue(new Error("preflight endpoint unreachable"));
+
+    const stageOk = await useStudioStore.getState().runStage("generate_videos", {});
+    expect(stageOk).toBe(false);
+    expect(useStudioStore.getState().error?.message).toContain("preflight endpoint unreachable");
+
+    const queueOk = await useStudioStore.getState().enqueueBatch({ stage: "videos" });
+    expect(queueOk).toBe(false);
+    // Must only invoke preflight, never bypassing into run_stage or queue_enqueue.
+    for (const [action] of reqSpy.mock.calls) {
+      expect(action).not.toBe(Actions.STUDIO_EPISODE_RUN_STAGE);
+      expect(action).not.toBe(Actions.STUDIO_QUEUE_ENQUEUE);
+    }
+
+    // Stale revision guard in receiveTimelineChanged
+    useStudioStore.setState({
+      timelineResult: {
+        project_id: detail.project.id,
+        episode_id: detail.episode.id,
+        revision: 5,
+        can_undo: true,
+        can_redo: false,
+        duration_ms: 4000,
+        timeline: { version: 1, fps: 24, width: 1280, height: 720, tracks: [], subtitles: [], markers: [] },
+        revisions: [],
+        updated_at: 2000,
+      },
+    });
+    useStudioStore.getState().receiveTimelineChanged({
+      project_id: detail.project.id,
+      episode_id: detail.episode.id,
+      revision: 3,
+      can_undo: false,
+      can_redo: false,
+      duration_ms: 1000,
+      actor: "user",
+      summary: "stale",
+      timeline: { version: 1, fps: 24, width: 1280, height: 720, tracks: [], subtitles: [], markers: [] },
+    });
+    expect(useStudioStore.getState().timelineResult?.revision).toBe(5);
+  });
 });

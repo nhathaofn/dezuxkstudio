@@ -635,6 +635,42 @@ export const ClipInspectorForm: React.FC<ClipInspectorProps> = ({
   );
 };
 
+const WaveformCanvas: React.FC<{ peaks: number[] }> = React.memo(({ peaks }) => {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const { waveformWidthStepPx, waveformHeightPx, waveformBarMinHeightPx, waveformBarMaxHeightPx, waveformBarWidthPx } =
+    appConfig.studio.timeline;
+  const width = Math.max(1, peaks.length * waveformWidthStepPx);
+  const height = waveformHeightPx;
+
+  useEffect(() => {
+    const cvs = canvasRef.current;
+    if (!cvs) return;
+    const ctx = cvs.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, width, height);
+    const computedColor =
+      typeof window !== "undefined"
+        ? getComputedStyle(cvs).getPropertyValue("--timeline-waveform-bar").trim() ||
+          getComputedStyle(document.documentElement).getPropertyValue("--accent").trim()
+        : "";
+    ctx.fillStyle = computedColor || "currentColor";
+    for (let idx = 0; idx < peaks.length; idx++) {
+      const h = Math.max(waveformBarMinHeightPx, Math.round(peaks[idx] * waveformBarMaxHeightPx));
+      ctx.fillRect(idx * waveformWidthStepPx, height - h, waveformBarWidthPx, h);
+    }
+  }, [peaks, width, height, waveformWidthStepPx, waveformBarMinHeightPx, waveformBarMaxHeightPx, waveformBarWidthPx]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="timeline-clip-waveform"
+      width={width}
+      height={height}
+      aria-hidden="true"
+    />
+  );
+});
+
 export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> = ({ detail }) => {
   const t = useT();
   const timelineResult = useStudioStore((s) => s.timelineResult);
@@ -702,6 +738,38 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRefs = useRef<Record<string, HTMLAudioElement | null>>({});
   const playheadRef = useRef(clampedPlayheadMs);
+  const playheadLinesRef = useRef<Map<string, HTMLDivElement>>(new Map());
+  const scrubberRef = useRef<HTMLInputElement | null>(null);
+  const timecodeCurRef = useRef<HTMLSpanElement | null>(null);
+
+  const registerPlayheadLine = useCallback(
+    (key: string) => (el: HTMLDivElement | null) => {
+      if (el) {
+        playheadLinesRef.current.set(key, el);
+      } else {
+        playheadLinesRef.current.delete(key);
+      }
+    },
+    []
+  );
+
+  const applyPlayheadDOM = useCallback(
+    (ms: number) => {
+      const clamped = Math.max(0, Math.min(durationMs, ms));
+      const xPx = (clamped / 1000) * pxPerSec;
+      const transform = `translate3d(${xPx}px, 0, 0)`;
+      for (const el of playheadLinesRef.current.values()) {
+        el.style.transform = transform;
+      }
+      if (timecodeCurRef.current) {
+        timecodeCurRef.current.textContent = formatTimecodeMs(clamped);
+      }
+      if (scrubberRef.current) {
+        scrubberRef.current.value = String(Math.round(clamped));
+      }
+    },
+    [durationMs, pxPerSec]
+  );
 
   useEffect(() => {
     playheadRef.current = clampedPlayheadMs;
@@ -791,15 +859,29 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
     if (!playing) return;
     let rafId = 0;
     let lastTs = performance.now();
+    const stateSignature = (ms: number) => {
+      const st = resolvePreviewStateAtTime(timeline, ms);
+      const vId = st.videoClip?.id ?? "";
+      const aKey = st.audioCues.map((c) => `${c.trackId}:${c.clip.id}`).join(",");
+      const sKey = st.activeSubtitles.map((c) => c.id).join(",");
+      return `${vId}|${aKey}|${sKey}`;
+    };
+    let lastSig = stateSignature(playheadRef.current);
 
     const tick = (now: number) => {
       const dt = Math.max(0, now - lastTs);
       lastTs = now;
       const nextMs = Math.min(durationMs, playheadRef.current + dt);
       playheadRef.current = nextMs;
-      setPlayheadMs(Math.round(nextMs));
+      applyPlayheadDOM(nextMs);
       syncMediaElements(nextMs, true);
+      const nextSig = stateSignature(nextMs);
+      if (nextSig !== lastSig) {
+        lastSig = nextSig;
+        setPlayheadMs(Math.round(nextMs));
+      }
       if (nextMs >= durationMs) {
+        setPlayheadMs(Math.round(nextMs));
         setPlaying(false);
         return;
       }
@@ -807,8 +889,11 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
     };
 
     rafId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafId);
-  }, [playing, durationMs, syncMediaElements]);
+    return () => {
+      cancelAnimationFrame(rafId);
+      setPlayheadMs(Math.round(playheadRef.current));
+    };
+  }, [playing, durationMs, timeline, applyPlayheadDOM, syncMediaElements]);
 
   useEffect(() => {
     const audioMap = audioRefs.current;
@@ -832,6 +917,7 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
   const seekTo = (ms: number) => {
     const clamped = Math.max(0, Math.min(durationMs, Math.round(ms)));
     playheadRef.current = clamped;
+    applyPlayheadDOM(clamped);
     setPlayheadMs(clamped);
     syncMediaElements(clamped, playing);
   };
@@ -1155,6 +1241,7 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
               <SkipForward size={14} />
             </Button>
             <input
+              ref={scrubberRef}
               type="range"
               className="timeline-scrubber"
               min={0}
@@ -1165,7 +1252,8 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
               aria-label={t("studio.timeline.scrubLabel")}
             />
             <span className="timeline-timecode">
-              {formatTimecodeMs(clampedPlayheadMs)} / {formatTimecodeMs(durationMs)}
+              <span ref={timecodeCurRef}>{formatTimecodeMs(clampedPlayheadMs)}</span> /{" "}
+              {formatTimecodeMs(durationMs)}
             </span>
           </div>
         </Card>
@@ -1388,8 +1476,12 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
                 </div>
               ))}
               <div
+                ref={registerPlayheadLine("ruler")}
                 className="timeline-playhead-line"
-                style={{ left: `${(clampedPlayheadMs / 1000) * pxPerSec}px` }}
+                style={{
+                  left: 0,
+                  transform: `translate3d(${(clampedPlayheadMs / 1000) * pxPerSec}px, 0, 0)`,
+                }}
               />
             </div>
           </div>
@@ -1525,36 +1617,17 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
                             })}
                           </span>
                         </div>
-                        {cl.peaks && cl.peaks.length > 0 && (
-                          <svg
-                            className="timeline-clip-waveform"
-                            viewBox={`0 0 ${cl.peaks.length * appConfig.studio.timeline.waveformWidthStepPx} ${appConfig.studio.timeline.waveformHeightPx}`}
-                            preserveAspectRatio="none"
-                          >
-                            {cl.peaks.map((pk, idx) => {
-                              const h = Math.max(
-                                appConfig.studio.timeline.waveformBarMinHeightPx,
-                                Math.round(pk * appConfig.studio.timeline.waveformBarMaxHeightPx)
-                              );
-                              return (
-                                <rect
-                                  key={idx}
-                                  className="timeline-waveform-bar"
-                                  x={idx * appConfig.studio.timeline.waveformWidthStepPx}
-                                  y={appConfig.studio.timeline.waveformHeightPx - h}
-                                  width={appConfig.studio.timeline.waveformBarWidthPx}
-                                  height={h}
-                                />
-                              );
-                            })}
-                          </svg>
-                        )}
+                        {cl.peaks && cl.peaks.length > 0 && <WaveformCanvas peaks={cl.peaks} />}
                       </div>
                     );
                   })}
                   <div
+                    ref={registerPlayheadLine(`track:${tr.id}`)}
                     className="timeline-playhead-line"
-                    style={{ left: `${(clampedPlayheadMs / 1000) * pxPerSec}px` }}
+                    style={{
+                      left: 0,
+                      transform: `translate3d(${(clampedPlayheadMs / 1000) * pxPerSec}px, 0, 0)`,
+                    }}
                   />
                 </div>
               </div>
@@ -1602,8 +1675,12 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
                 );
               })}
               <div
+                ref={registerPlayheadLine("subtitles")}
                 className="timeline-playhead-line"
-                style={{ left: `${(clampedPlayheadMs / 1000) * pxPerSec}px` }}
+                style={{
+                  left: 0,
+                  transform: `translate3d(${(clampedPlayheadMs / 1000) * pxPerSec}px, 0, 0)`,
+                }}
               />
             </div>
           </div>

@@ -26,6 +26,7 @@ import {
   type StudioGenre,
   type StudioProductionMode,
 } from "../../contracts/generated";
+import { isDesktop } from "../../lib/bridge";
 import { translateServerMessage, useT } from "../../lib/i18n";
 import { useAgentScreenContext } from "../agent/screenContext";
 import { useAgentStore } from "../agent/useAgentStore";
@@ -118,6 +119,8 @@ export const StudioView: React.FC = () => {
 
   const openMediaDrawer = useMediaLibraryStore((s) => s.openDrawer);
   const openFolder = useSystemStore((s) => s.openFolder);
+  const sysMode = useSystemStore((s) => s.info?.mode);
+  const canOpenFolder = isDesktop() && sysMode !== "server" && sysMode !== "client";
 
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
@@ -344,7 +347,13 @@ export const StudioView: React.FC = () => {
               </div>
 
               <div className="studio-toolbar">
-                <Button variant="ghost" size="sm" onClick={() => void openFolder("workspace_root")}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void openFolder("workspace_root")}
+                  disabled={!canOpenFolder}
+                  title={!canOpenFolder ? t("system.desktopOnly") : undefined}
+                >
                   <FolderOpen size={13} />
                   {t("studio.sidebar.openWorkspace")}
                 </Button>
@@ -436,11 +445,7 @@ export const StudioView: React.FC = () => {
           </div>
         </div>
 
-        {error && (
-          <div onClick={clearError} role="presentation">
-            <ErrorText error={error} />
-          </div>
-        )}
+        {error && <ErrorText error={error} onDismiss={clearError} />}
 
         {studioApprovals.length > 0 && (
           <div className="studio-approval-bar studio-approval-bar--inline">

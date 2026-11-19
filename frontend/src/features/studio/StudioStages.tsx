@@ -28,6 +28,7 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Dialog } from "../../components/ui/Dialog";
+import { ErrorText } from "../../components/ui/ErrorText";
 import { Switch } from "../../components/ui/Switch";
 import { appConfig } from "../../config/appConfig";
 import {
@@ -66,6 +67,8 @@ export const CreateProjectDialog: React.FC<{
   const aspectOptions = aspectParam?.options ?? [];
   const createProject = useStudioStore((s) => s.createProject);
   const saving = useStudioStore((s) => s.saving);
+  const error = useStudioStore((s) => s.error);
+  const clearError = useStudioStore((s) => s.clearError);
 
   const [title, setTitle] = useState("");
   const [genre, setGenre] = useState("");
@@ -118,6 +121,7 @@ export const CreateProjectDialog: React.FC<{
       )}
     >
       <form className="studio-form-stack" onSubmit={handleSubmit}>
+        <ErrorText error={error} onDismiss={clearError} />
         <div className="form-group">
           <label className="field-label" htmlFor="studio-new-title">
             {t("studio.modal.projectTitle")}
@@ -227,6 +231,8 @@ export const DeleteProjectDialog: React.FC<{
   const t = useT();
   const deleteProject = useStudioStore((s) => s.deleteProject);
   const saving = useStudioStore((s) => s.saving);
+  const error = useStudioStore((s) => s.error);
+  const clearError = useStudioStore((s) => s.clearError);
   const [deleteFiles, setDeleteFiles] = useState(false);
 
   const handleConfirm = async () => {
@@ -253,6 +259,7 @@ export const DeleteProjectDialog: React.FC<{
       )}
     >
       <div className="studio-form-stack">
+        <ErrorText error={error} onDismiss={clearError} />
         <p>{t("studio.sidebar.deleteConfirm", { title: project.title })}</p>
         <label className="studio-switch-row">
           <span className="field-label">{t("studio.sidebar.deleteWithFiles")}</span>
@@ -792,7 +799,7 @@ export const AssetsStagePanel: React.FC<{
         <div className="studio-card-grid">
           {detail.assets.map((asset) => (
             <AssetBibleCard
-              key={`${asset.id}:${asset.updated_at}`}
+              key={asset.id}
               asset={asset}
               selected={selectedAssetIds.includes(asset.id)}
               busy={busy}
@@ -1185,7 +1192,7 @@ export const StoryboardStagePanel: React.FC<{
         <div className="studio-card-grid">
           {detail.shots.map((shot, idx) => (
             <StoryboardShotCard
-              key={`${shot.id}:${shot.updated_at}`}
+              key={shot.id}
               projectId={detail.project.id}
               shot={shot}
               index={idx}

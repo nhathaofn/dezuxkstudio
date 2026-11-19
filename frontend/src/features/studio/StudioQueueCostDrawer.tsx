@@ -3,7 +3,9 @@ import { Pause, Play, RefreshCw, RotateCcw, ShieldCheck, XCircle } from "lucide-
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
+import { ErrorText } from "../../components/ui/ErrorText";
 import { Switch } from "../../components/ui/Switch";
+import { VirtualList } from "../../components/ui/VirtualList";
 import { appConfig } from "../../config/appConfig";
 import { StudioJobKindValues } from "../../contracts/generated";
 import { isMessageKey, useT } from "../../lib/i18n";
@@ -26,6 +28,8 @@ export const StudioQueueCostDrawer: React.FC = () => {
   const upsertPricing = useStudioStore((s) => s.upsertPricing);
   const enqueueBatch = useStudioStore((s) => s.enqueueBatch);
   const saving = useStudioStore((s) => s.saving);
+  const error = useStudioStore((s) => s.error);
+  const clearError = useStudioStore((s) => s.clearError);
 
   const approvals = useAgentStore((s) => s.approvals);
   const resolveApproval = useAgentStore((s) => s.resolveApproval);
@@ -41,6 +45,7 @@ export const StudioQueueCostDrawer: React.FC = () => {
   return (
     <Dialog title={t("studio.queue.title")} size="lg" onClose={() => openQueueDrawer(false)}>
       <div className="studio-phase2-stack">
+        <ErrorText error={error} onDismiss={clearError} />
         <div className="studio-approval-bar">
           <div>
             <strong>{t("studio.approval.gateLabel")}</strong>
@@ -150,9 +155,16 @@ export const StudioQueueCostDrawer: React.FC = () => {
         {jobs.length === 0 ? (
           <p className="studio-field-hint">{t("studio.queue.empty")}</p>
         ) : (
-          <div className="studio-queue-list">
-            {jobs.map((job) => (
-              <div key={job.id} className="studio-queue-item">
+          <VirtualList
+            items={jobs}
+            className="studio-queue-list"
+            style={{ display: "block" }}
+            height={Math.min(280, Math.max(84, jobs.length * 68))}
+            itemHeight={68}
+            variableHeight
+            getItemKey={(job) => job.id}
+            renderItem={(job) => (
+              <div className="studio-queue-item">
                 <div className="studio-queue-item__main">
                   <div className="studio-phase2-meta-grid">
                     <strong>
@@ -228,8 +240,8 @@ export const StudioQueueCostDrawer: React.FC = () => {
                   )}
                 </div>
               </div>
-            ))}
-          </div>
+            )}
+          />
         )}
 
         <div className="studio-cost-section">
@@ -263,15 +275,22 @@ export const StudioQueueCostDrawer: React.FC = () => {
               {(costSummary.pricing ?? []).length > 0 && (
                 <details className="studio-pricing-details">
                   <summary>{t("studio.cost.pricingCatalog", { currency })}</summary>
-                  <div className="studio-pricing-list">
-                    {(costSummary.pricing ?? []).map((pr) => {
+                  <VirtualList
+                    items={costSummary.pricing ?? []}
+                    className="studio-pricing-list"
+                    style={{ display: "block" }}
+                    height={Math.min(220, Math.max(52, (costSummary.pricing ?? []).length * 44))}
+                    itemHeight={44}
+                    variableHeight
+                    getItemKey={(pr) => pr.id}
+                    renderItem={(pr) => {
                       const val = priceEdits[pr.id] ?? String(pr.unit_price_usd);
                       const capKey = `providers.capability.${pr.capability}`;
                       const capLabel = isMessageKey(capKey) ? t(capKey) : pr.capability;
                       const unitKey = `studio.cost.unit.${pr.unit}`;
                       const unitLabel = isMessageKey(unitKey) ? t(unitKey) : pr.unit;
                       return (
-                        <div key={pr.id} className="studio-pricing-row">
+                        <div className="studio-pricing-row">
                           <span>
                             {capLabel} · {pr.provider_id}/{pr.model_id} ({unitLabel})
                           </span>
@@ -307,8 +326,8 @@ export const StudioQueueCostDrawer: React.FC = () => {
                           </div>
                         </div>
                       );
-                    })}
-                  </div>
+                    }}
+                  />
                 </details>
               )}
             </div>

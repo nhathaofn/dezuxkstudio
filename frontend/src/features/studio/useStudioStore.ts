@@ -729,10 +729,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const proj = get().projectDetail?.project;
     if (proj && !proj.auto_approve_batches && !opts.approved && isHeavyStudioStage(stage)) {
       const preflight = await get().runBatchPreflight(stage, opts.model, undefined);
-      if (preflight) {
-        set({ pendingPreflight: { mode: "stage", stage, opts: { ...opts }, preflight } });
+      if (!preflight) {
         return false;
       }
+      set({ pendingPreflight: { mode: "stage", stage, opts: { ...opts }, preflight } });
+      return false;
     }
     set({
       runningStage: stage,
@@ -906,17 +907,18 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     if (!epId || !proj) return false;
     if (!proj.auto_approve_batches && !payload.approved) {
       const preflight = await get().runBatchPreflight(payload.stage, payload.model, undefined);
-      if (preflight) {
-        set({
-          pendingPreflight: {
-            mode: "queue",
-            stage: payload.stage,
-            opts: { ...payload },
-            preflight,
-          },
-        });
+      if (!preflight) {
         return false;
       }
+      set({
+        pendingPreflight: {
+          mode: "queue",
+          stage: payload.stage,
+          opts: { ...payload },
+          preflight,
+        },
+      });
+      return false;
     }
     set({ saving: true, error: null });
     try {
@@ -1405,6 +1407,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     if (!activeEp || evt.episode_id !== activeEp) return;
     set((s) => {
       const prev = s.timelineResult;
+      if (prev && prev.episode_id === evt.episode_id && evt.revision < prev.revision) {
+        return s;
+      }
       const prevRevs = prev?.episode_id === evt.episode_id ? (prev.revisions ?? []) : [];
       const nextRevs = prevRevs.some((r) => r.revision === evt.revision)
         ? prevRevs

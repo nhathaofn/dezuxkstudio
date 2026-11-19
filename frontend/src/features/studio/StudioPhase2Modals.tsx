@@ -1,8 +1,9 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Eraser, Grid, Paintbrush, RotateCcw, ShieldCheck, ShieldAlert } from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
+import { ErrorText } from "../../components/ui/ErrorText";
 import { appConfig } from "../../config/appConfig";
 import {
   NodeTypes,
@@ -32,6 +33,8 @@ export const StudioPreflightDialog: React.FC = () => {
   const pending = useStudioStore((s) => s.pendingPreflight);
   const cancel = useStudioStore((s) => s.cancelPreflight);
   const confirm = useStudioStore((s) => s.confirmPreflight);
+  const error = useStudioStore((s) => s.error);
+  const clearError = useStudioStore((s) => s.clearError);
   if (!pending) return null;
 
   const { preflight } = pending;
@@ -59,6 +62,7 @@ export const StudioPreflightDialog: React.FC = () => {
       }
     >
       <div className="studio-phase2-stack">
+        <ErrorText error={error} onDismiss={clearError} />
         <div className="studio-phase2-meta-grid">
           <Badge>{stageLabel}</Badge>
           <Badge>{t("studio.approval.preflightItems", { count: preflight.item_count })}</Badge>
@@ -117,6 +121,8 @@ export const StudioVersionDrawer: React.FC = () => {
   const selectVersion = useStudioStore((s) => s.selectVersion);
   const runQCReview = useStudioStore((s) => s.runQCReview);
   const saving = useStudioStore((s) => s.saving);
+  const error = useStudioStore((s) => s.error);
+  const clearError = useStudioStore((s) => s.clearError);
 
   if (!target) return null;
   const key = targetVersionKey(target.targetKind, target.targetId);
@@ -144,6 +150,7 @@ export const StudioVersionDrawer: React.FC = () => {
       onClose={() => openVersionDrawer(null)}
     >
       <div className="studio-phase2-stack">
+        <ErrorText error={error} onDismiss={clearError} />
         <div className="studio-phase2-toolbar">
           <Button
             size="sm"
@@ -336,6 +343,8 @@ const StudioGridSplitterBody: React.FC<StudioGridSplitterBodyProps> = ({
   const versionsByTarget = useStudioStore((s) => s.versionsByTarget);
   const selectVersion = useStudioStore((s) => s.selectVersion);
   const saving = useStudioStore((s) => s.saving);
+  const error = useStudioStore((s) => s.error);
+  const clearError = useStudioStore((s) => s.clearError);
 
   const [rows, setRows] = useState<number>(defaultRows);
   const [cols, setCols] = useState<number>(defaultCols);
@@ -398,6 +407,7 @@ const StudioGridSplitterBody: React.FC<StudioGridSplitterBodyProps> = ({
   return (
     <Dialog title={t("studio.gridSplit.title")} size="lg" onClose={() => openGridModal(null)}>
       <div className="studio-phase2-stack">
+        <ErrorText error={error} onDismiss={clearError} />
         <div className="studio-grid-controls">
           <label className="studio-field-inline">
             <span>{t("studio.gridSplit.rows")}</span>
@@ -563,42 +573,86 @@ export const StudioMaskEditorModal: React.FC = () => {
 const StudioMaskEditorBody: React.FC<{ target: StudioMaskModalTarget }> = ({ target }) => {
   const t = useT();
   const theme = usePreferencesStore((s) => s.prefs.theme);
+  const maskSpec = useNodeSpec(NodeTypes.MASK_EDIT);
+  const brushSpec = findParam(maskSpec, "brush_size");
+  const minBrushPx = brushSpec?.min ?? appConfig.studio.maskEditor.minBrushPx;
+  const maxBrushPx = brushSpec?.max ?? appConfig.studio.maskEditor.maxBrushPx;
+  const defaultBrushPx = clampGridBound(
+    brushSpec?.default
+      ? Number(brushSpec.default) || appConfig.studio.maskEditor.defaultBrushPx
+      : appConfig.studio.maskEditor.defaultBrushPx,
+    minBrushPx,
+    maxBrushPx
+  );
+
   const openMaskModal = useStudioStore((s) => s.openMaskModal);
   const applyMaskEdit = useStudioStore((s) => s.applyMaskEdit);
   const saving = useStudioStore((s) => s.saving);
+  const error = useStudioStore((s) => s.error);
+  const clearError = useStudioStore((s) => s.clearError);
 
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const committedCanvasRef = useRef<HTMLCanvasElement>(null);
+  const activeCanvasRef = useRef<HTMLCanvasElement>(null);
+  const activeStrokeRef = useRef<MaskStroke | null>(null);
+  const brushColorRef = useRef<string>("");
+
   const [imgSize, setImgSize] = useState<{ w: number; h: number }>({
     w: appConfig.studio.maskEditor.defaultWidthPx,
     h: appConfig.studio.maskEditor.defaultHeightPx,
   });
   const [imgLoaded, setImgLoaded] = useState(!target.assetId);
-  const [brushSize, setBrushSize] = useState<number>(appConfig.studio.maskEditor.defaultBrushPx);
+  const [brushSize, setBrushSize] = useState<number>(defaultBrushPx);
   const [strokes, setStrokes] = useState<MaskStroke[]>([]);
-  const [drawing, setDrawing] = useState(false);
   const [prompt, setPrompt] = useState(() => target.defaultPrompt ?? "");
   const { url, handleMediaError } = useSignedMediaURL(target.assetId || null, "preview");
 
+  const resolveBrushColor = useCallback(() => {
+    const cvs = activeCanvasRef.current ?? committedCanvasRef.current;
+    if (typeof window !== "undefined" && cvs) {
+      const tokenColor = getComputedStyle(cvs).getPropertyValue("--studio-mask-brush-stroke").trim();
+      if (tokenColor) {
+        brushColorRef.current = tokenColor;
+        return tokenColor;
+      }
+    }
+    if (typeof document !== "undefined") {
+      const fallback = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
+      brushColorRef.current = fallback;
+      return fallback;
+    }
+    return "";
+  }, []);
+
+  // Re-cache brush stroke CSS variable only when theme/canvas mounts, never per pointermove.
   useEffect(() => {
-    const cvs = canvasRef.current;
+    resolveBrushColor();
+  }, [theme, imgSize, resolveBrushColor]);
+
+  // Redraw committed strokes layer only when strokes commit/undo/clear or dimensions/theme change.
+  useEffect(() => {
+    const cvs = committedCanvasRef.current;
     if (!cvs) return;
     const ctx = cvs.getContext("2d");
     if (!ctx) return;
     ctx.clearRect(0, 0, cvs.width, cvs.height);
-    const tokenColor =
-      typeof window !== "undefined"
-        ? getComputedStyle(cvs).getPropertyValue("--studio-mask-brush-stroke").trim()
-        : "";
-    ctx.strokeStyle =
-      tokenColor ||
-      (typeof document !== "undefined"
-        ? getComputedStyle(document.documentElement).getPropertyValue("--accent").trim()
-        : "");
+    ctx.strokeStyle = brushColorRef.current || resolveBrushColor();
     strokeMaskPaths(ctx, strokes);
-  }, [strokes, imgSize, theme]);
+  }, [strokes, imgSize, theme, resolveBrushColor]);
+
+  const drawActiveStroke = () => {
+    const cvs = activeCanvasRef.current;
+    if (!cvs) return;
+    const ctx = cvs.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, cvs.width, cvs.height);
+    const active = activeStrokeRef.current;
+    if (!active) return;
+    ctx.strokeStyle = brushColorRef.current || resolveBrushColor();
+    strokeMaskPaths(ctx, [active]);
+  };
 
   const pointFromEvent = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const cvs = canvasRef.current!;
+    const cvs = e.currentTarget;
     const rect = cvs.getBoundingClientRect();
     const scaleX = cvs.width / Math.max(1, rect.width);
     const scaleY = cvs.height / Math.max(1, rect.height);
@@ -606,6 +660,15 @@ const StudioMaskEditorBody: React.FC<{ target: StudioMaskModalTarget }> = ({ tar
       x: (e.clientX - rect.left) * scaleX,
       y: (e.clientY - rect.top) * scaleY,
     };
+  };
+
+  const finishActiveStroke = () => {
+    const completed = activeStrokeRef.current;
+    activeStrokeRef.current = null;
+    drawActiveStroke();
+    if (completed && completed.points.length > 0) {
+      setStrokes((prev) => [...prev, completed]);
+    }
   };
 
   const handleApply = () => {
@@ -622,17 +685,54 @@ const StudioMaskEditorBody: React.FC<{ target: StudioMaskModalTarget }> = ({ tar
     });
   };
 
+  const renderCanvases = (standalone: boolean) => (
+    <>
+      <canvas
+        ref={committedCanvasRef}
+        width={imgSize.w}
+        height={imgSize.h}
+        className={
+          standalone ? "studio-mask-canvas studio-mask-canvas--standalone" : "studio-mask-canvas"
+        }
+      />
+      <canvas
+        ref={activeCanvasRef}
+        width={imgSize.w}
+        height={imgSize.h}
+        className="studio-mask-canvas"
+        onPointerDown={(e) => {
+          if (url && !imgLoaded) return;
+          e.currentTarget.setPointerCapture(e.pointerId);
+          const pt = pointFromEvent(e);
+          activeStrokeRef.current = { size: brushSize, points: [pt] };
+          drawActiveStroke();
+        }}
+        onPointerMove={(e) => {
+          const active = activeStrokeRef.current;
+          if (!active || (url && !imgLoaded)) return;
+          const pt = pointFromEvent(e);
+          active.points.push(pt);
+          drawActiveStroke();
+        }}
+        onPointerUp={finishActiveStroke}
+        onPointerCancel={finishActiveStroke}
+        onLostPointerCapture={finishActiveStroke}
+      />
+    </>
+  );
+
   return (
     <Dialog title={t("studio.maskEdit.title")} size="lg" onClose={() => openMaskModal(null)}>
       <div className="studio-phase2-stack">
+        <ErrorText error={error} onDismiss={clearError} />
         <p className="studio-field-hint">{t("studio.maskEdit.hint")}</p>
         <div className="studio-grid-controls">
           <label className="studio-field-inline">
             <span>{t("studio.maskEdit.brushSizePx", { size: brushSize })}</span>
             <input
               type="range"
-              min={appConfig.studio.maskEditor.minBrushPx}
-              max={appConfig.studio.maskEditor.maxBrushPx}
+              min={minBrushPx}
+              max={maxBrushPx}
               value={brushSize}
               aria-label={t("studio.maskEdit.brushSize")}
               onChange={(e) => setBrushSize(Number(e.target.value))}
@@ -651,7 +751,11 @@ const StudioMaskEditorBody: React.FC<{ target: StudioMaskModalTarget }> = ({ tar
             size="sm"
             variant="secondary"
             disabled={strokes.length === 0}
-            onClick={() => setStrokes([])}
+            onClick={() => {
+              activeStrokeRef.current = null;
+              drawActiveStroke();
+              setStrokes([]);
+            }}
           >
             <Eraser size={13} />
             {t("studio.maskEdit.clear")}
@@ -677,61 +781,10 @@ const StudioMaskEditorBody: React.FC<{ target: StudioMaskModalTarget }> = ({ tar
                   setImgLoaded(true);
                 }}
               />
-              <canvas
-                ref={canvasRef}
-                width={imgSize.w}
-                height={imgSize.h}
-                className="studio-mask-canvas"
-                onPointerDown={(e) => {
-                  if (!imgLoaded) return;
-                  e.currentTarget.setPointerCapture(e.pointerId);
-                  setDrawing(true);
-                  const pt = pointFromEvent(e);
-                  setStrokes((prev) => [...prev, { size: brushSize, points: [pt] }]);
-                }}
-                onPointerMove={(e) => {
-                  if (!drawing || !imgLoaded) return;
-                  const pt = pointFromEvent(e);
-                  setStrokes((prev) => {
-                    if (prev.length === 0) return prev;
-                    const next = [...prev];
-                    const last = next[next.length - 1];
-                    next[next.length - 1] = { ...last, points: [...last.points, pt] };
-                    return next;
-                  });
-                }}
-                onPointerUp={() => setDrawing(false)}
-                onPointerCancel={() => setDrawing(false)}
-                onLostPointerCapture={() => setDrawing(false)}
-              />
+              {renderCanvases(false)}
             </div>
           ) : (
-            <canvas
-              ref={canvasRef}
-              width={imgSize.w}
-              height={imgSize.h}
-              className="studio-mask-canvas studio-mask-canvas--standalone"
-              onPointerDown={(e) => {
-                e.currentTarget.setPointerCapture(e.pointerId);
-                setDrawing(true);
-                const pt = pointFromEvent(e);
-                setStrokes((prev) => [...prev, { size: brushSize, points: [pt] }]);
-              }}
-              onPointerMove={(e) => {
-                if (!drawing) return;
-                const pt = pointFromEvent(e);
-                setStrokes((prev) => {
-                  if (prev.length === 0) return prev;
-                  const next = [...prev];
-                  const last = next[next.length - 1];
-                  next[next.length - 1] = { ...last, points: [...last.points, pt] };
-                  return next;
-                });
-              }}
-              onPointerUp={() => setDrawing(false)}
-              onPointerCancel={() => setDrawing(false)}
-              onLostPointerCapture={() => setDrawing(false)}
-            />
+            <div className="studio-media-overlay-stage">{renderCanvases(true)}</div>
           )}
         </div>
 
