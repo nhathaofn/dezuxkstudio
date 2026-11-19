@@ -19,7 +19,6 @@ import (
 	domainbinaries "app/internal/domain/binaries"
 	"app/internal/engine"
 	"app/internal/progress"
-	"app/internal/runner"
 	"app/internal/service/media"
 )
 
@@ -176,17 +175,8 @@ func NewVideoConcatBasicNode(opts Options) engine.Node {
 		}
 		defer func() { _ = os.Remove(tmpOut) }()
 
-		args := buildFFmpegConcatArgs(clips, clipHasAudio, narrationPath, width, height, fps, opts.StudioConfig, tmpOut)
-		runCtx, cancel := context.WithTimeout(ctx, opts.StudioConfig.FFmpegTimeout)
-		defer cancel()
-
-		runOpts := runner.FFmpegPipeProgressOptions(ctx, int64(totalDurSec*microsecondsPerSecond), "studio.progress.concat_render", "Rendering assembled video")
-		res, err := runner.RunWithOptions(runCtx, ffmpegExe, args, runOpts)
-		if err != nil || res == nil || res.ExitCode != 0 {
-			if ctx.Err() != nil {
-				return contracts.VideoConcatBasicOutput{}, ctx.Err()
-			}
-			return contracts.VideoConcatBasicOutput{}, ioUnavailableErr("FFmpeg video assembly failed", err)
+		if err := runConcatBatch(ctx, ffmpegExe, outDir, clips, clipHasAudio, narrationPath, width, height, fps, opts.StudioConfig, totalDurSec, tmpOut); err != nil {
+			return contracts.VideoConcatBasicOutput{}, err
 		}
 
 		if err := commitTempMediaFile(tmpOut, outPath); err != nil {

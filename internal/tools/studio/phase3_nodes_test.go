@@ -848,3 +848,117 @@ func TestPhase3SpecDefaultsExplicitZeroBGMOverwriteDedupeAndOverlapShift(t *test
 		t.Fatalf("expected neutral studio-timeline slug in exported filename, got %s", expPath)
 	}
 }
+
+func TestStudioToolsHardeningFixes(t *testing.T) {
+	// 1. P0-3 Ken Burns zoompan omits -loop 1 and pre-zoompan fps=, while KenBurnsNone keeps both.
+	tl := domainstudio.EditTimeline{
+		Version: 1, Width: 1280, Height: 720, FPS: 24,
+		Tracks: []domainstudio.Track{{
+			ID: "v1", Kind: domainstudio.TrackVideo, Volume: 1,
+			Clips: []domainstudio.TimelineClip{
+				{ID: "kb", FilePath: "C:\\media\\still_kb.png", TimelineStartMs: 0, SourceInMs: 0, SourceOutMs: 3000, KenBurnsPreset: domainstudio.KenBurnsZoomIn},
+				{ID: "st", FilePath: "C:\\media\\still_static.png", TimelineStartMs: 3000, SourceInMs: 0, SourceOutMs: 2000, KenBurnsPreset: domainstudio.KenBurnsNone},
+			},
+		}},
+	}
+	resolved := []resolvedTimelineClip{
+		{track: tl.Tracks[0], clip: tl.Tracks[0].Clips[0], inputIndex: 0, isImage: true},
+		{track: tl.Tracks[0], clip: tl.Tracks[0].Clips[1], inputIndex: 1, isImage: true},
+	}
+	args, _, _ := buildRenderTimelineArgs(tl, resolved, `C:\sub dir\my'sub[1].ass`, -14.0, "medium", 20, config.StudioConfig{}, "out.mp4")
+	argsJoined := strings.Join(args, " ")
+	if strings.Contains(argsJoined, "-loop 1 -t 3.000 -i C:\\media\\still_kb.png") {
+		t.Fatalf("expected KenBurnsZoomIn still image NOT to pass -loop 1, got:\n%s", argsJoined)
+	}
+	if !strings.Contains(argsJoined, "-loop 1 -t 2.000 -i C:\\media\\still_static.png") {
+		t.Fatalf("expected KenBurnsNone still image to keep -loop 1, got:\n%s", argsJoined)
+	}
+	if strings.Contains(argsJoined, "setsar=1,fps=24,zoompan=") {
+		t.Fatalf("expected no fps= before zoompan filter, got:\n%s", argsJoined)
+	}
+	if !strings.Contains(argsJoined, "setsar=1,zoompan=") {
+		t.Fatalf("expected zoompan directly after setsar=1, got:\n%s", argsJoined)
+	}
+	if !strings.Contains(argsJoined, `ass=filename=C\:/sub\ dir/my\'sub\[1\].ass`) {
+		t.Fatalf("unexpected ass=filename escaping, got:\n%s", argsJoined)
+	}
+
+	// 2. UNC path URI conversion
+	if got := filePathToFileURI(`\\nas01\studio share\shot 1.mp4`); got != "file://nas01/studio%20share/shot%201.mp4" {
+		t.Fatalf("UNC filePathToFileURI = %q", got)
+	}
+
+	// 3. Batching >24 clips uses FFmpeg concat demuxer, MediaPeaksThumbs uses multi-row grid & zip.Store for CapCut media.
+	tmp := t.TempDir()
+	ffprobeExe, ffmpegExe, argsLog := writePhase3FakeBinaries(t, tmp, make([]byte, 800))
+	clips := make([]manifestClip, 26)
+	var manifestObjs []map[string]any
+	for i := range clips {
+		p := filepath.Join(tmp, "clip"+string(rune('a'+i%26))+".mp4")
+		_ = os.WriteFile(p, []byte("MP4BYTES"), 0o600)
+		clips[i] = manifestClip{Path: p, DurationSec: 1.0}
+		manifestObjs = append(manifestObjs, map[string]any{"path": p, "duration_sec": 1.0})
+	}
+	opts := Options{
+		MediaDir: tmp,
+		Binaries: &stubBinaryResolver{paths: map[domainbinaries.BinaryID]string{
+			domainbinaries.IDFFprobe: ffprobeExe,
+			domainbinaries.IDFFmpeg:  ffmpegExe,
+		}},
+	}
+	if _, err := NewVideoConcatBasicNode(opts).Run(context.Background(), mustJSON(t, contracts.VideoConcatBasicInput{
+		ClipsManifestJSON: string(mustJSON(t, manifestObjs)),
+		OutputDir:         tmp,
+	})); err != nil {
+		t.Fatalf("batched video concat failed: %v", err)
+	}
+	concatArgsRaw, _ := os.ReadFile(argsLog)
+	concatFlat := strings.ReplaceAll(strings.ReplaceAll(string(concatArgsRaw), "\r\n", " "), "\n", " ")
+	if !strings.Contains(concatFlat, "-f concat -safe 0 -i") {
+		t.Fatalf("expected >24 clip concat to batch via -f concat, got:\n%s", concatFlat)
+	}
+
+	// MediaPeaksThumbs grid tile
+	_ = os.Remove(argsLog)
+	ptRaw, err := NewMediaPeaksThumbsNode(opts).Run(context.Background(), mustJSON(t, contracts.MediaPeaksThumbsInput{
+		Media:            engine.InputRef(clips[0].Path, engine.MediaVideo),
+		ThumbIntervalSec: 0.25,
+		OutputDir:        tmp,
+	}))
+	if err != nil {
+		t.Fatalf("media_peaks_thumbs failed: %v", err)
+	}
+	ptOut := ptRaw.(contracts.MediaPeaksThumbsOutput)
+	if ptOut.SpriteCols != 10 || ptOut.SpriteRows != 2 || ptOut.ThumbCount != 20 {
+		t.Fatalf("expected 10x2 grid for 20 capped thumbs (6s / 0.25s), got cols=%d rows=%d count=%d", ptOut.SpriteCols, ptOut.SpriteRows, ptOut.ThumbCount)
+	}
+
+	// CapCut export uses zip.Store on media assets
+	ccTL := domainstudio.EditTimeline{
+		Version: 1, Width: 1280, Height: 720, FPS: 24,
+		Tracks: []domainstudio.Track{{
+			ID: "v1", Kind: domainstudio.TrackVideo, Volume: 1,
+			Clips: []domainstudio.TimelineClip{{ID: "c1", FilePath: clips[0].Path, TimelineStartMs: 0, SourceInMs: 0, SourceOutMs: 1000}},
+		}},
+	}
+	incMedia := true
+	ccRaw, err := NewExportNLEDraftNode(opts).Run(context.Background(), mustJSON(t, contracts.ExportNLEDraftInput{
+		TimelineJSON:     string(mustJSON(t, ccTL)),
+		Format:           "capcut",
+		IncludeMediaCopy: &incMedia,
+		OutputDir:        tmp,
+	}))
+	if err != nil {
+		t.Fatalf("capcut export failed: %v", err)
+	}
+	zr, err := zip.OpenReader(ccRaw.(contracts.ExportNLEDraftOutput).ExportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	for _, f := range zr.File {
+		if strings.HasSuffix(f.Name, ".mp4") && f.Method != zip.Store {
+			t.Fatalf("expected zip.Store for precompressed mp4 %q, got method=%d", f.Name, f.Method)
+		}
+	}
+}

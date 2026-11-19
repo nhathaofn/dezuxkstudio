@@ -113,7 +113,21 @@ func NewExtractFramesNode(opts Options) engine.Node {
 		ffCtx, cancelFF := context.WithTimeout(ctx, opts.StudioConfig.FFmpegTimeout)
 		defer cancelFF()
 
+		type stagedFrame struct {
+			tmpPath string
+			outPath string
+			tsSec   float64
+		}
 		total := len(timestamps)
+		staged := make([]stagedFrame, 0, total)
+		defer func() {
+			for _, sf := range staged {
+				if sf.tmpPath != "" {
+					_ = os.Remove(sf.tmpPath)
+				}
+			}
+		}()
+
 		for i, ts := range timestamps {
 			if err := ctx.Err(); err != nil {
 				return contracts.ExtractFramesOutput{}, err
@@ -151,13 +165,26 @@ func NewExtractFramesNode(opts Options) engine.Node {
 				}
 				return contracts.ExtractFramesOutput{}, ioUnavailableErr("FFmpeg failed to extract video frame", runErr)
 			}
-			if cerr := commitTempMediaFile(tmpOut, outPath); cerr != nil {
+			staged = append(staged, stagedFrame{
+				tmpPath: tmpOut,
+				outPath: outPath,
+				tsSec:   math.Max(0, ts),
+			})
+		}
+
+		if err := ctx.Err(); err != nil {
+			return contracts.ExtractFramesOutput{}, err
+		}
+		for i := range staged {
+			sf := &staged[i]
+			if cerr := commitTempMediaFile(sf.tmpPath, sf.outPath); cerr != nil {
 				return contracts.ExtractFramesOutput{}, cerr
 			}
-			assetID := registerStudioAsset(ctx, opts, "image", NodeTypeExtractFrames, outPath, outDir)
+			sf.tmpPath = ""
+			assetID := registerStudioAsset(ctx, opts, "image", NodeTypeExtractFrames, sf.outPath, outDir)
 			out.Frames = append(out.Frames, contracts.ExtractedFrame{
-				Path:         outPath,
-				TimestampSec: math.Max(0, ts),
+				Path:         sf.outPath,
+				TimestampSec: sf.tsSec,
 				Width:        info.Width,
 				Height:       info.Height,
 				AssetID:      assetID,

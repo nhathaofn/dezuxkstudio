@@ -3,8 +3,8 @@ package studio
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -16,25 +16,10 @@ import (
 	"app/internal/engine"
 	"app/internal/progress"
 	"app/internal/runner"
+	"app/internal/tools/mediautil"
 )
 
 var silenceDurationRe = regexp.MustCompile(`silence_duration:\s*([0-9]+(?:\.[0-9]+)?)`)
-
-type ffprobeRaw struct {
-	Format struct {
-		FormatName string `json:"format_name"`
-		Duration   string `json:"duration"`
-	} `json:"format"`
-	Streams []struct {
-		CodecType    string `json:"codec_type"`
-		CodecName    string `json:"codec_name"`
-		Width        int    `json:"width"`
-		Height       int    `json:"height"`
-		RFrameRate   string `json:"r_frame_rate"`
-		AvgFrameRate string `json:"avg_frame_rate"`
-		Duration     string `json:"duration"`
-	} `json:"streams"`
-}
 
 // NewProbeMediaNode builds the tool.probe_media workflow node backed by binaries.Service (IDFFprobe).
 func NewProbeMediaNode(opts Options) engine.Node {
@@ -96,9 +81,20 @@ func NewProbeMediaNode(opts Options) engine.Node {
 			if ffmpegExe, ferr := resolveBinary(ctx, opts.Binaries, domainbinaries.IDFFmpeg); ferr == nil {
 				silCtx, cancelSil := context.WithTimeout(ctx, opts.StudioConfig.FFmpegTimeout)
 				stopSil := progress.KeepAlive(ctx)
-				out.SilentRatio = detectSilenceRatio(silCtx, ffmpegExe, resolvedPath, out.DurationSec, opts.StudioConfig)
+				ratio, sErr := detectSilenceRatio(silCtx, ffmpegExe, resolvedPath, out.DurationSec, opts.StudioConfig)
 				stopSil()
 				cancelSil()
+				if sErr != nil {
+					if ctx.Err() != nil {
+						return contracts.ProbeMediaOutput{}, sErr
+					}
+					msg := fmt.Sprintf("Audio silence detection unavailable: %v", sErr)
+					out.Warnings = append(out.Warnings, msg)
+					if opts.Logger != nil {
+						opts.Logger.WarnContext(ctx, "studio: silencedetect failed during probe", "path", filepath.Base(resolvedPath), "error", sErr)
+					}
+				}
+				out.SilentRatio = ratio
 			}
 		}
 
@@ -131,79 +127,27 @@ func marshalProbeSummary(out contracts.ProbeMediaOutput) string {
 }
 
 func probeWithFFprobe(ctx context.Context, ffprobeExe, filePath string) (contracts.ProbeMediaOutput, error) {
-	args := []string{
-		"-v", "quiet",
-		"-print_format", "json",
-		"-show_format",
-		"-show_streams",
-		filePath,
-	}
-	res, err := runner.RunWithOptions(ctx, ffprobeExe, args, runner.RunOptions{})
+	info, err := mediautil.ProbeFile(ctx, ffprobeExe, filePath)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return contracts.ProbeMediaOutput{}, err
-		}
-		return contracts.ProbeMediaOutput{}, apperr.Wrap(apperr.CodeIntegrity, "Media file could not be inspected or is corrupted", err).
-			WithMsg("errors.studio.media_corrupt", nil)
+		return contracts.ProbeMediaOutput{}, err
 	}
-
-	var raw ffprobeRaw
-	if err := json.Unmarshal([]byte(res.Stdout), &raw); err != nil {
-		return contracts.ProbeMediaOutput{}, apperr.Wrap(apperr.CodeIntegrity, "Media probe output was unreadable or corrupted", err).
-			WithMsg("errors.studio.media_corrupt", nil)
-	}
-
 	out := contracts.ProbeMediaOutput{
-		FormatName: raw.Format.FormatName,
-	}
-	if d, err := strconv.ParseFloat(strings.TrimSpace(raw.Format.Duration), 64); err == nil && d > 0 {
-		out.DurationSec = d
-	}
-
-	for _, st := range raw.Streams {
-		switch st.CodecType {
-		case "video":
-			if out.VideoCodec == "" {
-				out.VideoCodec = st.CodecName
-			}
-			if out.Width == 0 && st.Width > 0 {
-				out.Width = st.Width
-				out.Height = st.Height
-			}
-			if out.FPS == 0 {
-				out.FPS = parseFFprobeRate(st.AvgFrameRate)
-				if out.FPS == 0 {
-					out.FPS = parseFFprobeRate(st.RFrameRate)
-				}
-			}
-			if out.DurationSec == 0 {
-				if d, err := strconv.ParseFloat(strings.TrimSpace(st.Duration), 64); err == nil && d > 0 {
-					out.DurationSec = d
-				}
-			}
-		case "audio":
-			out.HasAudio = true
-			if out.AudioCodec == "" {
-				out.AudioCodec = st.CodecName
-			}
-			if out.DurationSec == 0 {
-				if d, err := strconv.ParseFloat(strings.TrimSpace(st.Duration), 64); err == nil && d > 0 {
-					out.DurationSec = d
-				}
-			}
-		}
-	}
-	if len(raw.Streams) == 0 && out.FormatName == "" && out.DurationSec == 0 {
-		return contracts.ProbeMediaOutput{}, apperr.New(apperr.CodeIntegrity, "Media file contains no readable streams").
-			WithMsg("errors.studio.media_corrupt", nil)
+		FormatName:  info.FormatName,
+		VideoCodec:  info.VideoCodec,
+		AudioCodec:  info.AudioCodec,
+		HasAudio:    info.HasAudio,
+		Width:       info.Width,
+		Height:      info.Height,
+		FPS:         info.FPS,
+		DurationSec: info.DurationSec,
 	}
 	out.ProbeJSON = marshalProbeSummary(out)
 	return out, nil
 }
 
-func detectSilenceRatio(ctx context.Context, ffmpegExe, filePath string, totalDur float64, cfg ...config.StudioConfig) float64 {
+func detectSilenceRatio(ctx context.Context, ffmpegExe, filePath string, totalDur float64, cfg ...config.StudioConfig) (float64, error) {
 	if totalDur <= 0 {
-		return 0
+		return 0, nil
 	}
 	var rawCfg config.StudioConfig
 	if len(cfg) > 0 {
@@ -220,8 +164,14 @@ func detectSilenceRatio(ctx context.Context, ffmpegExe, filePath string, totalDu
 		"-",
 	}
 	res, err := runner.RunWithOptions(ctx, ffmpegExe, args, runner.RunOptions{})
-	if err != nil || res == nil {
-		return 0
+	if err != nil {
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		return 0, apperr.Wrap(apperr.CodeUnavailable, "FFmpeg silencedetect failed", err)
+	}
+	if res == nil || res.ExitCode != 0 {
+		return 0, apperr.Unavailable("FFmpeg silencedetect exited non-zero")
 	}
 	var silentTotal float64
 	for _, m := range silenceDurationRe.FindAllStringSubmatch(res.Stderr, -1) {
@@ -233,30 +183,10 @@ func detectSilenceRatio(ctx context.Context, ffmpegExe, filePath string, totalDu
 	}
 	ratio := silentTotal / totalDur
 	if ratio < 0 {
-		return 0
+		return 0, nil
 	}
 	if ratio > 1 {
-		return 1
+		return 1, nil
 	}
-	return ratio
-}
-
-func parseFFprobeRate(raw string) float64 {
-	s := strings.TrimSpace(raw)
-	if s == "" || s == "0/0" {
-		return 0
-	}
-	if numStr, denStr, ok := strings.Cut(s, "/"); ok {
-		num, err1 := strconv.ParseFloat(numStr, 64)
-		den, err2 := strconv.ParseFloat(denStr, 64)
-		if err1 == nil && err2 == nil && den > 0 {
-			return num / den
-		}
-		return 0
-	}
-	f, err := strconv.ParseFloat(s, 64)
-	if err != nil || f <= 0 {
-		return 0
-	}
-	return f
+	return ratio, nil
 }

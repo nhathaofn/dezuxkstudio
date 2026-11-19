@@ -43,7 +43,7 @@ type ffprobeRaw struct {
 }
 
 var imageExts = map[string]struct{}{
-	".png": {}, ".jpg": {}, ".jpeg": {}, ".webp": {}, ".bmp": {}, ".gif": {},
+	".png": {}, ".jpg": {}, ".jpeg": {}, ".webp": {}, ".bmp": {}, ".gif": {}, ".tif": {}, ".tiff": {}, ".avif": {},
 }
 
 var videoExts = map[string]struct{}{
@@ -52,6 +52,21 @@ var videoExts = map[string]struct{}{
 
 var audioExts = map[string]struct{}{
 	".mp3": {}, ".wav": {}, ".aac": {}, ".m4a": {}, ".ogg": {}, ".opus": {}, ".flac": {}, ".wma": {},
+}
+
+var audioContainerExts = map[string]struct{}{
+	".mp3": {}, ".wav": {}, ".aac": {}, ".m4a": {}, ".ogg": {}, ".opus": {}, ".flac": {}, ".wma": {},
+	".webm": {}, ".mp4": {}, ".mov": {}, ".mkv": {},
+}
+
+var subtitleExts = map[string]struct{}{
+	".srt": {}, ".ass": {}, ".ssa": {}, ".vtt": {},
+}
+
+var precompressedExts = map[string]struct{}{
+	".mp4": {}, ".mov": {}, ".m4v": {}, ".webm": {}, ".mkv": {},
+	".png": {}, ".jpg": {}, ".jpeg": {}, ".webp": {}, ".gif": {},
+	".mp3": {}, ".aac": {}, ".m4a": {}, ".opus": {}, ".ogg": {}, ".flac": {},
 }
 
 // IsSupportedImageExt reports whether path has a supported image file extension.
@@ -69,6 +84,24 @@ func IsSupportedVideoExt(path string) bool {
 // IsSupportedAudioExt reports whether path has a supported audio file extension.
 func IsSupportedAudioExt(path string) bool {
 	_, ok := audioExts[strings.ToLower(filepath.Ext(path))]
+	return ok
+}
+
+// IsSupportedAudioSourceExt reports whether path is an audio file or A/V container usable as an audio track.
+func IsSupportedAudioSourceExt(path string) bool {
+	_, ok := audioContainerExts[strings.ToLower(filepath.Ext(path))]
+	return ok
+}
+
+// IsSupportedSubtitleExt reports whether path has a supported subtitle file extension.
+func IsSupportedSubtitleExt(path string) bool {
+	_, ok := subtitleExts[strings.ToLower(filepath.Ext(path))]
+	return ok
+}
+
+// IsPrecompressedExt reports whether path uses an already compressed codec/container where zip.Store is preferable.
+func IsPrecompressedExt(path string) bool {
+	_, ok := precompressedExts[strings.ToLower(filepath.Ext(path))]
 	return ok
 }
 

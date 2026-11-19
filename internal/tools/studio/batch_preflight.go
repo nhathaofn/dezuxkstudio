@@ -154,7 +154,19 @@ func NewBatchPreflightNode(opts Options) engine.Node {
 		usedWildcard := true
 		if opts.CostEstimator != nil {
 			p, wc, err := opts.CostEstimator.EstimateUnitPriceUSD(ctx, out.ProviderID, out.ModelID, capName, unit)
-			if err == nil && !math.IsNaN(p) && !math.IsInf(p, 0) && (p > 0 || (p == 0 && !wc)) {
+			if err != nil {
+				if ctx.Err() != nil {
+					return contracts.BatchPreflightOutput{}, ctx.Err()
+				}
+				if opts.Logger != nil {
+					opts.Logger.WarnContext(ctx, "studio: pricing catalog estimate lookup failed; using fallback rate",
+						"capability", capName,
+						"error", err,
+					)
+				}
+				addWarning("Pricing catalog lookup failed; using fallback rate", "studio.preflight.warn.fallback_rate", nil)
+				usedWildcard = false
+			} else if !math.IsNaN(p) && !math.IsInf(p, 0) && (p > 0 || (p == 0 && !wc)) {
 				unitPrice = p
 				usedWildcard = wc
 			}

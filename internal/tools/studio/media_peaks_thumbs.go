@@ -158,9 +158,15 @@ func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 			baseStem = "clip"
 		}
 
-		var spritePath, spriteAssetID string
-		thumbCount := 0
+		var spritePath, tmpSprite, spriteAssetID string
+		thumbCount, spriteCols, spriteRows := 0, 0, 0
+		defer func() {
+			if tmpSprite != "" {
+				_ = os.Remove(tmpSprite)
+			}
+		}()
 		if info.Width > 0 && info.Height > 0 {
+			const maxSpriteGridCols = 10
 			maxStripThumbs := opts.StudioConfig.TimelineMaxStripThumbs
 			effInterval := math.Max(minThumbIntervalSec, interval)
 			thumbCount = max(1, int(math.Ceil(durSec/effInterval)))
@@ -169,16 +175,19 @@ func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 				effInterval = math.Max(minThumbIntervalSec, durSec/float64(maxStripThumbs))
 			}
 			interval = effInterval
+			spriteCols = min(thumbCount, maxSpriteGridCols)
+			spriteRows = (thumbCount + spriteCols - 1) / spriteCols
 
 			spritePath = filepath.Join(outDir, uniqueExportFilename(baseStem+"_sprite", ".jpg"))
 			if err := checkStudioFile(ctx, spritePath, true); err != nil {
 				return contracts.MediaPeaksThumbsOutput{}, err
 			}
-			tmpSprite, terr := createTempMediaFile(outDir, ".tmp-sprite-", ".jpg")
+			var terr error
+			tmpSprite, terr = createTempMediaFile(outDir, ".tmp-sprite-", ".jpg")
 			if terr != nil {
 				return contracts.MediaPeaksThumbsOutput{}, terr
 			}
-			vf := fmt.Sprintf("fps=1/%.4f,scale=-2:%d,tile=%dx1", effInterval, thumbH, thumbCount)
+			vf := fmt.Sprintf("fps=1/%.4f,scale=-2:%d,tile=%dx%d", effInterval, thumbH, spriteCols, spriteRows)
 			ffCtx, cancelFF := context.WithTimeout(ctx, opts.StudioConfig.FFmpegTimeout)
 			stopFF := progress.KeepAlive(ctx)
 			res, ferr := runner.RunWithOptions(ffCtx, ffmpegExe, []string{
@@ -192,20 +201,17 @@ func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 			stopFF()
 			cancelFF()
 			if ferr != nil || res == nil || res.ExitCode != 0 {
-				_ = os.Remove(tmpSprite)
 				if ctx.Err() != nil {
 					return contracts.MediaPeaksThumbsOutput{}, ctx.Err()
 				}
 				return contracts.MediaPeaksThumbsOutput{}, ioUnavailableErr("FFmpeg failed to extract timeline thumbnail strip", ferr)
 			}
-			if infoStat, serr := os.Stat(tmpSprite); serr == nil && infoStat.Size() > 0 {
-				if cerr := commitTempMediaFile(tmpSprite, spritePath); cerr != nil {
-					return contracts.MediaPeaksThumbsOutput{}, cerr
-				}
-				spriteAssetID = registerStudioAsset(ctx, opts, "image", NodeTypeMediaPeaksThumbs, spritePath, outDir)
-			} else {
+			if infoStat, serr := os.Stat(tmpSprite); serr != nil || infoStat.Size() == 0 {
 				_ = os.Remove(tmpSprite)
+				tmpSprite = ""
 				spritePath = ""
+				spriteCols = 0
+				spriteRows = 0
 			}
 		}
 
@@ -233,6 +239,8 @@ func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 			"duration_ms":        durationMs,
 			"sprite_sheet_path":  spritePath,
 			"sprite_asset_id":    spriteAssetID,
+			"sprite_cols":        spriteCols,
+			"sprite_rows":        spriteRows,
 			"thumb_count":        thumbCount,
 			"thumb_interval_sec": interval,
 			"peaks":              peaks,
@@ -241,9 +249,40 @@ func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 		if err != nil {
 			return contracts.MediaPeaksThumbsOutput{}, apperr.Internal(err)
 		}
-		if err := fsutil.WriteFileAtomic(peaksPath, append(metaBytes, '\n'), 0o600); err != nil {
-			return contracts.MediaPeaksThumbsOutput{}, ioUnavailableErr("Failed to write timeline waveform peaks cache", err)
+		tmpPeaks, terr := createTempMediaFile(outDir, ".tmp-peaks-", ".json")
+		if terr != nil {
+			return contracts.MediaPeaksThumbsOutput{}, terr
 		}
+		defer func() {
+			if tmpPeaks != "" {
+				_ = os.Remove(tmpPeaks)
+			}
+		}()
+		if err := fsutil.WriteFileAtomic(tmpPeaks, append(metaBytes, '\n'), 0o600); err != nil {
+			return contracts.MediaPeaksThumbsOutput{}, ioUnavailableErr("Failed to write temporary timeline waveform peaks cache", err)
+		}
+
+		if err := ctx.Err(); err != nil {
+			return contracts.MediaPeaksThumbsOutput{}, err
+		}
+		if tmpSprite != "" && spritePath != "" {
+			if cerr := commitTempMediaFile(tmpSprite, spritePath); cerr != nil {
+				return contracts.MediaPeaksThumbsOutput{}, cerr
+			}
+			tmpSprite = ""
+			spriteAssetID = registerStudioAsset(ctx, opts, "image", NodeTypeMediaPeaksThumbs, spritePath, outDir)
+			if spriteAssetID != "" {
+				metaObj["sprite_asset_id"] = spriteAssetID
+				if updated, mErr := json.MarshalIndent(metaObj, "", "  "); mErr == nil {
+					metaBytes = updated
+					_ = fsutil.WriteFileAtomic(tmpPeaks, append(metaBytes, '\n'), 0o600)
+				}
+			}
+		}
+		if cerr := commitTempMediaFile(tmpPeaks, peaksPath); cerr != nil {
+			return contracts.MediaPeaksThumbsOutput{}, cerr
+		}
+		tmpPeaks = ""
 
 		progress.Report(ctx, progress.Update{Percent: 100, Message: "Timeline peaks & thumbnails ready", Key: "studio.progress.done"})
 
@@ -251,6 +290,8 @@ func NewMediaPeaksThumbsNode(opts Options) engine.Node {
 			PeaksThumbsJSON:  string(metaBytes),
 			SpriteSheetPath:  spritePath,
 			SpriteAssetID:    spriteAssetID,
+			SpriteCols:       spriteCols,
+			SpriteRows:       spriteRows,
 			PeaksJSONPath:    peaksPath,
 			Peaks:            peaks,
 			ThumbCount:       thumbCount,

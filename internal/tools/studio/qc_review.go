@@ -164,10 +164,17 @@ func NewQCReviewNode(opts Options) engine.Node {
 					if ffmpegExe, ferr := resolveBinary(ctx, opts.Binaries, domainbinaries.IDFFmpeg); ferr == nil {
 						silCtx, cancelSil := context.WithTimeout(ctx, opts.StudioConfig.FFmpegTimeout)
 						stopSil := progress.KeepAlive(ctx)
-						silentRatio := detectSilenceRatio(silCtx, ffmpegExe, mediaPath, pOut.DurationSec, opts.StudioConfig)
+						silentRatio, sErr := detectSilenceRatio(silCtx, ffmpegExe, mediaPath, pOut.DurationSec, opts.StudioConfig)
 						stopSil()
 						cancelSil()
-						if silentRatio > opts.StudioConfig.QCSilenceWarnRatio {
+						if sErr != nil {
+							out.Issues = append(out.Issues, contracts.QCReviewIssue{
+								Severity: "warn",
+								Category: "audio",
+								Message:  "Audio silence detection could not complete cleanly",
+								MsgKey:   "studio.qc.issue.audio_probe_failed",
+							})
+						} else if silentRatio > opts.StudioConfig.QCSilenceWarnRatio {
 							out.Issues = append(out.Issues, contracts.QCReviewIssue{
 								Severity:  "warn",
 								Category:  "audio",

@@ -181,7 +181,8 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 			}
 		}
 
-		probeMs := func(path string, fallbackSec int) int64 {
+		var assemblyWarnings []string
+		probeMs := func(path string, fallbackSec int) (int64, error) {
 			if ffprobeExe != "" {
 				probeCtx, cancel := context.WithTimeout(ctx, opts.StudioConfig.FFprobeTimeout)
 				stop := progress.KeepAlive(ctx)
@@ -189,13 +190,23 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 				stop()
 				cancel()
 				if perr == nil && pOut.DurationSec > minProbeValidSec {
-					return int64(math.Round(pOut.DurationSec * 1000))
+					return int64(math.Round(pOut.DurationSec * 1000)), nil
 				}
+				if ctx.Err() != nil {
+					return 0, ctx.Err()
+				}
+				if opts.Logger != nil {
+					opts.Logger.WarnContext(ctx, "studio: ffprobe duration unavailable during timeline_assemble; using shot fallback duration",
+						"file", filepath.Base(path),
+						"error", perr,
+					)
+				}
+				assemblyWarnings = append(assemblyWarnings, fmt.Sprintf("ffprobe duration fallback for %s", filepath.Base(path)))
 			}
 			if fallbackSec > 0 {
-				return int64(fallbackSec) * 1000
+				return int64(fallbackSec) * 1000, nil
 			}
-			return int64(opts.StudioConfig.DefaultShotDurationSec) * 1000
+			return int64(opts.StudioConfig.DefaultShotDurationSec) * 1000, nil
 		}
 
 		tl := domainstudio.EditTimeline{
@@ -240,7 +251,10 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 			if rerr != nil {
 				return contracts.TimelineAutoAssembleOutput{}, rerr
 			}
-			vidDurMs := probeMs(vidPath, sh.DurationSec)
+			vidDurMs, pErr := probeMs(vidPath, sh.DurationSec)
+			if pErr != nil {
+				return contracts.TimelineAutoAssembleOutput{}, pErr
+			}
 			if vidDurMs < minShotDurMs {
 				vidDurMs = fallbackShotDurMs
 			}
@@ -253,7 +267,10 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 					return contracts.TimelineAutoAssembleOutput{}, aerr
 				}
 				audPath = resolvedAud
-				audDurMs = probeMs(audPath, sh.DurationSec)
+				audDurMs, pErr = probeMs(audPath, sh.DurationSec)
+				if pErr != nil {
+					return contracts.TimelineAutoAssembleOutput{}, pErr
+				}
 			}
 
 			startMs := cursorMs
@@ -358,7 +375,11 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 			}
 			outMs := ea.SourceOutMs
 			if outMs <= ea.SourceInMs {
-				outMs = ea.SourceInMs + probeMs(resolved, opts.StudioConfig.DefaultShotDurationSec)
+				pDur, pErr := probeMs(resolved, opts.StudioConfig.DefaultShotDurationSec)
+				if pErr != nil {
+					return contracts.TimelineAutoAssembleOutput{}, pErr
+				}
+				outMs = ea.SourceInMs + pDur
 			}
 			vol := ea.Volume
 			if math.IsNaN(vol) || math.IsInf(vol, 0) || vol <= 0 {
@@ -395,7 +416,10 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 				return contracts.TimelineAutoAssembleOutput{}, berr
 			}
 			totalVideoMs := max(fallbackShotDurMs, cursorMs)
-			bgmSrcMs := probeMs(bgmResolved, int(totalVideoMs/1000))
+			bgmSrcMs, pErr := probeMs(bgmResolved, int(totalVideoMs/1000))
+			if pErr != nil {
+				return contracts.TimelineAutoAssembleOutput{}, pErr
+			}
 			bgmOutMs := min(bgmSrcMs, totalVideoMs)
 			if bgmOutMs <= 0 {
 				bgmOutMs = totalVideoMs
@@ -454,6 +478,7 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 			TrackCount:    len(tl.Tracks),
 			ClipCount:     clipCount,
 			SubtitleCount: len(tl.Subtitles),
+			Warnings:      assemblyWarnings,
 		}, nil
 	})
 }

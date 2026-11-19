@@ -21,6 +21,7 @@ import (
 	"app/internal/fsutil"
 	"app/internal/paths"
 	"app/internal/service/media"
+	"app/internal/tools/mediautil"
 )
 
 const (
@@ -280,33 +281,20 @@ func writeProjectArtifact(ctx context.Context, opts Options, projectDir, subDir,
 }
 
 func matchesInputKind(path string, allowed inputMediaKind) bool {
-	ext := strings.ToLower(filepath.Ext(path))
-	if ext == "" {
+	if strings.TrimSpace(filepath.Ext(path)) == "" {
 		return false
 	}
-	if allowed&inputKindImage != 0 {
-		switch ext {
-		case ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".avif":
-			return true
-		}
+	if allowed&inputKindImage != 0 && mediautil.IsSupportedImageExt(path) {
+		return true
 	}
-	if allowed&inputKindVideo != 0 {
-		switch ext {
-		case ".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v", ".mpeg", ".mpg", ".ts":
-			return true
-		}
+	if allowed&inputKindVideo != 0 && mediautil.IsSupportedVideoExt(path) {
+		return true
 	}
-	if allowed&inputKindAudio != 0 {
-		switch ext {
-		case ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".flac", ".webm", ".mp4", ".mov", ".mkv":
-			return true
-		}
+	if allowed&inputKindAudio != 0 && mediautil.IsSupportedAudioSourceExt(path) {
+		return true
 	}
-	if allowed&inputKindSubtitle != 0 {
-		switch ext {
-		case ".srt", ".ass", ".ssa", ".vtt":
-			return true
-		}
+	if allowed&inputKindSubtitle != 0 && mediautil.IsSupportedSubtitleExt(path) {
+		return true
 	}
 	return false
 }

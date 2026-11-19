@@ -16,6 +16,7 @@ import (
 	_ "golang.org/x/image/webp"
 
 	"app/internal/apperr"
+	"app/internal/config"
 	"app/internal/contracts"
 	"app/internal/engine"
 	"app/internal/fsutil"
@@ -110,6 +111,15 @@ func NewGridSplitNode(opts Options) engine.Node {
 			cols = len(in.ColWeights)
 		}
 
+		imgW, imgH, _, cfgErr := probeImageConfig(imgPath)
+		if cfgErr == nil {
+			maxPixels := config.Default(config.ModeDesktop).Watermark.MaxImagePixels
+			if int64(imgW)*int64(imgH) > maxPixels {
+				return contracts.GridSplitOutput{}, apperr.Validation(fmt.Sprintf("grid source image exceeds max allowed pixels (%d)", maxPixels)).
+					WithMsg("errors.studio.image_too_large", nil)
+			}
+		}
+
 		data, err := os.ReadFile(imgPath)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -135,16 +145,31 @@ func NewGridSplitNode(opts Options) engine.Node {
 		if err != nil {
 			return contracts.GridSplitOutput{}, err
 		}
+		if err := os.MkdirAll(outDir, 0o750); err != nil {
+			return contracts.GridSplitOutput{}, ioUnavailableErr("Failed to create grid panel output directory", err)
+		}
 
 		colStarts, colWidths := splitAxisSpans(b.Min.X+in.MarginPx, usableW, cols, in.GutterPx, in.ColWeights)
 		rowStarts, rowHeights := splitAxisSpans(b.Min.Y+in.MarginPx, usableH, rows, in.GutterPx, in.RowWeights)
 
-		total := rows * cols
-		out := contracts.GridSplitOutput{
-			Images:    make([]engine.MediaRef, 0, total),
-			Panels:    make([]contracts.GridPanel, 0, total),
-			OutputDir: outDir,
+		type stagedPanel struct {
+			tmpPath string
+			outPath string
+			row     int
+			col     int
+			w       int
+			h       int
 		}
+		total := rows * cols
+		staged := make([]stagedPanel, 0, total)
+		defer func() {
+			for _, p := range staged {
+				if p.tmpPath != "" {
+					_ = os.Remove(p.tmpPath)
+				}
+			}
+		}()
+
 		idx := 0
 		for r := 0; r < rows; r++ {
 			for c := 0; c < cols; c++ {
@@ -174,21 +199,51 @@ func NewGridSplitNode(opts Options) engine.Node {
 				if err := checkStudioFile(ctx, outPath, true); err != nil {
 					return contracts.GridSplitOutput{}, err
 				}
-				if err := fsutil.WriteFileAtomic(outPath, buf.Bytes(), 0o600); err != nil {
-					return contracts.GridSplitOutput{}, ioUnavailableErr("Failed to write cropped panel image", err)
+				tmpPath, terr := createTempMediaFile(outDir, ".tmp-panel-", ".png")
+				if terr != nil {
+					return contracts.GridSplitOutput{}, terr
 				}
-				assetID := registerStudioAsset(ctx, opts, "image", NodeTypeGridSplit, outPath, outDir)
-				out.Images = append(out.Images, engine.RefFor(outPath, engine.MediaImage))
-				out.Panels = append(out.Panels, contracts.GridPanel{
-					Index:   idx,
-					Row:     r + 1,
-					Col:     c + 1,
-					Path:    outPath,
-					Width:   rect.Dx(),
-					Height:  rect.Dy(),
-					AssetID: assetID,
+				if err := fsutil.WriteFileAtomic(tmpPath, buf.Bytes(), 0o600); err != nil {
+					_ = os.Remove(tmpPath)
+					return contracts.GridSplitOutput{}, ioUnavailableErr("Failed to write temporary cropped panel image", err)
+				}
+				staged = append(staged, stagedPanel{
+					tmpPath: tmpPath,
+					outPath: outPath,
+					row:     r + 1,
+					col:     c + 1,
+					w:       rect.Dx(),
+					h:       rect.Dy(),
 				})
 			}
+		}
+
+		if err := ctx.Err(); err != nil {
+			return contracts.GridSplitOutput{}, err
+		}
+
+		out := contracts.GridSplitOutput{
+			Images:    make([]engine.MediaRef, 0, total),
+			Panels:    make([]contracts.GridPanel, 0, total),
+			OutputDir: outDir,
+		}
+		for i := range staged {
+			sp := &staged[i]
+			if err := commitTempMediaFile(sp.tmpPath, sp.outPath); err != nil {
+				return contracts.GridSplitOutput{}, err
+			}
+			sp.tmpPath = ""
+			assetID := registerStudioAsset(ctx, opts, "image", NodeTypeGridSplit, sp.outPath, outDir)
+			out.Images = append(out.Images, engine.RefFor(sp.outPath, engine.MediaImage))
+			out.Panels = append(out.Panels, contracts.GridPanel{
+				Index:   i + 1,
+				Row:     sp.row,
+				Col:     sp.col,
+				Width:   sp.w,
+				Height:  sp.h,
+				Path:    sp.outPath,
+				AssetID: assetID,
+			})
 		}
 		progress.Report(ctx, progress.Update{Percent: 100, Message: "Grid panels split", Key: "studio.progress.done"})
 		return out, nil

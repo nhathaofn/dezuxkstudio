@@ -254,16 +254,17 @@ type ProbeMediaInput struct {
 
 // ProbeMediaOutput is the structured probe output returned by tool.probe_media.
 type ProbeMediaOutput struct {
-	ProbeJSON   string  `json:"probe_json"`
-	DurationSec float64 `json:"duration_sec"`
-	Width       int     `json:"width,omitempty"`
-	Height      int     `json:"height,omitempty"`
-	FPS         float64 `json:"fps,omitempty"`
-	HasAudio    bool    `json:"has_audio"`
-	SilentRatio float64 `json:"silent_ratio"`
-	VideoCodec  string  `json:"video_codec,omitempty"`
-	AudioCodec  string  `json:"audio_codec,omitempty"`
-	FormatName  string  `json:"format_name,omitempty"`
+	ProbeJSON   string   `json:"probe_json"`
+	DurationSec float64  `json:"duration_sec"`
+	Width       int      `json:"width,omitempty"`
+	Height      int      `json:"height,omitempty"`
+	FPS         float64  `json:"fps,omitempty"`
+	HasAudio    bool     `json:"has_audio"`
+	SilentRatio float64  `json:"silent_ratio"`
+	VideoCodec  string   `json:"video_codec,omitempty"`
+	AudioCodec  string   `json:"audio_codec,omitempty"`
+	FormatName  string   `json:"format_name,omitempty"`
+	Warnings    []string `json:"warnings,omitempty"`
 }
 
 // VideoConcatBasicInput is the input+params contract for tool.video_concat_basic.
@@ -514,12 +515,13 @@ type TimelineAutoAssembleInput struct {
 
 // TimelineAutoAssembleOutput is returned by tool.timeline_auto_assemble.
 type TimelineAutoAssembleOutput struct {
-	TimelineJSON  string `json:"timeline_json"`
-	TimelinePath  string `json:"timeline_path,omitempty"`
-	DurationMs    int64  `json:"duration_ms"`
-	TrackCount    int    `json:"track_count"`
-	ClipCount     int    `json:"clip_count"`
-	SubtitleCount int    `json:"subtitle_count"`
+	TimelineJSON  string   `json:"timeline_json"`
+	TimelinePath  string   `json:"timeline_path,omitempty"`
+	DurationMs    int64    `json:"duration_ms"`
+	TrackCount    int      `json:"track_count"`
+	ClipCount     int      `json:"clip_count"`
+	SubtitleCount int      `json:"subtitle_count"`
+	Warnings      []string `json:"warnings,omitempty"`
 }
 
 // MediaPeaksThumbsInput is the input+params contract for tool.media_peaks_thumbs.
@@ -537,6 +539,8 @@ type MediaPeaksThumbsOutput struct {
 	PeaksThumbsJSON  string    `json:"peaks_thumbs_json"`
 	SpriteSheetPath  string    `json:"sprite_sheet_path,omitempty"`
 	SpriteAssetID    string    `json:"sprite_asset_id,omitempty"`
+	SpriteCols       int       `json:"sprite_cols,omitempty"`
+	SpriteRows       int       `json:"sprite_rows,omitempty"`
 	PeaksJSONPath    string    `json:"peaks_json_path"`
 	Peaks            []float64 `json:"peaks"`
 	ThumbCount       int       `json:"thumb_count"`

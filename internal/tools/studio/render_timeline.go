@@ -19,8 +19,8 @@ import (
 	"app/internal/engine"
 	"app/internal/fsutil"
 	"app/internal/progress"
-	"app/internal/runner"
 	"app/internal/service/media"
+	"app/internal/tools/mediautil"
 )
 
 const (
@@ -209,7 +209,7 @@ func NewRenderTimelineNode(opts Options) engine.Node {
 						WithMsg("errors.studio.media_not_found", nil)
 				}
 				cl.FilePath = p
-				isImg := isImageExtension(p)
+				isImg := mediautil.IsSupportedImageExt(p)
 				hasAudio := !isImg
 				if !isImg && ffprobeExe != "" {
 					probeCtx, cancel := context.WithTimeout(ctx, opts.StudioConfig.FFprobeTimeout)
@@ -247,7 +247,7 @@ func NewRenderTimelineNode(opts Options) engine.Node {
 				WithMsg("errors.studio.empty_timeline", nil)
 		}
 
-		var srtPath, assPath string
+		var srtPath, assPath, tmpSrt, tmpAss string
 		burnPath := ""
 		if len(tl.Subtitles) > 0 {
 			stem := strings.TrimSuffix(filepath.Base(outPath), filepath.Ext(outPath))
@@ -259,43 +259,69 @@ func NewRenderTimelineNode(opts Options) engine.Node {
 			if err := checkStudioFile(ctx, assPath, true); err != nil {
 				return contracts.RenderTimelineOutput{}, err
 			}
-			if in.BurnSubtitles {
-				burnPath = assPath
-			}
 		}
 
 		tmpOut, err := createTempMediaFile(outDir, ".tmp-render-", ".mp4")
 		if err != nil {
 			return contracts.RenderTimelineOutput{}, err
 		}
-		defer func() { _ = os.Remove(tmpOut) }()
+		defer func() {
+			_ = os.Remove(tmpOut)
+			if tmpSrt != "" {
+				_ = os.Remove(tmpSrt)
+			}
+			if tmpAss != "" {
+				_ = os.Remove(tmpAss)
+			}
+		}()
 
-		args, expectedDurSec, shifts := buildRenderTimelineArgs(tl, resolved, burnPath, lufs, preset, crf, opts.StudioConfig, tmpOut)
+		var expectedDurSec float64
+		var shifts []renderTimeShift
+		// Compute filter shifts & expected duration first so shifted subtitles match the rendered video timeline.
+		args, expectedDurSec, shifts := buildRenderTimelineArgs(tl, resolved, "", lufs, preset, crf, opts.StudioConfig, tmpOut)
 
 		if len(tl.Subtitles) > 0 {
 			shiftedSubs := shiftSubtitleCues(tl.Subtitles, shifts)
-			if err := fsutil.WriteFileAtomic(srtPath, []byte(formatSRT(shiftedSubs)), 0o600); err != nil {
-				return contracts.RenderTimelineOutput{}, ioUnavailableErr("Failed to write rendered SRT subtitle file", err)
+			var terr error
+			tmpSrt, terr = createTempMediaFile(outDir, ".tmp-render-", ".srt")
+			if terr != nil {
+				return contracts.RenderTimelineOutput{}, terr
+			}
+			if err := fsutil.WriteFileAtomic(tmpSrt, []byte(formatSRT(shiftedSubs)), 0o600); err != nil {
+				return contracts.RenderTimelineOutput{}, ioUnavailableErr("Failed to write temporary rendered SRT subtitle file", err)
+			}
+			tmpAss, terr = createTempMediaFile(outDir, ".tmp-render-", ".ass")
+			if terr != nil {
+				return contracts.RenderTimelineOutput{}, terr
 			}
 			assContent := formatASS(shiftedSubs, tl.Width, tl.Height, fontSize, opts.StudioConfig.ExportSubtitleFontFamily)
-			if err := fsutil.WriteFileAtomic(assPath, []byte(assContent), 0o600); err != nil {
-				return contracts.RenderTimelineOutput{}, ioUnavailableErr("Failed to write rendered ASS subtitle file", err)
+			if err := fsutil.WriteFileAtomic(tmpAss, []byte(assContent), 0o600); err != nil {
+				return contracts.RenderTimelineOutput{}, ioUnavailableErr("Failed to write temporary rendered ASS subtitle file", err)
+			}
+			if in.BurnSubtitles {
+				burnPath = tmpAss
+				args, expectedDurSec, shifts = buildRenderTimelineArgs(tl, resolved, burnPath, lufs, preset, crf, opts.StudioConfig, tmpOut)
 			}
 		}
 
-		runCtx, cancelRun := context.WithTimeout(ctx, opts.StudioConfig.FFmpegTimeout)
-		defer cancelRun()
-		runOpts := runner.FFmpegPipeProgressOptions(ctx, int64(expectedDurSec*microsecondsPerSecond), "studio.progress.render_timeline", "Rendering timeline")
-		res, err := runner.RunWithOptions(runCtx, ffmpegExe, args, runOpts)
-		if err != nil || res == nil || res.ExitCode != 0 {
-			if ctx.Err() != nil {
-				return contracts.RenderTimelineOutput{}, ctx.Err()
-			}
-			return contracts.RenderTimelineOutput{}, ioUnavailableErr("FFmpeg timeline render failed", err)
+		if err := runRenderTimelinePass(ctx, ffmpegExe, outDir, tl, resolved, burnPath, lufs, preset, crf, opts.StudioConfig, tmpOut, args, expectedDurSec); err != nil {
+			return contracts.RenderTimelineOutput{}, err
 		}
 
 		if err := commitTempMediaFile(tmpOut, outPath); err != nil {
 			return contracts.RenderTimelineOutput{}, err
+		}
+		if tmpSrt != "" && srtPath != "" {
+			if err := commitTempMediaFile(tmpSrt, srtPath); err != nil {
+				return contracts.RenderTimelineOutput{}, err
+			}
+			tmpSrt = ""
+		}
+		if tmpAss != "" && assPath != "" {
+			if err := commitTempMediaFile(tmpAss, assPath); err != nil {
+				return contracts.RenderTimelineOutput{}, err
+			}
+			tmpAss = ""
 		}
 
 		finalDurSec := expectedDurSec
@@ -395,7 +421,7 @@ func buildRenderTimelineArgs(
 	args = []string{"-y", "-hide_banner", "-progress", "pipe:1", "-nostats"}
 
 	for _, rc := range resolved {
-		if rc.isImage {
+		if rc.isImage && rc.clip.KenBurnsPreset == domainstudio.KenBurnsNone {
 			durSec := float64(rc.clip.TimelineSpanMs()) / 1000.0
 			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", durSec), "-i", rc.clip.FilePath)
 		} else {
@@ -454,8 +480,13 @@ func buildRenderTimelineArgs(
 			}
 			var seg string
 			if rc.isImage {
-				seg = fmt.Sprintf("[%d:v]scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=%d%s,settb=AVTB,format=%s[vseg%d]",
-					rc.inputIndex, tl.Width, tl.Height, tl.Width, tl.Height, tl.FPS, kenBurnsFilter(rc.clip.KenBurnsPreset, tl.Width, tl.Height, tl.FPS, durSec), cfg.FFmpegPixelFormat, i)
+				if rc.clip.KenBurnsPreset != domainstudio.KenBurnsNone {
+					seg = fmt.Sprintf("[%d:v]scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1%s,settb=AVTB,format=%s[vseg%d]",
+						rc.inputIndex, tl.Width, tl.Height, tl.Width, tl.Height, kenBurnsFilter(rc.clip.KenBurnsPreset, tl.Width, tl.Height, tl.FPS, durSec), cfg.FFmpegPixelFormat, i)
+				} else {
+					seg = fmt.Sprintf("[%d:v]scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=%d,settb=AVTB,format=%s[vseg%d]",
+						rc.inputIndex, tl.Width, tl.Height, tl.Width, tl.Height, tl.FPS, cfg.FFmpegPixelFormat, i)
+				}
 			} else {
 				seg = fmt.Sprintf("[%d:v]trim=start=%.3f:end=%.3f,setpts=(PTS-STARTPTS)/%.4f,scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=%d,settb=AVTB,format=%s[vseg%d]",
 					rc.inputIndex, inSec, outSec, spd, tl.Width, tl.Height, tl.Width, tl.Height, tl.FPS, cfg.FFmpegPixelFormat, i)
@@ -578,7 +609,7 @@ func buildRenderTimelineArgs(
 	}
 
 	if assBurnPath != "" {
-		fc = append(fc, fmt.Sprintf("%sass='%s'[vout]", vOutLabel, escapeFFmpegFilterPath(assBurnPath)))
+		fc = append(fc, fmt.Sprintf("%sass=filename=%s[vout]", vOutLabel, escapeFFmpegFilterPath(assBurnPath)))
 		vOutLabel = "[vout]"
 	}
 
@@ -684,6 +715,9 @@ func escapeFFmpegFilterPath(p string) string {
 		`'`, `\'`,
 		`[`, `\[`,
 		`]`, `\]`,
+		`,`, `\,`,
+		`;`, `\;`,
+		` `, `\ `,
 	)
 	return replacer.Replace(slashed)
 }
@@ -779,13 +813,4 @@ func sanitizeExportFileBase(raw, fallbackStem, wantExt string) string {
 		out = strings.TrimSuffix(out, filepath.Ext(out)) + wantExt
 	}
 	return out
-}
-
-func isImageExtension(p string) bool {
-	switch strings.ToLower(filepath.Ext(p)) {
-	case ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".avif":
-		return true
-	default:
-		return false
-	}
 }

@@ -24,6 +24,7 @@ import (
 	"app/internal/engine"
 	"app/internal/fsutil"
 	"app/internal/progress"
+	"app/internal/tools/mediautil"
 )
 
 const (
@@ -244,7 +245,7 @@ func exportCapCutJianyingZip(
 				srcPath:    cl.FilePath,
 				zipRelPath: zipRel,
 				isAudio:    isAudTrack,
-				isImage:    isImageExtension(cl.FilePath),
+				isImage:    mediautil.IsSupportedImageExt(cl.FilePath),
 				durationUs: max(cl.SourceOutMs*1000, cl.TimelineSpanMs()*1000),
 			}
 			matByKey[key] = m
@@ -481,7 +482,15 @@ func exportCapCutJianyingZip(
 					_ = zw.Close()
 					return ioUnavailableErr("Failed to open source media file for NLE draft", oerr)
 				}
-				w, werr := zw.Create(prefix + m.zipRelPath)
+				hdr := &zip.FileHeader{
+					Name:     prefix + m.zipRelPath,
+					Method:   zip.Deflate,
+					Modified: st.ModTime(),
+				}
+				if mediautil.IsPrecompressedExt(m.srcPath) {
+					hdr.Method = zip.Store
+				}
+				w, werr := zw.CreateHeader(hdr)
 				if werr != nil {
 					_ = src.Close()
 					_ = zw.Close()
@@ -627,6 +636,13 @@ func fcpxTime(ms int64) string {
 
 func filePathToFileURI(p string) string {
 	slashed := filepath.ToSlash(p)
+	if strings.HasPrefix(slashed, "//") {
+		rest := strings.TrimPrefix(slashed, "//")
+		if host, pathPart, ok := strings.Cut(rest, "/"); ok && host != "" {
+			u := url.URL{Scheme: "file", Host: host, Path: "/" + pathPart}
+			return u.String()
+		}
+	}
 	if !strings.HasPrefix(slashed, "/") {
 		slashed = "/" + slashed
 	}
