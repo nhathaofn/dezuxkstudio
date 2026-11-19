@@ -108,6 +108,7 @@ export const StudioView: React.FC = () => {
   const updateProject = useStudioStore((s) => s.updateProject);
   const selectEpisode = useStudioStore((s) => s.selectEpisode);
   const createEpisode = useStudioStore((s) => s.createEpisode);
+  const syncWorkspace = useStudioStore((s) => s.syncWorkspace);
   const clearError = useStudioStore((s) => s.clearError);
 
   const approvals = useAgentStore((s) => s.approvals);
@@ -346,7 +347,31 @@ export const StudioView: React.FC = () => {
                 </select>
               </div>
 
+              <div className="form-group">
+                <span className="field-label">{t("studio.modal.defaultTtsModel")}</span>
+                <MediaModelSelect
+                  purpose="tts"
+                  value={ttsModel}
+                  onChange={(val) =>
+                    void updateProject({
+                      id: activeProj.id,
+                      default_tts_model: val,
+                    })
+                  }
+                  disabled={saving || runningStage !== null}
+                />
+              </div>
+
               <div className="studio-toolbar">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void syncWorkspace(activeProj.id)}
+                  disabled={saving || runningStage !== null}
+                >
+                  <RefreshCw size={13} />
+                  {t("studio.sidebar.syncWorkspace")}
+                </Button>
                 <Button
                   variant="ghost"
                   size="sm"
@@ -395,6 +420,19 @@ export const StudioView: React.FC = () => {
                 purpose={modelPurpose}
                 value={currentModelVal}
                 onChange={setCurrentModelVal}
+                disabled={runningStage !== null}
+              />
+            )}
+            {activeProj && activeStage === "video" && (
+              <MediaModelSelect
+                purpose="tts"
+                value={ttsModel}
+                onChange={(val) =>
+                  void updateProject({
+                    id: activeProj.id,
+                    default_tts_model: val,
+                  })
+                }
                 disabled={runningStage !== null}
               />
             )}

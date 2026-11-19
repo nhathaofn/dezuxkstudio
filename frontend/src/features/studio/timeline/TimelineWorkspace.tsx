@@ -32,6 +32,7 @@ import { appConfig } from "../../../config/appConfig";
 import {
   NodeTypes,
   StudioKenBurnsPresetValues,
+  StudioTrackKindValues,
   StudioTransitionTypeValues,
   type Param,
   type StudioEditTimeline,
@@ -42,6 +43,7 @@ import {
   type StudioTimelineClip,
   type StudioTimelineOp,
   type StudioTimelineOpKind,
+  type StudioTimelineTrack,
   type StudioTrackKind,
   type StudioTransitionType,
 } from "../../../contracts/generated";
@@ -362,6 +364,8 @@ export const ExportNLEDraftDialog: React.FC<ExportNLEDialogProps> = ({
 
 interface ClipInspectorProps {
   clip: StudioTimelineClip;
+  trackId?: string;
+  tracks?: StudioTimelineTrack[];
   locked: boolean;
   busy: boolean;
   canSplit: boolean;
@@ -374,6 +378,8 @@ interface ClipInspectorProps {
 
 export const ClipInspectorForm: React.FC<ClipInspectorProps> = ({
   clip,
+  trackId,
+  tracks,
   locked,
   busy,
   canSplit,
@@ -389,6 +395,8 @@ export const ClipInspectorForm: React.FC<ClipInspectorProps> = ({
   const trimStepSec = (appConfig.studio.timeline.trimStepMs / 1000).toFixed(1);
 
   const [label, setLabel] = useState(clip.label ?? "");
+  const [moveTrackId, setMoveTrackId] = useState(trackId ?? "");
+  const [moveStartMs, setMoveStartMs] = useState(clip.timeline_start_ms);
   const [speed, setSpeed] = useState(clip.speed || 1);
   const [volume, setVolume] = useState(clip.volume ?? 1);
   const [muted, setMuted] = useState(Boolean(clip.mute));
@@ -580,6 +588,62 @@ export const ClipInspectorForm: React.FC<ClipInspectorProps> = ({
         </select>
       </div>
 
+      <div className="studio-field-row">
+        <div className="form-group">
+          <label className="field-label" htmlFor="tl-clip-move-track">
+            {t("studio.timeline.moveTargetTrack")}
+          </label>
+          <select
+            id="tl-clip-move-track"
+            className="input-control"
+            value={moveTrackId}
+            onChange={(e) => setMoveTrackId(e.target.value)}
+            disabled={busy || locked}
+          >
+            {(tracks ?? []).map((tr) => (
+              <option key={tr.id} value={tr.id}>
+                {tr.name || tr.id}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="form-group">
+          <label className="field-label" htmlFor="tl-clip-move-start">
+            {t("studio.timeline.moveStartMs")}
+          </label>
+          <input
+            id="tl-clip-move-start"
+            type="number"
+            min={0}
+            step={100}
+            className="input-control input-control--mono"
+            value={moveStartMs}
+            onChange={(e) => setMoveStartMs(Math.max(0, Number(e.target.value) || 0))}
+            disabled={busy || locked}
+          />
+        </div>
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={busy || locked}
+          onClick={() =>
+            void onApplyOps(
+              [
+                {
+                  op: "move_clip" satisfies StudioTimelineOpKind,
+                  clip_id: clip.id,
+                  target_track_id: moveTrackId || trackId,
+                  timeline_start_ms: Math.max(0, Math.round(moveStartMs)),
+                },
+              ],
+              t("studio.timeline.op.moveClip", { name: clip.label || clip.id })
+            )
+          }
+        >
+          {t("studio.timeline.moveClip")}
+        </Button>
+      </div>
+
       <div className="studio-toolbar">
         <Button variant="primary" size="sm" disabled={busy || locked} onClick={commitEdits}>
           {t("studio.timeline.applyClipChanges")}
@@ -714,6 +778,20 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [showRenderDialog, setShowRenderDialog] = useState(false);
   const [showNLEDialog, setShowNLEDialog] = useState(false);
+  const [showAddClipDialog, setShowAddClipDialog] = useState(false);
+  const [showReplaceConfirm, setShowReplaceConfirm] = useState(false);
+  const [showFormatForm, setShowFormatForm] = useState(false);
+  const [fmtFps, setFmtFps] = useState(24);
+  const [fmtWidth, setFmtWidth] = useState(1280);
+  const [fmtHeight, setFmtHeight] = useState(720);
+  const [newTrackKind, setNewTrackKind] = useState<StudioTrackKind>("video");
+  const [newTrackName, setNewTrackName] = useState("");
+  const [markerLabel, setMarkerLabel] = useState("");
+  const [addClipTrackId, setAddClipTrackId] = useState("");
+  const [addClipShotKey, setAddClipShotKey] = useState("");
+  const [addClipCustomPath, setAddClipCustomPath] = useState("");
+  const [addClipLabel, setAddClipLabel] = useState("");
+  const [addClipDurationMs, setAddClipDurationMs] = useState(4000);
 
   const clampedPlayheadMs = Math.min(playheadMs, durationMs);
 
@@ -1010,6 +1088,117 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
     [previewState.audioCues]
   );
 
+  const openFormatPanel = () => {
+    if (timeline) {
+      setFmtFps(timeline.fps || 24);
+      setFmtWidth(timeline.width || 1280);
+      setFmtHeight(timeline.height || 720);
+    }
+    setShowFormatForm((v) => !v);
+  };
+
+  const handleAddTrack = async () => {
+    const name = newTrackName.trim() || `${newTrackKind}-${(timeline?.tracks?.length ?? 0) + 1}`;
+    const ok = await applyTimelineOps(
+      [
+        {
+          op: "add_track" satisfies StudioTimelineOpKind,
+          track_kind: newTrackKind,
+          track_name: name,
+        },
+      ],
+      t("studio.timeline.op.addTrack", { name })
+    );
+    if (ok) setNewTrackName("");
+  };
+
+  const handleAddMarker = async () => {
+    const label = markerLabel.trim() || formatTimecodeMs(playheadRef.current);
+    const id =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? `mk-${crypto.randomUUID()}`
+        : `mk-${Date.now()}`;
+    const ok = await applyTimelineOps(
+      [
+        {
+          op: "add_marker" satisfies StudioTimelineOpKind,
+          marker: {
+            id,
+            time_ms: Math.max(0, Math.round(playheadRef.current)),
+            label,
+          },
+        },
+      ],
+      t("studio.timeline.op.addMarker", { label })
+    );
+    if (ok) setMarkerLabel("");
+  };
+
+  const shotMediaOptions = useMemo(() => {
+    const items: Array<{ key: string; label: string; path: string; assetId?: string; durationMs: number }> = [];
+    for (const sh of detail.shots) {
+      if (sh.video_path) {
+        items.push({
+          key: `v:${sh.id}`,
+          label: `#${sh.seq} ${sh.title} (video)`,
+          path: sh.video_path,
+          assetId: sh.video_asset_id || undefined,
+          durationMs: Math.max(1000, Math.round((sh.duration_sec || 4) * 1000)),
+        });
+      }
+      if (sh.audio_path) {
+        items.push({
+          key: `a:${sh.id}`,
+          label: `#${sh.seq} ${sh.title} (audio)`,
+          path: sh.audio_path,
+          assetId: sh.audio_asset_id || undefined,
+          durationMs: Math.max(1000, Math.round((sh.duration_sec || 4) * 1000)),
+        });
+      }
+    }
+    return items;
+  }, [detail.shots]);
+
+  const handleAddClipSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const targetTrack = addClipTrackId || timeline?.tracks?.[0]?.id || "";
+    const picked = shotMediaOptions.find((o) => o.key === addClipShotKey);
+    const filePath = (addClipCustomPath.trim() || picked?.path || "").trim();
+    if (!targetTrack || !filePath) return;
+    const dur = Math.max(100, Math.round(addClipDurationMs || picked?.durationMs || 4000));
+    const clipId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? `clip-${crypto.randomUUID()}`
+        : `clip-${Date.now()}`;
+    const label = addClipLabel.trim() || picked?.label || mediaBasename(filePath);
+    const ok = await applyTimelineOps(
+      [
+        {
+          op: "add_clip" satisfies StudioTimelineOpKind,
+          target_track_id: targetTrack,
+          clip: {
+            id: clipId,
+            label,
+            file_path: filePath,
+            asset_id: picked && !addClipCustomPath.trim() ? picked.assetId : undefined,
+            source_in_ms: 0,
+            source_out_ms: dur,
+            timeline_start_ms: Math.max(0, Math.round(playheadRef.current)),
+            speed: 1,
+            volume: 1,
+            mute: false,
+            transition_in: "none",
+            transition_ms: 0,
+            ken_burns_preset: "none",
+            peaks: [],
+          },
+        },
+      ],
+      t("studio.timeline.op.addClip", { name: label })
+    );
+    if (ok) setShowAddClipDialog(false);
+  };
+
   return (
     <div className="timeline-workspace">
       {/* Top Toolbar */}
@@ -1101,6 +1290,34 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
           <Button
             variant="secondary"
             size="sm"
+            onClick={() => {
+              setAddClipTrackId(timeline?.tracks?.[0]?.id ?? "");
+              setAddClipShotKey(shotMediaOptions[0]?.key ?? "");
+              setAddClipDurationMs(shotMediaOptions[0]?.durationMs ?? 4000);
+              setAddClipCustomPath("");
+              setAddClipLabel("");
+              setShowAddClipDialog(true);
+            }}
+            disabled={busy || !timeline || (timeline.tracks ?? []).length === 0}
+          >
+            <Plus size={14} />
+            {t("studio.timeline.addClipBtn")}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={openFormatPanel} disabled={busy || !timeline}>
+            {t("studio.timeline.formatBtn")}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowReplaceConfirm(true)}
+            disabled={busy || !timeline}
+          >
+            <Trash2 size={14} />
+            {t("studio.timeline.replaceBtn")}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => setShowNLEDialog(true)}
             disabled={
               busy ||
@@ -1126,6 +1343,67 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
           </Button>
         </div>
       </div>
+
+      {showFormatForm && timeline && (
+        <div className="timeline-toolbar-card">
+          <div className="studio-field-row">
+            <label className="studio-field-inline">
+              <span>{t("studio.timeline.formatFps")}</span>
+              <input
+                type="number"
+                min={1}
+                max={120}
+                className="input-control"
+                value={fmtFps}
+                onChange={(e) => setFmtFps(Math.max(1, Number(e.target.value) || 24))}
+              />
+            </label>
+            <label className="studio-field-inline">
+              <span>{t("studio.timeline.formatWidth")}</span>
+              <input
+                type="number"
+                min={128}
+                step={2}
+                className="input-control"
+                value={fmtWidth}
+                onChange={(e) => setFmtWidth(Math.max(128, Number(e.target.value) || 1280))}
+              />
+            </label>
+            <label className="studio-field-inline">
+              <span>{t("studio.timeline.formatHeight")}</span>
+              <input
+                type="number"
+                min={128}
+                step={2}
+                className="input-control"
+                value={fmtHeight}
+                onChange={(e) => setFmtHeight(Math.max(128, Number(e.target.value) || 720))}
+              />
+            </label>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={busy}
+              onClick={() => {
+                void applyTimelineOps(
+                  [
+                    {
+                      op: "set_format" satisfies StudioTimelineOpKind,
+                      fps: fmtFps,
+                      width: fmtWidth,
+                      height: fmtHeight,
+                    },
+                  ],
+                  t("studio.timeline.op.setFormat")
+                );
+                setShowFormatForm(false);
+              }}
+            >
+              {t("studio.timeline.applyFormat")}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {actionProgress && runningStage === null && (
         <div className="studio-progress-banner">
@@ -1278,8 +1556,10 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
           <div className="timeline-inspector-section">
             {selectedEntry ? (
               <ClipInspectorForm
-                key={`${selectedEntry.clip.id}:${selectedEntry.clip.label ?? ""}:${selectedEntry.clip.speed}:${selectedEntry.clip.volume}:${Boolean(selectedEntry.clip.mute)}:${selectedEntry.clip.transition_in}:${selectedEntry.clip.transition_ms}:${selectedEntry.clip.ken_burns_preset ?? ""}`}
+                key={`${selectedEntry.clip.id}:${selectedEntry.track.id}:${selectedEntry.clip.timeline_start_ms}:${selectedEntry.clip.label ?? ""}:${selectedEntry.clip.speed}:${selectedEntry.clip.volume}:${Boolean(selectedEntry.clip.mute)}:${selectedEntry.clip.transition_in}:${selectedEntry.clip.transition_ms}:${selectedEntry.clip.ken_burns_preset ?? ""}`}
                 clip={selectedEntry.clip}
+                trackId={selectedEntry.track.id}
+                tracks={timeline?.tracks ?? []}
                 locked={selectedEntry.track.locked}
                 busy={busy}
                 canSplit={canSplitSelected}
@@ -1445,6 +1725,85 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
 
       {/* Multi-Track Timeline Canvas */}
       <div className="timeline-tracks-card">
+        <div className="timeline-toolbar-card">
+          <div className="studio-field-row">
+            <select
+              className="input-control"
+              value={newTrackKind}
+              onChange={(e) => setNewTrackKind(e.target.value as StudioTrackKind)}
+              disabled={busy}
+              aria-label={t("studio.timeline.addTrack")}
+            >
+              {StudioTrackKindValues.map((k) => (
+                <option key={k} value={k}>
+                  {t(`studio.timeline.trackKinds.${k}` as never)}
+                </option>
+              ))}
+            </select>
+            <input
+              className="input-control"
+              placeholder={t("studio.timeline.trackNamePlaceholder")}
+              value={newTrackName}
+              onChange={(e) => setNewTrackName(e.target.value)}
+              disabled={busy}
+            />
+            <Button variant="secondary" size="sm" disabled={busy} onClick={() => void handleAddTrack()}>
+              <Plus size={13} />
+              {t("studio.timeline.addTrack")}
+            </Button>
+          </div>
+
+          <div className="studio-field-row">
+            <input
+              className="input-control"
+              placeholder={t("studio.timeline.markerPlaceholder")}
+              value={markerLabel}
+              onChange={(e) => setMarkerLabel(e.target.value)}
+              disabled={busy || !timeline}
+            />
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={busy || !timeline}
+              onClick={() => void handleAddMarker()}
+            >
+              <Plus size={13} />
+              {t("studio.timeline.addMarker")}
+            </Button>
+          </div>
+        </div>
+
+        {(timeline?.markers ?? []).length > 0 && (
+          <div className="studio-toolbar">
+            {(timeline?.markers ?? []).map((mk) => (
+              <div key={mk.id} className="timeline-marker-chip">
+                <button
+                  type="button"
+                  className="timeline-mini-btn"
+                  onClick={() => seekTo(mk.time_ms)}
+                >
+                  {mk.label} ({formatTimecodeMs(mk.time_ms)})
+                </button>
+                <button
+                  type="button"
+                  className="timeline-mini-btn"
+                  disabled={busy}
+                  aria-label={t("studio.timeline.removeMarker")}
+                  title={t("studio.timeline.removeMarker")}
+                  onClick={() =>
+                    void applyTimelineOps(
+                      [{ op: "remove_marker" satisfies StudioTimelineOpKind, marker_id: mk.id }],
+                      t("studio.timeline.op.removeMarker")
+                    )
+                  }
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="timeline-tracks-scroller">
           {/* Ruler Row */}
           <div className="timeline-ruler-row">
@@ -1474,6 +1833,21 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
                 <div key={s} className="timeline-ruler-tick" style={{ left: `${s * pxPerSec}px` }}>
                   {t("studio.common.secondsShort", { sec: s })}
                 </div>
+              ))}
+              {(timeline?.markers ?? []).map((mk) => (
+                <button
+                  key={mk.id}
+                  type="button"
+                  className="timeline-marker-pin"
+                  style={{ left: `${(mk.time_ms / 1000) * pxPerSec}px` }}
+                  title={`${mk.label} (${formatTimecodeMs(mk.time_ms)})`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    seekTo(mk.time_ms);
+                  }}
+                >
+                  {mk.label}
+                </button>
               ))}
               <div
                 ref={registerPlayheadLine("ruler")}
@@ -1567,6 +1941,26 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
                     </button>
                     <Volume2 size={12} />
                     <span>{Math.round(tr.volume * 100)}%</span>
+                    <button
+                      type="button"
+                      className="timeline-mini-btn"
+                      disabled={busy}
+                      aria-label={t("studio.timeline.removeTrack")}
+                      title={t("studio.timeline.removeTrack")}
+                      onClick={() =>
+                        void applyTimelineOps(
+                          [
+                            {
+                              op: "remove_track" satisfies StudioTimelineOpKind,
+                              track_id: tr.id,
+                            },
+                          ],
+                          t("studio.timeline.op.removeTrack", { name: tr.name || tr.id })
+                        )
+                      }
+                    >
+                      <Trash2 size={12} />
+                    </button>
                   </div>
                 </div>
 
@@ -1812,6 +2206,161 @@ export const TimelineWorkspace: React.FC<{ detail: StudioEpisodeDetailResult }> 
           defaultProjectName={`${detail.project.title} ${detail.episode.code}`}
           onClose={() => setShowNLEDialog(false)}
         />
+      )}
+      {showAddClipDialog && timeline && (
+        <Dialog
+          title={t("studio.timeline.addClipTitle")}
+          size="sm"
+          onClose={() => setShowAddClipDialog(false)}
+          footer={(requestClose) => (
+            <>
+              <Button variant="ghost" onClick={requestClose} disabled={busy}>
+                {t("studio.modal.cancel")}
+              </Button>
+              <Button
+                variant="primary"
+                disabled={
+                  busy ||
+                  !(
+                    addClipCustomPath.trim() ||
+                    shotMediaOptions.find((o) => o.key === addClipShotKey)?.path
+                  )
+                }
+                onClick={handleAddClipSubmit}
+              >
+                <Plus size={14} />
+                {t("studio.timeline.addClipBtn")}
+              </Button>
+            </>
+          )}
+        >
+          <form className="studio-form-stack" onSubmit={handleAddClipSubmit}>
+            <div className="form-group">
+              <label className="field-label" htmlFor="tl-add-clip-track">
+                {t("studio.timeline.addClipTrack")}
+              </label>
+              <select
+                id="tl-add-clip-track"
+                className="input-control"
+                value={addClipTrackId}
+                onChange={(e) => setAddClipTrackId(e.target.value)}
+              >
+                {(timeline.tracks ?? []).map((tr) => (
+                  <option key={tr.id} value={tr.id}>
+                    {tr.name || tr.id}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {shotMediaOptions.length > 0 && (
+              <div className="form-group">
+                <label className="field-label" htmlFor="tl-add-clip-shot">
+                  {t("studio.timeline.addClipSource")}
+                </label>
+                <select
+                  id="tl-add-clip-shot"
+                  className="input-control"
+                  value={addClipShotKey}
+                  onChange={(e) => {
+                    const nextKey = e.target.value;
+                    setAddClipShotKey(nextKey);
+                    const hit = shotMediaOptions.find((o) => o.key === nextKey);
+                    if (hit) setAddClipDurationMs(hit.durationMs);
+                  }}
+                >
+                  {shotMediaOptions.map((o) => (
+                    <option key={o.key} value={o.key}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <div className="form-group">
+              <label className="field-label" htmlFor="tl-add-clip-custom">
+                {t("studio.timeline.addClipCustomPath")}
+              </label>
+              <input
+                id="tl-add-clip-custom"
+                className="input-control input-control--mono"
+                value={addClipCustomPath}
+                onChange={(e) => setAddClipCustomPath(e.target.value)}
+              />
+            </div>
+            <div className="studio-field-row">
+              <div className="form-group">
+                <label className="field-label" htmlFor="tl-add-clip-label">
+                  {t("studio.timeline.clipLabel")}
+                </label>
+                <input
+                  id="tl-add-clip-label"
+                  className="input-control"
+                  value={addClipLabel}
+                  onChange={(e) => setAddClipLabel(e.target.value)}
+                />
+              </div>
+              <div className="form-group">
+                <label className="field-label" htmlFor="tl-add-clip-dur">
+                  {t("studio.timeline.addClipDurationMs")}
+                </label>
+                <input
+                  id="tl-add-clip-dur"
+                  type="number"
+                  min={100}
+                  step={100}
+                  className="input-control input-control--mono"
+                  value={addClipDurationMs}
+                  onChange={(e) =>
+                    setAddClipDurationMs(Math.max(100, Number(e.target.value) || 4000))
+                  }
+                />
+              </div>
+            </div>
+          </form>
+        </Dialog>
+      )}
+      {showReplaceConfirm && timeline && (
+        <Dialog
+          title={t("studio.timeline.replaceConfirmTitle")}
+          size="sm"
+          onClose={() => setShowReplaceConfirm(false)}
+          footer={(requestClose) => (
+            <>
+              <Button variant="ghost" onClick={requestClose} disabled={busy}>
+                {t("studio.modal.cancel")}
+              </Button>
+              <Button
+                variant="primary"
+                disabled={busy}
+                onClick={() => {
+                  void applyTimelineOps(
+                    [
+                      {
+                        op: "replace_timeline" satisfies StudioTimelineOpKind,
+                        timeline: {
+                          version: timeline.version,
+                          fps: timeline.fps,
+                          width: timeline.width,
+                          height: timeline.height,
+                          tracks: [],
+                          subtitles: [],
+                          markers: [],
+                        },
+                      },
+                    ],
+                    t("studio.timeline.op.replaceTimeline")
+                  );
+                  setShowReplaceConfirm(false);
+                }}
+              >
+                <Trash2 size={14} />
+                {t("studio.timeline.replaceConfirmAction")}
+              </Button>
+            </>
+          )}
+        >
+          <p>{t("studio.timeline.replaceConfirmBody")}</p>
+        </Dialog>
       )}
     </div>
   );

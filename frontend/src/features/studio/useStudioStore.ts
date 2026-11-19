@@ -6,8 +6,12 @@ import {
   type BatchPreflightOutput,
   type ErrorCode,
   type ExportNLEDraftOutput,
+  type LipSyncGenerateInput,
+  type LipSyncGenerateOutput,
   type MediaPeaksThumbsOutput,
   type ProbeMediaOutput,
+  type TTSDubMuxInput,
+  type TTSDubMuxOutput,
   type StudioAssetUpsertPayload,
   type StudioBatchProgressEvent,
   type StudioBatchStatus,
@@ -125,6 +129,26 @@ export interface StudioState {
     opts?: Omit<StudioEpisodeRunStagePayload, "episode_id" | "stage">
   ) => Promise<boolean>;
   probeShot: (shot: StudioShot) => Promise<ProbeMediaOutput | null>;
+  syncWorkspace: (projectId?: string) => Promise<boolean>;
+  runShotDubMux: (payload: {
+    shot: StudioShot;
+    videoPath?: string;
+    audioPath?: string;
+    text?: string;
+    modelRef?: string;
+    voice?: string;
+    overflowMode?: string;
+    duckOriginal?: boolean;
+    originalVolume?: number;
+  }) => Promise<boolean>;
+  runShotLipSync: (payload: {
+    shot: StudioShot;
+    videoPath?: string;
+    audioPath?: string;
+    modelRef?: string;
+    faceIndex?: number;
+    prompt?: string;
+  }) => Promise<boolean>;
 
   receiveProjectChanged: (evt: StudioProjectChangedEvent) => void;
   receiveEpisodeUpdated: (evt: StudioEpisodeUpdatedEvent) => void;
@@ -1107,6 +1131,130 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         actionProgress: null,
         episodeDetail: res.episode ? normalizeEpisodeDetail(res.episode) : s.episodeDetail,
         lastSummary: res.frame_path,
+      }));
+      return true;
+    } catch (err) {
+      set({ saving: false, actionProgress: null, error: toActionError(err) });
+      return false;
+    }
+  },
+
+  syncWorkspace: async (projectId) => {
+    const pid = projectId ?? get().activeProjectId ?? undefined;
+    set({ saving: true, error: null });
+    try {
+      const res = await rtClient.request(Actions.STUDIO_SYNC_WORKSPACE, pid ? { project_id: pid } : {});
+      const normProj = res.project ? normalizeProjectDetail(res.project) : undefined;
+      set((s) => ({
+        saving: false,
+        projects: res.projects ?? s.projects,
+        projectDetail: normProj ?? s.projectDetail,
+        episodeDetail:
+          normProj?.active_episode ?? s.episodeDetail,
+        lastSummary: res.projects_dir,
+      }));
+      const activeEp = get().activeEpisodeId;
+      if (activeEp) {
+        await get().selectEpisode(activeEp);
+      }
+      return true;
+    } catch (err) {
+      set({ saving: false, error: toActionError(err) });
+      return false;
+    }
+  },
+
+  runShotDubMux: async ({
+    shot,
+    videoPath,
+    audioPath,
+    text,
+    modelRef,
+    voice,
+    overflowMode,
+    duckOriginal,
+    originalVolume,
+  }) => {
+    const vid = (videoPath ?? shot.video_path).trim();
+    if (!vid) return false;
+    const epId = get().activeEpisodeId ?? shot.episode_id;
+    const aud = (audioPath ?? shot.audio_path ?? "").trim();
+    const spoken = (text ?? shot.narration_text ?? "").trim();
+    const input: TTSDubMuxInput = {
+      video_path: { localUrl: vid, kind: "video" },
+      ...(aud ? { audio_path: { localUrl: aud, kind: "audio" } } : {}),
+      ...(spoken ? { text: spoken } : {}),
+      ...(modelRef?.trim() ? { model_ref: modelRef.trim() } : {}),
+      ...(voice?.trim() ? { voice: voice.trim() } : {}),
+      ...(overflowMode ? { overflow_mode: overflowMode } : {}),
+      ...(duckOriginal !== undefined ? { duck_original: duckOriginal } : {}),
+      ...(originalVolume !== undefined && Number.isFinite(originalVolume)
+        ? { original_volume: originalVolume }
+        : {}),
+    };
+    set({ saving: true, actionProgress: null, error: null });
+    try {
+      const res = await rtClient.request(
+        Actions.WORKFLOW_RUN_NODE,
+        { type: NodeTypes.TTS_DUB_MUX, input },
+        { onProgress: (p) => !p.heartbeat && set({ actionProgress: p }) }
+      );
+      const out = res.output as TTSDubMuxOutput;
+      const upserted = await rtClient.request(Actions.STUDIO_SHOT_UPSERT, {
+        id: shot.id,
+        episode_id: epId,
+        video_path: out.path,
+        ...(out.asset_id ? { video_asset_id: out.asset_id } : {}),
+        ...(out.audio_path ? { audio_path: out.audio_path } : {}),
+      });
+      set((s) => ({
+        saving: false,
+        actionProgress: null,
+        episodeDetail: s.episodeDetail
+          ? normalizeEpisodeDetail({ ...s.episodeDetail, shots: upserted.shots ?? [] })
+          : s.episodeDetail,
+        lastSummary: out.path,
+      }));
+      return true;
+    } catch (err) {
+      set({ saving: false, actionProgress: null, error: toActionError(err) });
+      return false;
+    }
+  },
+
+  runShotLipSync: async ({ shot, videoPath, audioPath, modelRef, faceIndex, prompt }) => {
+    const vid = (videoPath ?? shot.video_path).trim();
+    const aud = (audioPath ?? shot.audio_path).trim();
+    if (!vid || !aud) return false;
+    const epId = get().activeEpisodeId ?? shot.episode_id;
+    const input: LipSyncGenerateInput = {
+      video_path: { localUrl: vid, kind: "video" },
+      audio_path: { localUrl: aud, kind: "audio" },
+      ...(modelRef?.trim() ? { model_ref: modelRef.trim() } : {}),
+      ...(faceIndex !== undefined && Number.isFinite(faceIndex) ? { face_index: faceIndex } : {}),
+      ...(prompt?.trim() ? { prompt: prompt.trim() } : {}),
+    };
+    set({ saving: true, actionProgress: null, error: null });
+    try {
+      const res = await rtClient.request(
+        Actions.WORKFLOW_RUN_NODE,
+        { type: NodeTypes.LIPSYNC_GENERATE, input },
+        { onProgress: (p) => !p.heartbeat && set({ actionProgress: p }) }
+      );
+      const out = res.output as LipSyncGenerateOutput;
+      const upserted = await rtClient.request(Actions.STUDIO_SHOT_UPSERT, {
+        id: shot.id,
+        episode_id: epId,
+        video_path: out.path,
+        ...(out.asset_id ? { video_asset_id: out.asset_id } : {}),
+      });
+      set((s) => ({
+        saving: false,
+        actionProgress: null,
+        episodeDetail: s.episodeDetail
+          ? normalizeEpisodeDetail({ ...s.episodeDetail, shots: upserted.shots ?? [] })
+          : s.episodeDetail,
+        lastSummary: out.path,
       }));
       return true;
     } catch (err) {

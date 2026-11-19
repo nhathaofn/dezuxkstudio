@@ -15,10 +15,10 @@ import { useNodeSpecsStore } from "../workflow/useNodeSpecs";
 import { StudioView } from "./StudioView";
 import {
   CreateProjectDialog,
-  ExportStagePanel,
   ScriptStagePanel,
   VideoShotsStagePanel,
 } from "./StudioStages";
+import { TimelineWorkspace } from "./timeline/TimelineWorkspace";
 import { targetVersionKey, useStudioStore } from "./useStudioStore";
 
 vi.mock("react-router-dom", async (importOriginal) => {
@@ -350,13 +350,19 @@ describe("/studio feature MVP", () => {
     expect(studioHtml).toContain("40%");
     expect(studioHtml).toContain("Đang tạo ảnh tham chiếu tài sản (2/5)…");
     expect(studioHtml).not.toContain("raw English batch message");
+    expect(studioHtml).toContain("Đồng bộ Ổ đĩa");
+    expect(studioHtml).toContain("Model TTS mặc định");
 
-    const emptyExportHtml = renderToStaticMarkup(
-      React.createElement(ExportStagePanel, { detail: sampleEpisodeDetail })
+    const emptyTimelineHtml = renderToStaticMarkup(
+      React.createElement(TimelineWorkspace, { detail: sampleEpisodeDetail })
     );
-    expect(emptyExportHtml).not.toContain('value="1920x1080"');
+    expect(emptyTimelineHtml).not.toContain('value="1920x1080"');
+    expect(emptyTimelineHtml).toContain("Thêm Track");
+    expect(emptyTimelineHtml).toContain("Chèn Clip");
+    expect(emptyTimelineHtml).toContain("Gắn Marker");
+    expect(emptyTimelineHtml).toContain("Định dạng");
+    expect(emptyTimelineHtml).toContain("Đặt lại Timeline");
 
-    // Loaded workflow specs populate resolution/fps dynamically in ExportStagePanel
     useNodeSpecsStore.setState({
       specs: [
         {
@@ -386,11 +392,10 @@ describe("/studio feature MVP", () => {
         },
       ],
     });
-    const loadedSpecHtml = renderToStaticMarkup(
-      React.createElement(ExportStagePanel, { detail: sampleEpisodeDetail })
+    const timelineHtml = renderToStaticMarkup(
+      React.createElement(TimelineWorkspace, { detail: sampleEpisodeDetail })
     );
-    expect(loadedSpecHtml).toContain('value="1920x1080"');
-    expect(loadedSpecHtml).toContain('value="24"');
+    expect(timelineHtml).toContain("Xuất NLE");
 
     // Boundary normalization + WS disconnect cleanup + reconnect resync
     useStudioStore.setState({
@@ -723,5 +728,119 @@ describe("/studio feature MVP", () => {
     }) as typeof rtClient.request);
     await useStudioStore.getState().resyncAfterReconnect();
     expect(useStudioStore.getState().activeEpisodeId).toBe("ep-1");
+  });
+
+  it("supports syncWorkspace, per-shot runShotDubMux, runShotLipSync, and VideoShotsStagePanel post tools", async () => {
+    useStudioStore.setState({
+      activeProjectId: sampleProject.id,
+      activeEpisodeId: sampleEpisodeDetail.episode.id,
+      projectDetail: {
+        project: sampleProject,
+        episodes: [sampleEpisodeDetail.episode],
+        assets: sampleEpisodeDetail.assets,
+        active_episode: sampleEpisodeDetail,
+      },
+      episodeDetail: sampleEpisodeDetail,
+    });
+
+    const reqSpy = vi.spyOn(rtClient, "request").mockImplementation((async (
+      action: string,
+      payload?: unknown
+    ) => {
+      if (action === Actions.STUDIO_SYNC_WORKSPACE) {
+        return {
+          project: {
+            project: sampleProject,
+            episodes: [sampleEpisodeDetail.episode],
+            assets: sampleEpisodeDetail.assets,
+            active_episode: sampleEpisodeDetail,
+          },
+          projects: [sampleProject],
+          projects_dir: "D:/studio",
+        };
+      }
+      if (action === Actions.STUDIO_EPISODE_GET) {
+        return sampleEpisodeDetail;
+      }
+      if (action === Actions.WORKFLOW_RUN_NODE) {
+        const req = payload as { type: string };
+        return {
+          output: {
+            video: { localUrl: `D:/out/${req.type}.mp4`, kind: "video" },
+            path: `D:/out/${req.type}.mp4`,
+            audio_path: "D:/out/dub.mp3",
+            asset_id: "asset-post-1",
+            duration_sec: 4,
+          },
+        };
+      }
+      if (action === Actions.STUDIO_SHOT_UPSERT) {
+        return {
+          shot: sampleEpisodeDetail.shots[0],
+          shots: sampleEpisodeDetail.shots,
+        };
+      }
+      return {};
+    }) as typeof rtClient.request);
+
+    expect(await useStudioStore.getState().syncWorkspace()).toBe(true);
+    expect(reqSpy).toHaveBeenCalledWith(Actions.STUDIO_SYNC_WORKSPACE, {
+      project_id: sampleProject.id,
+    });
+
+    const shot = {
+      ...sampleEpisodeDetail.shots[0],
+      video_path: "D:/vid/shot1.mp4",
+      audio_path: "D:/aud/shot1.mp3",
+    };
+    expect(
+      await useStudioStore.getState().runShotDubMux({
+        shot,
+        overflowMode: "speed_up",
+        duckOriginal: true,
+        originalVolume: 0.25,
+      })
+    ).toBe(true);
+    expect(reqSpy).toHaveBeenCalledWith(
+      Actions.WORKFLOW_RUN_NODE,
+      expect.objectContaining({
+        type: NodeTypes.TTS_DUB_MUX,
+        input: expect.objectContaining({
+          overflow_mode: "speed_up",
+          duck_original: true,
+          original_volume: 0.25,
+        }),
+      }),
+      expect.any(Object)
+    );
+
+    expect(
+      await useStudioStore.getState().runShotLipSync({
+        shot,
+        modelRef: "kling/lipsync",
+        faceIndex: 1,
+      })
+    ).toBe(true);
+    expect(reqSpy).toHaveBeenCalledWith(
+      Actions.WORKFLOW_RUN_NODE,
+      expect.objectContaining({
+        type: NodeTypes.LIPSYNC_GENERATE,
+        input: expect.objectContaining({
+          model_ref: "kling/lipsync",
+          face_index: 1,
+        }),
+      }),
+      expect.any(Object)
+    );
+
+    const videoHtml = renderToStaticMarkup(
+      React.createElement(VideoShotsStagePanel, {
+        detail: sampleEpisodeDetail,
+        videoModel: "",
+        ttsModel: "openai/gpt-4o-mini-tts",
+      })
+    );
+    expect(videoHtml).toContain("Dub &amp; Mux");
+    expect(videoHtml).toContain("Lip-Sync");
   });
 });

@@ -340,3 +340,29 @@
   flex-direction: column;
   gap: var(--space-1-5);
 }
+
+.timeline-marker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-0-5) var(--space-1-5);
+  border: var(--border-width) solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-elevated);
+  font-size: var(--text-2xs);
+}
+
+.timeline-marker-pin {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  padding: 0 var(--space-1);
+  border: none;
+  border-left: var(--timeline-playhead-width) solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--text-2xs);
+  cursor: pointer;
+  white-space: nowrap;
+  z-index: 4;
+}

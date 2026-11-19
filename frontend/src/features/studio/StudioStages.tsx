@@ -5,10 +5,8 @@ import {
   ArrowUp,
   Bot,
   Clapperboard,
-  Download,
   FileText,
   Film,
-  FolderOpen,
   Grid,
   Image as ImageIcon,
   Layers,
@@ -46,9 +44,8 @@ import {
   type StudioShotMode,
 } from "../../contracts/generated";
 import { isMessageKey, useT } from "../../lib/i18n";
-import { mediaBasename, saveMediaToDevice } from "../../lib/rtClient";
 import { askAgentAboutMediaAsset } from "../agent/screenContext";
-import { useSystemStore } from "../system/useSystemStore";
+import { MediaModelSelect } from "../mediagen/MediaModelSelect";
 import { findParam, useNodeSpec } from "../workflow/useNodeSpecs";
 import { SignedStudioAudio, SignedStudioImage, SignedStudioVideo } from "./SignedStudioMedia";
 import { targetVersionKey, useStudioStore } from "./useStudioStore";
@@ -74,6 +71,7 @@ export const CreateProjectDialog: React.FC<{
   const [genre, setGenre] = useState("");
   const [productionMode, setProductionMode] = useState("");
   const [aspectRatio, setAspectRatio] = useState("");
+  const [defaultTtsModel, setDefaultTtsModel] = useState("");
   const [stylePrompt, setStylePrompt] = useState("");
   const [autoApproveBatches, setAutoApproveBatches] = useState(false);
 
@@ -92,6 +90,7 @@ export const CreateProjectDialog: React.FC<{
       ...(effectiveGenre ? { genre: effectiveGenre } : {}),
       ...(effectiveProductionMode ? { production_mode: effectiveProductionMode } : {}),
       ...(effectiveAspectRatio ? { aspect_ratio: effectiveAspectRatio } : {}),
+      ...(defaultTtsModel ? { default_tts_model: defaultTtsModel } : {}),
       style_prompt: stylePrompt.trim(),
       auto_approve_batches: autoApproveBatches,
     });
@@ -196,6 +195,16 @@ export const CreateProjectDialog: React.FC<{
               ))}
             </select>
           </div>
+        </div>
+
+        <div className="form-group">
+          <span className="field-label">{t("studio.modal.defaultTtsModel")}</span>
+          <MediaModelSelect
+            purpose="tts"
+            value={defaultTtsModel}
+            onChange={setDefaultTtsModel}
+            disabled={saving}
+          />
         </div>
 
         <div className="form-group">
@@ -1211,6 +1220,244 @@ export const StoryboardStagePanel: React.FC<{
   );
 };
 
+const ShotPostToolsPanel: React.FC<{
+  shot: StudioShot;
+  ttsModel: string;
+  busy: boolean;
+}> = ({ shot, ttsModel, busy }) => {
+  const t = useT();
+  const dubSpec = useNodeSpec(NodeTypes.TTS_DUB_MUX);
+  const lipSpec = useNodeSpec(NodeTypes.LIPSYNC_GENERATE);
+  const overflowParam = findParam(dubSpec, "overflow_mode");
+  const duckParam = findParam(dubSpec, "duck_original");
+  const volParam = findParam(dubSpec, "original_volume");
+  const faceParam = findParam(lipSpec, "face_index");
+
+  const runShotDubMux = useStudioStore((s) => s.runShotDubMux);
+  const runShotLipSync = useStudioStore((s) => s.runShotLipSync);
+
+  const [mode, setMode] = useState<"none" | "dub" | "lipsync">("none");
+  const [voice, setVoice] = useState("");
+  const [overflowMode, setOverflowMode] = useState("");
+  const [duckOriginal, setDuckOriginal] = useState(
+    duckParam?.default ? duckParam.default !== "false" : true
+  );
+  const [origVolume, setOrigVolume] = useState(volParam?.default ?? "0.25");
+  const [customAudio, setCustomAudio] = useState("");
+
+  const [lipModelRef, setLipModelRef] = useState("");
+  const [lipFaceIndex, setLipFaceIndex] = useState(Number(faceParam?.default ?? 0));
+  const [lipVideoOverride, setLipVideoOverride] = useState("");
+  const [lipAudioOverride, setLipAudioOverride] = useState("");
+  const [lipPrompt, setLipPrompt] = useState("");
+
+  const overflowOptions = overflowParam?.options ?? [];
+  const effectiveOverflow =
+    overflowMode || overflowParam?.default || overflowOptions[0] || "freeze_last_frame";
+
+  return (
+    <div className="studio-form-stack">
+      <div className="studio-toolbar">
+        <Button
+          variant={mode === "dub" ? "primary" : "ghost"}
+          size="sm"
+          onClick={() => setMode((m) => (m === "dub" ? "none" : "dub"))}
+          disabled={busy || !shot.video_path}
+        >
+          <Volume2 size={13} />
+          {t("studio.video.dubMux")}
+        </Button>
+        <Button
+          variant={mode === "lipsync" ? "primary" : "ghost"}
+          size="sm"
+          onClick={() => setMode((m) => (m === "lipsync" ? "none" : "lipsync"))}
+          disabled={busy || (!shot.video_path && !lipVideoOverride.trim())}
+        >
+          <Speech size={13} />
+          {t("studio.video.lipsync")}
+        </Button>
+      </div>
+
+      {mode === "dub" && (
+        <div className="studio-form-stack">
+          <div className="studio-field-row">
+            <div className="form-group">
+              <label className="field-label" htmlFor={`dub-voice-${shot.id}`}>
+                {t("mediagen.tts.field.voice")}
+              </label>
+              <input
+                id={`dub-voice-${shot.id}`}
+                className="input-control"
+                placeholder={t("studio.video.voicePlaceholder")}
+                value={voice}
+                onChange={(e) => setVoice(e.target.value)}
+                disabled={busy}
+              />
+            </div>
+            <div className="form-group">
+              <label className="field-label" htmlFor={`dub-overflow-${shot.id}`}>
+                {t("studio.video.overflowMode")}
+              </label>
+              <select
+                id={`dub-overflow-${shot.id}`}
+                className="input-control"
+                value={effectiveOverflow}
+                onChange={(e) => setOverflowMode(e.target.value)}
+                disabled={busy || overflowOptions.length === 0}
+              >
+                {overflowOptions.map((opt) => {
+                  const key = `studio.video.overflow.${opt}`;
+                  return (
+                    <option key={opt} value={opt}>
+                      {isMessageKey(key) ? t(key) : opt}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+            <div className="form-group">
+              <label className="field-label" htmlFor={`dub-vol-${shot.id}`}>
+                {t("studio.video.originalVolume")}
+              </label>
+              <input
+                id={`dub-vol-${shot.id}`}
+                type="number"
+                step="0.05"
+                min={0}
+                max={2}
+                className="input-control"
+                value={origVolume}
+                onChange={(e) => setOrigVolume(e.target.value)}
+                disabled={busy}
+              />
+            </div>
+          </div>
+          <div className="studio-field-row">
+            <label className="studio-inline-toggle">
+              <Switch
+                checked={duckOriginal}
+                onCheckedChange={setDuckOriginal}
+                aria-label={t("studio.video.duckOriginal")}
+                disabled={busy}
+              />
+              <span>{t("studio.video.duckOriginal")}</span>
+            </label>
+            <div className="form-group">
+              <input
+                className="input-control input-control--mono"
+                placeholder={t("studio.video.audioPathOverride")}
+                value={customAudio}
+                onChange={(e) => setCustomAudio(e.target.value)}
+                disabled={busy}
+              />
+            </div>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={busy || !shot.video_path}
+              onClick={() =>
+                void runShotDubMux({
+                  shot,
+                  audioPath: customAudio || undefined,
+                  modelRef: ttsModel || undefined,
+                  voice: voice || undefined,
+                  overflowMode: effectiveOverflow,
+                  duckOriginal,
+                  originalVolume: Number.isFinite(Number(origVolume))
+                    ? Number(origVolume)
+                    : undefined,
+                })
+              }
+            >
+              {t("studio.video.runDubMux")}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {mode === "lipsync" && (
+        <div className="studio-form-stack">
+          <div className="studio-field-row">
+            <div className="form-group">
+              <label className="field-label" htmlFor={`ls-model-${shot.id}`}>
+                {t("studio.video.modelRef")}
+              </label>
+              <input
+                id={`ls-model-${shot.id}`}
+                className="input-control input-control--mono"
+                value={lipModelRef}
+                onChange={(e) => setLipModelRef(e.target.value)}
+                disabled={busy}
+              />
+            </div>
+            <div className="form-group">
+              <label className="field-label" htmlFor={`ls-face-${shot.id}`}>
+                {t("studio.video.faceIndex")}
+              </label>
+              <input
+                id={`ls-face-${shot.id}`}
+                type="number"
+                min={faceParam?.min ?? 0}
+                max={faceParam?.max}
+                className="input-control"
+                value={lipFaceIndex}
+                onChange={(e) => setLipFaceIndex(Math.max(0, Number(e.target.value) || 0))}
+                disabled={busy}
+              />
+            </div>
+          </div>
+          <div className="studio-field-row">
+            <input
+              className="input-control input-control--mono"
+              placeholder={shot.video_path || t("studio.video.videoPathOverride")}
+              value={lipVideoOverride}
+              onChange={(e) => setLipVideoOverride(e.target.value)}
+              disabled={busy}
+            />
+            <input
+              className="input-control input-control--mono"
+              placeholder={shot.audio_path || t("studio.video.audioPathOverride")}
+              value={lipAudioOverride}
+              onChange={(e) => setLipAudioOverride(e.target.value)}
+              disabled={busy}
+            />
+          </div>
+          <div className="studio-toolbar">
+            <input
+              className="input-control"
+              placeholder={t("studio.video.lipsyncPrompt")}
+              value={lipPrompt}
+              onChange={(e) => setLipPrompt(e.target.value)}
+              disabled={busy}
+            />
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={
+                busy ||
+                !(lipVideoOverride.trim() || shot.video_path) ||
+                !(lipAudioOverride.trim() || shot.audio_path)
+              }
+              onClick={() =>
+                void runShotLipSync({
+                  shot,
+                  videoPath: lipVideoOverride || undefined,
+                  audioPath: lipAudioOverride || undefined,
+                  modelRef: lipModelRef || undefined,
+                  faceIndex: lipFaceIndex,
+                  prompt: lipPrompt || undefined,
+                })
+              }
+            >
+              {t("studio.video.runLipSync")}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const VideoShotsStagePanel: React.FC<{
   detail: StudioEpisodeDetailResult;
   videoModel: string;
@@ -1342,6 +1589,25 @@ export const VideoShotsStagePanel: React.FC<{
           >
             <Speech size={13} />
             {t("studio.voice.lipSyncButton")}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() =>
+              void enqueueBatch({
+                stage: "tts_dub_mux",
+                ...(ttsModel ? { model: ttsModel } : {}),
+              })
+            }
+            disabled={
+              busy ||
+              !detail.shots.some((s) =>
+                Boolean(s.video_path && (s.audio_path || s.narration_text || s.dialogues?.length))
+              )
+            }
+          >
+            <Volume2 size={13} />
+            {t("studio.video.batchDubMux")}
           </Button>
         </div>
       </div>
@@ -1491,174 +1757,13 @@ export const VideoShotsStagePanel: React.FC<{
                     <Bot size={13} />
                   </Button>
                 </div>
+
+                <ShotPostToolsPanel shot={shot} ttsModel={ttsModel} busy={busy} />
               </div>
             );
           })}
         </div>
       )}
-    </div>
-  );
-};
-
-export const ExportStagePanel: React.FC<{
-  detail: StudioEpisodeDetailResult;
-}> = ({ detail }) => {
-  const t = useT();
-  const concatSpec = useNodeSpec(NodeTypes.VIDEO_CONCAT_BASIC);
-  const resDefault = findParam(concatSpec, "resolution")?.default ?? "";
-  const fpsParam = findParam(concatSpec, "fps");
-  const fpsMin = fpsParam?.min;
-  const fpsMax = fpsParam?.max;
-  const fpsDefault = fpsParam?.default ? Number(fpsParam.default) : undefined;
-
-  const [resolution, setResolution] = useState("");
-  const [fps, setFps] = useState<number | null>(null);
-  const [narrationPath, setNarrationPath] = useState("");
-  const effectiveResolution = resolution || resDefault;
-  const effectiveFPS = fps ?? fpsDefault;
-  const runStage = useStudioStore((s) => s.runStage);
-  const runningStage = useStudioStore((s) => s.runningStage);
-  const openFolder = useSystemStore((s) => s.openFolder);
-
-  const readyShots = detail.shots.filter((s) => Boolean(s.video_path));
-  const audioShots = detail.shots.filter((s) => Boolean(s.audio_path));
-  const busy = runningStage !== null;
-
-  return (
-    <div className="studio-form-stack">
-      <Card
-        icon={Clapperboard}
-        title={t("studio.export.title")}
-        actions={
-          <Badge>
-            {t("studio.export.clipsReady", {
-              ready: readyShots.length,
-              total: detail.shots.length,
-            })}
-          </Badge>
-        }
-      >
-        <div className="studio-field-row">
-          <div className="form-group">
-            <label className="field-label" htmlFor="studio-export-res">
-              {t("studio.export.resolution")}
-            </label>
-            <input
-              id="studio-export-res"
-              className="input-control"
-              value={effectiveResolution}
-              onChange={(e) => setResolution(e.target.value)}
-              disabled={busy}
-            />
-          </div>
-
-          <div className="form-group">
-            <label className="field-label" htmlFor="studio-export-fps">
-              {t("studio.export.fps")}
-            </label>
-            <input
-              id="studio-export-fps"
-              type="number"
-              min={fpsMin}
-              max={fpsMax}
-              className="input-control"
-              value={effectiveFPS ?? ""}
-              onChange={(e) => setFps(e.target.value === "" ? null : Number(e.target.value))}
-              disabled={busy}
-            />
-          </div>
-
-          <div className="form-group">
-            <label className="field-label" htmlFor="studio-export-narration">
-              {t("studio.export.narrationTrack")}
-            </label>
-            <select
-              id="studio-export-narration"
-              className="input-control"
-              value={narrationPath}
-              onChange={(e) => setNarrationPath(e.target.value)}
-              disabled={busy}
-            >
-              <option value="">{t("studio.export.narrationNone")}</option>
-              {audioShots.map((s) => (
-                <option key={s.id} value={s.audio_path}>
-                  #{s.seq} {s.title} ({mediaBasename(s.audio_path)})
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        <div className="studio-toolbar">
-          <Button
-            variant="primary"
-            onClick={() =>
-              void runStage("concat_video", {
-                ...(effectiveResolution ? { resolution: effectiveResolution } : {}),
-                ...(effectiveFPS !== undefined ? { fps: effectiveFPS } : {}),
-                ...(narrationPath ? { narration_audio_path: narrationPath } : {}),
-              })
-            }
-            disabled={busy || readyShots.length === 0}
-          >
-            {runningStage === "concat_video" ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <Clapperboard size={14} />
-            )}
-            {t("studio.export.assemble")}
-          </Button>
-
-          {detail.final_video_path && (
-            <>
-              <Button
-                variant="secondary"
-                onClick={() =>
-                  void saveMediaToDevice(
-                    detail.final_video_path!,
-                    mediaBasename(detail.final_video_path!),
-                    undefined,
-                    detail.final_video_asset_id
-                  )
-                }
-              >
-                <Download size={14} />
-                {t("studio.export.download")}
-              </Button>
-              <Button variant="ghost" onClick={() => void openFolder("workspace_root")}>
-                <FolderOpen size={14} />
-                {t("studio.export.openFolder")}
-              </Button>
-              <Button
-                variant="ghost"
-                onClick={() =>
-                  askAgentAboutMediaAsset({
-                    assetId: detail.final_video_asset_id,
-                    filePath: detail.final_video_path,
-                    mimeType: "video/mp4",
-                  })
-                }
-              >
-                <Bot size={14} />
-                {t("studio.common.askAgent")}
-              </Button>
-            </>
-          )}
-        </div>
-      </Card>
-
-      <Card icon={Film} title={detail.episode.title}>
-        <div className="studio-media-frame studio-media-frame--export">
-          <SignedStudioVideo
-            assetId={detail.final_video_asset_id}
-            placeholder={t("studio.export.noOutput")}
-            large
-          />
-        </div>
-        {detail.final_video_path && (
-          <p>{t("studio.export.readyOutput", { path: detail.final_video_path })}</p>
-        )}
-      </Card>
     </div>
   );
 };
