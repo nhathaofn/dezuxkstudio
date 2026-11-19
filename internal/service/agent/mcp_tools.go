@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"mime"
 	"os"
 	"path/filepath"
@@ -17,7 +18,6 @@ import (
 	domainprefs "app/internal/domain/preferences"
 	"app/internal/engine"
 	"app/internal/fsutil"
-	"app/internal/storage/sqlite"
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -127,7 +127,7 @@ func (s *Service) scrubSecretParams(ctx context.Context, spec engine.Spec, input
 		}
 		if v, _ := input[p.Name].(string); len(strings.TrimSpace(v)) >= minScrubbedSecret {
 			if err := s.repo.RedactChatMessages(ctx, strings.TrimSpace(v), "[secret saved]"); err != nil {
-				s.log.Warn("agent: scrub secret from chat history", "error", err)
+				s.log.WarnContext(ctx, "agent: scrub secret from chat history", "error", err)
 			}
 		}
 	}
@@ -149,10 +149,30 @@ type inspectAssetToolInput struct {
 	AssetID string `json:"asset_id" jsonschema:"Media asset ID to inspect"`
 }
 
+type mediaListToolInput struct {
+	Kind   string `json:"kind,omitempty" jsonschema:"Optional asset kind filter: image|video|audio"`
+	Search string `json:"search,omitempty" jsonschema:"Optional substring filter"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"Max items to return"`
+	Offset int    `json:"offset,omitempty" jsonschema:"Offset for pagination"`
+}
+
+type mediaDeleteToolInput struct {
+	ID         string `json:"id" jsonschema:"Registered media asset ID"`
+	DeleteFile bool   `json:"delete_file,omitempty" jsonschema:"Also delete underlying file on disk inside media directory"`
+}
+
+type mediaRegisterInputToolInput struct {
+	Path       string `json:"path" jsonschema:"Local media file path inside trusted directory"`
+	Kind       string `json:"kind,omitempty" jsonschema:"Optional asset kind override: image|video|audio"`
+	SourceNode string `json:"source_node,omitempty" jsonschema:"Optional source tag"`
+}
+
 type subagentRunToolInput struct {
-	Name    string `json:"name" jsonschema:"Subagent slug listed in <subagents>"`
-	Task    string `json:"task" jsonschema:"Focused task brief for the subagent to execute in its isolated context"`
-	Context string `json:"context,omitempty" jsonschema:"Optional background context or constraints to pass to the subagent"`
+	Name     string `json:"name" jsonschema:"Subagent slug listed in <subagents>"`
+	Task     string `json:"task" jsonschema:"Focused task brief for the subagent to execute in its isolated context"`
+	Context  string `json:"context,omitempty" jsonschema:"Optional background context or constraints to pass to the subagent"`
+	Provider string `json:"provider,omitempty" jsonschema:"Optional explicit provider override (claude, codex, antigravity) validated against active auth"`
+	Model    string `json:"model,omitempty" jsonschema:"Optional explicit model override for the target provider"`
 }
 
 // mcpServerInstructions is the short MCP-level reminder (the full rules are the provider's system prompt).
@@ -283,8 +303,21 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 			return mcpJSON(map[string]any{"specs": s.workflow.Specs(ctx)})
 		})
 
+	addMCPTool(server, "workflow_list_templates",
+		"Canonical validated multi-node Studio workflow DAG templates ready to adapt and run.",
+		func(_ context.Context, _ struct{}) (*mcp.CallToolResult, any, error) {
+			if s.workflow == nil {
+				return mcpError("workflow service is unavailable")
+			}
+			lister, ok := s.workflow.(WorkflowTemplateLister)
+			if !ok {
+				return mcpError("workflow templates are unavailable")
+			}
+			return mcpJSON(contracts.WorkflowTemplatesResult{Templates: lister.Templates()})
+		})
+
 	addMCPTool(server, "workflow_run_node",
-		"Run one app feature like its screen does. Destructive settings wait for user approval.",
+		"Run one app feature like its screen does. Destructive settings and paid AI generation nodes wait for user approval unless auto-approved in trusted folders.",
 		func(ctx context.Context, in runNodeToolInput) (*mcp.CallToolResult, any, error) {
 			if s.workflow == nil {
 				return mcpError("workflow service is unavailable")
@@ -304,9 +337,9 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 			}
 			run := func(execCtx context.Context) (any, error) {
 				defer s.scrubSecretParams(context.WithoutCancel(execCtx), spec, prep.Input)
-				return s.workflow.RunNode(execCtx, nodeType, raw)
+				return s.workflow.RunNode(engine.WithFileGuard(execCtx, s.CheckTrustedFile), nodeType, raw)
 			}
-			if len(prep.Destructive) > 0 {
+			if len(prep.Destructive) > 0 || isPaidWorkflowNode(nodeType, prep.Input) {
 				if s.canAutoApproveNode(nodeType, prep) {
 					res, err := run(ctx)
 					if err != nil {
@@ -324,7 +357,7 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 		})
 
 	addMCPTool(server, "workflow_run_graph",
-		"Run several features as a workflow (DAG). Destructive settings wait for user approval.",
+		"Run several features as a workflow (DAG). Destructive settings and paid AI generation nodes wait for user approval unless auto-approved in trusted folders.",
 		func(ctx context.Context, in runGraphToolInput) (*mcp.CallToolResult, any, error) {
 			if s.workflow == nil {
 				return mcpError("workflow service is unavailable")
@@ -335,11 +368,11 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 				return mcpError(err.Error())
 			}
 			var parts []string
-			destructive := false
+			requiresApproval := false
 			for i, p := range prepared {
 				spec, _ := specByType(specs, g.Nodes[i].Type)
 				parts = append(parts, p.summary(spec))
-				destructive = destructive || len(p.Destructive) > 0
+				requiresApproval = requiresApproval || len(p.Destructive) > 0 || isPaidWorkflowNode(g.Nodes[i].Type, p.Input)
 			}
 			summary := fmt.Sprintf("Workflow (%d steps): %s", len(g.Nodes), strings.Join(parts, " → "))
 			run := func(execCtx context.Context) (any, error) {
@@ -349,18 +382,18 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 						s.scrubSecretParams(context.WithoutCancel(execCtx), spec, p.Input)
 					}
 				}()
-				return s.workflow.RunGraph(execCtx, g)
+				return s.workflow.RunGraph(engine.WithFileGuard(execCtx, s.CheckTrustedFile), g)
 			}
 			canAutoApprove := s.skipTrustedApproval()
 			if canAutoApprove {
 				for i, p := range prepared {
-					if len(p.Destructive) > 0 && !s.canAutoApproveNode(g.Nodes[i].Type, p) {
+					if (len(p.Destructive) > 0 || isPaidWorkflowNode(g.Nodes[i].Type, p.Input)) && !s.canAutoApproveNode(g.Nodes[i].Type, p) {
 						canAutoApprove = false
 						break
 					}
 				}
 			}
-			if destructive {
+			if requiresApproval {
 				if canAutoApprove {
 					res, err := run(ctx)
 					if err != nil {
@@ -512,6 +545,9 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 			if errMsg := validateJSONWrite(target, in.Content); errMsg != "" {
 				return mcpError(errMsg)
 			}
+			if errMsg := s.validateTextCodeWrite(target, in.Content); errMsg != "" {
+				return mcpError(errMsg)
+			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return mcpError(err.Error())
 			}
@@ -529,7 +565,7 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 
 	addMCPTool(server, "workspace_move_file",
 		"Move or rename a file within trusted folders, keeping its type.",
-		func(_ context.Context, in moveFileToolInput) (*mcp.CallToolResult, any, error) {
+		func(ctx context.Context, in moveFileToolInput) (*mcp.CallToolResult, any, error) {
 			src, dst, err := s.policy.ValidateMove(in.Source, in.Destination)
 			if err != nil {
 				return mcpError(err.Error())
@@ -541,21 +577,26 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 			if st.IsDir() {
 				return mcpError("moving whole folders is not supported; move the files inside it")
 			}
-			if _, err := os.Stat(dst); err == nil && !in.Overwrite {
+			_, dstErr := os.Stat(dst)
+			dstExists := dstErr == nil
+			if dstExists && !in.Overwrite {
 				return mcpError(fmt.Sprintf("destination %q already exists (set overwrite=true to replace it)", dst))
 			}
-			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			if dstExists && in.Overwrite && !s.skipTrustedApproval() {
+				return s.needsApproval(ctx, "workspace_move_file", "", in, "Overwrite file on move",
+					fmt.Sprintf("Move %s overwriting existing %s", filepath.Base(src), filepath.Base(dst)),
+					func(context.Context) (any, error) { return s.executeWorkspaceMove(in) })
+			}
+			res, err := s.executeWorkspaceMove(in)
+			if err != nil {
 				return mcpError(err.Error())
 			}
-			if err := os.Rename(src, dst); err != nil {
-				return mcpError(err.Error())
-			}
-			return mcpJSON(map[string]any{"ok": true, "source": src, "destination": dst})
+			return mcpJSON(res)
 		})
 
 	addMCPTool(server, "workspace_delete_file",
 		"Delete a file inside DezuxkStudio's workspace, media, or trusted folders.",
-		func(_ context.Context, in deleteFileToolInput) (*mcp.CallToolResult, any, error) {
+		func(ctx context.Context, in deleteFileToolInput) (*mcp.CallToolResult, any, error) {
 			target, err := s.policy.ValidateDelete(in.Path)
 			if err != nil {
 				return mcpError(err.Error())
@@ -567,10 +608,16 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 			if info.IsDir() {
 				return mcpError("deleting folders is not allowed")
 			}
-			if err := os.Remove(target); err != nil {
+			if !s.skipTrustedApproval() {
+				return s.needsApproval(ctx, "workspace_delete_file", "", in, "Delete file",
+					fmt.Sprintf("Delete file %s", target),
+					func(context.Context) (any, error) { return s.executeWorkspaceDelete(in.Path) })
+			}
+			res, err := s.executeWorkspaceDelete(in.Path)
+			if err != nil {
 				return mcpError(err.Error())
 			}
-			return mcpJSON(map[string]any{"ok": true, "deleted": target})
+			return mcpJSON(res)
 		})
 
 	addMCPTool(server, "skill_read",
@@ -591,6 +638,97 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 			})
 		})
 
+	addMCPTool(server, "system_check_update",
+		"Check if a newer official DezuxkStudio release is available.",
+		func(ctx context.Context, _ struct{}) (*mcp.CallToolResult, any, error) {
+			if s.update == nil {
+				return mcpError("update checker is unavailable")
+			}
+			info, err := s.update.Check(ctx)
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(info)
+		})
+
+	addMCPTool(server, "binaries_probe",
+		"Re-probe a managed external binary (e.g. ffmpeg, yt-dlp) on PATH or custom path to refresh its status and version.",
+		func(ctx context.Context, in binaryIDToolInput) (*mcp.CallToolResult, any, error) {
+			if s.binaries == nil {
+				return mcpError("binaries service is unavailable")
+			}
+			id := domainbinaries.BinaryID(strings.TrimSpace(in.ID))
+			if err := domainbinaries.ValidateID(id); err != nil {
+				return mcpError(err.Error())
+			}
+			info, err := s.binaries.Probe(ctx, id)
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(info)
+		})
+
+	addMCPTool(server, "media_list",
+		"List registered media library assets with optional kind filter (image|video|audio) and text search.",
+		func(ctx context.Context, in mediaListToolInput) (*mcp.CallToolResult, any, error) {
+			if s.media == nil {
+				return mcpError("media service is unavailable")
+			}
+			res, err := s.media.List(ctx, contracts.MediaListPayload{
+				Kind:   strings.TrimSpace(in.Kind),
+				Search: strings.TrimSpace(in.Search),
+				Limit:  in.Limit,
+				Offset: in.Offset,
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(res)
+		})
+
+	addMCPTool(server, "media_delete",
+		"Delete a registered media asset record (and optionally its underlying file on disk; always requires user approval).",
+		func(ctx context.Context, in mediaDeleteToolInput) (*mcp.CallToolResult, any, error) {
+			if s.media == nil {
+				return mcpError("media service is unavailable")
+			}
+			id := strings.TrimSpace(in.ID)
+			if id == "" {
+				return mcpError("asset id is required")
+			}
+			summary := fmt.Sprintf("Delete media asset %s", id)
+			if in.DeleteFile {
+				summary += " and remove its file from disk"
+			}
+			return s.needsApproval(ctx, "media_delete", "", in, "Delete media asset", summary, func(execCtx context.Context) (any, error) {
+				if err := s.media.Delete(engine.WithFileGuard(execCtx, s.CheckTrustedFile), id, in.DeleteFile); err != nil {
+					return nil, err
+				}
+				return map[string]any{"ok": true, "deleted_id": id, "delete_file": in.DeleteFile}, nil
+			})
+		})
+
+	addMCPTool(server, "media_register_input",
+		"Register a local image, video, or audio file into DezuxkStudio's media library and return its asset record.",
+		func(ctx context.Context, in mediaRegisterInputToolInput) (*mcp.CallToolResult, any, error) {
+			if s.media == nil {
+				return mcpError("media service is unavailable")
+			}
+			target, err := s.policy.ValidateRead(in.Path)
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			item, err := s.media.RegisterInput(engine.WithFileGuard(ctx, s.CheckTrustedFile), contracts.MediaRegisterInputPayload{
+				FilePath:   target,
+				Kind:       strings.TrimSpace(in.Kind),
+				SourceNode: strings.TrimSpace(in.SourceNode),
+			})
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			return mcpJSON(item)
+		})
+
 	addMCPTool(server, "media_inspect_asset",
 		"Inspect metadata (mime_type, dimensions, duration, size, registered_root) of a registered media asset by asset_id safely without exposing raw paths or signed tickets.",
 		func(ctx context.Context, in inspectAssetToolInput) (*mcp.CallToolResult, any, error) {
@@ -602,7 +740,7 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 		})
 
 	addMCPTool(server, "subagent_run",
-		"Delegate a focused sub-task to a specialized isolated subagent worker (supports parallel calls).",
+		"Delegate a focused sub-task to a specialized isolated subagent worker (supports parallel calls and optional provider/model overrides).",
 		func(ctx context.Context, in subagentRunToolInput) (*mcp.CallToolResult, any, error) {
 			if _, isSub := subagentFromContext(ctx); isSub {
 				return mcpError("subagent_run cannot be invoked from inside a subagent")
@@ -613,6 +751,8 @@ func (s *Service) buildToolsetFiltered(filter func(string) bool) *mcpToolset {
 			}
 			return mcpJSON(res)
 		})
+
+	s.registerStudioTools(server)
 
 	return server
 }
@@ -673,6 +813,11 @@ func (s *Service) buildCapabilitiesSnapshot(ctx context.Context) map[string]any 
 	if providers := s.providerSnapshot(ctx); providers != nil {
 		appFeatures["providers"] = providers
 	}
+	if s.studio != nil {
+		if studioList, err := s.studio.ListProjects(engine.WithFileGuard(ctx, s.CheckTrustedFile)); err == nil {
+			appFeatures["studio"] = studioList
+		}
+	}
 
 	// Group 2: what the assistant does by itself. These are NOT DezuxkStudio features and must never be presented as such.
 	assistantExtras := map[string]any{
@@ -709,8 +854,127 @@ func (s *Service) toolNames() []string {
 	return names
 }
 
+func isPaidWorkflowNode(nodeType string, input map[string]any) bool {
+	switch strings.TrimSpace(nodeType) {
+	case contracts.NodeTypeImageGenerate,
+		contracts.NodeTypeVideoGenerate,
+		contracts.NodeTypeTTSGenerate,
+		contracts.NodeTypeLipSyncGenerate,
+		contracts.NodeTypeMaskEdit,
+		contracts.NodeTypeScriptNormalize,
+		contracts.NodeTypeExtractAssets,
+		contracts.NodeTypeAuthorShotPrompts:
+		return true
+	case contracts.NodeTypeTTSDubMux:
+		raw, ok := input["audio_path"]
+		if !ok || raw == nil {
+			return true
+		}
+		if str, ok := raw.(string); ok {
+			return strings.TrimSpace(str) == ""
+		}
+		return strings.TrimSpace(fmt.Sprint(raw)) == ""
+	case contracts.NodeTypeQCReview:
+		if skip, ok := input["skip_vision"].(bool); ok && skip {
+			return false
+		}
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Service) canAutoApproveNode(nodeType string, prep preparedNodeInput) bool {
-	return nodeType != "tool.provider_delete" && s.skipTrustedApproval() && allFileTargetsTrusted(s.policy, prep)
+	if nodeType == "tool.provider_delete" || !s.skipTrustedApproval() {
+		return false
+	}
+	if len(prep.Files)+len(prep.Folders)+len(prep.OutputDirs) == 0 {
+		for _, fallbackDir := range []string{s.getMediaDir(), s.getWorkspaceDir()} {
+			if strings.TrimSpace(fallbackDir) != "" {
+				prep.OutputDirs = []string{fallbackDir}
+				break
+			}
+		}
+	}
+	return allFileTargetsTrusted(s.policy, prep)
+}
+
+func (s *Service) redactApprovalInput(ctx context.Context, tool, nodeType string, rawInput any) any {
+	if s.workflow == nil || rawInput == nil {
+		return rawInput
+	}
+	redactMap := func(spec engine.Spec, inMap map[string]any) (map[string]any, bool) {
+		var cloned map[string]any
+		for _, p := range spec.Params {
+			if !p.Secret {
+				continue
+			}
+			v, _ := inMap[p.Name].(string)
+			if strings.TrimSpace(v) == "" {
+				continue
+			}
+			if cloned == nil {
+				cloned = maps.Clone(inMap)
+			}
+			cloned[p.Name] = "[REDACTED]"
+		}
+		if cloned != nil {
+			s.scrubSecretParams(ctx, spec, inMap)
+			return cloned, true
+		}
+		return inMap, false
+	}
+
+	switch tool {
+	case "workflow_run_node":
+		inMap, ok := rawInput.(map[string]any)
+		if !ok {
+			return rawInput
+		}
+		spec, ok := specByType(s.workflow.Specs(ctx), nodeType)
+		if !ok {
+			return rawInput
+		}
+		redacted, changed := redactMap(spec, inMap)
+		if changed {
+			return redacted
+		}
+		return rawInput
+	case "workflow_run_graph":
+		g, ok := rawInput.(engine.Graph)
+		if !ok {
+			return rawInput
+		}
+		specs := s.workflow.Specs(ctx)
+		nodes := make([]engine.GraphNode, len(g.Nodes))
+		copy(nodes, g.Nodes)
+		anyChanged := false
+		for i, n := range nodes {
+			if len(n.Params) == 0 {
+				continue
+			}
+			spec, ok := specByType(specs, n.Type)
+			if !ok {
+				continue
+			}
+			var inMap map[string]any
+			if json.Unmarshal(n.Params, &inMap) != nil {
+				continue
+			}
+			if redacted, changed := redactMap(spec, inMap); changed {
+				if raw, err := json.Marshal(redacted); err == nil {
+					nodes[i].Params = raw
+					anyChanged = true
+				}
+			}
+		}
+		if anyChanged {
+			return engine.Graph{Nodes: nodes, Edges: g.Edges}
+		}
+		return rawInput
+	default:
+		return rawInput
+	}
 }
 
 func (s *Service) queueApprovalRecord(ctx context.Context, tool, nodeType string, rawInput any, title, summary string, execFn func(context.Context) (any, error)) (domainagent.ApprovalRequest, error) {
@@ -720,7 +984,8 @@ func (s *Service) queueApprovalRecord(ctx context.Context, tool, nodeType string
 	depth := s.continuationDepth
 	s.mu.Unlock()
 
-	canonJSON, err := CanonicalJSON(rawInput)
+	persistedInput := s.redactApprovalInput(ctx, tool, nodeType, rawInput)
+	canonJSON, err := CanonicalJSON(persistedInput)
 	if err != nil {
 		canonJSON = []byte("{}")
 	}
@@ -738,7 +1003,7 @@ func (s *Service) queueApprovalRecord(ctx context.Context, tool, nodeType string
 	}
 
 	if s.approvalRepo != nil {
-		record := &sqlite.AgentApproval{
+		record := &domainagent.ApprovalRecord{
 			ID:                appID,
 			ConversationID:    convID,
 			ToolName:          tool,

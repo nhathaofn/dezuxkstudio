@@ -1050,7 +1050,7 @@
 }
 
 .watermark-segmented .ds-button--secondary:hover {
-  background-color: var(--bg-hover);
+  background-color: var(--bg-surface-elevated);
   color: var(--text-primary);
 }
 

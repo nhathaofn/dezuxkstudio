@@ -22,6 +22,24 @@ func TestNewBlocksLinkLocalDial(t *testing.T) {
 	if err := rejectLinkLocalControl("tcp", "[fe80::1]:80", nil); err == nil {
 		t.Fatal("expected fe80::1 to be blocked")
 	}
+	if err := rejectLinkLocalControl("tcp", "[fe80::1%eth0]:80", nil); err == nil {
+		t.Fatal("expected zoned fe80::1 with zone eth0 to be blocked")
+	}
+	if err := rejectLinkLocalControl("tcp", "[fd00:ec2::254]:80", nil); err == nil {
+		t.Fatal("expected fd00:ec2::254 ULA metadata to be blocked")
+	}
+	if err := rejectLinkLocalControl("tcp", "100.100.100.200:80", nil); err == nil {
+		t.Fatal("expected 100.100.100.200 CGNAT metadata to be blocked")
+	}
+	if err := rejectLinkLocalControl("tcp", "[::ffff:169.254.169.254]:80", nil); err == nil {
+		t.Fatal("expected IPv4-mapped 169.254.169.254 to be blocked")
+	}
+	if err := rejectLinkLocalControl("tcp", "192.0.0.192:80", nil); err == nil {
+		t.Fatal("expected 192.0.0.192 to be blocked")
+	}
+	if err := rejectLinkLocalControl("tcp", "not-an-ip:80", nil); err == nil {
+		t.Fatal("expected unparseable dial IP to fail closed")
+	}
 	if err := rejectLinkLocalControl("tcp", "0.0.0.0:80", nil); err == nil {
 		t.Fatal("expected 0.0.0.0 to be blocked")
 	}
@@ -252,5 +270,42 @@ func TestWithRedirectGuardTenHopCap(t *testing.T) {
 				t.Fatalf("hits = %d, want 10", hits.Load())
 			}
 		})
+	}
+}
+
+func TestWithRedirectGuardCrossOriginStripsAuthAndBlocksLocal(t *testing.T) {
+	c := WithRedirectGuard(nil, func(string) error { return nil })
+
+	// Cross-origin redirect to a public host must strip sensitive headers.
+	origReq, _ := http.NewRequest(http.MethodGet, "https://api.example.com/start", nil)
+	nextReq, _ := http.NewRequest(http.MethodGet, "https://cdn.example.net/file", nil)
+	for _, hdr := range sensitiveHeaders {
+		nextReq.Header.Set(hdr, "secret-value")
+	}
+	nextReq.Header.Set("X-Safe-Trace", "keep-me")
+	if err := c.CheckRedirect(nextReq, []*http.Request{origReq}); err != nil {
+		t.Fatalf("unexpected error for cross-origin public redirect: %v", err)
+	}
+	for _, hdr := range sensitiveHeaders {
+		if got := nextReq.Header.Get(hdr); got != "" {
+			t.Fatalf("expected header %s to be stripped on cross-origin redirect, got %q", hdr, got)
+		}
+	}
+	if got := nextReq.Header.Get("X-Safe-Trace"); got != "keep-me" {
+		t.Fatalf("expected non-sensitive header to remain, got %q", got)
+	}
+
+	// Cross-origin redirect into loopback or RFC1918 must be blocked.
+	for _, localTarget := range []string{
+		"http://127.0.0.1:8080/admin",
+		"http://localhost:9000/status",
+		"http://192.168.1.1/",
+		"http://10.0.0.1/",
+		"http://[::1]:8080/",
+	} {
+		badReq, _ := http.NewRequest(http.MethodGet, localTarget, nil)
+		if err := c.CheckRedirect(badReq, []*http.Request{origReq}); err == nil {
+			t.Fatalf("expected cross-origin redirect to %s to be blocked", localTarget)
+		}
 	}
 }

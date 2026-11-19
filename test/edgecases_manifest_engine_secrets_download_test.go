@@ -570,8 +570,9 @@ func TestAdversarial_Download_CrashSafetyAndTempFileCleanup(t *testing.T) {
 			ExtractFile:   "bin/ffmpeg.exe",
 		}
 		testSpec.Downloads = testDownloads
-		binaries.Registry[binaries.IDFFmpeg] = testSpec
-		defer func() { binaries.Registry[binaries.IDFFmpeg] = origSpec }()
+		svc = binariessvc.New(repo, toolsDir, logger, binariessvc.WithManifest(map[binaries.BinaryID]binaries.BinarySpec{
+			binaries.IDFFmpeg: testSpec,
+		}))
 
 		_, err := svc.Download(ctx, binaries.IDFFmpeg)
 		if err == nil {
@@ -627,8 +628,9 @@ func TestAdversarial_Download_CrashSafetyAndTempFileCleanup(t *testing.T) {
 			ExtractFile:   "yt-dlp.exe",
 		}
 		testSpec.Downloads = testDownloads
-		binaries.Registry[binaries.IDYtDlp] = testSpec
-		defer func() { binaries.Registry[binaries.IDYtDlp] = origSpec }()
+		svc = binariessvc.New(repo, toolsDir, logger, binariessvc.WithManifest(map[binaries.BinaryID]binaries.BinarySpec{
+			binaries.IDYtDlp: testSpec,
+		}))
 
 		_, err := svc.Download(ctx, binaries.IDYtDlp)
 		if err == nil {

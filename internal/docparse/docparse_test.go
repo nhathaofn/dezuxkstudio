@@ -218,3 +218,32 @@ func TestExtractDocumentErrorsAndLimits(t *testing.T) {
 		t.Fatalf("expected missing content.xml error, got %v", err)
 	}
 }
+
+func TestPDFObjStmNegativeOffsetAndCumulativeBudget(t *testing.T) {
+	// Negative offset in /ObjStm must not panic.
+	obj := pdfObject{
+		id:     1,
+		dict:   "<< /Type /ObjStm /N 1 /First 6 >>",
+		stream: []byte("2 -10 \n<< /Type /Page >>"),
+	}
+	res := expandPDFObjStm(obj)
+	if len(res) != 0 {
+		t.Fatalf("expected negative offset entry to be skipped, got %+v", res)
+	}
+
+	// Cumulative decompression budget across streams must bound total decoded bytes.
+	var compressed bytes.Buffer
+	zw := zlib.NewWriter(&compressed)
+	_, _ = zw.Write(bytes.Repeat([]byte("A"), 200))
+	_ = zw.Close()
+
+	budget := int64(250)
+	first := decodePDFStream("<< /Filter /FlateDecode >>", compressed.Bytes(), &budget)
+	if len(first) != 200 || budget != 50 {
+		t.Fatalf("first stream decode unexpected: len=%d budget=%d", len(first), budget)
+	}
+	second := decodePDFStream("<< /Filter /FlateDecode >>", compressed.Bytes(), &budget)
+	if second != nil || budget != 0 {
+		t.Fatalf("second stream must fail when exceeding remaining budget: got len=%d budget=%d", len(second), budget)
+	}
+}

@@ -4,7 +4,7 @@ export interface PickMediaOptions {
   title?: string;
   multiple?: boolean;
   accept?: string;
-  kind?: "image" | "directory" | "executable";
+  kind?: "image" | "video" | "audio" | "directory" | "executable";
 }
 
 export interface PickMediaResult {
@@ -43,7 +43,10 @@ export async function pickMediaFiles(options: PickMediaOptions = {}): Promise<Pi
         };
       }
 
-      if (kind === "executable" && bridge.BrowseExecutable) {
+      if (
+        (kind === "executable" || kind === "video" || kind === "audio") &&
+        bridge.BrowseExecutable
+      ) {
         const picked = await bridge.BrowseExecutable(title);
         return {
           paths: picked ? [picked] : [],

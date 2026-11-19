@@ -19,6 +19,8 @@ type Options struct {
 	Host              string
 	Port              int // 0 = OS-assigned
 	ReadHeaderTimeout time.Duration
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
 	IdleTimeout       time.Duration
 	Handler           http.Handler
 	Logger            *slog.Logger
@@ -53,6 +55,8 @@ func (s *Server) Start() error {
 	s.http = &http.Server{
 		Handler:           s.o.Handler,
 		ReadHeaderTimeout: s.o.ReadHeaderTimeout,
+		ReadTimeout:       s.o.ReadTimeout,
+		WriteTimeout:      s.o.WriteTimeout,
 		IdleTimeout:       s.o.IdleTimeout,
 		ErrorLog:          slog.NewLogLogger(s.o.Logger.Handler(), slog.LevelWarn),
 	}

@@ -219,3 +219,28 @@ func TestTicketSigner_NonceUniqueness(t *testing.T) {
 		t.Fatal("expected tickets generated for same parameters to differ due to nonces")
 	}
 }
+
+func TestTicketVerifyAndConsume_SingleUseDownloadVsReusablePreview(t *testing.T) {
+	signer := NewTicketSigner([]byte("secret-key-for-replay-test"))
+
+	dlTicket, err := signer.SignTicket("asset-dl", PurposeDownload, 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := signer.VerifyAndConsumeTicket(dlTicket, "asset-dl", PurposeDownload); err != nil {
+		t.Fatalf("first download consume failed: %v", err)
+	}
+	if _, err := signer.VerifyAndConsumeTicket(dlTicket, "asset-dl", PurposeDownload); !errors.Is(err, ErrTicketReplayed) {
+		t.Fatalf("expected ErrTicketReplayed on second download use, got %v", err)
+	}
+
+	prevTicket, err := signer.SignTicket("asset-prev", PurposePreview, 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := signer.VerifyAndConsumeTicket(prevTicket, "asset-prev", PurposePreview); err != nil {
+			t.Fatalf("preview range use %d failed: %v", i, err)
+		}
+	}
+}

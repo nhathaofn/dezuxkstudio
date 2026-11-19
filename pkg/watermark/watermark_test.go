@@ -3,6 +3,7 @@ package watermark_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -229,7 +230,7 @@ func TestBatchProcessingConcurrency(t *testing.T) {
 		Workers: 4,
 	})
 
-	results := eng.ProcessBatch(context.Background(), items, 4)
+	results := eng.ProcessBatchProgress(context.Background(), items, 4, nil)
 	if len(results) != count {
 		t.Fatalf("expected %d results, got %d", count, len(results))
 	}
@@ -562,7 +563,7 @@ func TestBatchPanicSafetyAndRecovery(t *testing.T) {
 		{ID: "valid_2", Data: validPNG},
 	}
 
-	results := eng.ProcessBatch(context.Background(), items, 2)
+	results := eng.ProcessBatchProgress(context.Background(), items, 2, nil)
 	if len(results) != len(items) {
 		t.Fatalf("expected %d results, got %d", len(items), len(results))
 	}
@@ -578,5 +579,49 @@ func TestBatchPanicSafetyAndRecovery(t *testing.T) {
 	}
 	if results[3].Err != nil {
 		t.Errorf("expected valid_2 to succeed, got error: %v", results[3].Err)
+	}
+}
+
+func TestYCbCrROIPatchedReconstructionAndCancellation(t *testing.T) {
+	rgba := texture(1024, 1024)
+	stamp(t, rgba, 1024-78-48, 1024-78-48, 0.72)
+	var jpgBuf bytes.Buffer
+	if err := jpeg.Encode(&jpgBuf, rgba, &jpeg.Options{Quality: 95}); err != nil {
+		t.Fatal(err)
+	}
+
+	out, removed, outFmt, err := watermark.Default().RemoveWithFormat(jpgBuf.Bytes())
+	if err != nil {
+		t.Fatalf("RemoveWithFormat(JPEG) failed: %v", err)
+	}
+	if !removed || outFmt != watermark.FormatJPEG {
+		t.Fatalf("got removed=%v fmt=%v, want removed=true fmt=JPEG", removed, outFmt)
+	}
+	if _, err := jpeg.Decode(bytes.NewReader(out)); err != nil {
+		t.Fatalf("re-encoded JPEG invalid: %v", err)
+	}
+
+	cCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, _, err := watermark.DetectContext(cCtx, jpgBuf.Bytes()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("DetectContext canceled got %v, want Canceled", err)
+	}
+	if _, _, err := watermark.RemoveContext(cCtx, jpgBuf.Bytes()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("RemoveContext canceled got %v, want Canceled", err)
+	}
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.bin")
+	dst := filepath.Join(dir, "dst.bin")
+	payload := bytes.Repeat([]byte("wm-stream-"), 8192)
+	if err := os.WriteFile(src, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := watermark.CopyFileAtomicContext(context.Background(), src, dst, 0o600); err != nil {
+		t.Fatalf("CopyFileAtomicContext failed: %v", err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("copied file mismatch (err=%v, len=%d)", err, len(got))
 	}
 }

@@ -52,7 +52,7 @@ export type AgentCustomizationKind = (typeof AgentCustomizationKindValues)[numbe
 export const AgentCustomizationStateValues = ["managed", "user_modified", "user_only", "tombstone"] as const;
 export type AgentCustomizationState = (typeof AgentCustomizationStateValues)[number];
 
-export const ProviderCapabilityValues = ["llm", "image", "video", "tts"] as const;
+export const ProviderCapabilityValues = ["llm", "image", "video", "tts", "lipsync"] as const;
 export type ProviderCapability = (typeof ProviderCapabilityValues)[number];
 
 export const ProviderFieldKindValues = ["text", "url", "file"] as const;
@@ -61,17 +61,83 @@ export type ProviderFieldKind = (typeof ProviderFieldKindValues)[number];
 export const ProviderDiscoveryFormatValues = ["openai", "gemini", "anthropic"] as const;
 export type ProviderDiscoveryFormat = (typeof ProviderDiscoveryFormatValues)[number];
 
-export const ProviderEndpointValues = ["openai-chat", "openai-responses", "gemini-generate", "anthropic-messages", "openai-images", "openai-images-generations", "openai-images-edits", "openai-chat-image", "openrouter-images", "gemini-image", "openai-video", "openai-tts", "gemini-video", "gemini-tts"] as const;
+export const ProviderEndpointValues = ["openai-chat", "openai-responses", "gemini-generate", "anthropic-messages", "openai-images", "openai-images-generations", "openai-images-edits", "openai-chat-image", "openrouter-images", "gemini-image", "openai-video", "openai-tts", "gemini-video", "gemini-tts", "lipsync"] as const;
 export type ProviderEndpoint = (typeof ProviderEndpointValues)[number];
 
 export const ProviderTestOutcomeValues = ["ok", "auth_failed", "rate_limited", "not_found", "http_error", "timeout", "network", "invalid_credentials", "secret_missing", "models_failed"] as const;
 export type ProviderTestOutcome = (typeof ProviderTestOutcomeValues)[number];
 
-export const ProviderPurposeValues = ["text", "image", "video", "tts"] as const;
+export const ProviderPurposeValues = ["text", "image", "video", "tts", "lipsync"] as const;
 export type ProviderPurpose = (typeof ProviderPurposeValues)[number];
 
-export const SecretBackendValues = ["keyring", "encrypted_file", "memory"] as const;
+export const SecretBackendValues = ["keyring", "encrypted_file", "memory", "error"] as const;
 export type SecretBackend = (typeof SecretBackendValues)[number];
+
+export const StudioGenreValues = ["drama", "narration"] as const;
+export type StudioGenre = (typeof StudioGenreValues)[number];
+
+export const StudioProductionModeValues = ["storyboard_i2v", "r2v"] as const;
+export type StudioProductionMode = (typeof StudioProductionModeValues)[number];
+
+export const StudioAssetKindValues = ["character", "scene", "prop"] as const;
+export type StudioAssetKind = (typeof StudioAssetKindValues)[number];
+
+export const StudioShotModeValues = ["single", "grid_2x2", "grid_3x3", "r2v"] as const;
+export type StudioShotMode = (typeof StudioShotModeValues)[number];
+
+export const StudioShotStatusValues = ["pending", "keyframe_ready", "video_ready", "tts_ready", "qc_passed", "failed"] as const;
+export type StudioShotStatus = (typeof StudioShotStatusValues)[number];
+
+export const StudioEpisodeStageValues = ["script", "assets", "storyboard", "video", "export"] as const;
+export type StudioEpisodeStage = (typeof StudioEpisodeStageValues)[number];
+
+export const StudioRunStageActionValues = ["script_normalize", "extract_assets", "author_shots", "generate_assets", "generate_keyframes", "generate_videos", "generate_tts", "probe_shots", "concat_video"] as const;
+export type StudioRunStageAction = (typeof StudioRunStageActionValues)[number];
+
+export const StudioTrackKindValues = ["video", "audio_dialogue", "audio_narration", "audio_bgm", "audio_sfx", "text"] as const;
+export type StudioTrackKind = (typeof StudioTrackKindValues)[number];
+
+export const StudioTransitionTypeValues = ["none", "fade", "crossfade", "wipeleft", "slideleft"] as const;
+export type StudioTransitionType = (typeof StudioTransitionTypeValues)[number];
+
+export const StudioKenBurnsPresetValues = ["none", "zoom_in", "zoom_out", "pan_left", "pan_right"] as const;
+export type StudioKenBurnsPreset = (typeof StudioKenBurnsPresetValues)[number];
+
+export const StudioNLEExportFormatValues = ["capcut", "jianying", "fcpxml", "otio"] as const;
+export type StudioNLEExportFormat = (typeof StudioNLEExportFormatValues)[number];
+
+export const StudioJobStatusValues = ["queued", "submitted", "polling", "paused", "succeeded", "failed", "canceled"] as const;
+export type StudioJobStatus = (typeof StudioJobStatusValues)[number];
+
+export const StudioJobKindValues = ["image", "video", "tts", "lipsync", "mask_edit", "grid_split", "extract_frames", "tts_dub_mux", "video_wm_remove", "qc_review"] as const;
+export type StudioJobKind = (typeof StudioJobKindValues)[number];
+
+export const StudioQueueActionValues = ["pause", "resume", "cancel", "retry"] as const;
+export type StudioQueueAction = (typeof StudioQueueActionValues)[number];
+
+export const StudioCostStatusValues = ["estimated", "recorded", "failed"] as const;
+export type StudioCostStatus = (typeof StudioCostStatusValues)[number];
+
+export const StudioMediaTargetKindValues = ["asset", "keyframe", "video", "dub_audio", "lipsync_video", "grid_panel", "clean_video"] as const;
+export type StudioMediaTargetKind = (typeof StudioMediaTargetKindValues)[number];
+
+export const StudioQCStatusValues = ["pending", "pass", "warn", "fail"] as const;
+export type StudioQCStatus = (typeof StudioQCStatusValues)[number];
+
+export const StudioTimelineActorValues = ["user", "agent", "node"] as const;
+export type StudioTimelineActor = (typeof StudioTimelineActorValues)[number];
+
+export const StudioTimelineOpKindValues = ["replace_timeline", "set_format", "add_track", "update_track", "remove_track", "add_clip", "update_clip", "move_clip", "remove_clip", "split_clip", "add_subtitle", "update_subtitle", "remove_subtitle", "add_marker", "remove_marker"] as const;
+export type StudioTimelineOpKind = (typeof StudioTimelineOpKindValues)[number];
+
+export const StudioBatchStatusValues = ["running", "completed", "failed"] as const;
+export type StudioBatchStatus = (typeof StudioBatchStatusValues)[number];
+
+export const StudioProjectChangedActionValues = ["created", "updated", "deleted", "synced"] as const;
+export type StudioProjectChangedAction = (typeof StudioProjectChangedActionValues)[number];
+
+export const StudioOverrunPolicyValues = ["warn", "freeze_last_frame", "speed_fit"] as const;
+export type StudioOverrunPolicy = (typeof StudioOverrunPolicyValues)[number];
 
 export interface ActionProgress {
   percent: number;
@@ -298,8 +364,60 @@ export interface AgentUIContextPayload {
   screen?: string;
   feature?: string;
   selected_files?: string[];
+  selected_asset_ids?: string[];
   settings?: Record<string, string>;
   last_result?: string;
+}
+
+export interface AuthorShotPromptsInput {
+  normalized_script_json: string;
+  asset_bible_json?: string;
+  production_mode?: string;
+  shot_mode_default?: string;
+  default_duration_sec?: number;
+  style_prompt?: string;
+  model?: string;
+  project_dir?: string;
+}
+
+export interface AuthorShotPromptsOutput {
+  shots_json: string;
+  shots_path?: string;
+  shot_count: number;
+  provider: string;
+  model: string;
+}
+
+export interface BatchPreflightInput {
+  project_id?: string;
+  episode_id?: string;
+  model_ref?: string;
+  capability: string;
+  item_count: number;
+  units_per_item?: number;
+}
+
+export interface BatchPreflightMessage {
+  message: string;
+  msg_key?: string;
+  msg_params?: Record<string, string>;
+}
+
+export interface BatchPreflightOutput {
+  report: string;
+  ready: boolean;
+  provider_id?: string;
+  model_id?: string;
+  capability: string;
+  item_count: number;
+  unit: string;
+  unit_price_usd: number;
+  estimated_usd: number;
+  estimated_sec: number;
+  warnings: string[];
+  warning_items: BatchPreflightMessage[];
+  blockers: string[];
+  blocker_items: BatchPreflightMessage[];
 }
 
 export interface BinaryIDPayload {
@@ -381,6 +499,14 @@ export interface ConnectionInfo {
   long_action_timeout_ms: number;
   ping_interval_ms: number;
   check_updates_on_startup: boolean;
+}
+
+export interface ContactSheetFrameMeta {
+  index: number;
+  sheet_index: number;
+  time_sec: number;
+  timeline_ms: number;
+  signals?: string[];
 }
 
 export interface CreateCredentialPayload {
@@ -477,6 +603,61 @@ export interface EventMessage {
   timestamp: number;
 }
 
+export interface ExportNLEDraftInput {
+  timeline_json: string;
+  format?: string;
+  output_dir?: string;
+  project_name?: string;
+  include_media_copy?: boolean;
+}
+
+export interface ExportNLEDraftOutput {
+  export_path: string;
+  asset_id?: string;
+  format: string;
+  file_count: number;
+  total_bytes: number;
+}
+
+export interface ExtractAssetsInput {
+  normalized_script_json: string;
+  style_prompt?: string;
+  model?: string;
+  project_dir?: string;
+}
+
+export interface ExtractAssetsOutput {
+  asset_bible_json: string;
+  assets_path?: string;
+  asset_count: number;
+  provider: string;
+  model: string;
+}
+
+export interface ExtractFramesInput {
+  video_path: ImageInputRef;
+  mode?: string;
+  timestamps_sec?: number[];
+  timestamps_csv?: string;
+  count?: number;
+  output_dir?: string;
+}
+
+export interface ExtractFramesOutput {
+  last_frame: MediaRef;
+  frames: ExtractedFrame[];
+  last_frame_path?: string;
+  output_dir: string;
+}
+
+export interface ExtractedFrame {
+  path: string;
+  timestamp_sec: number;
+  width?: number;
+  height?: number;
+  asset_id?: string;
+}
+
 export interface Graph {
   requestId?: string;
   nodes: GraphNode[];
@@ -492,6 +673,33 @@ export interface GraphNode {
 export interface GraphResult {
   order: string[];
   nodes: Record<string, NodeRun>;
+}
+
+export interface GridPanel {
+  index: number;
+  row: number;
+  col: number;
+  path: string;
+  width: number;
+  height: number;
+  asset_id?: string;
+}
+
+export interface GridSplitInput {
+  image_path: ImageInputRef;
+  rows?: number;
+  cols?: number;
+  margin_px?: number;
+  gutter_px?: number;
+  row_weights?: number[];
+  col_weights?: number[];
+  output_dir?: string;
+}
+
+export interface GridSplitOutput {
+  images: MediaRef[];
+  panels: GridPanel[];
+  output_dir: string;
 }
 
 export interface ImageGenerateInput {
@@ -518,6 +726,44 @@ export interface ImageInputRef {
   localUrl: string;
   kind: string;
   mimeType?: string;
+}
+
+export interface LipSyncGenerateInput {
+  video_path: ImageInputRef;
+  audio_path: ImageInputRef;
+  model_ref?: string;
+  face_index?: number;
+  prompt?: string;
+  output_dir?: string;
+}
+
+export interface LipSyncGenerateOutput {
+  video: MediaRef;
+  path: string;
+  asset_id?: string;
+  mime_type?: string;
+  provider?: string;
+  model?: string;
+}
+
+export interface MaskEditInput {
+  image_path: ImageInputRef;
+  mask_path: ImageInputRef;
+  prompt: string;
+  model_ref?: string;
+  aspect_ratio?: string;
+  resolution?: string;
+  seed?: number;
+  output_dir?: string;
+}
+
+export interface MaskEditOutput {
+  image: MediaRef;
+  path: string;
+  asset_id?: string;
+  mime_type?: string;
+  provider?: string;
+  model?: string;
 }
 
 export interface MediaAssetItem {
@@ -551,6 +797,28 @@ export interface MediaListPayload {
 export interface MediaListResult {
   assets: MediaAssetItem[];
   total: number;
+}
+
+export interface MediaPeaksThumbsInput {
+  media?: ImageInputRef;
+  audio?: ImageInputRef;
+  thumb_interval_sec?: number;
+  peak_bins?: number;
+  thumb_height?: number;
+  output_dir?: string;
+}
+
+export interface MediaPeaksThumbsOutput {
+  peaks_thumbs_json: string;
+  sprite_sheet_path?: string;
+  sprite_asset_id?: string;
+  sprite_cols?: number;
+  sprite_rows?: number;
+  peaks_json_path: string;
+  peaks: number[];
+  thumb_count: number;
+  thumb_interval_sec: number;
+  duration_ms: number;
 }
 
 export interface MediaRef {
@@ -669,6 +937,25 @@ export interface PreferencesPatch {
   agent_skip_trusted_approval?: boolean;
 }
 
+export interface ProbeMediaInput {
+  media?: ImageInputRef;
+  audio?: ImageInputRef;
+}
+
+export interface ProbeMediaOutput {
+  probe_json: string;
+  duration_sec: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+  has_audio: boolean;
+  silent_ratio: number;
+  video_codec?: string;
+  audio_codec?: string;
+  format_name?: string;
+  warnings?: string[];
+}
+
 export interface ProviderCredential {
   id: string;
   provider_id: string;
@@ -751,6 +1038,36 @@ export interface PurposeDefault {
   candidates: ModelCandidate[];
 }
 
+export interface QCReviewInput {
+  media_path: ImageInputRef;
+  target_kind?: string;
+  target_id?: string;
+  reference_paths?: MediaRef[];
+  prompt_expected?: string;
+  vision_model_ref?: string;
+  sample_count?: number;
+  skip_vision?: boolean;
+}
+
+export interface QCReviewIssue {
+  severity: string;
+  category: string;
+  message: string;
+  msg_key?: string;
+  msg_params?: Record<string, string>;
+  frame_path?: string;
+}
+
+export interface QCReviewOutput {
+  report: string;
+  verdict: string;
+  overall_score: number;
+  ffprobe_json?: string;
+  issues: QCReviewIssue[];
+  vision_summary?: string;
+  sample_frames: string[];
+}
+
 export interface RemoverInput {
   image?: ImageInputRef;
   images?: MediaRef[];
@@ -783,7 +1100,28 @@ export interface RemoverOutput {
   detected: boolean;
   total_count: number;
   detected_count: number;
-  results?: RemoverItem[];
+  results: RemoverItem[];
+}
+
+export interface RenderTimelineInput {
+  timeline_json: string;
+  output_dir?: string;
+  filename?: string;
+  burn_subtitles?: boolean;
+  subtitle_font_size?: number;
+  loudnorm_lufs?: number;
+  crf?: number;
+  preset?: string;
+  overwrite?: boolean;
+}
+
+export interface RenderTimelineOutput {
+  video: MediaRef;
+  output_path: string;
+  asset_id?: string;
+  srt_path?: string;
+  ass_path?: string;
+  duration_sec: number;
 }
 
 export interface ResponseMessage {
@@ -801,6 +1139,24 @@ export interface RuntimeInfo {
   sys_mb: number;
   gc_cycles: number;
   uptime_seconds: number;
+}
+
+export interface ScriptNormalizeInput {
+  raw_script: string;
+  genre?: string;
+  episode_title?: string;
+  aspect_ratio?: string;
+  model?: string;
+  project_dir?: string;
+}
+
+export interface ScriptNormalizeOutput {
+  normalized_script_json: string;
+  script_path?: string;
+  scene_count: number;
+  beat_count: number;
+  provider: string;
+  model: string;
 }
 
 export interface SetDefaultPayload {
@@ -843,6 +1199,916 @@ export interface Spec {
   params: Param[];
 }
 
+export interface StudioAsset {
+  id: string;
+  project_id: string;
+  kind: StudioAssetKind;
+  name: string;
+  code_tag: string;
+  description: string;
+  prompt: string;
+  primary_asset_id: string;
+  primary_path: string;
+  voice_provider?: string;
+  voice_id?: string;
+  voice_style?: string;
+  updated_at: number;
+}
+
+export interface StudioAssetMergePayload {
+  project_id: string;
+  source_asset_id: string;
+  target_asset_id: string;
+  dry_run?: boolean;
+}
+
+export interface StudioAssetRefactorResult {
+  dry_run: boolean;
+  old_code_tag: string;
+  new_code_tag: string;
+  impacted_episode_count: number;
+  impacted_shot_count: number;
+  updated_scripts_count: number;
+  updated_shots_count: number;
+  deleted_asset_id?: string;
+  assets?: StudioAsset[];
+}
+
+export interface StudioAssetRenamePayload {
+  project_id: string;
+  asset_id: string;
+  new_name?: string;
+  new_code_tag: string;
+  dry_run?: boolean;
+}
+
+export interface StudioAssetUpsertPayload {
+  id?: string;
+  project_id: string;
+  kind: StudioAssetKind;
+  name: string;
+  code_tag?: string;
+  description?: string;
+  prompt?: string;
+  primary_asset_id?: string;
+  primary_path?: string;
+  voice_provider?: string;
+  voice_id?: string;
+  voice_style?: string;
+  delete?: boolean;
+}
+
+export interface StudioAssetUpsertResult {
+  asset?: StudioAsset;
+  assets: StudioAsset[];
+}
+
+export interface StudioBatchPreflightPayload {
+  project_id: string;
+  episode_id?: string;
+  stage: string;
+  model?: string;
+  item_count?: number;
+  units_per_item?: number;
+}
+
+export interface StudioBatchProgressEvent {
+  project_id: string;
+  episode_id: string;
+  stage: string;
+  current: number;
+  total: number;
+  target_id?: string;
+  percent: number;
+  message: string;
+  msg_key?: string;
+  msg_params?: Record<string, string>;
+  status: StudioBatchStatus;
+}
+
+export interface StudioCostLedgerEntry {
+  id: string;
+  project_id?: string;
+  episode_id?: string;
+  shot_id?: string;
+  job_id?: string;
+  provider_id: string;
+  model_id?: string;
+  capability: string;
+  operation?: string;
+  input_units: number;
+  output_units: number;
+  unit: string;
+  estimated_usd: number;
+  actual_usd: number;
+  status: StudioCostStatus;
+  created_at: number;
+}
+
+export interface StudioCostSummaryPayload {
+  project_id: string;
+  episode_id?: string;
+  limit?: number;
+}
+
+export interface StudioCostSummaryResult {
+  project_id: string;
+  episode_id?: string;
+  currency: string;
+  estimated_total_usd: number;
+  actual_total_usd: number;
+  entry_count: number;
+  by_capability: Record<string, number>;
+  by_provider: Record<string, number>;
+  entries: StudioCostLedgerEntry[];
+  pricing: StudioPricingEntry[];
+}
+
+export interface StudioCostUpdatedEvent {
+  project_id: string;
+  episode_id?: string;
+  actual_total_usd: number;
+  estimated_total_usd: number;
+  entry_count: number;
+}
+
+export interface StudioDialogueLine {
+  speaker: string;
+  line: string;
+  emotion?: string;
+  cue?: string;
+}
+
+export interface StudioEditTimeline {
+  version: number;
+  fps: number;
+  width: number;
+  height: number;
+  tracks: StudioTimelineTrack[];
+  subtitles: StudioSubtitleCue[];
+  markers: StudioTimelineMarker[];
+}
+
+export interface StudioEpisode {
+  id: string;
+  project_id: string;
+  code: string;
+  title: string;
+  stage: StudioEpisodeStage;
+  raw_script_path: string;
+  script_json_path: string;
+  assets_json_path: string;
+  shots_json_path: string;
+  timeline_json_path: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface StudioEpisodeCreatePayload {
+  project_id: string;
+  code?: string;
+  title?: string;
+}
+
+export interface StudioEpisodeDetailResult {
+  project: StudioProject;
+  episode: StudioEpisode;
+  assets: StudioAsset[];
+  shots: StudioShot[];
+  raw_script: string;
+  normalized_script?: StudioNormalizedScript;
+  final_video_path?: string;
+  final_video_asset_id?: string;
+}
+
+export interface StudioEpisodeRunStagePayload {
+  episode_id: string;
+  stage: StudioRunStageAction;
+  asset_ids?: string[];
+  shot_ids?: string[];
+  model?: string;
+  voice?: string;
+  resolution?: string;
+  fps?: number;
+  narration_audio_path?: string;
+  force?: boolean;
+  approved?: boolean;
+}
+
+export interface StudioEpisodeSaveScriptPayload {
+  episode_id: string;
+  raw_script?: string;
+  normalized_script?: StudioNormalizedScript;
+  stage?: StudioEpisodeStage;
+}
+
+export interface StudioEpisodeUpdatedEvent {
+  project_id: string;
+  episode_id: string;
+  stage: StudioEpisodeStage;
+  reason: string;
+}
+
+export interface StudioExtractLastFramePayload {
+  episode_id: string;
+  source_shot_id: string;
+  target_shot_id?: string;
+}
+
+export interface StudioExtractLastFrameResult {
+  frame_path: string;
+  asset_id?: string;
+  version?: StudioMediaVersion;
+  episode?: StudioEpisodeDetailResult;
+}
+
+export interface StudioGridSplitPayload {
+  project_id: string;
+  episode_id?: string;
+  target_kind?: StudioMediaTargetKind;
+  target_id?: string;
+  image_path: string;
+  rows: number;
+  cols: number;
+  margin_px?: number;
+  gutter_px?: number;
+  row_weights?: number[];
+  col_weights?: number[];
+}
+
+export interface StudioGridSplitResult {
+  panels: GridPanel[];
+  versions: StudioMediaVersion[];
+}
+
+export interface StudioIDPayload {
+  id: string;
+}
+
+export interface StudioInspectShotsPayload {
+  episode_id: string;
+  shot_ids?: string[];
+  max_frames?: number;
+  frames_per_sheet?: number;
+  include_signals?: boolean;
+}
+
+export interface StudioInspectShotsResult {
+  episode_id: string;
+  shots: StudioShotInspectionItem[];
+  summary: string;
+}
+
+export interface StudioJob {
+  id: string;
+  project_id: string;
+  episode_id?: string;
+  shot_id?: string;
+  asset_id?: string;
+  job_kind: StudioJobKind;
+  provider_id?: string;
+  model_ref?: string;
+  status: StudioJobStatus;
+  provider_job_id?: string;
+  progress: number;
+  attempts: number;
+  max_attempts: number;
+  next_poll_at?: number;
+  output_path?: string;
+  error_text?: string;
+  estimated_usd: number;
+  actual_usd: number;
+  created_at: number;
+  updated_at: number;
+  started_at?: number;
+  finished_at?: number;
+}
+
+export interface StudioMaskEditPayload {
+  project_id: string;
+  episode_id?: string;
+  target_kind?: StudioMediaTargetKind;
+  target_id?: string;
+  image_path: string;
+  mask_path?: string;
+  mask_data_base64?: string;
+  prompt: string;
+  model_ref?: string;
+  aspect_ratio?: string;
+  resolution?: string;
+  approved?: boolean;
+}
+
+export interface StudioMaskEditResult {
+  path: string;
+  asset_id?: string;
+  version?: StudioMediaVersion;
+  episode?: StudioEpisodeDetailResult;
+}
+
+export interface StudioMediaPeaksThumbsPayload {
+  episode_id: string;
+  media_path: string;
+  clip_id?: string;
+  thumb_interval_sec?: number;
+  peak_bins?: number;
+}
+
+export interface StudioMediaVersion {
+  id: string;
+  project_id: string;
+  episode_id?: string;
+  target_kind: StudioMediaTargetKind;
+  target_id: string;
+  version_num: number;
+  media_path: string;
+  source_node?: string;
+  prompt_used?: string;
+  model_ref?: string;
+  seed?: number;
+  cost_usd: number;
+  qc_status: StudioQCStatus;
+  is_selected: boolean;
+  created_at: number;
+}
+
+export interface StudioNarrationSegment {
+  text: string;
+  tone?: string;
+  estimated_sec?: number;
+}
+
+export interface StudioNormalizedScript {
+  title: string;
+  genre: StudioGenre;
+  aspect_ratio: string;
+  logline: string;
+  language?: string;
+  characters: string[];
+  scenes: StudioScriptScene[];
+}
+
+export interface StudioOpenExportFolderPayload {
+  episode_id: string;
+  file_path?: string;
+}
+
+export interface StudioPricingEntry {
+  id: string;
+  provider_id: string;
+  model_id: string;
+  capability: string;
+  unit: string;
+  unit_price_usd: number;
+  currency: string;
+  updated_at: number;
+}
+
+export interface StudioPricingUpsertPayload {
+  provider_id: string;
+  model_id: string;
+  capability: string;
+  unit: string;
+  unit_price_usd: number;
+}
+
+export interface StudioProject {
+  id: string;
+  slug: string;
+  title: string;
+  genre: StudioGenre;
+  production_mode: StudioProductionMode;
+  aspect_ratio: string;
+  style_prompt: string;
+  root_dir: string;
+  auto_approve_batches: boolean;
+  default_text_model: string;
+  default_image_model: string;
+  default_video_model: string;
+  default_tts_model: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface StudioProjectChangedEvent {
+  project_id: string;
+  action: StudioProjectChangedAction;
+  project?: StudioProject;
+}
+
+export interface StudioProjectCreatePayload {
+  title: string;
+  slug?: string;
+  genre?: StudioGenre;
+  production_mode?: StudioProductionMode;
+  aspect_ratio?: string;
+  style_prompt?: string;
+  auto_approve_batches?: boolean;
+  default_text_model?: string;
+  default_image_model?: string;
+  default_video_model?: string;
+  default_tts_model?: string;
+  initial_episode_title?: string;
+}
+
+export interface StudioProjectDeletePayload {
+  id: string;
+  delete_files?: boolean;
+}
+
+export interface StudioProjectDetailResult {
+  project: StudioProject;
+  episodes: StudioEpisode[];
+  assets: StudioAsset[];
+  active_episode?: StudioEpisodeDetailResult;
+}
+
+export interface StudioProjectListResult {
+  projects: StudioProject[];
+  projects_dir: string;
+}
+
+export interface StudioProjectUpdatePayload {
+  id: string;
+  title?: string;
+  genre?: StudioGenre;
+  production_mode?: StudioProductionMode;
+  aspect_ratio?: string;
+  style_prompt?: string;
+  auto_approve_batches?: boolean;
+  default_text_model?: string;
+  default_image_model?: string;
+  default_video_model?: string;
+  default_tts_model?: string;
+}
+
+export interface StudioQCReport {
+  id: string;
+  project_id: string;
+  episode_id?: string;
+  target_kind: StudioMediaTargetKind;
+  target_id: string;
+  media_version_id?: string;
+  media_path: string;
+  verdict: StudioQCStatus;
+  overall_score: number;
+  issues: QCReviewIssue[];
+  vision_summary?: string;
+  vision_model_ref?: string;
+  sample_frames: string[];
+  created_at: number;
+}
+
+export interface StudioQCReviewPayload {
+  project_id: string;
+  episode_id?: string;
+  target_kind?: StudioMediaTargetKind;
+  target_id?: string;
+  media_version_id?: string;
+  media_path: string;
+  reference_paths?: string[];
+  prompt_expected?: string;
+  vision_model_ref?: string;
+  sample_count?: number;
+  skip_vision?: boolean;
+  approved?: boolean;
+}
+
+export interface StudioQueueControlPayload {
+  action: StudioQueueAction;
+  project_id?: string;
+  episode_id?: string;
+  job_id?: string;
+  approved?: boolean;
+}
+
+export interface StudioQueueControlResult {
+  affected: number;
+  job?: StudioJob;
+}
+
+export interface StudioQueueEnqueuePayload {
+  episode_id: string;
+  stage: string;
+  asset_ids?: string[];
+  shot_ids?: string[];
+  model?: string;
+  force?: boolean;
+  approved?: boolean;
+}
+
+export interface StudioQueueEnqueueResult {
+  jobs: StudioJob[];
+  skipped: number;
+  estimated_usd: number;
+  summary: string;
+}
+
+export interface StudioQueueListPayload {
+  project_id?: string;
+  episode_id?: string;
+  status?: StudioJobStatus;
+  limit?: number;
+}
+
+export interface StudioQueueListResult {
+  jobs: StudioJob[];
+}
+
+export interface StudioQueueUpdatedEvent {
+  project_id: string;
+  episode_id?: string;
+  job?: StudioJob;
+  summary?: string;
+}
+
+export interface StudioQueueWaitPayload {
+  project_id?: string;
+  episode_id?: string;
+  job_ids?: string[];
+  timeout_sec?: number;
+}
+
+export interface StudioQueueWaitResult {
+  all_done: boolean;
+  timed_out: boolean;
+  succeeded_count: number;
+  failed_count: number;
+  canceled_count: number;
+  pending_count: number;
+  paused_count: number;
+  jobs: StudioJob[];
+  summary: string;
+}
+
+export interface StudioRunStageResult {
+  episode: StudioEpisodeDetailResult;
+  output_path?: string;
+  output_asset_id?: string;
+  completed_count: number;
+  failed_count: number;
+  summary: string;
+}
+
+export interface StudioScriptBeat {
+  code: string;
+  description: string;
+  visual_hint?: string;
+  camera_hint?: string;
+  duration_sec: number;
+  asset_tags: string[];
+  dialogues: StudioDialogueLine[];
+  narrations: StudioNarrationSegment[];
+}
+
+export interface StudioScriptScene {
+  code: string;
+  title: string;
+  location?: string;
+  time_of_day?: string;
+  summary?: string;
+  beats: StudioScriptBeat[];
+}
+
+export interface StudioShot {
+  id: string;
+  episode_id: string;
+  seq: number;
+  scene_code: string;
+  title: string;
+  shot_mode: StudioShotMode;
+  duration_sec: number;
+  image_prompt: string;
+  video_prompt: string;
+  narration_text: string;
+  dialogues: StudioDialogueLine[];
+  ref_asset_tags: string[];
+  keyframe_asset_id: string;
+  keyframe_path: string;
+  video_asset_id: string;
+  video_path: string;
+  audio_asset_id: string;
+  audio_path: string;
+  status: StudioShotStatus;
+  error_text: string;
+  updated_at: number;
+}
+
+export interface StudioShotBatchItem {
+  id?: string;
+  seq?: number;
+  scene_code?: string;
+  title?: string;
+  shot_mode?: StudioShotMode;
+  duration_sec?: number;
+  image_prompt?: string;
+  video_prompt?: string;
+  narration_text?: string;
+  dialogues?: StudioDialogueLine[];
+  ref_asset_tags?: string[];
+  keyframe_asset_id?: string;
+  keyframe_path?: string;
+  video_asset_id?: string;
+  video_path?: string;
+  audio_asset_id?: string;
+  audio_path?: string;
+  status?: StudioShotStatus;
+  error_text?: string;
+}
+
+export interface StudioShotInspectionItem {
+  shot_id: string;
+  seq: number;
+  title: string;
+  video_path: string;
+  sheet_paths: string[];
+  sheet_asset_ids?: string[];
+  signals: VideoSignals;
+  frames: ContactSheetFrameMeta[];
+  summary: string;
+  error?: string;
+}
+
+export interface StudioShotListResult {
+  shots: StudioShot[];
+}
+
+export interface StudioShotReorderPayload {
+  episode_id: string;
+  shot_ids: string[];
+}
+
+export interface StudioShotUpsertPayload {
+  id?: string;
+  episode_id: string;
+  seq?: number;
+  scene_code?: string;
+  title?: string;
+  shot_mode?: StudioShotMode;
+  duration_sec?: number;
+  image_prompt?: string;
+  video_prompt?: string;
+  narration_text?: string;
+  dialogues?: StudioDialogueLine[];
+  ref_asset_tags?: string[];
+  keyframe_asset_id?: string;
+  keyframe_path?: string;
+  video_asset_id?: string;
+  video_path?: string;
+  audio_asset_id?: string;
+  audio_path?: string;
+  status?: StudioShotStatus;
+  error_text?: string;
+}
+
+export interface StudioShotUpsertResult {
+  shot: StudioShot;
+  shots: StudioShot[];
+}
+
+export interface StudioShotsBatchUpsertPayload {
+  episode_id: string;
+  replace_all?: boolean;
+  shots: StudioShotBatchItem[];
+}
+
+export interface StudioSubtitleCue {
+  id: string;
+  start_ms: number;
+  end_ms: number;
+  speaker?: string;
+  text: string;
+  style_preset?: string;
+}
+
+export interface StudioSyncWorkspacePayload {
+  project_id?: string;
+}
+
+export interface StudioSyncWorkspaceResult {
+  project?: StudioProjectDetailResult;
+  projects: StudioProject[];
+  projects_dir: string;
+}
+
+export interface StudioTimelineApplyOpsPayload {
+  episode_id: string;
+  expected_revision: number;
+  actor?: StudioTimelineActor;
+  summary?: string;
+  ops: StudioTimelineOp[];
+}
+
+export interface StudioTimelineAutoAssemblePayload {
+  episode_id: string;
+  expected_revision?: number;
+  resolution?: string;
+  fps?: number;
+  transition_default?: StudioTransitionType;
+  transition_ms?: number;
+  bgm_path?: string;
+  bgm_volume?: number;
+  overrun_policy?: StudioOverrunPolicy;
+  max_speed_fit_ratio?: number;
+}
+
+export interface StudioTimelineChangedEvent {
+  project_id: string;
+  episode_id: string;
+  revision: number;
+  can_undo: boolean;
+  can_redo: boolean;
+  duration_ms: number;
+  actor: StudioTimelineActor;
+  summary: string;
+  timeline: StudioEditTimeline;
+}
+
+export interface StudioTimelineClip {
+  id: string;
+  shot_id?: string;
+  asset_id?: string;
+  label?: string;
+  file_path: string;
+  timeline_start_ms: number;
+  source_in_ms: number;
+  source_out_ms: number;
+  speed: number;
+  volume: number;
+  mute?: boolean;
+  transition_in: StudioTransitionType;
+  transition_ms: number;
+  ken_burns_preset?: StudioKenBurnsPreset;
+  sprite_path?: string;
+  sprite_asset_id?: string;
+  peaks: number[];
+}
+
+export interface StudioTimelineExportNLEPayload {
+  episode_id: string;
+  format: StudioNLEExportFormat;
+  project_name?: string;
+  include_media_copy?: boolean;
+}
+
+export interface StudioTimelineMarker {
+  id: string;
+  time_ms: number;
+  label: string;
+  color?: string;
+}
+
+export interface StudioTimelineOp {
+  op: StudioTimelineOpKind;
+  timeline?: StudioEditTimeline;
+  fps?: number;
+  width?: number;
+  height?: number;
+  track_id?: string;
+  target_track_id?: string;
+  track_kind?: StudioTrackKind;
+  track_name?: string;
+  muted?: boolean;
+  solo?: boolean;
+  locked?: boolean;
+  volume?: number;
+  clip_id?: string;
+  new_clip_id?: string;
+  clip?: StudioTimelineClip;
+  timeline_start_ms?: number;
+  source_in_ms?: number;
+  source_out_ms?: number;
+  speed?: number;
+  transition_in?: StudioTransitionType;
+  transition_ms?: number;
+  ken_burns_preset?: StudioKenBurnsPreset;
+  label?: string;
+  split_at_ms?: number;
+  subtitle_id?: string;
+  subtitle?: StudioSubtitleCue;
+  marker_id?: string;
+  marker?: StudioTimelineMarker;
+}
+
+export interface StudioTimelineRenderPayload {
+  episode_id: string;
+  filename?: string;
+  burn_subtitles?: boolean;
+  subtitle_font_size?: number;
+  loudnorm_lufs?: number;
+  crf?: number;
+  preset?: string;
+  overwrite?: boolean;
+}
+
+export interface StudioTimelineRenderResult {
+  output_path: string;
+  asset_id?: string;
+  srt_path?: string;
+  ass_path?: string;
+  duration_sec: number;
+  episode: StudioEpisodeDetailResult;
+}
+
+export interface StudioTimelineResult {
+  project_id: string;
+  episode_id: string;
+  revision: number;
+  can_undo: boolean;
+  can_redo: boolean;
+  duration_ms: number;
+  timeline_path?: string;
+  timeline: StudioEditTimeline;
+  revisions: StudioTimelineRevisionSummary[];
+  issues?: TimelineAssembleIssue[];
+  updated_at: number;
+}
+
+export interface StudioTimelineRevisionNavPayload {
+  episode_id: string;
+  expected_revision: number;
+}
+
+export interface StudioTimelineRevisionSummary {
+  id: string;
+  revision: number;
+  actor: StudioTimelineActor;
+  summary: string;
+  created_at: number;
+}
+
+export interface StudioTimelineTrack {
+  id: string;
+  name?: string;
+  kind: StudioTrackKind;
+  muted: boolean;
+  solo?: boolean;
+  locked: boolean;
+  volume: number;
+  clips: StudioTimelineClip[];
+}
+
+export interface StudioVersionSelectPayload {
+  version_id: string;
+}
+
+export interface StudioVersionSelectResult {
+  version: StudioMediaVersion;
+  episode?: StudioEpisodeDetailResult;
+}
+
+export interface StudioVersionsListPayload {
+  target_kind: StudioMediaTargetKind;
+  target_id: string;
+}
+
+export interface StudioVersionsListResult {
+  versions: StudioMediaVersion[];
+  latest_qc?: StudioQCReport;
+}
+
+export interface StudioWorkflowNextAction {
+  action: string;
+  reason: string;
+  suggested_tool?: string;
+  suggested_args?: Record<string, unknown>;
+}
+
+export interface StudioWorkflowPlanCounts {
+  scenes: number;
+  beats: number;
+  assets: number;
+  assets_ready: number;
+  shots: number;
+  keyframes_ready: number;
+  videos_ready: number;
+  tts_ready: number;
+  queue_active: number;
+  queue_failed: number;
+}
+
+export interface StudioWorkflowPlanPayload {
+  episode_id: string;
+}
+
+export interface StudioWorkflowPlanResult {
+  project_id: string;
+  episode_id: string;
+  stage: StudioEpisodeStage;
+  raw_script_chars: number;
+  long_script_chunk_chars: number;
+  text_provider_ready: boolean;
+  recommended_authoring_mode: string;
+  counts: StudioWorkflowPlanCounts;
+  missing_asset_ids: string[];
+  missing_keyframe_shot_ids: string[];
+  missing_video_shot_ids: string[];
+  missing_tts_shot_ids: string[];
+  failed_job_ids: string[];
+  timeline_issues: TimelineAssembleIssue[];
+  next_action: StudioWorkflowNextAction;
+}
+
 export interface SubagentInfo {
   name: string;
   description: string;
@@ -875,6 +2141,28 @@ export interface SystemInfo {
   paths: PathsInfo;
 }
 
+export interface TTSDubMuxInput {
+  video_path: ImageInputRef;
+  text?: string;
+  audio_path?: ImageInputRef;
+  model_ref?: string;
+  voice?: string;
+  language?: string;
+  overflow_mode?: string;
+  duck_original?: boolean;
+  original_volume?: number;
+  output_dir?: string;
+}
+
+export interface TTSDubMuxOutput {
+  video: MediaRef;
+  path: string;
+  audio_path: string;
+  asset_id?: string;
+  duration_sec: number;
+  adjusted_ratio?: number;
+}
+
 export interface TTSGenerateInput {
   text: string;
   model?: string;
@@ -893,6 +2181,44 @@ export interface TTSGenerateOutput {
   model: string;
   sizeBytes: number;
   asset_id?: string;
+}
+
+export interface TimelineAssembleIssue {
+  code: string;
+  shot_id?: string;
+  clip_id?: string;
+  track_id?: string;
+  overflow_ms?: number;
+  overlap_ms?: number;
+  policy?: string;
+  resolved?: boolean;
+  message: string;
+}
+
+export interface TimelineAutoAssembleInput {
+  shots_json: string;
+  audio_manifest_json?: string;
+  episode_id?: string;
+  resolution?: string;
+  fps?: number;
+  transition_default?: string;
+  transition_ms?: number;
+  bgm_path?: string;
+  bgm_volume?: number;
+  overrun_policy?: StudioOverrunPolicy;
+  max_speed_fit_ratio?: number;
+  project_dir?: string;
+}
+
+export interface TimelineAutoAssembleOutput {
+  timeline_json: string;
+  timeline_path?: string;
+  duration_ms: number;
+  track_count: number;
+  clip_count: number;
+  subtitle_count: number;
+  warnings?: string[];
+  issues?: TimelineAssembleIssue[];
 }
 
 export interface UpdateCredentialPayload {
@@ -917,6 +2243,43 @@ export interface UpdateInfo {
 export interface UpdateSettingsPayload {
   owner_id: string;
   settings: Record<string, string>;
+}
+
+export interface VideoConcatBasicInput {
+  clips_manifest_json: string;
+  output_dir?: string;
+  narration_audio_path?: string;
+  resolution?: string;
+  fps?: number;
+}
+
+export interface VideoConcatBasicOutput {
+  video: MediaRef;
+  output_path: string;
+  asset_id?: string;
+  duration_sec: number;
+  clip_count: number;
+}
+
+export interface VideoContactSheetInput {
+  video_path: ImageInputRef;
+  shot_id?: string;
+  source_in_ms?: number;
+  source_out_ms?: number;
+  max_frames?: number;
+  frames_per_sheet?: number;
+  max_edge_px?: number;
+  jpeg_quality?: number;
+  include_signals?: boolean;
+  output_dir?: string;
+}
+
+export interface VideoContactSheetOutput {
+  sheets: MediaRef[];
+  sheet_paths: string[];
+  signals: VideoSignals;
+  frames: ContactSheetFrameMeta[];
+  summary: string;
 }
 
 export interface VideoGenerateInput {
@@ -944,6 +2307,55 @@ export interface VideoGenerateOutput {
   asset_id?: string;
 }
 
+export interface VideoSignalBlack {
+  start_sec: number;
+  end_sec: number;
+  duration_sec: number;
+}
+
+export interface VideoSignalCut {
+  time_sec: number;
+  score?: number;
+}
+
+export interface VideoSignalFreeze {
+  start_sec: number;
+  end_sec: number;
+  duration_sec: number;
+}
+
+export interface VideoSignals {
+  duration_sec: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+  blacks: VideoSignalBlack[];
+  freezes: VideoSignalFreeze[];
+  cuts: VideoSignalCut[];
+  cached?: boolean;
+}
+
+export interface VideoWatermarkRemoveInput {
+  video_path: ImageInputRef;
+  mode?: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  crop_edge?: string;
+  crop_px?: number;
+  output_dir?: string;
+}
+
+export interface VideoWatermarkRemoveOutput {
+  video: MediaRef;
+  path: string;
+  asset_id?: string;
+  width?: number;
+  height?: number;
+  duration_sec?: number;
+}
+
 export interface WorkflowRunGraphPayload {
   graph: Graph;
 }
@@ -963,6 +2375,26 @@ export interface WorkflowRunNodeResult {
 
 export interface WorkflowSpecsResult {
   specs: Spec[];
+}
+
+export interface WorkflowTemplate {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  params: WorkflowTemplateParam[];
+  graph: Graph;
+}
+
+export interface WorkflowTemplateParam {
+  name: string;
+  description: string;
+  required?: boolean;
+  default?: string;
+}
+
+export interface WorkflowTemplatesResult {
+  templates: WorkflowTemplate[];
 }
 
 export const Actions = {
@@ -996,6 +2428,8 @@ export const Actions = {
   WORKFLOW_RUN_NODE: "workflow:run_node",
   /** Runs a full workflow DAG graph in dependency order. */
   WORKFLOW_RUN_GRAPH: "workflow:run_graph",
+  /** Returns verified reusable Studio workflow DAG templates. */
+  WORKFLOW_TEMPLATES: "workflow:templates",
   /** Lists supported isolated agent providers and their live connection status. */
   AGENT_LIST: "agent:list",
   /** Probes an agent provider executable, isolated auth, and version. */
@@ -1099,8 +2533,6 @@ export const Actions = {
   /** Registers an existing local media file as an asset. */
   MEDIA_REGISTER_INPUT: "media:register_input",
   /** Sets the opt-in provider credential link for an agent provider. */
-  AGENT_SET_PROVIDER_LINK: "agent:set_provider_link",
-  /** Sets the opt-in provider credential link for an agent provider. */
   AGENT_LINK_PROVIDER: "agent:link_provider",
   /** Removes the opt-in provider link for an agent provider. */
   AGENT_UNLINK_PROVIDER: "agent:unlink_provider",
@@ -1108,6 +2540,86 @@ export const Actions = {
   AGENT_LIST_PROVIDER_LINKS: "agent:list_provider_links",
   /** Lists allowed target providers for an agent provider. */
   AGENT_COMPATIBLE_PROVIDERS: "agent:compatible_providers",
+  /** Lists all AI film studio projects and the active workspace projects directory. */
+  STUDIO_PROJECT_LIST: "studio:project_list",
+  /** Creates a new AI film studio project with its workspace folder and initial episode. */
+  STUDIO_PROJECT_CREATE: "studio:project_create",
+  /** Gets a studio project with its episodes, assets, and default episode detail. */
+  STUDIO_PROJECT_GET: "studio:project_get",
+  /** Updates studio project metadata and default models. */
+  STUDIO_PROJECT_UPDATE: "studio:project_update",
+  /** Deletes a studio project record and optionally removes its workspace directory. */
+  STUDIO_PROJECT_DELETE: "studio:project_delete",
+  /** Creates a new episode inside a studio project. */
+  STUDIO_EPISODE_CREATE: "studio:episode_create",
+  /** Gets full episode detail including script, asset bible, shots, and export path. */
+  STUDIO_EPISODE_GET: "studio:episode_get",
+  /** Saves raw screenplay text or structured script edits for an episode. */
+  STUDIO_EPISODE_SAVE_SCRIPT: "studio:episode_save_script",
+  /** Creates, updates, or deletes a studio project asset bible entry. */
+  STUDIO_ASSET_UPSERT: "studio:asset_upsert",
+  /** Creates or updates a storyboard shot inside an episode. */
+  STUDIO_SHOT_UPSERT: "studio:shot_upsert",
+  /** Reorders storyboard shots in an episode. */
+  STUDIO_SHOT_REORDER: "studio:shot_reorder",
+  /** Executes a Phase 1 production stage or batch across episode shots and assets. */
+  STUDIO_EPISODE_RUN_STAGE: "studio:episode_run_stage",
+  /** Enqueues durable background studio generation jobs with idempotency keys. */
+  STUDIO_QUEUE_ENQUEUE: "studio:queue_enqueue",
+  /** Lists durable studio queue jobs for a project or episode. */
+  STUDIO_QUEUE_LIST: "studio:queue_list",
+  /** Pauses, resumes, cancels, or retries durable studio queue jobs. */
+  STUDIO_QUEUE_CONTROL: "studio:queue_control",
+  /** Summarizes studio project/episode generation spend and unit pricing. */
+  STUDIO_COST_SUMMARY: "studio:cost_summary",
+  /** Upserts a provider/model unit price rule in studio_pricing_catalog. */
+  STUDIO_PRICING_UPSERT: "studio:pricing_upsert",
+  /** Lists media version history and latest QC report for an asset or shot slot. */
+  STUDIO_VERSIONS_LIST: "studio:versions_list",
+  /** Activates a saved media version as the selected output for its shot or asset. */
+  STUDIO_VERSION_SELECT: "studio:version_select",
+  /** Splits a storyboard grid image into individual frame panels. */
+  STUDIO_GRID_SPLIT: "studio:grid_split",
+  /** Applies canvas-masked inpainting to an asset or keyframe via tool.mask_edit. */
+  STUDIO_MASK_EDIT: "studio:mask_edit",
+  /** Extracts the final frame of a shot video to seed the next shot keyframe. */
+  STUDIO_EXTRACT_LAST_FRAME: "studio:extract_last_frame",
+  /** Runs FFprobe + multimodal Vision QC review and saves a QC report. */
+  STUDIO_QC_REVIEW: "studio:qc_review",
+  /** Validates active providers and estimates USD cost before batch execution. */
+  STUDIO_BATCH_PREFLIGHT: "studio:batch_preflight",
+  /** Gets an episode's multi-track EditTimeline, current revision, and Undo/Redo history. */
+  STUDIO_TIMELINE_GET: "studio:timeline_get",
+  /** Applies atomic EditTimeline operations with optimistic revision concurrency checking. */
+  STUDIO_TIMELINE_APPLY_OPS: "studio:timeline_apply_ops",
+  /** Undoes the latest timeline revision while enforcing expected_revision. */
+  STUDIO_TIMELINE_UNDO: "studio:timeline_undo",
+  /** Redoes the next timeline revision while enforcing expected_revision. */
+  STUDIO_TIMELINE_REDO: "studio:timeline_redo",
+  /** Auto-assembles an EditTimeline from episode shots, TTS audio, subtitles, and optional BGM. */
+  STUDIO_TIMELINE_AUTO_ASSEMBLE: "studio:timeline_auto_assemble",
+  /** Generates audio waveform peaks and thumbnail sprite strip for timeline scrubbing. */
+  STUDIO_MEDIA_PEAKS_THUMBS: "studio:media_peaks_thumbs",
+  /** Renders the episode EditTimeline via FFmpeg filter_complex with transitions, loudnorm, and optional Vietnamese subtitle burn-in. */
+  STUDIO_TIMELINE_RENDER: "studio:timeline_render",
+  /** Exports the episode EditTimeline as a CapCut/Jianying draft zip, FCPXML, or OTIO file. */
+  STUDIO_TIMELINE_EXPORT_NLE: "studio:timeline_export_nle",
+  /** Reveals the episode exports folder in the OS file manager (desktop/host admin only). */
+  STUDIO_OPEN_EXPORT_FOLDER: "studio:open_export_folder",
+  /** Synchronizes workspace project.json, asset_bible.json, shots.json, and timeline.json files with SQLite. */
+  STUDIO_SYNC_WORKSPACE: "studio:sync_workspace",
+  /** Projects deterministic episode production readiness, missing items, and next recommended action. */
+  STUDIO_WORKFLOW_PLAN: "studio:workflow_plan",
+  /** Batch creates, updates, or replaces storyboard shots for an episode. */
+  STUDIO_SHOTS_BATCH_UPSERT: "studio:shots_batch_upsert",
+  /** Renames an Asset Bible entry and cascades @Tag and speaker references across scripts and shots. */
+  STUDIO_ASSET_RENAME: "studio:asset_rename",
+  /** Merges a duplicate Asset Bible entry into a target asset and cascades @Tag references. */
+  STUDIO_ASSET_MERGE: "studio:asset_merge",
+  /** Generates labeled JPEG contact sheets with BLACK/FREEZE/CUT signals for episode shots. */
+  STUDIO_INSPECT_SHOTS: "studio:inspect_shots",
+  /** Waits until active durable queue jobs for an episode or project reach terminal state. */
+  STUDIO_QUEUE_WAIT: "studio:queue_wait",
 } as const;
 export type ActionName = (typeof Actions)[keyof typeof Actions];
 
@@ -1118,6 +2630,16 @@ export const LongActions: readonly ActionName[] = [
   "workflow:run_graph",
   "diagnostics:export",
   "agent:resolve_approval",
+  "studio:episode_run_stage",
+  "studio:grid_split",
+  "studio:mask_edit",
+  "studio:extract_last_frame",
+  "studio:qc_review",
+  "studio:timeline_auto_assemble",
+  "studio:media_peaks_thumbs",
+  "studio:timeline_render",
+  "studio:timeline_export_nle",
+  "studio:queue_wait",
 ];
 
 export interface ActionMap {
@@ -1136,6 +2658,7 @@ export interface ActionMap {
   "workflow:specs": { payload: Empty; result: WorkflowSpecsResult };
   "workflow:run_node": { payload: WorkflowRunNodePayload; result: WorkflowRunNodeResult };
   "workflow:run_graph": { payload: WorkflowRunGraphPayload; result: WorkflowRunGraphResult };
+  "workflow:templates": { payload: Empty; result: WorkflowTemplatesResult };
   "agent:list": { payload: Empty; result: AgentListResult };
   "agent:probe": { payload: AgentProviderIDPayload; result: AgentProviderInfo };
   "agent:set_path": { payload: AgentSetPathPayload; result: AgentProviderInfo };
@@ -1187,27 +2710,118 @@ export interface ActionMap {
   "media:delete": { payload: MediaDeletePayload; result: Empty };
   "media:sign_url": { payload: MediaSignURLPayload; result: MediaSignedURLResult };
   "media:register_input": { payload: MediaRegisterInputPayload; result: MediaAssetItem };
-  "agent:set_provider_link": { payload: AgentLinkProviderPayload; result: Empty };
   "agent:link_provider": { payload: AgentLinkProviderPayload; result: Empty };
   "agent:unlink_provider": { payload: AgentProviderIDPayload; result: Empty };
   "agent:list_provider_links": { payload: Empty; result: AgentProviderLinksResult };
   "agent:compatible_providers": { payload: AgentProviderIDPayload; result: AgentCompatibleProvidersResult };
+  "studio:project_list": { payload: Empty; result: StudioProjectListResult };
+  "studio:project_create": { payload: StudioProjectCreatePayload; result: StudioProjectDetailResult };
+  "studio:project_get": { payload: StudioIDPayload; result: StudioProjectDetailResult };
+  "studio:project_update": { payload: StudioProjectUpdatePayload; result: StudioProjectDetailResult };
+  "studio:project_delete": { payload: StudioProjectDeletePayload; result: Empty };
+  "studio:episode_create": { payload: StudioEpisodeCreatePayload; result: StudioEpisodeDetailResult };
+  "studio:episode_get": { payload: StudioIDPayload; result: StudioEpisodeDetailResult };
+  "studio:episode_save_script": { payload: StudioEpisodeSaveScriptPayload; result: StudioEpisodeDetailResult };
+  "studio:asset_upsert": { payload: StudioAssetUpsertPayload; result: StudioAssetUpsertResult };
+  "studio:shot_upsert": { payload: StudioShotUpsertPayload; result: StudioShotUpsertResult };
+  "studio:shot_reorder": { payload: StudioShotReorderPayload; result: StudioShotListResult };
+  "studio:episode_run_stage": { payload: StudioEpisodeRunStagePayload; result: StudioRunStageResult };
+  "studio:queue_enqueue": { payload: StudioQueueEnqueuePayload; result: StudioQueueEnqueueResult };
+  "studio:queue_list": { payload: StudioQueueListPayload; result: StudioQueueListResult };
+  "studio:queue_control": { payload: StudioQueueControlPayload; result: StudioQueueControlResult };
+  "studio:cost_summary": { payload: StudioCostSummaryPayload; result: StudioCostSummaryResult };
+  "studio:pricing_upsert": { payload: StudioPricingUpsertPayload; result: StudioPricingEntry };
+  "studio:versions_list": { payload: StudioVersionsListPayload; result: StudioVersionsListResult };
+  "studio:version_select": { payload: StudioVersionSelectPayload; result: StudioVersionSelectResult };
+  "studio:grid_split": { payload: StudioGridSplitPayload; result: StudioGridSplitResult };
+  "studio:mask_edit": { payload: StudioMaskEditPayload; result: StudioMaskEditResult };
+  "studio:extract_last_frame": { payload: StudioExtractLastFramePayload; result: StudioExtractLastFrameResult };
+  "studio:qc_review": { payload: StudioQCReviewPayload; result: StudioQCReport };
+  "studio:batch_preflight": { payload: StudioBatchPreflightPayload; result: BatchPreflightOutput };
+  "studio:timeline_get": { payload: StudioIDPayload; result: StudioTimelineResult };
+  "studio:timeline_apply_ops": { payload: StudioTimelineApplyOpsPayload; result: StudioTimelineResult };
+  "studio:timeline_undo": { payload: StudioTimelineRevisionNavPayload; result: StudioTimelineResult };
+  "studio:timeline_redo": { payload: StudioTimelineRevisionNavPayload; result: StudioTimelineResult };
+  "studio:timeline_auto_assemble": { payload: StudioTimelineAutoAssemblePayload; result: StudioTimelineResult };
+  "studio:media_peaks_thumbs": { payload: StudioMediaPeaksThumbsPayload; result: MediaPeaksThumbsOutput };
+  "studio:timeline_render": { payload: StudioTimelineRenderPayload; result: StudioTimelineRenderResult };
+  "studio:timeline_export_nle": { payload: StudioTimelineExportNLEPayload; result: ExportNLEDraftOutput };
+  "studio:open_export_folder": { payload: StudioOpenExportFolderPayload; result: Empty };
+  "studio:sync_workspace": { payload: StudioSyncWorkspacePayload; result: StudioSyncWorkspaceResult };
+  "studio:workflow_plan": { payload: StudioWorkflowPlanPayload; result: StudioWorkflowPlanResult };
+  "studio:shots_batch_upsert": { payload: StudioShotsBatchUpsertPayload; result: StudioShotListResult };
+  "studio:asset_rename": { payload: StudioAssetRenamePayload; result: StudioAssetRefactorResult };
+  "studio:asset_merge": { payload: StudioAssetMergePayload; result: StudioAssetRefactorResult };
+  "studio:inspect_shots": { payload: StudioInspectShotsPayload; result: StudioInspectShotsResult };
+  "studio:queue_wait": { payload: StudioQueueWaitPayload; result: StudioQueueWaitResult };
 }
 
 /** Built-in workflow node types (contracts.Nodes). Settings come from workflow:specs. */
 export const NodeTypes = {
   WATERMARK_REMOVER: "tool.watermark_remover",
+  PROVIDER_LIST: "tool.provider_list",
+  PROVIDER_SETUP: "tool.provider_setup",
+  PROVIDER_TEST: "tool.provider_test",
+  PROVIDER_ACTIVATE: "tool.provider_activate",
+  PROVIDER_DELETE: "tool.provider_delete",
+  PROVIDER_DISCOVER_MODELS: "tool.provider_discover_models",
+  PROVIDER_SET_DEFAULT: "tool.provider_set_default",
+  PROVIDER_SETTINGS: "tool.provider_settings",
   IMAGE_GENERATE: "tool.generate_image",
   VIDEO_GENERATE: "tool.generate_video",
   TTS_GENERATE: "tool.generate_tts",
+  SCRIPT_NORMALIZE: "tool.script_normalize",
+  EXTRACT_ASSETS: "tool.extract_assets",
+  AUTHOR_SHOT_PROMPTS: "tool.author_shot_prompts",
+  PROBE_MEDIA: "tool.probe_media",
+  VIDEO_CONCAT_BASIC: "tool.video_concat_basic",
+  BATCH_PREFLIGHT: "tool.batch_preflight",
+  GRID_SPLIT: "tool.grid_split",
+  MASK_EDIT: "tool.mask_edit",
+  EXTRACT_FRAMES: "tool.extract_frames",
+  TTS_DUB_MUX: "tool.tts_dub_mux",
+  LIPSYNC_GENERATE: "tool.lipsync_generate",
+  QC_REVIEW: "tool.qc_review",
+  VIDEO_WATERMARK_REMOVE: "tool.video_watermark_remove",
+  TIMELINE_AUTO_ASSEMBLE: "tool.timeline_auto_assemble",
+  MEDIA_PEAKS_THUMBS: "tool.media_peaks_thumbs",
+  RENDER_TIMELINE: "tool.render_timeline",
+  EXPORT_NLE_DRAFT: "tool.export_nle_draft",
+  VIDEO_CONTACT_SHEET: "tool.video_contact_sheet",
 } as const;
 export type NodeType = (typeof NodeTypes)[keyof typeof NodeTypes];
 
 export interface NodeMap {
   "tool.watermark_remover": { input: RemoverInput; output: RemoverOutput };
+  "tool.provider_list": { input: Empty; output: unknown };
+  "tool.provider_setup": { input: unknown; output: unknown };
+  "tool.provider_test": { input: unknown; output: unknown };
+  "tool.provider_activate": { input: unknown; output: unknown };
+  "tool.provider_delete": { input: unknown; output: unknown };
+  "tool.provider_discover_models": { input: unknown; output: unknown };
+  "tool.provider_set_default": { input: unknown; output: unknown };
+  "tool.provider_settings": { input: unknown; output: unknown };
   "tool.generate_image": { input: ImageGenerateInput; output: ImageGenerateOutput };
   "tool.generate_video": { input: VideoGenerateInput; output: VideoGenerateOutput };
   "tool.generate_tts": { input: TTSGenerateInput; output: TTSGenerateOutput };
+  "tool.script_normalize": { input: ScriptNormalizeInput; output: ScriptNormalizeOutput };
+  "tool.extract_assets": { input: ExtractAssetsInput; output: ExtractAssetsOutput };
+  "tool.author_shot_prompts": { input: AuthorShotPromptsInput; output: AuthorShotPromptsOutput };
+  "tool.probe_media": { input: ProbeMediaInput; output: ProbeMediaOutput };
+  "tool.video_concat_basic": { input: VideoConcatBasicInput; output: VideoConcatBasicOutput };
+  "tool.batch_preflight": { input: BatchPreflightInput; output: BatchPreflightOutput };
+  "tool.grid_split": { input: GridSplitInput; output: GridSplitOutput };
+  "tool.mask_edit": { input: MaskEditInput; output: MaskEditOutput };
+  "tool.extract_frames": { input: ExtractFramesInput; output: ExtractFramesOutput };
+  "tool.tts_dub_mux": { input: TTSDubMuxInput; output: TTSDubMuxOutput };
+  "tool.lipsync_generate": { input: LipSyncGenerateInput; output: LipSyncGenerateOutput };
+  "tool.qc_review": { input: QCReviewInput; output: QCReviewOutput };
+  "tool.video_watermark_remove": { input: VideoWatermarkRemoveInput; output: VideoWatermarkRemoveOutput };
+  "tool.timeline_auto_assemble": { input: TimelineAutoAssembleInput; output: TimelineAutoAssembleOutput };
+  "tool.media_peaks_thumbs": { input: MediaPeaksThumbsInput; output: MediaPeaksThumbsOutput };
+  "tool.render_timeline": { input: RenderTimelineInput; output: RenderTimelineOutput };
+  "tool.export_nle_draft": { input: ExportNLEDraftInput; output: ExportNLEDraftOutput };
+  "tool.video_contact_sheet": { input: VideoContactSheetInput; output: VideoContactSheetOutput };
 }
 
 export const Events = {
@@ -1231,6 +2845,18 @@ export const Events = {
   MEDIA_ASSETS_CHANGED: "media:assets_changed",
   /** Download progress of an external binary. */
   BINARIES_PROGRESS: "binaries:progress",
+  /** A studio project was created, updated, deleted, or synced. */
+  STUDIO_PROJECT_CHANGED: "studio:project_changed",
+  /** Studio episode script, assets, storyboard, or export state changed. */
+  STUDIO_EPISODE_UPDATED: "studio:episode_updated",
+  /** Progress of a multi-item studio stage batch execution. */
+  STUDIO_BATCH_PROGRESS: "studio:batch_progress",
+  /** A durable studio queue job changed status or progress. */
+  STUDIO_QUEUE_UPDATED: "studio:queue_updated",
+  /** Studio cost ledger totals updated. */
+  STUDIO_COST_UPDATED: "studio:cost_updated",
+  /** Episode multi-track EditTimeline was updated, undone, redone, or auto-assembled. */
+  STUDIO_TIMELINE_CHANGED: "studio:timeline_changed",
 } as const;
 export type EventName = (typeof Events)[keyof typeof Events];
 
@@ -1245,6 +2871,12 @@ export interface EventMap {
   "providers:changed": ProvidersListResult;
   "media:assets_changed": Empty;
   "binaries:progress": BinaryProgress;
+  "studio:project_changed": StudioProjectChangedEvent;
+  "studio:episode_updated": StudioEpisodeUpdatedEvent;
+  "studio:batch_progress": StudioBatchProgressEvent;
+  "studio:queue_updated": StudioQueueUpdatedEvent;
+  "studio:cost_updated": StudioCostUpdatedEvent;
+  "studio:timeline_changed": StudioTimelineChangedEvent;
 }
 
 export const NativeEvents = {

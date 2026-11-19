@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useInRouterContext, useNavigate } from "react-router-dom";
 import {
   Bot,
@@ -15,11 +15,14 @@ import {
 } from "lucide-react";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
+import { Dialog } from "../../components/ui/Dialog";
+import { ErrorText } from "../../components/ui/ErrorText";
 import { VirtualList } from "../../components/ui/VirtualList";
 import type { MediaAssetItem } from "../../contracts/generated";
 import { useSignedMediaURL } from "../../lib/hooks/useSignedMediaURL";
 import { mediaBasename } from "../../lib/rtClient/media";
-import { useT, type MessageKey } from "../../lib/i18n";
+import { toActionError } from "../../lib/rtClient/errors";
+import { useT } from "../../lib/i18n";
 import { askAgentAboutMediaAsset } from "../agent/screenContext";
 import { useMediaLibraryStore } from "./useMediaLibraryStore";
 
@@ -76,6 +79,21 @@ const MediaAssetPreview: React.FC<{
   const isImg = asset.kind === "image" || asset.mime_type.startsWith("image/");
   const isVid = asset.kind === "video" || asset.mime_type.startsWith("video/");
   const isAud = asset.kind === "audio" || asset.mime_type.startsWith("audio/");
+
+  useEffect(() => {
+    if (!isVid) return;
+    const vidEl = mediaRef.current as HTMLVideoElement | null;
+    return () => {
+      if (!vidEl) return;
+      try {
+        vidEl.pause();
+        vidEl.removeAttribute("src");
+        vidEl.load();
+      } catch {
+        // ignore non-DOM test cleanup
+      }
+    };
+  }, [isVid, mediaRef, asset.id]);
 
   if (loading && !url) {
     return (
@@ -158,20 +176,22 @@ export const MediaLibraryDrawer: React.FC = () => {
   const inRouter = useInRouterContext();
   const navRef = useRef<((path: string, opts?: { state?: unknown }) => void) | null>(null);
 
-  const {
-    drawerOpen,
-    assets,
-    total,
-    loading,
-    deletingId,
-    kindFilter,
-    searchQuery,
-    closeDrawer,
-    setKindFilter,
-    setSearchQuery,
-    fetchAssets,
-    deleteAsset,
-  } = useMediaLibraryStore();
+  const drawerOpen = useMediaLibraryStore((s) => s.drawerOpen);
+  const assets = useMediaLibraryStore((s) => s.assets);
+  const total = useMediaLibraryStore((s) => s.total);
+  const loading = useMediaLibraryStore((s) => s.loading);
+  const deletingId = useMediaLibraryStore((s) => s.deletingId);
+  const error = useMediaLibraryStore((s) => s.error);
+  const kindFilter = useMediaLibraryStore((s) => s.kindFilter);
+  const searchQuery = useMediaLibraryStore((s) => s.searchQuery);
+  const closeDrawer = useMediaLibraryStore((s) => s.closeDrawer);
+  const setKindFilter = useMediaLibraryStore((s) => s.setKindFilter);
+  const setSearchQuery = useMediaLibraryStore((s) => s.setSearchQuery);
+  const fetchAssets = useMediaLibraryStore((s) => s.fetchAssets);
+  const deleteAsset = useMediaLibraryStore((s) => s.deleteAsset);
+
+  const [pendingDelete, setPendingDelete] = useState<MediaAssetItem | null>(null);
+  const [deleteDiskFile, setDeleteDiskFile] = useState(false);
 
   const drawerObjectURLsRef = useRef<Map<string, string>>(new Map());
   useEffect(() => {
@@ -184,13 +204,21 @@ export const MediaLibraryDrawer: React.FC = () => {
     };
   }, []);
 
-  const handleDeleteAsset = (id: string) => {
-    const existing = drawerObjectURLsRef.current.get(id);
+  const handleConfirmDelete = async () => {
+    if (!pendingDelete) return;
+    const targetId = pendingDelete.id;
+    const existing = drawerObjectURLsRef.current.get(targetId);
     if (existing) {
       safeRevokeObjectURL(existing);
-      drawerObjectURLsRef.current.delete(id);
+      drawerObjectURLsRef.current.delete(targetId);
     }
-    void deleteAsset(id);
+    try {
+      await deleteAsset(targetId, deleteDiskFile);
+      setPendingDelete(null);
+      setDeleteDiskFile(false);
+    } catch {
+      // Error surfaced via store.error banner inside drawer
+    }
   };
 
   if (!drawerOpen) return null;
@@ -213,10 +241,10 @@ export const MediaLibraryDrawer: React.FC = () => {
   };
 
   const kinds: Array<{ id: string; label: string }> = [
-    { id: "", label: t("media.filter.all" as MessageKey) || "All" },
-    { id: "image", label: t("media.filter.images" as MessageKey) || "Images" },
-    { id: "video", label: t("media.filter.videos" as MessageKey) || "Videos" },
-    { id: "audio", label: t("media.filter.audio" as MessageKey) || "Audio" },
+    { id: "", label: t("media.filter.all") },
+    { id: "image", label: t("media.filter.images") },
+    { id: "video", label: t("media.filter.videos") },
+    { id: "audio", label: t("media.filter.audio") },
   ];
 
   return (
@@ -236,7 +264,7 @@ export const MediaLibraryDrawer: React.FC = () => {
         borderLeft: "var(--border-width) solid var(--border-default)",
         boxShadow: "var(--shadow-elevation-high, 0 10px 25px rgba(0,0,0,0.25))",
       }}
-      aria-label="Media Library"
+      aria-label={t("media.library.title")}
     >
       {inRouter && <RouterNavigateBridge navRef={navRef} />}
 
@@ -244,9 +272,7 @@ export const MediaLibraryDrawer: React.FC = () => {
       <div className="agent-drawer__header">
         <div className="agent-drawer__title-group">
           <FolderArchive size={16} className="agent-drawer__icon" />
-          <h2 className="agent-drawer__title">
-            {t("media.library.title" as MessageKey) || "Media Library"}
-          </h2>
+          <h2 className="agent-drawer__title">{t("media.library.title")}</h2>
           <Badge>{total}</Badge>
         </div>
 
@@ -256,8 +282,8 @@ export const MediaLibraryDrawer: React.FC = () => {
             iconOnly
             onClick={() => void fetchAssets()}
             disabled={loading}
-            title={t("media.action.refresh" as MessageKey) || "Refresh"}
-            aria-label="Refresh library"
+            title={t("media.action.refresh")}
+            aria-label={t("media.action.refresh")}
           >
             <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
           </Button>
@@ -265,8 +291,8 @@ export const MediaLibraryDrawer: React.FC = () => {
             size="sm"
             iconOnly
             onClick={closeDrawer}
-            title={t("tools.cancel" as MessageKey) || "Close"}
-            aria-label="Close library"
+            title={t("tools.cancel")}
+            aria-label={t("tools.cancel")}
           >
             <X size={14} />
           </Button>
@@ -299,9 +325,7 @@ export const MediaLibraryDrawer: React.FC = () => {
             type="text"
             className="input-control"
             style={{ paddingLeft: "30px", width: "100%" }}
-            placeholder={
-              t("media.search.placeholder" as MessageKey) || "Search registered assets..."
-            }
+            placeholder={t("media.search.placeholder")}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
@@ -327,6 +351,12 @@ export const MediaLibraryDrawer: React.FC = () => {
             </button>
           ))}
         </div>
+
+        {error && (
+          <div className="alert-box alert-box--error">
+            <ErrorText error={toActionError(error)} />
+          </div>
+        )}
       </div>
 
       {/* Assets List */}
@@ -350,7 +380,7 @@ export const MediaLibraryDrawer: React.FC = () => {
             }}
           >
             <Loader2 size={16} className="animate-spin" />
-            <span>{t("media.loading" as MessageKey) || "Loading media assets..."}</span>
+            <span>{t("media.loading")}</span>
           </div>
         )}
 
@@ -369,12 +399,9 @@ export const MediaLibraryDrawer: React.FC = () => {
           >
             <FolderArchive size={28} />
             <div style={{ fontWeight: "var(--weight-semibold)", color: "var(--text-primary)" }}>
-              {t("media.empty.title" as MessageKey) || "No media assets"}
+              {t("media.empty.title")}
             </div>
-            <div style={{ fontSize: "var(--text-xs)" }}>
-              {t("media.empty.desc" as MessageKey) ||
-                "Generated and imported media files will appear here."}
-            </div>
+            <div style={{ fontSize: "var(--text-xs)" }}>{t("media.empty.desc")}</div>
           </div>
         )}
 
@@ -445,8 +472,8 @@ export const MediaLibraryDrawer: React.FC = () => {
                       type="button"
                       className="watermark-icon-btn"
                       onClick={() => handleSendToWatermark(asset)}
-                      title={t("cross.sendToWatermark" as MessageKey) || "Send to Watermark"}
-                      aria-label="Send to Watermark"
+                      title={t("cross.sendToWatermark")}
+                      aria-label={t("cross.sendToWatermark")}
                     >
                       <Sparkles size={12} />
                     </button>
@@ -456,8 +483,8 @@ export const MediaLibraryDrawer: React.FC = () => {
                     type="button"
                     className="watermark-icon-btn"
                     onClick={() => handleAskAgent(asset)}
-                    title={t("cross.askAgent" as MessageKey) || "Ask Agent about this file"}
-                    aria-label="Ask Agent about this file"
+                    title={t("cross.askAgent")}
+                    aria-label={t("cross.askAgent")}
                   >
                     <Bot size={12} />
                   </button>
@@ -465,10 +492,13 @@ export const MediaLibraryDrawer: React.FC = () => {
                   <button
                     type="button"
                     className="watermark-icon-btn"
-                    onClick={() => handleDeleteAsset(asset.id)}
+                    onClick={() => {
+                      setDeleteDiskFile(false);
+                      setPendingDelete(asset);
+                    }}
                     disabled={deletingId === asset.id}
-                    title={t("tools.delete" as MessageKey) || "Delete"}
-                    aria-label="Delete media asset"
+                    title={t("tools.delete")}
+                    aria-label={t("tools.delete")}
                   >
                     {deletingId === asset.id ? (
                       <Loader2 size={12} className="animate-spin" />
@@ -482,6 +512,45 @@ export const MediaLibraryDrawer: React.FC = () => {
           />
         )}
       </div>
+
+      {pendingDelete && (
+        <Dialog
+          size="sm"
+          title={t("media.deleteConfirm.title")}
+          busy={deletingId === pendingDelete.id}
+          onClose={() => {
+            setPendingDelete(null);
+            setDeleteDiskFile(false);
+          }}
+          footer={(requestClose) => (
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "var(--space-2)" }}>
+              <Button size="sm" onClick={requestClose} disabled={deletingId === pendingDelete.id}>
+                {t("tools.cancel")}
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={deletingId === pendingDelete.id}
+                onClick={() => void handleConfirmDelete()}
+              >
+                {t("tools.delete")}
+              </Button>
+            </div>
+          )}
+        >
+          <p style={{ marginBottom: "var(--space-2)" }}>
+            {t("media.deleteConfirm.desc", { name: mediaBasename(pendingDelete.file_path) })}
+          </p>
+          <label style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+            <input
+              type="checkbox"
+              checked={deleteDiskFile}
+              onChange={(e) => setDeleteDiskFile(e.target.checked)}
+            />
+            <span>{t("media.deleteConfirm.deleteDisk")}</span>
+          </label>
+        </Dialog>
+      )}
     </aside>
   );
 };

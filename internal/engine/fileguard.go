@@ -17,9 +17,21 @@ func WithFileGuard(ctx context.Context, guard FileGuard) context.Context {
 	return context.WithValue(ctx, fileGuardKey{}, guard)
 }
 
+// HasFileGuard reports whether ctx carries a non-nil FileGuard (e.g. remote server mode).
+func HasFileGuard(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	g, ok := ctx.Value(fileGuardKey{}).(FileGuard)
+	return ok && g != nil
+}
+
 // CheckFile asks the guard attached to ctx (if any) whether path may be accessed.
 // Every node that touches local files must call it before reading or writing.
 func CheckFile(ctx context.Context, path string, write bool) error {
+	if ctx == nil {
+		return nil
+	}
 	if g, ok := ctx.Value(fileGuardKey{}).(FileGuard); ok {
 		return g(path, write)
 	}

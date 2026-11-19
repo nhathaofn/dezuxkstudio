@@ -10,7 +10,8 @@ import (
 
 // Providers exposes providers:* actions.
 type Providers struct {
-	Service *providersvc.Service
+	Service       *providersvc.Service
+	LockHostAdmin bool
 }
 
 func (Providers) Name() string { return "providers" }
@@ -50,6 +51,9 @@ func defaultsResult(ds []providersvc.PurposeDefault) contracts.ProviderDefaultsR
 func (m Providers) Register(r *realtime.Registry) {
 	realtime.Handle(r, contracts.ActionProvidersSetModels,
 		func(ctx context.Context, _ *realtime.Request, p contracts.SetModelsPayload) (contracts.ProviderModelsResult, error) {
+			if m.LockHostAdmin {
+				return contracts.ProviderModelsResult{}, hostAdminLockedError()
+			}
 			ms, err := m.Service.SetModels(ctx, p.OwnerID, p.ToDomain())
 			if err != nil {
 				return contracts.ProviderModelsResult{}, err
@@ -58,6 +62,9 @@ func (m Providers) Register(r *realtime.Registry) {
 		})
 	realtime.Handle(r, contracts.ActionProvidersDiscoverBuiltin,
 		func(ctx context.Context, _ *realtime.Request, p contracts.ProviderIDPayload) (contracts.ProviderModelsResult, error) {
+			if m.LockHostAdmin {
+				return contracts.ProviderModelsResult{}, hostAdminLockedError()
+			}
 			ms, err := m.Service.DiscoverBuiltinModels(ctx, p.ID)
 			if err != nil {
 				return contracts.ProviderModelsResult{}, err
@@ -66,6 +73,9 @@ func (m Providers) Register(r *realtime.Registry) {
 		})
 	realtime.Handle(r, contracts.ActionProvidersUpdateSettings,
 		func(ctx context.Context, _ *realtime.Request, p contracts.UpdateSettingsPayload) (contracts.ProviderSettingsResult, error) {
+			if m.LockHostAdmin {
+				return contracts.ProviderSettingsResult{}, hostAdminLockedError()
+			}
 			s, err := m.Service.UpdateSettings(ctx, p.OwnerID, p.Settings)
 			if err != nil {
 				return contracts.ProviderSettingsResult{}, err
@@ -82,10 +92,10 @@ func (m Providers) Register(r *realtime.Registry) {
 		})
 	realtime.Handle(r, contracts.ActionProvidersSetDefault,
 		func(ctx context.Context, _ *realtime.Request, p contracts.SetDefaultPayload) (contracts.ProviderDefaultsResult, error) {
-			if err := m.Service.SetDefault(ctx, p.Purpose, p.Model); err != nil {
-				return contracts.ProviderDefaultsResult{}, err
+			if m.LockHostAdmin {
+				return contracts.ProviderDefaultsResult{}, hostAdminLockedError()
 			}
-			ds, err := m.Service.Defaults(ctx)
+			ds, err := m.Service.SetDefaultAndGetDefaults(ctx, p.Purpose, p.Model)
 			if err != nil {
 				return contracts.ProviderDefaultsResult{}, err
 			}
@@ -101,6 +111,9 @@ func (m Providers) Register(r *realtime.Registry) {
 		})
 	realtime.Handle(r, contracts.ActionProvidersCreateCredential,
 		func(ctx context.Context, _ *realtime.Request, p contracts.CreateCredentialPayload) (contracts.ProviderCredential, error) {
+			if m.LockHostAdmin {
+				return contracts.ProviderCredential{}, hostAdminLockedError()
+			}
 			c, err := m.Service.CreateCredential(ctx, p.ProviderID, p.Credential.ToDomain())
 			if err != nil {
 				return contracts.ProviderCredential{}, err
@@ -109,6 +122,9 @@ func (m Providers) Register(r *realtime.Registry) {
 		})
 	realtime.Handle(r, contracts.ActionProvidersUpdateCredential,
 		func(ctx context.Context, _ *realtime.Request, p contracts.UpdateCredentialPayload) (contracts.ProviderCredential, error) {
+			if m.LockHostAdmin {
+				return contracts.ProviderCredential{}, hostAdminLockedError()
+			}
 			c, err := m.Service.UpdateCredential(ctx, p.ID, p.Credential.ToDomain())
 			if err != nil {
 				return contracts.ProviderCredential{}, err
@@ -117,14 +133,23 @@ func (m Providers) Register(r *realtime.Registry) {
 		})
 	realtime.Handle(r, contracts.ActionProvidersDeleteCredential,
 		func(ctx context.Context, _ *realtime.Request, p contracts.ProviderIDPayload) (contracts.Empty, error) {
+			if m.LockHostAdmin {
+				return contracts.Empty{}, hostAdminLockedError()
+			}
 			return contracts.Empty{}, m.Service.DeleteCredential(ctx, p.ID)
 		})
 	realtime.Handle(r, contracts.ActionProvidersActivate,
 		func(ctx context.Context, _ *realtime.Request, p contracts.ProviderIDPayload) (contracts.Empty, error) {
+			if m.LockHostAdmin {
+				return contracts.Empty{}, hostAdminLockedError()
+			}
 			return contracts.Empty{}, m.Service.ActivateCredential(ctx, p.ID)
 		})
 	realtime.Handle(r, contracts.ActionProvidersTestCredential,
 		func(ctx context.Context, _ *realtime.Request, p contracts.ProviderIDPayload) (contracts.ProviderTestResult, error) {
+			if m.LockHostAdmin {
+				return contracts.ProviderTestResult{}, hostAdminLockedError()
+			}
 			res, err := m.Service.TestCredential(ctx, p.ID)
 			if err != nil {
 				return contracts.ProviderTestResult{}, err
@@ -133,6 +158,9 @@ func (m Providers) Register(r *realtime.Registry) {
 		})
 	realtime.Handle(r, contracts.ActionProvidersCreateCustom,
 		func(ctx context.Context, _ *realtime.Request, p contracts.CustomProviderInput) (contracts.CustomProvider, error) {
+			if m.LockHostAdmin {
+				return contracts.CustomProvider{}, hostAdminLockedError()
+			}
 			c, err := m.Service.CreateCustom(ctx, p.ToDomain())
 			if err != nil {
 				return contracts.CustomProvider{}, err
@@ -141,6 +169,9 @@ func (m Providers) Register(r *realtime.Registry) {
 		})
 	realtime.Handle(r, contracts.ActionProvidersUpdateCustom,
 		func(ctx context.Context, _ *realtime.Request, p contracts.UpdateCustomPayload) (contracts.CustomProvider, error) {
+			if m.LockHostAdmin {
+				return contracts.CustomProvider{}, hostAdminLockedError()
+			}
 			c, err := m.Service.UpdateCustom(ctx, p.ID, p.Provider.ToDomain())
 			if err != nil {
 				return contracts.CustomProvider{}, err
@@ -149,10 +180,16 @@ func (m Providers) Register(r *realtime.Registry) {
 		})
 	realtime.Handle(r, contracts.ActionProvidersDeleteCustom,
 		func(ctx context.Context, _ *realtime.Request, p contracts.ProviderIDPayload) (contracts.Empty, error) {
+			if m.LockHostAdmin {
+				return contracts.Empty{}, hostAdminLockedError()
+			}
 			return contracts.Empty{}, m.Service.DeleteCustom(ctx, p.ID)
 		})
 	realtime.Handle(r, contracts.ActionProvidersTestCustom,
 		func(ctx context.Context, _ *realtime.Request, p contracts.ProviderIDPayload) (contracts.ProviderTestResult, error) {
+			if m.LockHostAdmin {
+				return contracts.ProviderTestResult{}, hostAdminLockedError()
+			}
 			res, err := m.Service.TestCustom(ctx, p.ID)
 			if err != nil {
 				return contracts.ProviderTestResult{}, err
@@ -161,6 +198,9 @@ func (m Providers) Register(r *realtime.Registry) {
 		})
 	realtime.Handle(r, contracts.ActionProvidersDiscoverModels,
 		func(ctx context.Context, _ *realtime.Request, p contracts.DiscoverModelsPayload) (contracts.DiscoverModelsResult, error) {
+			if m.LockHostAdmin {
+				return contracts.DiscoverModelsResult{}, hostAdminLockedError()
+			}
 			ms, err := m.Service.DiscoverModels(ctx, providersvc.DiscoverRequest{
 				CustomID: p.CustomID, DiscoveryFormat: p.DiscoveryFormat, BaseURL: p.BaseURL, APIKey: p.APIKey})
 			if err != nil {

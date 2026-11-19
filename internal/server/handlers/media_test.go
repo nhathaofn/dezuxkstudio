@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"app/internal/apperr"
 	"app/internal/security"
 	"app/internal/server/middleware"
 )
@@ -376,7 +377,7 @@ func TestMediaDownloadRangeRequest(t *testing.T) {
 	signer := security.NewTicketSigner(secret)
 	assetID := "sample.mp4"
 
-	ticket, err := signer.SignTicket(assetID, security.PurposeDownload, 10*time.Minute)
+	ticket, err := signer.SignTicket(assetID, security.PurposePreview, 10*time.Minute)
 	if err != nil {
 		t.Fatalf("sign ticket failed: %v", err)
 	}
@@ -827,5 +828,106 @@ func TestStagingCleanupWhere_ProtectsGuardedEntries(t *testing.T) {
 	}
 	if _, err := os.Stat(expiredLeased); err != nil {
 		t.Fatalf("expected guarded leased dir %q to remain: %v", expiredLeased, err)
+	}
+}
+
+func TestMediaDownloadRejectsRestrictedFilesAndHonoursFileGuard(t *testing.T) {
+	mediaDir := t.TempDir()
+	for _, restricted := range []string{".env", "secrets.enc", "app.db", "credentials.json", "notes.txt"} {
+		if err := os.WriteFile(filepath.Join(mediaDir, restricted), []byte("sensitive"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(mediaDir, "ok.png"), makeTestPNG(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h := MediaDownload(mediaDir)
+	for _, restricted := range []string{".env", "secrets.enc", "app.db", "credentials.json", "notes.txt"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/media/download?path="+url.QueryEscape(restricted), nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 Forbidden for restricted download %q, got %d (%s)", restricted, rec.Code, rec.Body.String())
+		}
+	}
+
+	guarded := MediaDownload(mediaDir, WithFileGuard(func(path string, _ bool) error {
+		if strings.HasSuffix(path, "ok.png") {
+			return apperr.New(apperr.CodeUnauthorized, "blocked by policy")
+		}
+		return nil
+	}))
+	reqGuard := httptest.NewRequest(http.MethodGet, "/api/media/download?path=ok.png", nil)
+	recGuard := httptest.NewRecorder()
+	guarded.ServeHTTP(recGuard, reqGuard)
+	if recGuard.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 when WithFileGuard denies path, got %d", recGuard.Code)
+	}
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := CleanupStagingDirWhereContext(canceledCtx, mediaDir, time.Hour, time.Now(), nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled from CleanupStagingDirWhereContext, got %v", err)
+	}
+}
+
+func TestMediaDownloadNoExistenceOracleJSONWhitelistAndSingleUseDownload(t *testing.T) {
+	mediaDir := t.TempDir()
+	outsideDir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(mediaDir, "arbitrary.json"), []byte(`{"secret":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mediaDir, "project.json"), []byte(`{"title":"ok"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mediaDir, "pic.png"), makeTestPNG(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	signer := security.NewTicketSigner([]byte("secret-key-32-bytes-long-testing"))
+	h := MediaDownload(mediaDir, WithTicketSigner(signer))
+
+	// Non-existent path outside mediaDir MUST return 403 (never 404 existence oracle).
+	nonExistentOutside := filepath.Join(outsideDir, "does_not_exist.png")
+	reqOracle := httptest.NewRequest(http.MethodGet, "/api/media/download?path="+url.QueryEscape(nonExistentOutside), nil)
+	recOracle := httptest.NewRecorder()
+	h.ServeHTTP(recOracle, reqOracle)
+	if recOracle.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for nonexistent outside path (no oracle), got %d", recOracle.Code)
+	}
+
+	// Arbitrary .json inside mediaDir is rejected; whitelisted studio project.json is allowed.
+	reqArb := httptest.NewRequest(http.MethodGet, "/api/media/download?path=arbitrary.json", nil)
+	recArb := httptest.NewRecorder()
+	h.ServeHTTP(recArb, reqArb)
+	if recArb.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for arbitrary.json, got %d", recArb.Code)
+	}
+
+	reqProj := httptest.NewRequest(http.MethodGet, "/api/media/download?path=project.json", nil)
+	recProj := httptest.NewRecorder()
+	h.ServeHTTP(recProj, reqProj)
+	if recProj.Code != http.StatusOK {
+		t.Fatalf("expected 200 for whitelisted project.json, got %d", recProj.Code)
+	}
+
+	// PurposeDownload ticket is single-use.
+	dlTicket, err := signer.SignTicket("pic.png", security.PurposeDownload, 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dl1 := httptest.NewRequest(http.MethodGet, "/api/media/download?asset_id=pic.png&ticket="+url.QueryEscape(dlTicket), nil)
+	recDl1 := httptest.NewRecorder()
+	h.ServeHTTP(recDl1, dl1)
+	if recDl1.Code != http.StatusOK {
+		t.Fatalf("first download ticket request expected 200, got %d", recDl1.Code)
+	}
+	dl2 := httptest.NewRequest(http.MethodGet, "/api/media/download?asset_id=pic.png&ticket="+url.QueryEscape(dlTicket), nil)
+	recDl2 := httptest.NewRecorder()
+	h.ServeHTTP(recDl2, dl2)
+	if recDl2.Code != http.StatusForbidden {
+		t.Fatalf("replayed download ticket expected 403, got %d", recDl2.Code)
 	}
 }

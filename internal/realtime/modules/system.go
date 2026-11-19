@@ -42,7 +42,11 @@ func (m System) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionSystemInfo,
 		func(context.Context, *realtime.Request, contracts.Empty) (contracts.SystemInfo, error) {
-			return m.Info.Info(), nil
+			info := m.Info.Info()
+			if m.LockHostAdmin {
+				info.Paths = contracts.PathsInfo{}
+			}
+			return info, nil
 		})
 
 	realtime.Handle(r, contracts.ActionSystemOpenFolder,
@@ -55,6 +59,9 @@ func (m System) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionSystemCheckUpdate,
 		func(ctx context.Context, _ *realtime.Request, _ contracts.Empty) (contracts.UpdateInfo, error) {
+			if m.LockHostAdmin {
+				return contracts.UpdateInfo{}, hostAdminLockedError()
+			}
 			return m.Update.Check(ctx)
 		})
 }

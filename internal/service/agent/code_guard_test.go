@@ -31,6 +31,11 @@ var codeSamples = map[string]string{
 	"fenced yaml":         "```yaml\nservices:\n  api:\n    image: alpine\n```\n",
 	"unterminated fence":  "```python\nimport os\nos.remove('a')\n",
 	"indented tilde bash": "  ~~~bash\nrm -rf /tmp/demo\n~~~\n",
+	"html pre block":      "Here:\n<pre>\nprint('hi')\n</pre>\n",
+	"html code block":     "Try <code>const x = 1</code>\n",
+	"indented python":     "Example:\n    def hello():\n        return 'hi'\n",
+	"nested fence in md":  "```markdown\n```python\nprint('hi')\n```\n```\n",
+	"code in empty fence": "```\nimport os\nos.remove('x')\n```\n",
 }
 
 func longVietnameseMovieScript() string {

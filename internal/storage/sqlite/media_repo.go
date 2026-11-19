@@ -8,33 +8,18 @@ import (
 	"strings"
 	"time"
 
+	domainmedia "app/internal/domain/media"
+
 	"github.com/google/uuid"
 )
 
-// MediaAssetRecord represents a row in the media_assets table.
-type MediaAssetRecord struct {
-	ID             string
-	Kind           string
-	SourceNode     string
-	FilePath       string
-	RegisteredRoot string
-	MIMEType       string
-	SizeBytes      int64
-	Width          int
-	Height         int
-	DurationSec    float64
-	MetadataJSON   string
-	CreatedAt      int64
-	LastVerifiedAt int64
-}
+// MediaAssetRecord aliases domainmedia.AssetRecord for SQLite persistence.
+type MediaAssetRecord = domainmedia.AssetRecord
 
-// MediaListFilter specifies query parameters for ListAssets.
-type MediaListFilter struct {
-	Kind   string
-	Limit  int
-	Offset int
-	Search string
-}
+// MediaListFilter aliases domainmedia.ListFilter for ListAssets queries.
+type MediaListFilter = domainmedia.ListFilter
+
+var _ domainmedia.Repository = (*MediaRepository)(nil)
 
 // MediaRepository manages persistence of media asset records in SQLite.
 type MediaRepository struct {

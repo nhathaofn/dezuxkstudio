@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -17,19 +19,12 @@ import (
 	domainagent "app/internal/domain/agent"
 	domainbinaries "app/internal/domain/binaries"
 	"app/internal/engine"
-	"app/internal/storage/sqlite"
 
 	"github.com/google/uuid"
 )
 
 // ApprovalRepository defines persistence operations for agent MCP approvals.
-type ApprovalRepository interface {
-	InsertApproval(ctx context.Context, app *sqlite.AgentApproval) error
-	GetApproval(ctx context.Context, id string) (*sqlite.AgentApproval, error)
-	ListPendingApprovals(ctx context.Context, conversationID string) ([]*sqlite.AgentApproval, error)
-	UpdateApprovalStatus(ctx context.Context, id string, oldStatus, newStatus string, decision string, resultJSON string, errorText string) (bool, error)
-	RecoverAmbiguousApprovals(ctx context.Context) error
-}
+type ApprovalRepository = domainagent.ApprovalRepository
 
 // CanonicalJSON recursively formats any JSON-encodable value into deterministic canonical JSON (sorted keys).
 func CanonicalJSON(v any) ([]byte, error) {
@@ -355,7 +350,9 @@ func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) 
 	if s.limits.ApprovalTTL > 0 {
 		now := time.Now().UnixMilli()
 		if now-rec.CreatedAt > s.limits.ApprovalTTL.Milliseconds() {
-			_, _ = s.approvalRepo.UpdateApprovalStatus(ctx, id, contracts.ApprovalStatusPending, contracts.ApprovalStatusFailed, "expired", "", "approval TTL expired")
+			if _, uerr := s.approvalRepo.UpdateApprovalStatus(ctx, id, contracts.ApprovalStatusPending, contracts.ApprovalStatusFailed, "expired", "", "approval TTL expired"); uerr != nil {
+				s.log.ErrorContext(ctx, "agent: failed to mark expired approval status", "id", id, "error", uerr)
+			}
 			s.emitApprovals()
 			return userError(apperr.CodeValidation, "agent.errors.approval_expired", "approval request has expired", nil)
 		}
@@ -388,7 +385,10 @@ func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) 
 
 	maxContinuations := s.maxApprovalContinuations
 	if maxContinuations <= 0 {
-		maxContinuations = 5
+		maxContinuations = s.limits.MaxApprovalContinuations
+	}
+	if maxContinuations <= 0 {
+		maxContinuations = DefaultLimits().MaxApprovalContinuations
 	}
 
 	if !approve {
@@ -402,20 +402,39 @@ func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) 
 
 	// On Approve: status is currently 'executing'. Execute the underlying action.
 	var (
-		res     any
-		execErr error
+		res        any
+		execErr    error
+		guardedCtx = engine.WithFileGuard(ctx, s.CheckTrustedFile)
 	)
 
 	if memItem.exec != nil {
 		res, execErr = memItem.exec(ctx)
 	} else if s.workflow != nil && rec.ToolName == "workflow_run_node" {
-		res, execErr = s.workflow.RunNode(ctx, rec.NodeType, json.RawMessage(rec.InputJSON))
+		if spec, ok := specByType(s.workflow.Specs(ctx), rec.NodeType); ok {
+			var inMap map[string]any
+			if json.Unmarshal([]byte(rec.InputJSON), &inMap) == nil {
+				if hasRedactedSecretParam(spec, inMap) {
+					execErr = fmt.Errorf("approval secret parameter was redacted on save; please re-submit the request with the credential")
+				} else {
+					defer s.scrubSecretParams(context.WithoutCancel(ctx), spec, inMap)
+				}
+			}
+		}
+		if execErr == nil {
+			res, execErr = s.workflow.RunNode(guardedCtx, rec.NodeType, json.RawMessage(rec.InputJSON))
+		}
 	} else if s.workflow != nil && rec.ToolName == "workflow_run_graph" {
 		var g engine.Graph
 		if err := json.Unmarshal([]byte(rec.InputJSON), &g); err != nil {
 			execErr = fmt.Errorf("invalid graph JSON: %w", err)
 		} else {
-			res, execErr = s.workflow.RunGraph(ctx, g)
+			specs := s.workflow.Specs(ctx)
+			if graphHasRedactedSecret(specs, g) {
+				execErr = fmt.Errorf("approval workflow graph contains a redacted secret parameter; please re-submit the request with the credential")
+			} else {
+				defer s.scrubGraphSecretParams(context.WithoutCancel(ctx), specs, g)
+				res, execErr = s.workflow.RunGraph(guardedCtx, g)
+			}
 		}
 	} else if s.binaries != nil && rec.ToolName == "binaries_download" {
 		var in binaryIDToolInput
@@ -424,13 +443,40 @@ func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) 
 		} else {
 			res, execErr = s.binaries.Download(ctx, domainbinaries.BinaryID(in.ID))
 		}
+	} else if rec.ToolName == "workspace_delete_file" {
+		var in deleteFileToolInput
+		if err := json.Unmarshal([]byte(rec.InputJSON), &in); err != nil {
+			execErr = fmt.Errorf("invalid delete input: %w", err)
+		} else {
+			res, execErr = s.executeWorkspaceDelete(in.Path)
+		}
+	} else if rec.ToolName == "workspace_move_file" {
+		var in moveFileToolInput
+		if err := json.Unmarshal([]byte(rec.InputJSON), &in); err != nil {
+			execErr = fmt.Errorf("invalid move input: %w", err)
+		} else {
+			res, execErr = s.executeWorkspaceMove(in)
+		}
+	} else if s.media != nil && rec.ToolName == "media_delete" {
+		var in mediaDeleteToolInput
+		if err := json.Unmarshal([]byte(rec.InputJSON), &in); err != nil {
+			execErr = fmt.Errorf("invalid media delete input: %w", err)
+		} else if err := s.media.Delete(guardedCtx, strings.TrimSpace(in.ID), in.DeleteFile); err != nil {
+			execErr = err
+		} else {
+			res = map[string]any{"ok": true, "deleted_id": strings.TrimSpace(in.ID), "delete_file": in.DeleteFile}
+		}
+	} else if studioRes, handled, studioErr := s.executeApprovedStudioTool(guardedCtx, rec.ToolName, rec.InputJSON); handled {
+		res, execErr = studioRes, studioErr
 	} else {
 		execErr = fmt.Errorf("no executor available for approved action %s", rec.ToolName)
 	}
 
 	if execErr != nil {
 		// Update status executing -> failed
-		_, _ = s.approvalRepo.UpdateApprovalStatus(ctx, id, contracts.ApprovalStatusExecuting, contracts.ApprovalStatusFailed, decisionStr, "", execErr.Error())
+		if _, uerr := s.approvalRepo.UpdateApprovalStatus(ctx, id, contracts.ApprovalStatusExecuting, contracts.ApprovalStatusFailed, decisionStr, "", execErr.Error()); uerr != nil {
+			s.log.ErrorContext(ctx, "agent: failed to mark failed approval status", "id", id, "error", uerr)
+		}
 		s.emitApprovals()
 
 		if rec.ContinuationDepth < maxContinuations {
@@ -446,9 +492,15 @@ func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) 
 	}
 
 	// Execution succeeded: update executing -> approved
-	resBytes, _ := json.Marshal(res)
+	resBytes, mErr := json.Marshal(res)
+	if mErr != nil {
+		s.log.ErrorContext(ctx, "agent: failed to marshal approved action result", "id", id, "error", mErr)
+		resBytes = []byte("{}")
+	}
 	resJSON := string(resBytes)
-	_, _ = s.approvalRepo.UpdateApprovalStatus(ctx, id, contracts.ApprovalStatusExecuting, contracts.ApprovalStatusApproved, decisionStr, resJSON, "")
+	if _, uerr := s.approvalRepo.UpdateApprovalStatus(ctx, id, contracts.ApprovalStatusExecuting, contracts.ApprovalStatusApproved, decisionStr, resJSON, ""); uerr != nil {
+		s.log.ErrorContext(ctx, "agent: failed to mark approved status", "id", id, "error", uerr)
+	}
 	s.emitApprovals()
 
 	if rec.ContinuationDepth < maxContinuations {
@@ -457,6 +509,265 @@ func (s *Service) ResolveApproval(ctx context.Context, id string, approve bool) 
 	}
 
 	return nil
+}
+
+func (s *Service) executeApprovedStudioTool(guardedCtx context.Context, toolName, inputJSON string) (any, bool, error) {
+	if s.studio == nil {
+		return nil, false, nil
+	}
+	switch toolName {
+	case "studio_episode_run_stage":
+		var p contracts.StudioEpisodeRunStagePayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio stage input: %w", err)
+		}
+		p.Approved = true
+		res, err := s.studio.RunStage(guardedCtx, p)
+		return res, true, err
+	case "studio_queue_enqueue":
+		p2, ok := s.studio.(StudioPhase2Manager)
+		if !ok {
+			return nil, true, fmt.Errorf("studio phase 2 queue unavailable")
+		}
+		var p contracts.StudioQueueEnqueuePayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio queue input: %w", err)
+		}
+		p.Approved = true
+		res, err := p2.EnqueueBatch(guardedCtx, p)
+		return res, true, err
+	case "studio_mask_edit":
+		ext, ok := s.studio.(StudioExtendedManager)
+		if !ok {
+			return nil, true, fmt.Errorf("studio mask edit unavailable")
+		}
+		var p contracts.StudioMaskEditPayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio mask edit input: %w", err)
+		}
+		res, err := ext.ApplyMaskEdit(guardedCtx, p)
+		return res, true, err
+	case "studio_project_update":
+		ext, ok := s.studio.(StudioExtendedManager)
+		if !ok {
+			return nil, true, fmt.Errorf("studio project update unavailable")
+		}
+		var p contracts.StudioProjectUpdatePayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio project update input: %w", err)
+		}
+		res, err := ext.UpdateProject(guardedCtx, p)
+		return res, true, err
+	case "studio_project_delete":
+		ext, ok := s.studio.(StudioExtendedManager)
+		if !ok {
+			return nil, true, fmt.Errorf("studio project delete unavailable")
+		}
+		var p contracts.StudioProjectDeletePayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio project delete input: %w", err)
+		}
+		if err := ext.DeleteProject(guardedCtx, p); err != nil {
+			return nil, true, err
+		}
+		return map[string]any{"ok": true, "deleted_id": p.ID}, true, nil
+	case "studio_asset_upsert":
+		var p contracts.StudioAssetUpsertPayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio asset upsert input: %w", err)
+		}
+		res, err := s.studio.UpsertAsset(guardedCtx, p)
+		return res, true, err
+	case "studio_pricing_upsert":
+		ext, ok := s.studio.(StudioExtendedManager)
+		if !ok {
+			return nil, true, fmt.Errorf("studio pricing upsert unavailable")
+		}
+		var p contracts.StudioPricingUpsertPayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio pricing upsert input: %w", err)
+		}
+		res, err := ext.UpsertPricing(guardedCtx, p)
+		return res, true, err
+	case "studio_queue_control":
+		p2, ok := s.studio.(StudioPhase2Manager)
+		if !ok {
+			return nil, true, fmt.Errorf("studio queue control unavailable")
+		}
+		var p contracts.StudioQueueControlPayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio queue control input: %w", err)
+		}
+		res, err := p2.ControlQueue(guardedCtx, p)
+		return res, true, err
+	case "studio_qc_review":
+		p2, ok := s.studio.(StudioPhase2Manager)
+		if !ok {
+			return nil, true, fmt.Errorf("studio QC review unavailable")
+		}
+		var p contracts.StudioQCReviewPayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio QC review input: %w", err)
+		}
+		res, err := p2.RunQCReview(guardedCtx, p)
+		return res, true, err
+	case "studio_timeline_auto_assemble":
+		ext, ok := s.studio.(StudioExtendedManager)
+		if !ok {
+			return nil, true, fmt.Errorf("studio timeline auto-assemble unavailable")
+		}
+		var p contracts.StudioTimelineAutoAssemblePayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio timeline auto-assemble input: %w", err)
+		}
+		res, err := ext.AutoAssembleTimeline(guardedCtx, p)
+		return res, true, err
+	case "studio_timeline_render":
+		ext, ok := s.studio.(StudioExtendedManager)
+		if !ok {
+			return nil, true, fmt.Errorf("studio timeline render unavailable")
+		}
+		var p contracts.StudioTimelineRenderPayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio timeline render input: %w", err)
+		}
+		res, err := ext.RenderTimeline(guardedCtx, p)
+		return res, true, err
+	case "studio_project_create":
+		var p contracts.StudioProjectCreatePayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio project create input: %w", err)
+		}
+		res, err := s.studio.CreateProject(guardedCtx, p)
+		return res, true, err
+	case "studio_timeline_apply_ops":
+		p3, ok := s.studio.(StudioPhase3Manager)
+		if !ok {
+			return nil, true, fmt.Errorf("studio timeline management unavailable")
+		}
+		var p contracts.StudioTimelineApplyOpsPayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio timeline ops input: %w", err)
+		}
+		res, err := p3.ApplyTimelineOps(guardedCtx, p)
+		return res, true, err
+	case "studio_timeline_export_nle":
+		ext, ok := s.studio.(StudioExtendedManager)
+		if !ok {
+			return nil, true, fmt.Errorf("studio NLE export unavailable")
+		}
+		var p contracts.StudioTimelineExportNLEPayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio NLE export input: %w", err)
+		}
+		res, err := ext.ExportNLEDraft(guardedCtx, p)
+		return res, true, err
+	case "studio_shots_batch_upsert":
+		t123, ok := s.studio.(StudioTier123Manager)
+		if !ok {
+			return nil, true, fmt.Errorf("studio batch shot upsert unavailable")
+		}
+		var p contracts.StudioShotsBatchUpsertPayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio batch shot upsert input: %w", err)
+		}
+		res, err := t123.BatchUpsertShots(guardedCtx, p)
+		return res, true, err
+	case "studio_asset_merge":
+		t123, ok := s.studio.(StudioTier123Manager)
+		if !ok {
+			return nil, true, fmt.Errorf("studio asset merge unavailable")
+		}
+		var p contracts.StudioAssetMergePayload
+		if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+			return nil, true, fmt.Errorf("invalid studio asset merge input: %w", err)
+		}
+		res, err := t123.MergeAssets(guardedCtx, p)
+		return res, true, err
+	default:
+		return nil, false, nil
+	}
+}
+
+func (s *Service) executeWorkspaceDelete(rawPath string) (map[string]any, error) {
+	target, err := s.policy.ValidateDelete(rawPath)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("deleting folders is not allowed")
+	}
+	if err := os.Remove(target); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "deleted": target}, nil
+}
+
+func (s *Service) executeWorkspaceMove(in moveFileToolInput) (map[string]any, error) {
+	src, dst, err := s.policy.ValidateMove(in.Source, in.Destination)
+	if err != nil {
+		return nil, err
+	}
+	st, err := os.Stat(src)
+	if err != nil {
+		return nil, err
+	}
+	if st.IsDir() {
+		return nil, fmt.Errorf("moving whole folders is not supported; move the files inside it")
+	}
+	if _, err := os.Stat(dst); err == nil && !in.Overwrite {
+		return nil, fmt.Errorf("destination %q already exists (set overwrite=true to replace it)", dst)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(src, dst); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "source": src, "destination": dst}, nil
+}
+
+func hasRedactedSecretParam(spec engine.Spec, input map[string]any) bool {
+	for _, p := range spec.Params {
+		if !p.Secret {
+			continue
+		}
+		if v, _ := input[p.Name].(string); strings.TrimSpace(v) == "[REDACTED]" {
+			return true
+		}
+	}
+	return false
+}
+
+func graphHasRedactedSecret(specs []engine.Spec, g engine.Graph) bool {
+	for _, n := range g.Nodes {
+		spec, ok := specByType(specs, n.Type)
+		if !ok || len(n.Params) == 0 {
+			continue
+		}
+		var inMap map[string]any
+		if json.Unmarshal(n.Params, &inMap) == nil && hasRedactedSecretParam(spec, inMap) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) scrubGraphSecretParams(ctx context.Context, specs []engine.Spec, g engine.Graph) {
+	for _, n := range g.Nodes {
+		spec, ok := specByType(specs, n.Type)
+		if !ok || len(n.Params) == 0 {
+			continue
+		}
+		var inMap map[string]any
+		if json.Unmarshal(n.Params, &inMap) == nil {
+			s.scrubSecretParams(ctx, spec, inMap)
+		}
+	}
 }
 
 // RecoverAmbiguousApprovals transitions any executing approvals left in limbo to 'ambiguous'.

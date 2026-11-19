@@ -11,7 +11,8 @@ import (
 // Diagnostics exposes diagnostics:* actions. Export is the reference implementation
 // of a long-running action: it reports progress and stops when the client cancels.
 type Diagnostics struct {
-	Service *diagnostics.Service
+	Service       *diagnostics.Service
+	LockHostAdmin bool
 }
 
 func (Diagnostics) Name() string { return "diagnostics" }
@@ -19,6 +20,9 @@ func (Diagnostics) Name() string { return "diagnostics" }
 func (m Diagnostics) Register(r *realtime.Registry) {
 	realtime.Handle(r, contracts.ActionDiagnosticsExport,
 		func(ctx context.Context, req *realtime.Request, _ contracts.Empty) (contracts.DiagnosticsBundle, error) {
+			if m.LockHostAdmin {
+				return contracts.DiagnosticsBundle{}, hostAdminLockedError()
+			}
 			return m.Service.Export(ctx)
 		})
 }

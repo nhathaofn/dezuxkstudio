@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { appConfig } from "../../config/appConfig";
+import { NodeTypes } from "../../contracts/generated";
 import { useWatermarkStore } from "./useWatermarkStore";
 import { WatermarkView } from "./WatermarkView";
 import WatermarkViewDefault from "./WatermarkView";
@@ -158,6 +159,7 @@ describe("Watermark UI Components Runtime Rendering & State Bindings", () => {
         detected: true,
         total_count: 1,
         detected_count: 1,
+        results: [],
       },
     });
 
@@ -286,6 +288,7 @@ describe("Adversarial Stress Testing & Edge Cases", () => {
         detected: true,
         total_count: 1_000_000,
         detected_count: 999_999,
+        results: [],
       },
     });
 
@@ -305,6 +308,7 @@ describe("Adversarial Stress Testing & Edge Cases", () => {
         detected: true,
         total_count: 1,
         detected_count: 1,
+        results: [],
       },
     });
 
@@ -351,7 +355,7 @@ describe("Adversarial Stress Testing & Edge Cases", () => {
         detected: true,
         total_count: 1,
         detected_count: 1,
-        results: undefined,
+        results: [],
       },
     });
 
@@ -477,6 +481,7 @@ describe("useWatermarkStore Actions & Edge Case Robustness", () => {
         detected: true,
         total_count: 1,
         detected_count: 1,
+        results: [],
       },
       error: new ActionError("ERR_INTERNAL", "some error"),
       loading: true,
@@ -780,6 +785,7 @@ describe("Phase 1 Wave B Watermark Policy & Compare UX Enhancement", () => {
         detected: true,
         total_count: 1,
         detected_count: 1,
+        results: [],
       },
     });
 
@@ -805,6 +811,87 @@ describe("Phase 1 Wave B Watermark Policy & Compare UX Enhancement", () => {
 
     html = renderToStaticMarkup(React.createElement(WatermarkView));
     expect(html).not.toContain("Test dismissable error");
+  });
+
+  it("tracks duplicate queued file names distinctly and revokes removed index without collision", () => {
+    const createSpy = vi
+      .spyOn(URL, "createObjectURL")
+      .mockImplementation(() => `blob:mock-${Math.random()}`);
+    const revokeSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    try {
+      const f1 = new File(["one"], "dup.png", { type: "image/png" });
+      const f2 = new File(["two"], "dup.png", { type: "image/png" });
+      useWatermarkStore.getState().setQueuedFiles([f1, f2]);
+      const keys = useWatermarkStore.getState().queuedObjectKeys;
+      expect(keys).toHaveLength(2);
+      expect(keys[0]).not.toBe(keys[1]);
+
+      useWatermarkStore.getState().removeQueuedFile(0);
+      expect(useWatermarkStore.getState().queuedFiles).toEqual([f2]);
+      expect(revokeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      createSpy.mockRestore();
+      revokeSpy.mockRestore();
+    }
+  });
+
+  it("subtracts failed items from cleanCount KPI in WatermarkResultsCard", () => {
+    useWatermarkStore.setState({
+      result: {
+        detected: true,
+        total_count: 5,
+        detected_count: 2,
+        results: [
+          { path: "a.png", out_path: "a_out.png", status: "processed", detected: true, score: 0.9 },
+          { path: "b.png", out_path: "b_out.png", status: "processed", detected: true, score: 0.9 },
+          { path: "c.png", out_path: "c_out.png", status: "clean", detected: false, score: 0.1 },
+          { path: "d.png", out_path: "", status: "error", detected: false, error: "corrupt file" },
+          { path: "e.png", out_path: "", status: "error", detected: false, error: "unreadable" },
+        ],
+      } as unknown as import("./useWatermarkStore").WatermarkNodeResult,
+    });
+    const html = renderToStaticMarkup(React.createElement(WatermarkResultsCard));
+    // total=5, detected=2, failed=2 => cleanCount=1 (not 3)
+    expect(html).toContain(">1<");
+  });
+
+  it("supports video watermark removal mode, delogo/crop params, and invokes tool.video_watermark_remove", async () => {
+    const reqSpy = vi.spyOn(rtClient, "request").mockResolvedValue({
+      output: {
+        video: { localUrl: "D:/out/clean.mp4", kind: "video" },
+        path: "D:/out/clean.mp4",
+        asset_id: "vid-wm-1",
+        duration_sec: 12,
+      },
+    } as never);
+    useWatermarkStore.getState().setMediaKind("video");
+    useWatermarkStore.getState().setVideoInputPath("D:/in/clip.mp4");
+    useWatermarkStore.getState().setVideoMode("delogo");
+    useWatermarkStore.getState().setVideoX(10);
+    useWatermarkStore.getState().setVideoY(20);
+    useWatermarkStore.getState().setVideoWidth(120);
+    useWatermarkStore.getState().setVideoHeight(60);
+
+    await useWatermarkStore.getState().removeVideoWatermark();
+    expect(reqSpy).toHaveBeenCalledWith(
+      Actions.WORKFLOW_RUN_NODE,
+      expect.objectContaining({
+        type: NodeTypes.VIDEO_WATERMARK_REMOVE,
+        input: expect.objectContaining({
+          video_path: { localUrl: "D:/in/clip.mp4", kind: "video" },
+          mode: "delogo",
+          x: 10,
+          y: 20,
+          width: 120,
+          height: 60,
+        }),
+      }),
+      expect.any(Object)
+    );
+    expect(useWatermarkStore.getState().videoResult?.path).toBe("D:/out/clean.mp4");
+
+    const html = renderToStaticMarkup(React.createElement(WatermarkView));
+    expect(html).toContain("D:/out/clean.mp4");
   });
 });
 

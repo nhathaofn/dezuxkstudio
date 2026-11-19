@@ -296,6 +296,10 @@ func (s *Service) do(ctx context.Context, req request) ([]byte, int, error) {
 	if req.body != nil {
 		hr.Header.Set("Content-Type", "application/json")
 	}
+	return s.doHTTPRequest(ctx, hr)
+}
+
+func (s *Service) doHTTPRequest(ctx context.Context, hr *http.Request) ([]byte, int, error) {
 	resp, err := s.client.Do(hr)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -572,27 +576,19 @@ func (s *Service) exchangeVertexToken(ctx context.Context, raw string) (string, 
 		return "", "", 0, fail(OutcomeInvalid, 0, "invalid token_uri")
 	}
 	hr.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := s.client.Do(hr)
+	body, status, err := s.doHTTPRequest(ctx, hr)
 	if err != nil {
-		if ctx.Err() != nil {
-			return "", "", 0, ctx.Err()
+		if status == http.StatusBadRequest || status == http.StatusUnauthorized {
+			return "", "", 0, fail(OutcomeAuthFailed, status, fmt.Sprintf("HTTP %d: %s", status, body))
 		}
 		return "", "", 0, err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized {
-		return "", "", 0, fail(OutcomeAuthFailed, resp.StatusCode, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, body))
-	}
-	if resp.StatusCode/100 != 2 {
-		return "", "", 0, classify(resp.StatusCode, body)
 	}
 	var tok struct {
 		AccessToken string `json:"access_token"`
 		ExpiresIn   int64  `json:"expires_in"`
 	}
 	if err := json.Unmarshal(body, &tok); err != nil || tok.AccessToken == "" {
-		return "", "", 0, fail(OutcomeHTTPError, resp.StatusCode, "response did not contain access_token")
+		return "", "", 0, fail(OutcomeHTTPError, status, "response did not contain access_token")
 	}
 	ttl := time.Duration(tok.ExpiresIn) * time.Second
 	if ttl <= 0 {

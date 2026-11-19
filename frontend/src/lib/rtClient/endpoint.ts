@@ -20,6 +20,7 @@ export interface EndpointEnv {
   bridge: BridgeApi | null;
   location: Pick<Location, "search" | "protocol" | "host">;
   storage: Pick<Storage, "getItem"> | null;
+  sessionToken?: string | null;
   fetchJson: (path: string) => Promise<unknown>;
   dev: boolean;
 }
@@ -29,20 +30,22 @@ interface ServerTimeouts {
   action_timeout_ms?: number;
   long_action_timeout_ms?: number;
   ping_interval_ms?: number;
+  check_updates_on_startup?: boolean;
 }
 
 const browserEndpoint = (
   url: string,
   source: Endpoint["source"],
-  timeouts: ServerTimeouts = {}
+  timeouts: ServerTimeouts = {},
+  token = ""
 ): Endpoint => ({
   url,
-  token: "",
+  token: token.trim(),
   mode: "browser",
   actionTimeoutMs: timeouts.action_timeout_ms ?? appConfig.fallback.actionTimeoutMs,
   longActionTimeoutMs: timeouts.long_action_timeout_ms ?? appConfig.fallback.longActionTimeoutMs,
   pingIntervalMs: timeouts.ping_interval_ms ?? appConfig.fallback.pingIntervalMs,
-  checkUpdatesOnStartup: false,
+  checkUpdatesOnStartup: timeouts.check_updates_on_startup ?? false,
   source,
 });
 
@@ -85,17 +88,20 @@ export async function resolveEndpoint(env: EndpointEnv): Promise<Endpoint | null
     }
   }
 
+  const sessionTok = env.sessionToken?.trim() ?? "";
+
   if (env.dev) {
     const fromQuery = new URLSearchParams(env.location.search).get("ws");
-    if (fromQuery) return browserEndpoint(fromQuery, "query");
+    if (fromQuery) return browserEndpoint(fromQuery, "query", {}, sessionTok);
   }
 
   const manual = env.storage?.getItem(appConfig.storageKeys.manualWsUrl);
-  if (manual) return browserEndpoint(manual, "manual");
+  if (manual) return browserEndpoint(manual, "manual", {}, sessionTok);
 
   try {
     const parsed = RuntimeConfigSchema.safeParse(await env.fetchJson(appConfig.runtimeConfigPath));
-    if (parsed.success) return browserEndpoint(parsed.data.ws_url, "runtime-config", parsed.data);
+    if (parsed.success)
+      return browserEndpoint(parsed.data.ws_url, "runtime-config", parsed.data, sessionTok);
   } catch {
     // endpoint not served here; fall through
   }
@@ -103,7 +109,7 @@ export async function resolveEndpoint(env: EndpointEnv): Promise<Endpoint | null
   const { protocol, host } = env.location;
   if (!env.dev && host && (protocol === "http:" || protocol === "https:")) {
     const wsProto = protocol === "https:" ? "wss:" : "ws:";
-    return browserEndpoint(`${wsProto}//${host}${appConfig.wsPath}`, "location");
+    return browserEndpoint(`${wsProto}//${host}${appConfig.wsPath}`, "location", {}, sessionTok);
   }
   return null;
 }

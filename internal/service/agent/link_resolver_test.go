@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -460,5 +461,58 @@ func TestLinkResolver_MediaAssetInspection(t *testing.T) {
 	}
 	if strings.Contains(block, privateTicket) {
 		t.Errorf("SECURITY LEAK: promptBlock leaked ticket!")
+	}
+}
+
+type failingLinkRepo struct{}
+
+func (failingLinkRepo) GetProviderLink(context.Context, string) (domainagent.ProviderLink, error) {
+	return domainagent.ProviderLink{}, errors.New("sqlite busy")
+}
+func (failingLinkRepo) ListProviderLinks(context.Context) ([]domainagent.ProviderLink, error) {
+	return nil, errors.New("sqlite busy")
+}
+func (failingLinkRepo) SetProviderLink(context.Context, domainagent.ProviderLink) error {
+	return errors.New("sqlite busy")
+}
+func (failingLinkRepo) DeleteProviderLink(context.Context, string) error {
+	return errors.New("sqlite busy")
+}
+
+func TestResolveLinkedSecretPropagatesDBError(t *testing.T) {
+	link, err := providersvc.ResolveLinkedSecret(context.Background(), "codex", "cli", failingLinkRepo{}, secrets.NewMemory())
+	if err == nil || link != nil {
+		t.Fatalf("expected DB error to fail closed instead of returning nil; got link=%+v err=%v", link, err)
+	}
+	var ae *apperr.Error
+	if !errors.As(err, &ae) || ae.Code != apperr.CodeUnavailable {
+		t.Fatalf("expected CodeUnavailable, got %v", err)
+	}
+}
+
+func TestEnvWithLinkedSecretAndProcessExitConnSeq(t *testing.T) {
+	base := map[string]string{"CODEX_HOME": "/tmp/sub"}
+	link := &providersvc.ResolvedLink{
+		AgentProviderID: "codex",
+		ProviderID:      "openai",
+		CredentialID:    "cred-1",
+		Secret:          "sk-test-linked-123456",
+		EnvOverrides:    map[string]string{"OPENAI_API_KEY": "sk-test-linked-123456"},
+	}
+	env := envWithLinkedSecret(domainagent.ProviderCodex, base, link)
+	if _, mutated := base["OPENAI_API_KEY"]; mutated {
+		t.Fatal("envWithLinkedSecret mutated caller base map")
+	}
+	joined := strings.Join(env, "\n")
+	if !strings.Contains(joined, "OPENAI_API_KEY=sk-test-linked-123456") {
+		t.Fatalf("expected OPENAI_API_KEY injected into codex env, got %s", joined)
+	}
+
+	svc, _, _, cleanup := setupLinkResolverTestService(t)
+	defer cleanup()
+	before := svc.connSeq.Load()
+	svc.handleProcessExit(before, domainagent.ProviderAntigravity, errors.New("unexpected exit"))
+	if svc.connSeq.Load() == before {
+		t.Fatal("expected handleProcessExit to increment connSeq")
 	}
 }

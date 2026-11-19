@@ -4,6 +4,7 @@ import "./switch.css";
 export function Switch({
   checked,
   onCheckedChange,
+  className = "",
   ...props
 }: Omit<ButtonHTMLAttributes<HTMLButtonElement>, "onChange"> & {
   checked: boolean;
@@ -15,7 +16,7 @@ export function Switch({
       type="button"
       role="switch"
       aria-checked={checked}
-      className="ui-switch"
+      className={`ui-switch${className ? ` ${className}` : ""}`}
       onClick={() => onCheckedChange(!checked)}
     >
       <span />

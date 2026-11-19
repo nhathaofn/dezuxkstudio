@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime/debug"
 	"syscall"
 
@@ -42,17 +41,12 @@ func run() (code int) {
 	}()
 
 	envPrefix := config.EnvPrefixFor(buildinfo.AppID)
-	exeDir := ""
-	if exe, err := os.Executable(); err == nil {
-		exeDir = filepath.Dir(exe)
-	}
 	res, err := config.Load(config.Source{
 		Mode:      config.ModeServer,
 		Args:      os.Args[1:],
 		LookupEnv: os.LookupEnv,
 		EnvPrefix: envPrefix,
 		ConfigDir: appPaths.Config,
-		ExeDir:    exeDir,
 	})
 	if errors.Is(err, flag.ErrHelp) {
 		config.Usage(os.Stdout, config.ModeServer, envPrefix)
@@ -68,9 +62,11 @@ func run() (code int) {
 		return 1
 	}
 
-	if appPaths, err = paths.Resolve(buildinfo.ServerAppID, paths.Overrides{DataDir: cfg.Storage.DataDir, LogDir: cfg.Log.Dir}); err != nil {
-		log.Error("cannot resolve application directories", "error", err)
+	if resolvedPaths, resolveErr := paths.Resolve(buildinfo.ServerAppID, paths.Overrides{DataDir: cfg.Storage.DataDir, LogDir: cfg.Log.Dir}); resolveErr != nil {
+		log.Error("cannot resolve application directories", "error", resolveErr)
 		return 1
+	} else {
+		appPaths = resolvedPaths
 	}
 	if err := appPaths.Ensure(); err != nil {
 		log.Error("cannot create application directories", "error", err)

@@ -1,8 +1,10 @@
 package desktop
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -10,6 +12,41 @@ import (
 	"app/internal/buildinfo"
 	"app/internal/config"
 )
+
+func isSafeCSPHostPort(u *url.URL) bool {
+	if u == nil || u.Host == "" {
+		return false
+	}
+	for i := 0; i < len(u.Host); i++ {
+		b := u.Host[i]
+		if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') ||
+			b == '.' || b == '-' || b == ':' || b == '[' || b == ']' {
+			continue
+		}
+		return false
+	}
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return false
+		}
+	}
+	return u.Hostname() != ""
+}
+
+func desktopOriginHostPort(cfg *config.Config) string {
+	host := strings.TrimSpace(cfg.Server.Host)
+	if host == "" || !config.IsLoopbackHost(host) {
+		host = "127.0.0.1"
+	}
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		host = "[" + host + "]"
+	}
+	if cfg.Server.Port > 0 && cfg.Server.Port <= 65535 {
+		return fmt.Sprintf("%s:%d", host, cfg.Server.Port)
+	}
+	return host + ":*"
+}
 
 // contentSecurityPolicy builds the CSP for the webview. connect-src is derived
 // from the mode so client mode can reach its configured remote server and nothing else.
@@ -22,7 +59,7 @@ func contentSecurityPolicy(cfg *config.Config) string {
 
 	switch cfg.Mode {
 	case config.ModeClient:
-		if u, err := url.Parse(cfg.Client.RemoteURL); err == nil && u.Host != "" {
+		if u, err := url.Parse(cfg.Client.RemoteURL); err == nil && isSafeCSPHostPort(u) {
 			switch strings.ToLower(u.Scheme) {
 			case "wss", "https":
 				connect = append(connect, "wss://"+u.Host, "https://"+u.Host)
@@ -30,14 +67,12 @@ func contentSecurityPolicy(cfg *config.Config) string {
 			case "ws", "http":
 				connect = append(connect, "ws://"+u.Host, "http://"+u.Host)
 				mediaOrigins = append(mediaOrigins, "http://"+u.Host)
-			default:
-				connect = append(connect, u.Scheme+"://"+u.Host)
-				mediaOrigins = append(mediaOrigins, u.Scheme+"://"+u.Host)
 			}
 		}
 	default:
-		connect = append(connect, "ws://127.0.0.1:*", "ws://localhost:*", "http://127.0.0.1:*", "http://localhost:*")
-		mediaOrigins = append(mediaOrigins, "http://127.0.0.1:*", "http://localhost:*")
+		hp := desktopOriginHostPort(cfg)
+		connect = append(connect, "ws://"+hp, "http://"+hp)
+		mediaOrigins = append(mediaOrigins, "http://"+hp)
 	}
 	if buildinfo.IsDev() {
 		// Vite dev server: HMR socket and the inline React-refresh preamble.
@@ -54,7 +89,8 @@ func contentSecurityPolicy(cfg *config.Config) string {
 	directives := []string{
 		"default-src 'self'",
 		"script-src " + strings.Join(script, " "),
-		"style-src 'self' 'unsafe-inline'",
+		"style-src 'self'",
+		"style-src-attr 'unsafe-inline'",
 		"img-src " + strings.Join(imgSrc, " "),
 		"media-src " + strings.Join(mediaSrc, " "),
 		"font-src 'self' data:",

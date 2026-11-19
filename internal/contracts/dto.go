@@ -302,6 +302,29 @@ type WorkflowRunGraphResult struct {
 	Result engine.GraphResult `json:"result"`
 }
 
+// WorkflowTemplateParam describes one configurable placeholder in a WorkflowTemplate.
+type WorkflowTemplateParam struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Required    bool   `json:"required,omitempty"`
+	Default     string `json:"default,omitempty"`
+}
+
+// WorkflowTemplate defines a reusable verified Studio workflow DAG blueprint.
+type WorkflowTemplate struct {
+	ID          string                  `json:"id"`
+	Name        string                  `json:"name"`
+	Description string                  `json:"description"`
+	Category    string                  `json:"category"`
+	Params      []WorkflowTemplateParam `json:"params"`
+	Graph       engine.Graph            `json:"graph"`
+}
+
+// WorkflowTemplatesResult returns verified Studio DAG templates.
+type WorkflowTemplatesResult struct {
+	Templates []WorkflowTemplate `json:"templates"`
+}
+
 // AgentProviderInfo describes an external isolated agent provider and its live connection state.
 type AgentProviderInfo struct {
 	ID                  agent.ProviderID      `json:"id"`
@@ -350,34 +373,35 @@ func (p AgentSetModelPayload) Validate() error {
 // NewAgentProviderInfo converts a domain agent.ProviderInfo to the wire DTO.
 func NewAgentProviderInfo(in agent.ProviderInfo) AgentProviderInfo {
 	return AgentProviderInfo{
-		ID:                 in.ID,
-		Name:               in.Name,
-		Executable:         in.Executable,
-		ResolvedPath:       in.ResolvedPath,
-		CustomPath:         in.CustomPath,
-		Source:             in.Source,
-		Version:            in.Version,
-		State:              in.State,
-		Supported:          in.Supported,
-		UnsupportedReason:  in.UnsupportedReason,
-		AuthState:          in.AuthState,
-		AccountInfo:        in.AccountInfo,
-		IsolatedProfileDir: in.IsolatedProfileDir,
-		ProtocolVersion:    in.ProtocolVersion,
-		AgentName:          in.AgentName,
-		AgentVersion:       in.AgentVersion,
-		LastError:          in.LastError,
-		LastErrorKey:       in.LastErrorKey,
-		LastErrorParams:    in.LastErrorParams,
-		Active:             in.Active,
-		Busy:               in.Busy,
-		Models:             in.Models,
-		CurrentModel:       in.CurrentModel,
-		SelectedModel:      in.SelectedModel,
-		SelectedEffort:     in.SelectedEffort,
-		Revision:           in.Revision,
-		Installing:         in.Installing,
-		InstallPercent:     in.InstallPercent,
+		ID:                  in.ID,
+		Name:                in.Name,
+		Executable:          in.Executable,
+		ResolvedPath:        in.ResolvedPath,
+		CustomPath:          in.CustomPath,
+		Source:              in.Source,
+		Version:             in.Version,
+		State:               in.State,
+		Supported:           in.Supported,
+		UnsupportedReason:   in.UnsupportedReason,
+		AuthState:           in.AuthState,
+		AccountInfo:         in.AccountInfo,
+		IsolatedProfileDir:  in.IsolatedProfileDir,
+		ProtocolVersion:     in.ProtocolVersion,
+		AgentName:           in.AgentName,
+		AgentVersion:        in.AgentVersion,
+		LastError:           in.LastError,
+		LastErrorKey:        in.LastErrorKey,
+		LastErrorParams:     in.LastErrorParams,
+		Active:              in.Active,
+		Busy:                in.Busy,
+		Models:              in.Models,
+		CurrentModel:        in.CurrentModel,
+		SelectedModel:       in.SelectedModel,
+		SelectedEffort:      in.SelectedEffort,
+		CompatibleProviders: in.CompatibleProviders,
+		Revision:            in.Revision,
+		Installing:          in.Installing,
+		InstallPercent:      in.InstallPercent,
 	}
 }
 
@@ -595,13 +619,14 @@ func (p AgentResolveApprovalPayload) Validate() error {
 
 // AgentUIContextPayload updates the active screen context visible to the agent.
 type AgentUIContextPayload struct {
-	Route         string            `json:"route"`
-	Note          string            `json:"note"`
-	Screen        string            `json:"screen,omitempty"`
-	Feature       string            `json:"feature,omitempty"`
-	SelectedFiles []string          `json:"selected_files,omitempty"`
-	Settings      map[string]string `json:"settings,omitempty"`
-	LastResult    string            `json:"last_result,omitempty"`
+	Route            string            `json:"route"`
+	Note             string            `json:"note"`
+	Screen           string            `json:"screen,omitempty"`
+	Feature          string            `json:"feature,omitempty"`
+	SelectedFiles    []string          `json:"selected_files,omitempty"`
+	SelectedAssetIDs []string          `json:"selected_asset_ids,omitempty"`
+	Settings         map[string]string `json:"settings,omitempty"`
+	LastResult       string            `json:"last_result,omitempty"`
 }
 
 // AgentAllowedDirsResult returns the authorized workspace folder list.
@@ -748,13 +773,16 @@ type MediaSignURLPayload struct {
 	TTLSeconds int    `json:"ttl_seconds,omitempty"` // optional custom TTL in seconds
 }
 
-// Validate checks the asset ID and optional purpose.
+// Validate checks the asset ID, optional purpose, and non-negative TTL.
 func (p MediaSignURLPayload) Validate() error {
 	if strings.TrimSpace(p.AssetID) == "" {
 		return apperr.Validation("asset_id is required")
 	}
 	if p.Purpose != "" && p.Purpose != "preview" && p.Purpose != "download" {
 		return apperr.Validation(fmt.Sprintf("invalid purpose %q: must be preview or download", p.Purpose))
+	}
+	if p.TTLSeconds < 0 {
+		return apperr.Validation("ttl_seconds must be >= 0")
 	}
 	return nil
 }

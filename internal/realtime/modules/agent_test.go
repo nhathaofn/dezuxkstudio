@@ -174,12 +174,25 @@ func TestAgentModule_HostAdminAndCustomizationsGuards(t *testing.T) {
 			assertUnavailableWithMessage(t, tc.action, err, customizationsMsg)
 		}
 
-		// Read/sync customization actions remain unlocked.
+		// Read/sync customization actions: list remains unlocked, reload is host-admin locked.
 		if _, err := mustCall(t, reg, contracts.ActionAgentListCustomizations, `{}`); err != nil {
 			t.Fatalf("agent:list_customizations failed when locked: %v", err)
 		}
-		if _, err := mustCall(t, reg, contracts.ActionAgentReloadCustomizations, `{}`); err != nil {
-			t.Fatalf("agent:reload_customizations failed when locked: %v", err)
+		for _, lockedAction := range []struct {
+			action  string
+			payload string
+		}{
+			{contracts.ActionAgentReloadCustomizations, `{}`},
+			{contracts.ActionAgentLogin, `{"id":"claude"}`},
+			{contracts.ActionAgentLoginCode, `{"id":"codex","code":"1234"}`},
+			{contracts.ActionAgentLogout, `{"id":"claude"}`},
+			{contracts.ActionAgentConnect, `{"id":"claude"}`},
+			{contracts.ActionAgentSetModel, `{"id":"claude","model":"sonnet"}`},
+			{contracts.ActionAgentLinkProvider, `{"agent_provider_id":"claude","provider_id":"anthropic","credential_id":"c1"}`},
+			{contracts.ActionAgentUnlinkProvider, `{"id":"claude"}`},
+		} {
+			_, err := mustCall(t, reg, lockedAction.action, lockedAction.payload)
+			assertUnavailableWithMessage(t, lockedAction.action, err, hostAdminMsg)
 		}
 	})
 

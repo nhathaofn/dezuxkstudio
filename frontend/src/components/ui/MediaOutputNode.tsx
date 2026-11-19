@@ -65,23 +65,94 @@ function formatAudioTime(seconds: number): string {
 }
 
 const WAVEFORM_BAR_COUNT = 36;
-const DEFAULT_BAR_HEIGHTS = Array.from({ length: WAVEFORM_BAR_COUNT }, (_, i) => {
-  const norm = i / (WAVEFORM_BAR_COUNT - 1);
-  const envelope = Math.sin(norm * Math.PI);
-  const ripple = Math.sin(norm * Math.PI * 6) * 0.25;
-  const height = Math.max(0.2, Math.min(1, envelope * 0.72 + ripple + 0.18));
-  return Math.round(height * 100);
-});
+const NEUTRAL_PROGRESS_BARS: readonly number[] = Array.from(
+  { length: WAVEFORM_BAR_COUNT },
+  () => 38
+);
 
 export const AudioWaveformPlayer: React.FC<{ src: string; duration?: number }> = ({
   src,
   duration: initialDuration,
 }) => {
+  const t = useT();
   const audioRef = useRef<HTMLAudioElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(initialDuration ?? 0);
   const [isMuted, setIsMuted] = useState(false);
+  const [decodedWave, setDecodedWave] = useState<{ src: string; bars: readonly number[] } | null>(
+    null
+  );
+  const bars = decodedWave?.src === src ? decodedWave.bars : NEUTRAL_PROGRESS_BARS;
+
+  useEffect(() => {
+    const el = audioRef.current;
+    return () => {
+      if (!el) return;
+      try {
+        el.pause();
+        el.removeAttribute("src");
+        el.load();
+      } catch {
+        // ignore media element cleanup error in non-DOM test environments
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const AudioCtx =
+      typeof window !== "undefined"
+        ? window.AudioContext ||
+          (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+        : undefined;
+    if (!src || !AudioCtx || typeof fetch !== "function") {
+      return;
+    }
+    const controller = new AbortController();
+    let closed = false;
+    void (async () => {
+      try {
+        const res = await fetch(src, { signal: controller.signal });
+        if (!res.ok) return;
+        const buf = await res.arrayBuffer();
+        if (controller.signal.aborted || buf.byteLength === 0) return;
+        const ctx = new AudioCtx();
+        try {
+          const decoded = await ctx.decodeAudioData(buf);
+          if (controller.signal.aborted) return;
+          const ch = decoded.getChannelData(0);
+          const blockSize = Math.max(1, Math.floor(ch.length / WAVEFORM_BAR_COUNT));
+          const sampled: number[] = [];
+          let peakMax = 0.001;
+          for (let i = 0; i < WAVEFORM_BAR_COUNT; i++) {
+            const start = i * blockSize;
+            const end = Math.min(ch.length, start + blockSize);
+            let sumSq = 0;
+            for (let j = start; j < end; j++) {
+              sumSq += ch[j] * ch[j];
+            }
+            const rms = Math.sqrt(sumSq / Math.max(1, end - start));
+            if (rms > peakMax) peakMax = rms;
+            sampled.push(rms);
+          }
+          setDecodedWave({
+            src,
+            bars: sampled.map((v) => Math.max(18, Math.min(100, Math.round((v / peakMax) * 100)))),
+          });
+        } finally {
+          if (!closed) {
+            closed = true;
+            void ctx.close().catch(() => {});
+          }
+        }
+      } catch {
+        // Fallback stays NEUTRAL_PROGRESS_BARS
+      }
+    })();
+    return () => {
+      controller.abort();
+    };
+  }, [src]);
 
   const togglePlay = () => {
     const el = audioRef.current;
@@ -100,13 +171,42 @@ export const AudioWaveformPlayer: React.FC<{ src: string; duration?: number }> =
     setIsMuted(!isMuted);
   };
 
-  const handleSeek = (index: number) => {
+  const seekToTime = (targetSec: number) => {
     const el = audioRef.current;
     if (!el || duration <= 0) return;
-    const targetRatio = index / (WAVEFORM_BAR_COUNT - 1);
-    const targetTime = targetRatio * duration;
-    el.currentTime = targetTime;
-    setCurrentTime(targetTime);
+    const clamped = Math.max(0, Math.min(duration, targetSec));
+    el.currentTime = clamped;
+    setCurrentTime(clamped);
+  };
+
+  const handleSeek = (index: number) => {
+    if (duration <= 0) return;
+    seekToTime((index / (WAVEFORM_BAR_COUNT - 1)) * duration);
+  };
+
+  const handleSliderKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (duration <= 0) return;
+    const step = Math.max(1, duration / 20);
+    switch (e.key) {
+      case "ArrowRight":
+      case "ArrowUp":
+        e.preventDefault();
+        seekToTime(currentTime + step);
+        break;
+      case "ArrowLeft":
+      case "ArrowDown":
+        e.preventDefault();
+        seekToTime(currentTime - step);
+        break;
+      case "Home":
+        e.preventDefault();
+        seekToTime(0);
+        break;
+      case "End":
+        e.preventDefault();
+        seekToTime(duration);
+        break;
+    }
   };
 
   const handleRestart = () => {
@@ -168,12 +268,14 @@ export const AudioWaveformPlayer: React.FC<{ src: string; duration?: number }> =
           padding: "2px 0",
         }}
         role="slider"
-        aria-label="Audio scrubber"
+        tabIndex={0}
+        aria-label={t("mediaoutput.audioScrubber")}
         aria-valuemin={0}
         aria-valuemax={Math.round(duration)}
         aria-valuenow={Math.round(currentTime)}
+        onKeyDown={handleSliderKeyDown}
       >
-        {DEFAULT_BAR_HEIGHTS.map((pctHeight, idx) => {
+        {bars.map((pctHeight, idx) => {
           const isPassed = idx <= currentBarIndex;
           return (
             <div
@@ -208,8 +310,8 @@ export const AudioWaveformPlayer: React.FC<{ src: string; duration?: number }> =
             type="button"
             className="watermark-icon-btn"
             onClick={togglePlay}
-            aria-label={isPlaying ? "Pause" : "Play"}
-            title={isPlaying ? "Pause" : "Play"}
+            aria-label={isPlaying ? t("mediaoutput.pause") : t("mediaoutput.play")}
+            title={isPlaying ? t("mediaoutput.pause") : t("mediaoutput.play")}
           >
             {isPlaying ? <Pause size={13} /> : <Play size={13} />}
           </button>
@@ -218,8 +320,8 @@ export const AudioWaveformPlayer: React.FC<{ src: string; duration?: number }> =
             type="button"
             className="watermark-icon-btn"
             onClick={handleRestart}
-            aria-label="Restart"
-            title="Restart"
+            aria-label={t("mediaoutput.restart")}
+            title={t("mediaoutput.restart")}
           >
             <RotateCcw size={12} />
           </button>
@@ -234,8 +336,8 @@ export const AudioWaveformPlayer: React.FC<{ src: string; duration?: number }> =
             type="button"
             className="watermark-icon-btn"
             onClick={toggleMute}
-            aria-label={isMuted ? "Unmute" : "Mute"}
-            title={isMuted ? "Unmute" : "Mute"}
+            aria-label={isMuted ? t("mediaoutput.unmute") : t("mediaoutput.mute")}
+            title={isMuted ? t("mediaoutput.unmute") : t("mediaoutput.mute")}
           >
             {isMuted ? <VolumeX size={13} /> : <Volume2 size={13} />}
           </button>
@@ -279,6 +381,25 @@ export const MediaOutputNode: React.FC<MediaOutputNodeProps> = ({
   const [isComparing, setIsComparing] = useState(false);
   const [compareZoom, setCompareZoom] = useState(1.0);
   const [compareSlider, setCompareSlider] = useState(50);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const copyPathTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyPromptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const vid = videoRef.current;
+    return () => {
+      if (copyPathTimerRef.current !== null) clearTimeout(copyPathTimerRef.current);
+      if (copyPromptTimerRef.current !== null) clearTimeout(copyPromptTimerRef.current);
+      if (!vid) return;
+      try {
+        vid.pause();
+        vid.removeAttribute("src");
+        vid.load();
+      } catch {
+        // ignore in test DOM
+      }
+    };
+  }, []);
 
   const [retryNonce, setRetryNonce] = useState(0);
   const [outputState, setOutputState] = useState<{
@@ -398,7 +519,11 @@ export const MediaOutputNode: React.FC<MediaOutputNodeProps> = ({
     try {
       await navigator.clipboard.writeText(item.outputPath);
       setCopiedPath(true);
-      setTimeout(() => setCopiedPath(false), 1800);
+      if (copyPathTimerRef.current !== null) clearTimeout(copyPathTimerRef.current);
+      copyPathTimerRef.current = setTimeout(() => {
+        copyPathTimerRef.current = null;
+        setCopiedPath(false);
+      }, 1800);
     } catch {
       // ignore
     }
@@ -409,7 +534,11 @@ export const MediaOutputNode: React.FC<MediaOutputNodeProps> = ({
     try {
       await navigator.clipboard.writeText(item.prompt);
       setCopiedPrompt(true);
-      setTimeout(() => setCopiedPrompt(false), 1800);
+      if (copyPromptTimerRef.current !== null) clearTimeout(copyPromptTimerRef.current);
+      copyPromptTimerRef.current = setTimeout(() => {
+        copyPromptTimerRef.current = null;
+        setCopiedPrompt(false);
+      }, 1800);
     } catch {
       // ignore
     }
@@ -458,8 +587,8 @@ export const MediaOutputNode: React.FC<MediaOutputNodeProps> = ({
                 type="button"
                 className="watermark-icon-btn"
                 onClick={onRetry}
-                title={t("mediaoutput.retry") || "Retry"}
-                aria-label={t("mediaoutput.retry") || "Retry"}
+                title={t("mediaoutput.retry")}
+                aria-label={t("mediaoutput.retry")}
               >
                 <RotateCcw size={12} />
               </button>
@@ -469,8 +598,8 @@ export const MediaOutputNode: React.FC<MediaOutputNodeProps> = ({
                 type="button"
                 className="watermark-icon-btn"
                 onClick={onDismissError}
-                title={t("mediaoutput.dismissError") || "Dismiss error"}
-                aria-label={t("mediaoutput.dismissError") || "Dismiss error"}
+                title={t("mediaoutput.dismissError")}
+                aria-label={t("mediaoutput.dismissError")}
               >
                 <X size={12} />
               </button>
@@ -563,6 +692,7 @@ export const MediaOutputNode: React.FC<MediaOutputNodeProps> = ({
             {/* Video Viewport */}
             {activeOutputUrl && isVideo && (
               <video
+                ref={videoRef}
                 src={activeOutputUrl}
                 controls
                 playsInline
@@ -584,7 +714,7 @@ export const MediaOutputNode: React.FC<MediaOutputNodeProps> = ({
             {activeOutputUrl && isImage && !isComparing && (
               <img
                 src={activeOutputUrl}
-                alt={item.model || "Output media"}
+                alt={item.model || t("mediaoutput.altOutput")}
                 className="media-output-preview-img"
               />
             )}
@@ -666,7 +796,7 @@ export const MediaOutputNode: React.FC<MediaOutputNodeProps> = ({
                       max={100}
                       value={compareSlider}
                       onChange={(e) => setCompareSlider(Number(e.target.value))}
-                      aria-label="Before/After split slider"
+                      aria-label={t("mediaoutput.splitSlider")}
                       style={{ width: "90px", cursor: "pointer" }}
                     />
                     <span>{t("mediaoutput.after")}</span>
@@ -699,7 +829,7 @@ export const MediaOutputNode: React.FC<MediaOutputNodeProps> = ({
                     {/* After image (base layer) */}
                     <img
                       src={activeOutputUrl}
-                      alt="After output"
+                      alt={t("mediaoutput.altAfter")}
                       style={{ maxHeight: "210px", maxWidth: "100%", display: "block" }}
                     />
 
@@ -719,7 +849,7 @@ export const MediaOutputNode: React.FC<MediaOutputNodeProps> = ({
                       >
                         <img
                           src={activeSourceUrl}
-                          alt="Before source"
+                          alt={t("mediaoutput.altBefore")}
                           style={{ maxHeight: "210px", maxWidth: "100%", display: "block" }}
                         />
                       </div>

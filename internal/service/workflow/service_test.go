@@ -17,12 +17,14 @@ import (
 	"sync"
 	"testing"
 
+	"app/internal/config"
 	"app/internal/domain/mediagen"
 	"app/internal/engine"
 	"app/internal/paths"
 	"app/internal/progress"
 	"app/internal/service/workflow"
 	mediagennodes "app/internal/tools/mediagen"
+	studionodes "app/internal/tools/studio"
 	"app/internal/tools/watermark"
 )
 
@@ -272,4 +274,183 @@ func (s *stubMediaGenCapture) GenerateVideo(_ context.Context, req mediagen.Vide
 }
 func (s *stubMediaGenCapture) GenerateTTS(_ context.Context, req mediagen.TTSRequest) (mediagen.Result, error) {
 	return mediagen.Result{Kind: mediagen.KindTTS, Path: filepath.Join(req.OutputDir, "a.wav")}, nil
+}
+
+type stubTextGen struct{}
+
+func (s *stubTextGen) GenerateText(_ context.Context, req mediagen.TextRequest) (mediagen.TextResult, error) {
+	payload := json.RawMessage(`{"title":"Ep1","genre":"drama","aspect_ratio":"16:9","logline":"L","scenes":[{"code":"S01","title":"Open","beats":[{"code":"B01","description":"Walk in","duration_sec":5}]}]}`)
+	return mediagen.TextResult{Text: string(payload), ParsedJSON: payload, Provider: "stub", Model: "text-1"}, nil
+}
+
+func TestWorkflowRegistersStudioNodes(t *testing.T) {
+	tempDir := t.TempDir()
+	svc, err := workflow.New(workflow.Options{
+		Paths:   paths.Paths{Data: tempDir},
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		TextGen: &stubTextGen{},
+	})
+	if err != nil {
+		t.Fatalf("workflow.New: %v", err)
+	}
+
+	have := map[string]bool{}
+	for _, sp := range svc.Specs(context.Background()) {
+		have[sp.Type] = true
+	}
+	wantNodes := []string{
+		studionodes.NodeTypeScriptNormalize,
+		studionodes.NodeTypeExtractAssets,
+		studionodes.NodeTypeAuthorShotPrompts,
+		studionodes.NodeTypeProbeMedia,
+		studionodes.NodeTypeVideoConcatBasic,
+		studionodes.NodeTypeBatchPreflight,
+		studionodes.NodeTypeGridSplit,
+		studionodes.NodeTypeMaskEdit,
+		studionodes.NodeTypeExtractFrames,
+		studionodes.NodeTypeTTSDubMux,
+		studionodes.NodeTypeLipSyncGenerate,
+		studionodes.NodeTypeQCReview,
+		studionodes.NodeTypeTimelineAutoAssem,
+		studionodes.NodeTypeMediaPeaksThumbs,
+		studionodes.NodeTypeRenderTimeline,
+		studionodes.NodeTypeExportNLEDraft,
+		"tool.video_watermark_remove",
+	}
+	for _, want := range wantNodes {
+		if !have[want] {
+			t.Fatalf("missing studio node spec %q", want)
+		}
+	}
+
+	if _, err := svc.RunNode(context.Background(), studionodes.NodeTypeScriptNormalize, json.RawMessage(`{"raw_script":"INT. ROOM - DAY"}`)); err != nil {
+		t.Fatalf("RunNode(script_normalize): %v", err)
+	}
+}
+
+func TestWorkflowWiresStudioConfigToSpecs(t *testing.T) {
+	cfg := config.Default(config.ModeDesktop)
+	cfg.Studio.MaxVideoDimension = 4096
+	cfg.Studio.DefaultFPS = 60
+	cfg.Studio.FFmpegCRF = 16
+	cfg.Studio.ExportLoudnormLUFS = -16
+	cfg.Studio.ExportSubtitleFontSize = 32
+	cfg.Studio.GridSplitMaxCount = 12
+	cfg.Studio.DefaultShotDurationSec = 7
+	cfg.Studio.MaxShotDurationSec = 45
+	cfg.Watermark.VideoDefaultWidth = 240
+	cfg.Watermark.VideoDefaultHeight = 90
+	cfg.Watermark.VideoDefaultCropPx = 80
+
+	svc, err := workflow.New(workflow.Options{
+		Paths:    paths.Paths{Data: t.TempDir()},
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		TextGen:  &stubTextGen{},
+		MediaGen: &stubWorkflowMediaGen{},
+		Config:   cfg,
+	})
+	if err != nil {
+		t.Fatalf("workflow.New: %v", err)
+	}
+
+	specsByType := map[string]engine.Spec{}
+	for _, sp := range svc.Specs(context.Background()) {
+		specsByType[sp.Type] = sp
+	}
+	findParam := func(nodeType, paramName string) engine.Param {
+		sp, ok := specsByType[nodeType]
+		if !ok {
+			t.Fatalf("missing spec %s", nodeType)
+		}
+		for _, p := range sp.Params {
+			if p.Name == paramName {
+				return p
+			}
+		}
+		t.Fatalf("missing param %s.%s", nodeType, paramName)
+		return engine.Param{}
+	}
+
+	if x := findParam("tool.video_watermark_remove", "x"); x.Max != 4096 {
+		t.Fatalf("expected watermark x max 4096 from StudioConfig, got %v", x.Max)
+	}
+	if w := findParam("tool.video_watermark_remove", "width"); w.Max != 2048 {
+		t.Fatalf("expected watermark width max 2048 from StudioConfig, got %v", w.Max)
+	}
+	if crop := findParam("tool.video_watermark_remove", "crop_px"); crop.Max != 1024 {
+		t.Fatalf("expected watermark crop_px max 1024 from StudioConfig, got %v", crop.Max)
+	}
+	if rows := findParam(studionodes.NodeTypeGridSplit, "rows"); rows.Max != 12 {
+		t.Fatalf("expected grid_split rows max 12 from StudioConfig, got %v", rows.Max)
+	}
+	if dur := findParam(studionodes.NodeTypeAuthorShotPrompts, "default_duration_sec"); dur.Default != "7" || dur.Max != 45 {
+		t.Fatalf("expected author_shot_prompts default=7 max=45, got default=%q max=%v", dur.Default, dur.Max)
+	}
+	if fps := findParam(studionodes.NodeTypeTimelineAutoAssem, "fps"); fps.Default != "60" {
+		t.Fatalf("expected timeline auto assemble fps default 60, got %q", fps.Default)
+	}
+	if lufs := findParam(studionodes.NodeTypeRenderTimeline, "loudnorm_lufs"); lufs.Default != "-16.0" {
+		t.Fatalf("expected timeline render loudnorm_lufs default -16.0, got %q", lufs.Default)
+	}
+	if crf := findParam(studionodes.NodeTypeRenderTimeline, "crf"); crf.Default != "16" {
+		t.Fatalf("expected timeline render crf default 16, got %q", crf.Default)
+	}
+	if subSize := findParam(studionodes.NodeTypeRenderTimeline, "subtitle_font_size"); subSize.Default != "32" {
+		t.Fatalf("expected timeline render subtitle_font_size default 32, got %q", subSize.Default)
+	}
+	if concatFPS := findParam(studionodes.NodeTypeVideoConcatBasic, "fps"); concatFPS.Default != "60" {
+		t.Fatalf("expected video_concat_basic fps default 60, got %q", concatFPS.Default)
+	}
+	if wmW := findParam("tool.video_watermark_remove", "width"); wmW.Default != "240" {
+		t.Fatalf("expected watermark width default 240 from WatermarkConfig, got %q", wmW.Default)
+	}
+	if wmH := findParam("tool.video_watermark_remove", "height"); wmH.Default != "90" {
+		t.Fatalf("expected watermark height default 90 from WatermarkConfig, got %q", wmH.Default)
+	}
+	if wmCrop := findParam("tool.video_watermark_remove", "crop_px"); wmCrop.Default != "80" {
+		t.Fatalf("expected watermark crop_px default 80 from WatermarkConfig, got %q", wmCrop.Default)
+	}
+	if vidDur := findParam("tool.generate_video", "duration"); vidDur.Max != 45 {
+		t.Fatalf("expected tool.generate_video duration max 45 from StudioConfig.MaxShotDurationSec, got %v", vidDur.Max)
+	}
+}
+
+type stubWorkflowMediaGen struct{}
+
+func (s *stubWorkflowMediaGen) GenerateImage(context.Context, mediagen.ImageRequest) (mediagen.Result, error) {
+	return mediagen.Result{}, nil
+}
+
+func (s *stubWorkflowMediaGen) GenerateVideo(context.Context, mediagen.VideoRequest) (mediagen.Result, error) {
+	return mediagen.Result{}, nil
+}
+
+func (s *stubWorkflowMediaGen) GenerateTTS(context.Context, mediagen.TTSRequest) (mediagen.Result, error) {
+	return mediagen.Result{}, nil
+}
+
+func TestWorkflowService_Templates(t *testing.T) {
+	svc, err := workflow.New(workflow.Options{
+		Paths:  paths.Paths{Data: t.TempDir()},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("workflow.New: %v", err)
+	}
+	tpls := svc.Templates()
+	if len(tpls) != 3 {
+		t.Fatalf("expected 3 verified studio templates, got %d", len(tpls))
+	}
+	ids := map[string]bool{}
+	for _, tpl := range tpls {
+		ids[tpl.ID] = true
+		if len(tpl.Graph.Nodes) < 2 || len(tpl.Graph.Edges) < 1 {
+			t.Fatalf("template %s has incomplete graph: %+v", tpl.ID, tpl.Graph)
+		}
+	}
+	for _, want := range []string{"studio.clean_and_inspect", "studio.dub_and_master", "studio.grid_to_timeline"} {
+		if !ids[want] {
+			t.Fatalf("missing template %q in %v", want, ids)
+		}
+	}
 }

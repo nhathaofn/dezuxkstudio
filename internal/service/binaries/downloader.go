@@ -146,7 +146,7 @@ func (s *Service) Download(ctx context.Context, id domainbinaries.BinaryID) (dom
 		return domainbinaries.BinaryInfo{}, ctx.Err()
 	}
 
-	spec, ok := domainbinaries.Registry[id]
+	spec, ok := s.spec(id)
 	if !ok {
 		return domainbinaries.BinaryInfo{}, apperr.Validation(fmt.Sprintf("unknown binary %q", id))
 	}
@@ -304,67 +304,85 @@ func (s *Service) downloadAttempt(
 	report func(pct float64, key string, params map[string]string, text string),
 ) error {
 	var (
+		resp        *http.Response
 		resumedFrom int64
-		isResume    bool
+		isRangeReq  bool
 		totalBytes  int64
 		partMeta    *downloadPartMeta
 	)
-
-	if s.isResumeEnabled() {
-		if fi, err := os.Stat(partPath); err == nil && fi.Size() > 0 {
-			if meta, err := loadPartMeta(metaPath); err == nil && meta != nil {
-				if meta.URL == dlSpec.URL && meta.ExpectedSHA256 == dlSpec.SHA256 {
-					partMeta = meta
-					totalBytes = meta.TotalBytes
-					if totalBytes > 0 && fi.Size() > totalBytes {
-						// Corrupt partial file larger than expected; discard
-						_ = os.Remove(partPath)
-						_ = os.Remove(metaPath)
-						partMeta = nil
-						totalBytes = 0
-						resumedFrom = 0
-					} else {
-						resumedFrom = fi.Size()
-					}
-				}
-			}
-		}
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, dlSpec.URL, nil)
-	if err != nil {
-		return apperr.Wrap(apperr.CodeUnavailable, "could not create download request", err)
-	}
-	req.Header.Set("User-Agent", fmt.Sprintf("%s-Downloader/%s", buildinfo.ProductName, buildinfo.Version))
-
-	var isRangeRequest bool
-	if resumedFrom > 0 && partMeta != nil {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumedFrom))
-		if partMeta.ETag != "" {
-			req.Header.Set("If-Range", partMeta.ETag)
-		} else if partMeta.LastModified != "" {
-			req.Header.Set("If-Range", partMeta.LastModified)
-		}
-		isRangeRequest = true
-	}
 
 	client := s.client
 	if client == nil {
 		client = http.DefaultClient
 	}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
+	for retried416 := false; ; retried416 = true {
+		resumedFrom = 0
+		isRangeReq = false
+		totalBytes = 0
+		partMeta = nil
+
+		if s.isResumeEnabled() && !retried416 {
+			if fi, err := os.Stat(partPath); err == nil && fi.Size() > 0 {
+				if meta, err := loadPartMeta(metaPath); err == nil && meta != nil {
+					if meta.URL == dlSpec.URL && meta.ExpectedSHA256 == dlSpec.SHA256 {
+						partMeta = meta
+						totalBytes = meta.TotalBytes
+						if totalBytes > 0 && fi.Size() > totalBytes {
+							// Corrupt partial file larger than expected; discard
+							if remErr := os.Remove(partPath); remErr != nil && !os.IsNotExist(remErr) {
+								return apperr.Wrap(apperr.CodeUnavailable, "could not discard corrupt partial download", remErr)
+							}
+							_ = os.Remove(metaPath)
+							partMeta = nil
+							totalBytes = 0
+						} else {
+							resumedFrom = fi.Size()
+						}
+					}
+				}
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, dlSpec.URL, nil)
+		if err != nil {
+			return apperr.Wrap(apperr.CodeUnavailable, "could not create download request", err)
+		}
+		req.Header.Set("User-Agent", fmt.Sprintf("%s-Downloader/%s", buildinfo.ProductName, buildinfo.Version))
+
+		if resumedFrom > 0 && partMeta != nil {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumedFrom))
+			if partMeta.ETag != "" {
+				req.Header.Set("If-Range", partMeta.ETag)
+			} else if partMeta.LastModified != "" {
+				req.Header.Set("If-Range", partMeta.LastModified)
+			}
+			isRangeReq = true
+		}
+
+		var errDo error
+		resp, errDo = client.Do(req)
+		if errDo != nil {
+			return errDo
+		}
+
+		if isRangeReq && resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+			_ = resp.Body.Close()
+			if remErr := os.Remove(partPath); remErr != nil && !os.IsNotExist(remErr) {
+				return apperr.Wrap(apperr.CodeUnavailable, "could not reset partial download after HTTP 416", remErr)
+			}
+			_ = os.Remove(metaPath)
+			if retried416 {
+				return apperr.Wrap(apperr.CodeUnavailable, "download server returned HTTP 416 repeatedly", nil)
+			}
+			continue
+		}
+		break
 	}
 	defer resp.Body.Close()
 
-	if isRangeRequest && resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
-		// HTTP 416: Invalid range or file changed, discard .part and .part.meta and retry clean from 0
-		_ = os.Remove(partPath)
-		_ = os.Remove(metaPath)
-		return s.downloadAttempt(ctx, id, spec, dlSpec, partPath, metaPath, report)
-	}
+	var isResume bool
+	isRangeRequest := isRangeReq
 
 	if isTransientHTTPStatus(resp.StatusCode) {
 		return apperr.Wrap(apperr.CodeUnavailable, fmt.Sprintf("download server returned HTTP %d", resp.StatusCode), nil)
@@ -374,7 +392,10 @@ func (s *Service) downloadAttempt(
 		return apperr.Wrap(apperr.CodeUnavailable, fmt.Sprintf("download server returned HTTP %d", resp.StatusCode), nil)
 	}
 
-	var partFile *os.File
+	var (
+		partFile *os.File
+		err      error
+	)
 	if isRangeRequest && resp.StatusCode == http.StatusPartialContent {
 		// HTTP 206 Partial Content: resume successful
 		isResume = true

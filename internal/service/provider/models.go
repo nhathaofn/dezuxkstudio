@@ -105,6 +105,8 @@ func (s *Service) DiscoverBuiltinModels(ctx context.Context, providerID string) 
 			models = append(models, dm)
 		}
 	}
+	unlock := s.lockOwner(providerID)
+	defer unlock()
 	saved, err := s.repo.ListModels(ctx, providerID)
 	if err != nil {
 		return nil, err
@@ -273,6 +275,14 @@ func (s *Service) SetDefault(ctx context.Context, p domain.Purpose, ref string) 
 	}
 	s.changed()
 	return nil
+}
+
+// SetDefaultAndGetDefaults updates the default model for p and returns the updated per-purpose defaults.
+func (s *Service) SetDefaultAndGetDefaults(ctx context.Context, p domain.Purpose, ref string) ([]PurposeDefault, error) {
+	if err := s.SetDefault(ctx, p, ref); err != nil {
+		return nil, err
+	}
+	return s.Defaults(ctx)
 }
 
 // ResolvedModel is everything a generation feature needs to call a model. Secrets stay in memory only.

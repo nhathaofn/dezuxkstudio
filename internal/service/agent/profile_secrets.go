@@ -7,20 +7,14 @@ import (
 	"errors"
 	"os"
 	"strings"
-	"sync"
 
+	domainagent "app/internal/domain/agent"
 	"app/internal/secrets"
 	providersvc "app/internal/service/provider"
-	"app/internal/storage/sqlite"
 )
 
-// ProviderLinkStore defines persistence operations for agent provider links.
-type ProviderLinkStore interface {
-	GetProviderLink(ctx context.Context, agentProviderID string) (sqlite.AgentProviderLink, error)
-	ListProviderLinks(ctx context.Context) ([]sqlite.AgentProviderLink, error)
-	SetProviderLink(ctx context.Context, link sqlite.AgentProviderLink) error
-	DeleteProviderLink(ctx context.Context, agentProviderID string) error
-}
+// ProviderLinkStore aliases domainagent.ProviderLinkRepository for opt-in agent provider links.
+type ProviderLinkStore = domainagent.ProviderLinkRepository
 
 // MediaAssetMetadata holds safe metadata of a media asset without raw paths or tickets.
 type MediaAssetMetadata struct {
@@ -41,30 +35,17 @@ type MediaAssetInspector interface {
 	InspectAsset(ctx context.Context, assetID string) (*MediaAssetMetadata, error)
 }
 
-var (
-	serviceLinksMu      sync.RWMutex
-	serviceLinks        = make(map[*Service]ProviderLinkStore)
-	mediaInspectMu      sync.RWMutex
-	mediaInspectors     = make(map[*Service]MediaAssetInspector)
-	activeLinkSecretsMu sync.RWMutex
-	activeLinkSecrets   = make(map[*Service]*providersvc.ResolvedLink)
-)
-
 // SetProviderLinks assigns the provider link store for an agent service.
 func (s *Service) SetProviderLinks(store ProviderLinkStore) {
-	serviceLinksMu.Lock()
-	defer serviceLinksMu.Unlock()
-	if store == nil {
-		delete(serviceLinks, s)
-	} else {
-		serviceLinks[s] = store
-	}
+	s.linksMu.Lock()
+	s.providerLinks = store
+	s.linksMu.Unlock()
 }
 
 func (s *Service) providerLinksStore() ProviderLinkStore {
-	serviceLinksMu.RLock()
-	st := serviceLinks[s]
-	serviceLinksMu.RUnlock()
+	s.linksMu.RLock()
+	st := s.providerLinks
+	s.linksMu.RUnlock()
 	if st != nil {
 		return st
 	}
@@ -76,35 +57,29 @@ func (s *Service) providerLinksStore() ProviderLinkStore {
 
 // SetMediaInspector assigns the media asset inspector for safe metadata reading.
 func (s *Service) SetMediaInspector(inspector MediaAssetInspector) {
-	mediaInspectMu.Lock()
-	defer mediaInspectMu.Unlock()
-	if inspector == nil {
-		delete(mediaInspectors, s)
-	} else {
-		mediaInspectors[s] = inspector
-	}
+	s.linksMu.Lock()
+	s.mediaInspector = inspector
+	s.linksMu.Unlock()
 }
 
 func (s *Service) mediaInspectorService() MediaAssetInspector {
-	mediaInspectMu.RLock()
-	defer mediaInspectMu.RUnlock()
-	return mediaInspectors[s]
+	s.linksMu.RLock()
+	insp := s.mediaInspector
+	s.linksMu.RUnlock()
+	return insp
 }
 
 func (s *Service) setActiveLinkedSecret(link *providersvc.ResolvedLink) {
-	activeLinkSecretsMu.Lock()
-	defer activeLinkSecretsMu.Unlock()
-	if link == nil {
-		delete(activeLinkSecrets, s)
-	} else {
-		activeLinkSecrets[s] = link
-	}
+	s.linksMu.Lock()
+	s.activeLinked = link
+	s.linksMu.Unlock()
 }
 
 func (s *Service) activeLinkedSecret() *providersvc.ResolvedLink {
-	activeLinkSecretsMu.RLock()
-	defer activeLinkSecretsMu.RUnlock()
-	return activeLinkSecrets[s]
+	s.linksMu.RLock()
+	link := s.activeLinked
+	s.linksMu.RUnlock()
+	return link
 }
 
 // RedactSecret replaces every occurrence of secret in text with "[REDACTED]".
@@ -135,6 +110,55 @@ func RedactError(err error, secrets ...string) error {
 		return err
 	}
 	return errors.New(scrubbed)
+}
+
+func (s *Service) redactTurnError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var extra []string
+	if active := s.activeLinkedSecret(); active != nil && active.Secret != "" {
+		extra = append(extra, active.Secret)
+	}
+	scrub := func(in string) string {
+		if in == "" {
+			return ""
+		}
+		out := redactSecrets(in)
+		if len(extra) > 0 {
+			out = RedactSecrets(out, extra...)
+		}
+		return out
+	}
+	var le *localizedError
+	if errors.As(err, &le) && le != nil {
+		origMsg := le.Error()
+		cleanMsg := scrub(origMsg)
+		var cleanParams map[string]string
+		paramsChanged := false
+		if len(le.params) > 0 {
+			cleanParams = make(map[string]string, len(le.params))
+			for k, v := range le.params {
+				cv := scrub(v)
+				if cv != v {
+					paramsChanged = true
+				}
+				cleanParams[k] = cv
+			}
+		} else {
+			cleanParams = le.params
+		}
+		if cleanMsg != origMsg || paramsChanged {
+			return localize(errors.New(cleanMsg), le.key, cleanParams)
+		}
+		return err
+	}
+	origMsg := err.Error()
+	cleanMsg := scrub(origMsg)
+	if cleanMsg == origMsg {
+		return err
+	}
+	return errors.New(cleanMsg)
 }
 
 // API keys the user enters for an isolated provider profile (Anthropic, Gemini) are kept in the OS

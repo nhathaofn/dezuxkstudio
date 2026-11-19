@@ -62,6 +62,18 @@ func TestSystemModule_OpenFolderGuard(t *testing.T) {
 		if !ok || info.Mode != config.ModeServer {
 			t.Fatalf("unexpected system:info result: %#v", res)
 		}
+		if info.Paths != (contracts.PathsInfo{}) {
+			t.Fatalf("expected system:info paths redacted when LockHostAdmin=true, got %+v", info.Paths)
+		}
+
+		hUpd, ok := reg.Lookup(contracts.ActionSystemCheckUpdate)
+		if !ok {
+			t.Fatalf("%s not registered", contracts.ActionSystemCheckUpdate)
+		}
+		_, updErr := hUpd(context.Background(), &realtime.Request{}, []byte(`{}`))
+		if !errors.As(updErr, &ae) || ae.Code != apperr.CodeUnavailable {
+			t.Fatalf("expected ERR_UNAVAILABLE on system:check_update when locked, got %v", updErr)
+		}
 	})
 
 	t.Run("unlocked host admin forwards open_folder", func(t *testing.T) {

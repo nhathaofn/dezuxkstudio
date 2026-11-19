@@ -10,6 +10,7 @@ import (
 	"app/internal/domain/binaries"
 	"app/internal/domain/preferences"
 	"app/internal/domain/provider"
+	domainstudio "app/internal/domain/studio"
 	"app/internal/secrets"
 )
 
@@ -31,9 +32,10 @@ const (
 	ActionBinariesSetPath  = "binaries:set_path"
 	ActionBinariesDownload = "binaries:download"
 
-	ActionWorkflowSpecs    = "workflow:specs"
-	ActionWorkflowRunNode  = "workflow:run_node"
-	ActionWorkflowRunGraph = "workflow:run_graph"
+	ActionWorkflowSpecs     = "workflow:specs"
+	ActionWorkflowRunNode   = "workflow:run_node"
+	ActionWorkflowRunGraph  = "workflow:run_graph"
+	ActionWorkflowTemplates = "workflow:templates"
 
 	ActionAgentList                 = "agent:list"
 	ActionAgentProbe                = "agent:probe"
@@ -66,7 +68,6 @@ const (
 	ActionAgentSaveSubagent         = "agent:save_subagent"
 	ActionAgentDeleteSubagent       = "agent:delete_subagent"
 	ActionAgentRestoreSubagent      = "agent:restore_subagent"
-	ActionAgentSetProviderLink      = "agent:set_provider_link"
 	ActionAgentLinkProvider         = "agent:link_provider"
 	ActionAgentUnlinkProvider       = "agent:unlink_provider"
 	ActionAgentListProviderLinks    = "agent:list_provider_links"
@@ -91,6 +92,16 @@ func LongActions() []string {
 		ActionWorkflowRunGraph,
 		ActionDiagnosticsExport,
 		ActionAgentResolveApproval, // an approved action runs a workflow node or graph
+		ActionStudioEpisodeRunStage,
+		ActionStudioGridSplit,
+		ActionStudioMaskEdit,
+		ActionStudioExtractLastFrame,
+		ActionStudioQCReview,
+		ActionStudioTimelineAutoAssemble,
+		ActionStudioMediaPeaksThumbs,
+		ActionStudioTimelineRender,
+		ActionStudioTimelineExportNLE,
+		ActionStudioQueueWait,
 	}
 }
 
@@ -173,6 +184,7 @@ func Actions() []ActionSpec {
 		{ActionWorkflowSpecs, "Returns the catalogue of registered workflow node types.", t[Empty](), t[WorkflowSpecsResult]()},
 		{ActionWorkflowRunNode, "Runs one node standalone by type with JSON input.", t[WorkflowRunNodePayload](), t[WorkflowRunNodeResult]()},
 		{ActionWorkflowRunGraph, "Runs a full workflow DAG graph in dependency order.", t[WorkflowRunGraphPayload](), t[WorkflowRunGraphResult]()},
+		{ActionWorkflowTemplates, "Returns verified reusable Studio workflow DAG templates.", t[Empty](), t[WorkflowTemplatesResult]()},
 		{ActionAgentList, "Lists supported isolated agent providers and their live connection status.", t[Empty](), t[AgentListResult]()},
 		{ActionAgentProbe, "Probes an agent provider executable, isolated auth, and version.", t[AgentProviderIDPayload](), t[AgentProviderInfo]()},
 		{ActionAgentSetPath, "Sets or clears a custom executable path for an agent provider.", t[AgentSetPathPayload](), t[AgentProviderInfo]()},
@@ -224,11 +236,50 @@ func Actions() []ActionSpec {
 		{ActionMediaDelete, "Deletes a media asset record (and optionally backing file).", t[MediaDeletePayload](), t[Empty]()},
 		{ActionMediaSignURL, "Generates a signed scoped download/streaming URL for a media asset.", t[MediaSignURLPayload](), t[MediaSignedURLResult]()},
 		{ActionMediaRegisterInput, "Registers an existing local media file as an asset.", t[MediaRegisterInputPayload](), t[MediaAssetItem]()},
-		{ActionAgentSetProviderLink, "Sets the opt-in provider credential link for an agent provider.", t[AgentLinkProviderPayload](), t[Empty]()},
 		{ActionAgentLinkProvider, "Sets the opt-in provider credential link for an agent provider.", t[AgentLinkProviderPayload](), t[Empty]()},
 		{ActionAgentUnlinkProvider, "Removes the opt-in provider link for an agent provider.", t[AgentProviderIDPayload](), t[Empty]()},
 		{ActionAgentListProviderLinks, "Lists all configured agent provider links.", t[Empty](), t[AgentProviderLinksResult]()},
 		{ActionAgentCompatibleProviders, "Lists allowed target providers for an agent provider.", t[AgentProviderIDPayload](), t[AgentCompatibleProvidersResult]()},
+		{ActionStudioProjectList, "Lists all AI film studio projects and the active workspace projects directory.", t[Empty](), t[StudioProjectListResult]()},
+		{ActionStudioProjectCreate, "Creates a new AI film studio project with its workspace folder and initial episode.", t[StudioProjectCreatePayload](), t[StudioProjectDetailResult]()},
+		{ActionStudioProjectGet, "Gets a studio project with its episodes, assets, and default episode detail.", t[StudioIDPayload](), t[StudioProjectDetailResult]()},
+		{ActionStudioProjectUpdate, "Updates studio project metadata and default models.", t[StudioProjectUpdatePayload](), t[StudioProjectDetailResult]()},
+		{ActionStudioProjectDelete, "Deletes a studio project record and optionally removes its workspace directory.", t[StudioProjectDeletePayload](), t[Empty]()},
+		{ActionStudioEpisodeCreate, "Creates a new episode inside a studio project.", t[StudioEpisodeCreatePayload](), t[StudioEpisodeDetailResult]()},
+		{ActionStudioEpisodeGet, "Gets full episode detail including script, asset bible, shots, and export path.", t[StudioIDPayload](), t[StudioEpisodeDetailResult]()},
+		{ActionStudioEpisodeSaveScript, "Saves raw screenplay text or structured script edits for an episode.", t[StudioEpisodeSaveScriptPayload](), t[StudioEpisodeDetailResult]()},
+		{ActionStudioAssetUpsert, "Creates, updates, or deletes a studio project asset bible entry.", t[StudioAssetUpsertPayload](), t[StudioAssetUpsertResult]()},
+		{ActionStudioShotUpsert, "Creates or updates a storyboard shot inside an episode.", t[StudioShotUpsertPayload](), t[StudioShotUpsertResult]()},
+		{ActionStudioShotReorder, "Reorders storyboard shots in an episode.", t[StudioShotReorderPayload](), t[StudioShotListResult]()},
+		{ActionStudioEpisodeRunStage, "Executes a Phase 1 production stage or batch across episode shots and assets.", t[StudioEpisodeRunStagePayload](), t[StudioRunStageResult]()},
+		{ActionStudioQueueEnqueue, "Enqueues durable background studio generation jobs with idempotency keys.", t[StudioQueueEnqueuePayload](), t[StudioQueueEnqueueResult]()},
+		{ActionStudioQueueList, "Lists durable studio queue jobs for a project or episode.", t[StudioQueueListPayload](), t[StudioQueueListResult]()},
+		{ActionStudioQueueControl, "Pauses, resumes, cancels, or retries durable studio queue jobs.", t[StudioQueueControlPayload](), t[StudioQueueControlResult]()},
+		{ActionStudioCostSummary, "Summarizes studio project/episode generation spend and unit pricing.", t[StudioCostSummaryPayload](), t[StudioCostSummaryResult]()},
+		{ActionStudioPricingUpsert, "Upserts a provider/model unit price rule in studio_pricing_catalog.", t[StudioPricingUpsertPayload](), t[StudioPricingEntry]()},
+		{ActionStudioVersionsList, "Lists media version history and latest QC report for an asset or shot slot.", t[StudioVersionsListPayload](), t[StudioVersionsListResult]()},
+		{ActionStudioVersionSelect, "Activates a saved media version as the selected output for its shot or asset.", t[StudioVersionSelectPayload](), t[StudioVersionSelectResult]()},
+		{ActionStudioGridSplit, "Splits a storyboard grid image into individual frame panels.", t[StudioGridSplitPayload](), t[StudioGridSplitResult]()},
+		{ActionStudioMaskEdit, "Applies canvas-masked inpainting to an asset or keyframe via tool.mask_edit.", t[StudioMaskEditPayload](), t[StudioMaskEditResult]()},
+		{ActionStudioExtractLastFrame, "Extracts the final frame of a shot video to seed the next shot keyframe.", t[StudioExtractLastFramePayload](), t[StudioExtractLastFrameResult]()},
+		{ActionStudioQCReview, "Runs FFprobe + multimodal Vision QC review and saves a QC report.", t[StudioQCReviewPayload](), t[StudioQCReport]()},
+		{ActionStudioBatchPreflight, "Validates active providers and estimates USD cost before batch execution.", t[StudioBatchPreflightPayload](), t[BatchPreflightOutput]()},
+		{ActionStudioTimelineGet, "Gets an episode's multi-track EditTimeline, current revision, and Undo/Redo history.", t[StudioIDPayload](), t[StudioTimelineResult]()},
+		{ActionStudioTimelineApplyOps, "Applies atomic EditTimeline operations with optimistic revision concurrency checking.", t[StudioTimelineApplyOpsPayload](), t[StudioTimelineResult]()},
+		{ActionStudioTimelineUndo, "Undoes the latest timeline revision while enforcing expected_revision.", t[StudioTimelineRevisionNavPayload](), t[StudioTimelineResult]()},
+		{ActionStudioTimelineRedo, "Redoes the next timeline revision while enforcing expected_revision.", t[StudioTimelineRevisionNavPayload](), t[StudioTimelineResult]()},
+		{ActionStudioTimelineAutoAssemble, "Auto-assembles an EditTimeline from episode shots, TTS audio, subtitles, and optional BGM.", t[StudioTimelineAutoAssemblePayload](), t[StudioTimelineResult]()},
+		{ActionStudioMediaPeaksThumbs, "Generates audio waveform peaks and thumbnail sprite strip for timeline scrubbing.", t[StudioMediaPeaksThumbsPayload](), t[MediaPeaksThumbsOutput]()},
+		{ActionStudioTimelineRender, "Renders the episode EditTimeline via FFmpeg filter_complex with transitions, loudnorm, and optional Vietnamese subtitle burn-in.", t[StudioTimelineRenderPayload](), t[StudioTimelineRenderResult]()},
+		{ActionStudioTimelineExportNLE, "Exports the episode EditTimeline as a CapCut/Jianying draft zip, FCPXML, or OTIO file.", t[StudioTimelineExportNLEPayload](), t[ExportNLEDraftOutput]()},
+		{ActionStudioOpenExportFolder, "Reveals the episode exports folder in the OS file manager (desktop/host admin only).", t[StudioOpenExportFolderPayload](), t[Empty]()},
+		{ActionStudioSyncWorkspace, "Synchronizes workspace project.json, asset_bible.json, shots.json, and timeline.json files with SQLite.", t[StudioSyncWorkspacePayload](), t[StudioSyncWorkspaceResult]()},
+		{ActionStudioWorkflowPlan, "Projects deterministic episode production readiness, missing items, and next recommended action.", t[StudioWorkflowPlanPayload](), t[StudioWorkflowPlanResult]()},
+		{ActionStudioShotsBatchUpsert, "Batch creates, updates, or replaces storyboard shots for an episode.", t[StudioShotsBatchUpsertPayload](), t[StudioShotListResult]()},
+		{ActionStudioAssetRename, "Renames an Asset Bible entry and cascades @Tag and speaker references across scripts and shots.", t[StudioAssetRenamePayload](), t[StudioAssetRefactorResult]()},
+		{ActionStudioAssetMerge, "Merges a duplicate Asset Bible entry into a target asset and cascades @Tag references.", t[StudioAssetMergePayload](), t[StudioAssetRefactorResult]()},
+		{ActionStudioInspectShots, "Generates labeled JPEG contact sheets with BLACK/FREEZE/CUT signals for episode shots.", t[StudioInspectShotsPayload](), t[StudioInspectShotsResult]()},
+		{ActionStudioQueueWait, "Waits until active durable queue jobs for an episode or project reach terminal state.", t[StudioQueueWaitPayload](), t[StudioQueueWaitResult]()},
 	}
 }
 
@@ -245,6 +296,12 @@ func Events() []EventSpec {
 		{EventProvidersChanged, "Provider credentials or custom providers changed.", t[ProvidersListResult]()},
 		{EventMediaAssetsChanged, "Media assets library content changed.", t[Empty]()},
 		{EventBinariesProgress, "Download progress of an external binary.", t[BinaryProgress]()},
+		{EventStudioProjectChanged, "A studio project was created, updated, deleted, or synced.", t[StudioProjectChangedEvent]()},
+		{EventStudioEpisodeUpdated, "Studio episode script, assets, storyboard, or export state changed.", t[StudioEpisodeUpdatedEvent]()},
+		{EventStudioBatchProgress, "Progress of a multi-item studio stage batch execution.", t[StudioBatchProgressEvent]()},
+		{EventStudioQueueUpdated, "A durable studio queue job changed status or progress.", t[StudioQueueUpdatedEvent]()},
+		{EventStudioCostUpdated, "Studio cost ledger totals updated.", t[StudioCostUpdatedEvent]()},
+		{EventStudioTimelineChanged, "Episode multi-track EditTimeline was updated, undone, redone, or auto-assembled.", t[StudioTimelineChangedEvent]()},
 	}
 }
 
@@ -295,6 +352,28 @@ func Enums() []EnumSpec {
 		{"ProviderTestOutcome", t[provider.Outcome](), stringsOf(provider.Outcomes())},
 		{"ProviderPurpose", t[provider.Purpose](), stringsOf(provider.Purposes())},
 		{"SecretBackend", t[secrets.Backend](), stringsOf(secrets.Backends())},
+		{"StudioGenre", t[domainstudio.Genre](), stringsOf(domainstudio.Genres())},
+		{"StudioProductionMode", t[domainstudio.ProductionMode](), stringsOf(domainstudio.ProductionModes())},
+		{"StudioAssetKind", t[domainstudio.AssetKind](), stringsOf(domainstudio.AssetKinds())},
+		{"StudioShotMode", t[domainstudio.ShotMode](), stringsOf(domainstudio.ShotModes())},
+		{"StudioShotStatus", t[domainstudio.ShotStatus](), stringsOf(domainstudio.ShotStatuses())},
+		{"StudioEpisodeStage", t[domainstudio.EpisodeStage](), stringsOf(domainstudio.EpisodeStages())},
+		{"StudioRunStageAction", t[StudioRunStageAction](), stringsOf(StudioRunStageActions())},
+		{"StudioTrackKind", t[domainstudio.TrackKind](), stringsOf(domainstudio.TrackKinds())},
+		{"StudioTransitionType", t[domainstudio.TransitionType](), stringsOf(domainstudio.TransitionTypes())},
+		{"StudioKenBurnsPreset", t[domainstudio.KenBurnsPreset](), stringsOf(domainstudio.KenBurnsPresets())},
+		{"StudioNLEExportFormat", t[domainstudio.NLEExportFormat](), stringsOf(domainstudio.NLEExportFormats())},
+		{"StudioJobStatus", t[domainstudio.JobStatus](), stringsOf(domainstudio.JobStatuses())},
+		{"StudioJobKind", t[domainstudio.JobKind](), stringsOf(domainstudio.JobKinds())},
+		{"StudioQueueAction", t[StudioQueueAction](), stringsOf(StudioQueueActions())},
+		{"StudioCostStatus", t[domainstudio.CostStatus](), stringsOf(domainstudio.CostStatuses())},
+		{"StudioMediaTargetKind", t[domainstudio.MediaTargetKind](), stringsOf(domainstudio.MediaTargetKinds())},
+		{"StudioQCStatus", t[domainstudio.QCStatus](), stringsOf(domainstudio.QCStatuses())},
+		{"StudioTimelineActor", t[domainstudio.TimelineActor](), stringsOf(domainstudio.TimelineActors())},
+		{"StudioTimelineOpKind", t[domainstudio.TimelineOpKind](), stringsOf(domainstudio.TimelineOpKinds())},
+		{"StudioBatchStatus", t[StudioBatchStatus](), stringsOf(StudioBatchStatuses())},
+		{"StudioProjectChangedAction", t[StudioProjectChangedAction](), stringsOf(StudioProjectChangedActions())},
+		{"StudioOverrunPolicy", t[domainstudio.OverrunPolicy](), stringsOf(domainstudio.OverrunPolicies())},
 	}
 }
 

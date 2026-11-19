@@ -27,13 +27,13 @@ func (s *Service) GenerateTTS(ctx context.Context, req domainmedia.TTSRequest) (
 		return domainmedia.Result{}, err
 	}
 
-	release, err := s.acquireLimit(ctx, target, domainprovider.CapabilityTTS, limits)
+	limCtx, release, err := s.acquireLimit(ctx, target, domainprovider.CapabilityTTS, limits)
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
 	defer release()
 
-	callCtx, cleanup := s.prepareJobContext(ctx, false)
+	callCtx, cleanup := s.prepareJobContext(limCtx, false)
 	defer cleanup()
 
 	progress.Report(callCtx, progress.Update{
@@ -62,10 +62,19 @@ func (s *Service) GenerateTTS(ctx context.Context, req domainmedia.TTSRequest) (
 	}
 
 	fallbackExt := "." + norm.Format
-	res, err := s.saveOutput(domainmedia.KindTTS, norm.OutputDir, "tts", mimeType, fallbackExt, data, target)
+	res, err := s.saveOutput(ctx, domainmedia.KindTTS, norm.OutputDir, "tts", mimeType, fallbackExt, data, target)
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
+	s.emitUsage(ctx, domainmedia.UsageEvent{
+		ProviderID:  target.ownerID,
+		ModelID:     target.modelID,
+		Capability:  string(domainprovider.CapabilityTTS),
+		Operation:   "generate_tts",
+		InputUnits:  float64(len([]rune(norm.Text))) / 1000.0,
+		OutputUnits: 1,
+		Unit:        "1k_chars",
+	})
 	progress.Report(callCtx, progress.Update{
 		Percent: 100,
 		Message: "Audio ready",
@@ -84,7 +93,7 @@ func defaultVoice(requested, fallback string) string {
 func (s *Service) genOpenAITTS(ctx context.Context, t targetSpec, req domainmedia.TTSRequest) ([]byte, string, error) {
 	base := domainprovider.EnsureOpenAIBase(t.baseURL)
 	headers := map[string]string{"Authorization": "Bearer " + t.apiKey}
-	voice := defaultVoice(req.Voice, "alloy")
+	voice := defaultVoice(req.Voice, s.cfg.TTSDefaultVoiceOpenAI)
 
 	payload := map[string]any{
 		"model":           t.modelID,
@@ -105,7 +114,7 @@ func (s *Service) genOpenAITTS(ctx context.Context, t targetSpec, req domainmedi
 
 func (s *Service) genGeminiTTS(ctx context.Context, t targetSpec, req domainmedia.TTSRequest) ([]byte, string, error) {
 	modelID := geminiModelName(t.modelID)
-	voice := defaultVoice(req.Voice, "Kore")
+	voice := defaultVoice(req.Voice, s.cfg.TTSDefaultVoiceGemini)
 	headers := map[string]string{}
 	var targetURL string
 
@@ -116,7 +125,7 @@ func (s *Service) genGeminiTTS(ctx context.Context, t targetSpec, req domainmedi
 		}
 		host := strings.TrimRight(t.baseURL, "/")
 		if host == "" {
-			host = "https://aiplatform.googleapis.com"
+			host = domainprovider.VertexAIBaseURL
 		}
 		headers["Authorization"] = "Bearer " + tok
 		targetURL = fmt.Sprintf("%s/v1beta1/projects/%s/locations/global/publishers/google/models/%s:generateContent",
@@ -182,7 +191,7 @@ func (s *Service) genGeminiTTS(ctx context.Context, t targetSpec, req domainmedi
 func (s *Service) genDashScopeTTS(ctx context.Context, t targetSpec, req domainmedia.TTSRequest) ([]byte, string, error) {
 	root := ensureRootStrippingSuffixes(t.baseURL, "/compatible-mode/v1", "/api/v1", "/v1")
 	headers := map[string]string{"Authorization": "Bearer " + t.apiKey}
-	voice := defaultVoice(req.Voice, "Cherry")
+	voice := defaultVoice(req.Voice, s.cfg.TTSDefaultVoiceDashScope)
 
 	inputObj := map[string]any{
 		"text":  req.Text,
@@ -215,7 +224,7 @@ func (s *Service) genDashScopeTTS(ctx context.Context, t targetSpec, req domainm
 		return s.downloadURL(ctx, resp.Output.Audio.URL, nil)
 	}
 	if resp.Message != "" {
-		return nil, "", apperr.Unavailable("DashScope TTS: " + resp.Message)
+		return nil, "", providerUnavailableErr("DashScope TTS failed", resp.Message)
 	}
 	return nil, "", apperr.Unavailable("DashScope TTS returned no audio payload")
 }
@@ -223,7 +232,7 @@ func (s *Service) genDashScopeTTS(ctx context.Context, t targetSpec, req domainm
 func (s *Service) genMiniMaxTTS(ctx context.Context, t targetSpec, req domainmedia.TTSRequest) ([]byte, string, error) {
 	root := ensureRootStrippingSuffixes(t.baseURL, "/v1")
 	headers := map[string]string{"Authorization": "Bearer " + t.apiKey}
-	voice := defaultVoice(req.Voice, "male-qn-qingse")
+	voice := defaultVoice(req.Voice, s.cfg.TTSDefaultVoiceMiniMax)
 	format := req.Format
 	if format != "mp3" && format != "pcm" && format != "flac" && format != "wav" {
 		format = "mp3"
@@ -256,7 +265,7 @@ func (s *Service) genMiniMaxTTS(ctx context.Context, t targetSpec, req domainmed
 		return nil, "", err
 	}
 	if resp.BaseResp.StatusCode != 0 {
-		return nil, "", apperr.Unavailable(fmt.Sprintf("MiniMax TTS (%d): %s", resp.BaseResp.StatusCode, resp.BaseResp.StatusMsg))
+		return nil, "", providerUnavailableErr(fmt.Sprintf("MiniMax TTS (%d)", resp.BaseResp.StatusCode), resp.BaseResp.StatusMsg)
 	}
 	if resp.Data.Audio == "" {
 		return nil, "", apperr.Unavailable("MiniMax TTS returned empty audio hex")

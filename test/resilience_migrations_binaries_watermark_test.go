@@ -527,9 +527,6 @@ func TestAdversarial_Scenario3_BinaryTampering_SHA256(t *testing.T) {
 		toolsDir := t.TempDir()
 
 		origManifest := domainbinaries.Registry[domainbinaries.IDFFmpeg]
-		defer func() {
-			domainbinaries.Registry[domainbinaries.IDFFmpeg] = origManifest
-		}()
 
 		patchedManifest := origManifest
 		patchedManifest.Downloads = map[string]domainbinaries.DownloadSpec{
@@ -540,9 +537,10 @@ func TestAdversarial_Scenario3_BinaryTampering_SHA256(t *testing.T) {
 				SHA256:        validSHA256,
 			},
 		}
-		domainbinaries.Registry[domainbinaries.IDFFmpeg] = patchedManifest
 
-		svc := binariessvc.New(&dummyBinRepo{}, toolsDir, slog.New(slog.DiscardHandler))
+		svc := binariessvc.New(&dummyBinRepo{}, toolsDir, slog.New(slog.DiscardHandler), binariessvc.WithManifest(map[domainbinaries.BinaryID]domainbinaries.BinarySpec{
+			domainbinaries.IDFFmpeg: patchedManifest,
+		}))
 
 		_, err := svc.Download(context.Background(), domainbinaries.IDFFmpeg)
 		if err == nil {
@@ -576,9 +574,6 @@ func TestAdversarial_Scenario3_BinaryTampering_SHA256(t *testing.T) {
 		toolsDir := t.TempDir()
 
 		origManifest := domainbinaries.Registry[domainbinaries.IDYtDlp]
-		defer func() {
-			domainbinaries.Registry[domainbinaries.IDYtDlp] = origManifest
-		}()
 
 		patchedManifest := origManifest
 		patchedManifest.Downloads = map[string]domainbinaries.DownloadSpec{
@@ -589,9 +584,10 @@ func TestAdversarial_Scenario3_BinaryTampering_SHA256(t *testing.T) {
 				SHA256:        expectedRawSHA256,
 			},
 		}
-		domainbinaries.Registry[domainbinaries.IDYtDlp] = patchedManifest
 
-		svc := binariessvc.New(&dummyBinRepo{}, toolsDir, slog.New(slog.DiscardHandler))
+		svc := binariessvc.New(&dummyBinRepo{}, toolsDir, slog.New(slog.DiscardHandler), binariessvc.WithManifest(map[domainbinaries.BinaryID]domainbinaries.BinarySpec{
+			domainbinaries.IDYtDlp: patchedManifest,
+		}))
 
 		_, err := svc.Download(context.Background(), domainbinaries.IDYtDlp)
 		if err == nil {
@@ -617,9 +613,6 @@ func TestAdversarial_Scenario3_BinaryTampering_SHA256(t *testing.T) {
 		toolsDir := t.TempDir()
 
 		origManifest := domainbinaries.Registry[domainbinaries.IDYtDlp]
-		defer func() {
-			domainbinaries.Registry[domainbinaries.IDYtDlp] = origManifest
-		}()
 
 		patchedManifest := origManifest
 		patchedManifest.Downloads = map[string]domainbinaries.DownloadSpec{
@@ -630,9 +623,10 @@ func TestAdversarial_Scenario3_BinaryTampering_SHA256(t *testing.T) {
 				SHA256:        expectedRawSHA256,
 			},
 		}
-		domainbinaries.Registry[domainbinaries.IDYtDlp] = patchedManifest
 
-		svc := binariessvc.New(&dummyBinRepo{}, toolsDir, slog.New(slog.DiscardHandler))
+		svc := binariessvc.New(&dummyBinRepo{}, toolsDir, slog.New(slog.DiscardHandler), binariessvc.WithManifest(map[domainbinaries.BinaryID]domainbinaries.BinarySpec{
+			domainbinaries.IDYtDlp: patchedManifest,
+		}))
 
 		targetPath := filepath.Join(toolsDir, origManifest.ExecutableName())
 		_, _ = svc.Download(context.Background(), domainbinaries.IDYtDlp)

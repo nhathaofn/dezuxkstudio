@@ -1,7 +1,9 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { UploadCloud } from "lucide-react";
-import { isDesktop, onFileDrop } from "../../lib/bridge";
+import { UploadCloud, type LucideIcon } from "lucide-react";
+import { isDesktop } from "../../lib/bridge";
+import { subscribeFileDrop } from "../../lib/fileDropDispatcher";
 import { pickMediaFiles } from "../../lib/filePicker";
+import { useT } from "../../lib/i18n";
 
 export interface MediaDropZoneHandle {
   browse: () => void;
@@ -21,7 +23,9 @@ export interface MediaDropZoneProps {
   /** Whether the dropzone is disabled. */
   disabled?: boolean;
   /** Optional custom icon component to display. */
-  icon?: React.ComponentType<{ size?: number; className?: string; style?: React.CSSProperties }>;
+  icon?:
+    | LucideIcon
+    | React.ComponentType<{ size?: number; className?: string; style?: React.CSSProperties }>;
   /** Additional custom class names for the container. */
   className?: string;
   /** Number of currently selected items to reflect in the UI. */
@@ -53,7 +57,7 @@ const DEFAULT_IMAGE_ACCEPT = "image/png,image/jpeg,image/webp,image/*";
 export const MediaDropZone = forwardRef<MediaDropZoneHandle, MediaDropZoneProps>(
   (
     {
-      label = "Select media",
+      label,
       title,
       description,
       accept = DEFAULT_IMAGE_ACCEPT,
@@ -70,19 +74,27 @@ export const MediaDropZone = forwardRef<MediaDropZoneHandle, MediaDropZoneProps>
     },
     ref
   ) => {
+    const t = useT();
+    const resolvedLabel = label ?? t("dropzone.selectMedia");
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const containerRef = useRef<HTMLDivElement | null>(null);
     const [isDragging, setIsDragging] = useState(false);
+
+    const inferredKind: "image" | "video" | "audio" = accept.includes("video")
+      ? "video"
+      : accept.includes("audio")
+        ? "audio"
+        : "image";
 
     const handleBrowse = async () => {
       if (disabled) return;
 
       if (isDesktop()) {
         const res = await pickMediaFiles({
-          title: label,
+          title: resolvedLabel,
           multiple,
           accept,
-          kind: "image",
+          kind: inferredKind,
         });
 
         if (res.paths.length > 0) {
@@ -100,16 +112,19 @@ export const MediaDropZone = forwardRef<MediaDropZoneHandle, MediaDropZoneProps>
       browse: handleBrowse,
     }));
 
-    // Native desktop Wails onFileDrop support
+    // Centralized native desktop Wails onFileDrop support so multiple dropzones do not clobber each other
     useEffect(() => {
       if (disabled || !isDesktop()) return;
 
-      const unsub = onFileDrop((x, y, paths) => {
+      const unsub = subscribeFileDrop((x, y, paths) => {
         setIsDragging(false);
-        const target = document.elementFromPoint(x, y);
+        const target =
+          typeof document.elementFromPoint === "function" ? document.elementFromPoint(x, y) : null;
         const rect = containerRef.current?.getBoundingClientRect();
         const isInsideRect =
           rect !== undefined &&
+          rect.width > 0 &&
+          rect.height > 0 &&
           x >= rect.left &&
           x <= rect.right &&
           y >= rect.top &&
@@ -125,7 +140,7 @@ export const MediaDropZone = forwardRef<MediaDropZoneHandle, MediaDropZoneProps>
           onPathsSelected?.(validPaths);
           onSelected?.([], validPaths);
         }
-      }, false);
+      });
 
       return () => {
         unsub();
@@ -212,7 +227,7 @@ export const MediaDropZone = forwardRef<MediaDropZoneHandle, MediaDropZoneProps>
         onClick={handleBrowse}
         onKeyDown={handleKeyDown}
         aria-disabled={disabled}
-        aria-label={label}
+        aria-label={resolvedLabel}
       >
         <input
           ref={fileInputRef}
@@ -234,8 +249,8 @@ export const MediaDropZone = forwardRef<MediaDropZoneHandle, MediaDropZoneProps>
             <Icon size={22} className="watermark-dropzone__icon" />
             <div className="watermark-dropzone__title">
               {selectedCount > 0
-                ? selectedSummary || `${selectedCount} files selected`
-                : title || "Drop files here or click to browse"}
+                ? selectedSummary || t("dropzone.filesSelected", { count: selectedCount })
+                : title || t("dropzone.prompt")}
             </div>
             {description && <div className="watermark-dropzone__desc">{description}</div>}
           </>

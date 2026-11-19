@@ -12,6 +12,29 @@ type ImageInputRef struct {
 	MediaRef
 }
 
+// InputRef builds an ImageInputRef from a local file path or URL, inferring MediaKind when recognized.
+func InputRef(localURL string, fallback MediaKind) ImageInputRef {
+	s := strings.TrimSpace(localURL)
+	if s == "" {
+		return ImageInputRef{}
+	}
+	return ImageInputRef{MediaRef: RefFor(s, fallback)}
+}
+
+// InputRefs builds an ImageInputRefs slice from local file paths or URLs, omitting empty entries.
+func InputRefs(localURLs []string, fallback MediaKind) ImageInputRefs {
+	if len(localURLs) == 0 {
+		return nil
+	}
+	out := make([]MediaRef, 0, len(localURLs))
+	for _, raw := range localURLs {
+		if s := strings.TrimSpace(raw); s != "" {
+			out = append(out, RefFor(s, fallback))
+		}
+	}
+	return out
+}
+
 // UnmarshalJSON decodes a string path (trimmed, inferred via RefFor) or a MediaRef object,
 // normalizing an empty Kind to MediaImage when LocalURL is non-empty.
 func (r *ImageInputRef) UnmarshalJSON(data []byte) error {

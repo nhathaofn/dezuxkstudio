@@ -132,22 +132,28 @@ func (m *customizationManager) ensureDirsLocked() error {
 	return nil
 }
 
-func (m *customizationManager) loadManifestLocked() customizationManifest {
+func (m *customizationManager) loadManifestLocked() (customizationManifest, error) {
 	mf := customizationManifest{Version: 1, Entries: map[string]manifestRecord{}}
 	if m.rootDir == "" {
-		return mf
+		return mf, nil
 	}
 	raw, err := os.ReadFile(m.manifestPath())
 	if err != nil {
-		return mf
+		if os.IsNotExist(err) {
+			return mf, nil
+		}
+		return mf, fmt.Errorf("agent: read customizations manifest: %w", err)
 	}
-	if json.Unmarshal(raw, &mf) != nil || mf.Entries == nil {
-		mf = customizationManifest{Version: 1, Entries: map[string]manifestRecord{}}
+	if err := json.Unmarshal(raw, &mf); err != nil {
+		return customizationManifest{}, fmt.Errorf("agent: parse customizations manifest: %w", err)
+	}
+	if mf.Entries == nil {
+		mf.Entries = map[string]manifestRecord{}
 	}
 	if mf.Version == 0 {
 		mf.Version = 1
 	}
-	return mf
+	return mf, nil
 }
 
 func (m *customizationManager) saveManifestLocked(mf customizationManifest) error {
@@ -176,7 +182,10 @@ func (m *customizationManager) ensureSyncedLocked() error {
 	if err := m.ensureDirsLocked(); err != nil {
 		return err
 	}
-	mf := m.loadManifestLocked()
+	mf, err := m.loadManifestLocked()
+	if err != nil {
+		return err
+	}
 	dirty := false
 
 	// 1. Reconcile every embedded built-in customization using the 15-state SHA-256 decision matrix.
@@ -341,7 +350,10 @@ func (m *customizationManager) Snapshot(availableTools []string) (domainagent.Cu
 	if err := m.ensureSyncedLocked(); err != nil {
 		return domainagent.CustomizationsSnapshot{}, err
 	}
-	mf := m.loadManifestLocked()
+	mf, err := m.loadManifestLocked()
+	if err != nil {
+		return domainagent.CustomizationsSnapshot{}, err
+	}
 	skills, subagents := m.loadAllLocked(mf)
 	toolsCopy := append([]string(nil), availableTools...)
 	return domainagent.CustomizationsSnapshot{
@@ -499,7 +511,10 @@ func (m *customizationManager) ReadSkill(name, resource string) (domainagent.Ski
 	if err := m.ensureSyncedLocked(); err != nil {
 		return domainagent.SkillInfo{}, "", err
 	}
-	mf := m.loadManifestLocked()
+	mf, err := m.loadManifestLocked()
+	if err != nil {
+		return domainagent.SkillInfo{}, "", err
+	}
 	skills, _ := m.loadAllLocked(mf)
 	var found *domainagent.SkillInfo
 	for i := range skills {
@@ -551,7 +566,10 @@ func (m *customizationManager) ResolveSubagent(name string) (domainagent.Subagen
 	if err := m.ensureSyncedLocked(); err != nil {
 		return domainagent.SubagentInfo{}, nil, err
 	}
-	mf := m.loadManifestLocked()
+	mf, err := m.loadManifestLocked()
+	if err != nil {
+		return domainagent.SubagentInfo{}, nil, err
+	}
 	skills, subagents := m.loadAllLocked(mf)
 
 	var sub *domainagent.SubagentInfo
@@ -628,7 +646,10 @@ func (m *customizationManager) SaveSubagent(spec domainagent.SubagentInfo) error
 }
 
 func (m *customizationManager) recordWriteLocked(kind domainagent.CustomizationKind, name, rel string, content []byte) error {
-	mf := m.loadManifestLocked()
+	mf, err := m.loadManifestLocked()
+	if err != nil {
+		return err
+	}
 	hash := sha256HexBytes(content)
 	if bi, isBuiltin := m.builtins[rel]; isBuiltin {
 		state := domainagent.CustomizationUserModified
@@ -665,7 +686,10 @@ func (m *customizationManager) Delete(kind domainagent.CustomizationKind, name s
 	if err := m.ensureSyncedLocked(); err != nil {
 		return err
 	}
-	mf := m.loadManifestLocked()
+	mf, err := m.loadManifestLocked()
+	if err != nil {
+		return err
+	}
 	if kind == domainagent.CustomizationSkill {
 		if err := os.RemoveAll(filepath.Dir(pathOnDisk)); err != nil {
 			return err
@@ -704,7 +728,10 @@ func (m *customizationManager) RestoreBuiltIn(kind domainagent.CustomizationKind
 	if err := m.writeRelLocked(rel, bi.Content); err != nil {
 		return err
 	}
-	mf := m.loadManifestLocked()
+	mf, err := m.loadManifestLocked()
+	if err != nil {
+		return err
+	}
 	mf.Entries[rel] = manifestRecord{
 		Kind:      kind,
 		Name:      name,
@@ -732,10 +759,17 @@ func (m *customizationManager) PromptCatalogBlocks() (skillsBlock, subagentsBloc
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.ensureSyncedLocked(); err != nil {
+	if m.rootDir != "" {
+		if _, err := os.Stat(m.manifestPath()); os.IsNotExist(err) {
+			if err := m.ensureSyncedLocked(); err != nil {
+				return "", ""
+			}
+		}
+	}
+	mf, err := m.loadManifestLocked()
+	if err != nil {
 		return "", ""
 	}
-	mf := m.loadManifestLocked()
 	skills, subagents := m.loadAllLocked(mf)
 
 	var skillLines []string

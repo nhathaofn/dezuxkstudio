@@ -159,3 +159,18 @@ func TestRunnerLargeLine(t *testing.T) {
 		t.Fatalf("expected stdout to contain full 250KB line without truncation")
 	}
 }
+
+func TestRunnerCappedBuffer(t *testing.T) {
+	var cb cappedBuffer
+	cb.limit = 20
+	cb.WriteLine("0123456789")
+	cb.WriteLine("abcdefghij1234567890")
+	cb.WriteLine("should-not-append")
+	got := cb.String()
+	if !strings.Contains(got, "...[truncated]") {
+		t.Fatalf("expected truncation marker, got %q", got)
+	}
+	if strings.Contains(got, "should-not-append") {
+		t.Fatalf("unexpected write after truncation: %q", got)
+	}
+}

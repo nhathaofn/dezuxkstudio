@@ -7,7 +7,6 @@ package core
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +26,7 @@ import (
 	domainagent "app/internal/domain/agent"
 	domainprefs "app/internal/domain/preferences"
 	domainprovider "app/internal/domain/provider"
+	domainstudio "app/internal/domain/studio"
 	"app/internal/engine"
 	"app/internal/httpclient"
 	"app/internal/paths"
@@ -45,6 +45,7 @@ import (
 	mediagensvc "app/internal/service/mediagen"
 	"app/internal/service/preferences"
 	providersvc "app/internal/service/provider"
+	studiosvc "app/internal/service/studio"
 	"app/internal/service/system"
 	"app/internal/service/update"
 	"app/internal/service/workflow"
@@ -82,7 +83,9 @@ type Core struct {
 	provSvc       *providersvc.Service
 	mediaSvc      *mediasvc.Service
 	mediaGenSvc   *mediagensvc.Service
+	studioSvc     *studiosvc.Service
 	prefSvc       *preferences.Service
+	chatCoalescer *chatEventCoalescer
 	workspaceTree atomic.Pointer[paths.WorkspaceTree]
 	// background work tied to the core lifetime (e.g. the start-up provider key check)
 	bgCtx     context.Context
@@ -109,6 +112,9 @@ func (c *Core) Agent() *agentsvc.Service { return c.agentSvc }
 // MediaGen returns the core media generation service.
 func (c *Core) MediaGen() *mediagensvc.Service { return c.mediaGenSvc }
 
+// Studio returns the core AI film studio service.
+func (c *Core) Studio() *studiosvc.Service { return c.studioSvc }
+
 // New opens storage, builds services and mounts every module. On error, everything
 // opened so far is released.
 func New(ctx context.Context, o Options) (_ *Core, err error) {
@@ -118,8 +124,8 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 	cfg := o.Config
 	c := &Core{log: o.Logger, shutdown: cfg.Server.ShutdownTimeout, startedAt: time.Now()}
 	defer func() {
-		if err != nil && c.db != nil {
-			_ = c.db.Close()
+		if err != nil {
+			_ = c.Close()
 		}
 	}()
 
@@ -155,15 +161,9 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 		return nil, err
 	}
 
-	var ticketSecret []byte
-	if o.AuthToken != "" {
-		h := sha256.Sum256([]byte("ticket-signing-secret:" + o.AuthToken))
-		ticketSecret = h[:]
-	} else {
-		ticketSecret = make([]byte, 32)
-		if _, err := rand.Read(ticketSecret); err != nil {
-			return nil, fmt.Errorf("core: ticket secret: %w", err)
-		}
+	ticketSecret := make([]byte, 32)
+	if _, err := rand.Read(ticketSecret); err != nil {
+		return nil, fmt.Errorf("core: ticket secret: %w", err)
 	}
 	ticketSigner := security.NewTicketSigner(ticketSecret)
 
@@ -182,6 +182,8 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 		Host:              cfg.Server.Host,
 		Port:              cfg.Server.Port,
 		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout,
+		ReadTimeout:       cfg.Server.ReadTimeout,
+		WriteTimeout:      cfg.Server.WriteTimeout,
 		IdleTimeout:       cfg.Server.IdleTimeout,
 		Logger:            o.Logger,
 		Handler: server.NewRouter(server.RouterOptions{
@@ -207,6 +209,8 @@ func New(ctx context.Context, o Options) (_ *Core, err error) {
 			MaxUploadBytes: cfg.Server.MaxMediaUploadBytes,
 			TicketSigner:   ticketSigner,
 			AssetResolver:  c.mediaSvc,
+			FileGuard:      workflowFileGuard(cfg.Mode, c.agentSvc),
+			Logger:         o.Logger,
 		}),
 	})
 	if err != nil {
@@ -248,6 +252,7 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		agentSvc    *agentsvc.Service
 		mediaSvc    *mediasvc.Service
 		mediaGenSvc *mediagensvc.Service
+		studioSvc   *studiosvc.Service
 	)
 
 	onChange := func(p domainprefs.Preferences) {
@@ -260,28 +265,40 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		skipChanged := p.AgentSkipTrustedApproval != oldPrefs.AgentSkipTrustedApproval
 
 		if rootChanged {
-			// 1. If previous root was custom (prevRoot != ""), automatically add it to agentSvc.AddAllowedDir
+			prevTree := c.WorkspaceTree()
+
+			// 1. If previous root was custom (prevRoot != ""), persist it in user allowed dirs as well.
 			if oldPrefs.WorkspaceRoot != "" && agentSvc != nil {
 				if _, err := agentSvc.AddAllowedDir(context.Background(), oldPrefs.WorkspaceRoot); err != nil {
-					o.Logger.Warn("preferences: failed to keep previous workspace root in allowed dirs", "dir", oldPrefs.WorkspaceRoot, "error", err)
+					o.Logger.WarnContext(context.Background(), "preferences: failed to keep previous workspace root in allowed dirs", "error", err)
 				}
 			}
-			// 2. Update atomic pointer to new tree and ensure directories exist
+			// 2. Update atomic pointer to new tree and ensure directories exist.
 			newTree := paths.ResolveWorkspaceTree(o.Paths, p.WorkspaceRoot, cfg.Agent.WorkspaceDir)
 			if err := newTree.Ensure(); err != nil {
-				o.Logger.Error("preferences: failed to ensure new workspace tree directories", "root", newTree.Root, "error", err)
+				o.Logger.ErrorContext(context.Background(), "preferences: failed to ensure new workspace tree directories", "error", err)
 			}
 			c.workspaceTree.Store(&newTree)
 
-			// 3. Call mediaSvc.SetMediaDir, mediaGenSvc.SetMediaDir, and agentSvc.SetWorkspaceDirs
+			// 3. Retain previous studio/media roots and propagate new workspace roots across services.
 			if mediaSvc != nil {
+				mediaSvc.AddAllowedRoot(prevTree.MediaDir)
+				mediaSvc.AddAllowedRoot(prevTree.WorkspaceDir)
+				mediaSvc.AddAllowedRoot(prevTree.ProjectsDir)
 				mediaSvc.SetMediaDir(newTree.MediaDir)
+				mediaSvc.AddAllowedRoot(newTree.WorkspaceDir)
+				mediaSvc.AddAllowedRoot(newTree.ProjectsDir)
 			}
 			if mediaGenSvc != nil {
 				mediaGenSvc.SetMediaDir(newTree.MediaDir)
 			}
 			if agentSvc != nil {
+				agentSvc.AddLegacyRoots(prevTree.WorkspaceDir, prevTree.ProjectsDir, prevTree.MediaDir)
 				agentSvc.SetWorkspaceDirs(newTree.WorkspaceDir, newTree.MediaDir)
+				agentSvc.SetProjectsDir(newTree.ProjectsDir)
+			}
+			if studioSvc != nil {
+				studioSvc.SetProjectsDir(newTree.ProjectsDir)
 			}
 		}
 
@@ -296,20 +313,22 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 
 	validator := func(raw string) (string, error) {
 		var norm string
-		if strings.TrimSpace(raw) != "" {
+		if trimmed := strings.TrimSpace(raw); trimmed != "" {
 			if agentSvc != nil {
 				var err error
-				norm, err = agentSvc.ValidateWorkspaceRoot(raw)
+				norm, err = agentSvc.ValidateWorkspaceRoot(trimmed)
 				if err != nil {
 					return "", apperr.Validation(err.Error())
 				}
+			} else if abs, err := filepath.Abs(trimmed); err == nil {
+				norm = filepath.Clean(abs)
 			} else {
-				norm = filepath.Clean(strings.TrimSpace(raw))
+				norm = filepath.Clean(trimmed)
 			}
 		}
 		candidateTree := paths.ResolveWorkspaceTree(o.Paths, norm, cfg.Agent.WorkspaceDir)
 		if err := candidateTree.Ensure(); err != nil {
-			return "", apperr.Validation(err.Error())
+			return "", apperr.Wrap(apperr.CodeValidation, "cannot prepare workspace directory", err)
 		}
 		return norm, nil
 	}
@@ -400,14 +419,22 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 	}
 
 	agentRepo := sqlite.NewAgentRepository(c.db)
-	allowedRoots := []string{tree.MediaDir, o.Paths.Staging(), tree.WorkspaceDir}
+	allowedRoots := []string{tree.MediaDir, o.Paths.Staging(), tree.WorkspaceDir, tree.ProjectsDir}
 	if storedDirs, err := agentRepo.ListAllowedDirs(ctx); err == nil {
 		allowedRoots = append(allowedRoots, storedDirs...)
 	}
-	for _, fallbackMedia := range []string{o.Paths.Media(), filepath.Join(o.Paths.DefaultStudioRoot(), "media")} {
-		if fallbackMedia != "" {
-			if fi, err := os.Stat(fallbackMedia); err == nil && fi.IsDir() {
-				allowedRoots = append(allowedRoots, fallbackMedia)
+	var legacyStudioRoots []string
+	defaultStudioRoot := o.Paths.DefaultStudioRoot()
+	for _, fallbackDir := range []string{
+		o.Paths.Media(),
+		filepath.Join(defaultStudioRoot, "media"),
+		filepath.Join(defaultStudioRoot, "workspace"),
+		filepath.Join(defaultStudioRoot, "workspace", "projects"),
+	} {
+		if fallbackDir != "" {
+			if fi, err := os.Stat(fallbackDir); err == nil && fi.IsDir() {
+				allowedRoots = append(allowedRoots, fallbackDir)
+				legacyStudioRoots = append(legacyStudioRoots, fallbackDir)
 			}
 		}
 	}
@@ -437,15 +464,17 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 	c.mediaSvc = mediaSvc
 
 	mediaGenSvc = mediagensvc.New(mediagensvc.Options{
-		Providers:         provSvc,
-		HTTPClient:        o.HTTPClient,
-		MediaDir:          tree.MediaDir,
-		StagingDir:        o.Paths.MediaGenStaging(),
-		Registrar:         mediaSvc,
-		Config:            cfg.MediaGen,
-		Logger:            o.Logger,
-		StagingTTL:        cfg.MediaStagingTTL(),
-		StagingGCInterval: cfg.MediaStagingGCInterval(),
+		Providers:               provSvc,
+		HTTPClient:              o.HTTPClient,
+		MediaDir:                tree.MediaDir,
+		StagingDir:              o.Paths.MediaGenStaging(),
+		Registrar:               mediaSvc,
+		Config:                  cfg.MediaGen,
+		MaxVideoDurationSec:     cfg.Studio.MaxShotDurationSec,
+		DefaultVideoDurationSec: cfg.Studio.DefaultShotDurationSec,
+		Logger:                  o.Logger,
+		StagingTTL:              cfg.MediaStagingTTL(),
+		StagingGCInterval:       cfg.MediaStagingGCInterval(),
 	})
 	c.mediaGenSvc = mediaGenSvc
 	if stagedDir := mediaGenSvc.StagingDir(); stagedDir != "" {
@@ -454,27 +483,57 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		})
 	}
 
+	studioRepo := sqlite.NewStudioRepository(c.db, sqlite.WithStudioConfig(cfg.Studio))
+	preflightAdapter := &studioPreflightAdapter{provSvc: provSvc, studioRepo: studioRepo}
+
 	wfSvc, err := workflow.New(workflow.Options{
 		Paths:             o.Paths,
 		Logger:            o.Logger,
+		Config:            cfg,
 		Providers:         provSvc,
 		MediaGen:          mediaGenSvc,
+		Binaries:          binSvc,
+		StudioConfig:      cfg.Studio,
 		Registrar:         mediaSvc,
+		ProviderChecker:   preflightAdapter,
+		CostEstimator:     preflightAdapter,
 		WorkspaceTreeFunc: c.WorkspaceTree,
 	})
 	if err != nil {
 		return nil, err
 	}
 
+	studioSvc = studiosvc.New(studiosvc.Options{
+		Repo:          studioRepo,
+		Workflow:      wfSvc,
+		Media:         mediaSvc,
+		VideoMedia:    mediaGenSvc,
+		TextReadiness: preflightAdapter,
+		OpenDirectory: o.OpenDirectory,
+		StudioConfig:  cfg.Studio,
+		ProjectsDir:   tree.ProjectsDir,
+		OnEvent: func(eventName string, data any) {
+			c.hub.Publish(eventName, data)
+		},
+		Logger: o.Logger,
+	})
+	mediaGenSvc.SetUsageHook(studioSvc.HandleMediaUsage)
+	c.studioSvc = studioSvc
+
 	// The app's own copies of the agent CLIs live in one folder of its data; nothing installed elsewhere is touched.
 	agentCLIs := agentclisvc.New(agentclisvc.Options{
 		Dir: o.Paths.AgentCLIs(), Client: o.HTTPClient, Logger: o.Logger, UserAgent: buildinfo.ProductName + "/" + buildinfo.Version,
+	})
+
+	c.chatCoalescer = newChatEventCoalescer(35*time.Millisecond, func(evt domainagent.ChatEvent) {
+		c.hub.Publish(contracts.EventAgentChatEvent, contracts.NewAgentChatEvent(evt))
 	})
 
 	agentSvc, err = agentsvc.New(agentsvc.Options{
 		Repo:                agentRepo,
 		DataDir:             o.Paths.Data,
 		WorkspaceDir:        tree.WorkspaceDir,
+		ProjectsDir:         tree.ProjectsDir,
 		MediaDir:            tree.MediaDir,
 		StagingDir:          o.Paths.Staging(),
 		SkipTrustedApproval: initPrefs.AgentSkipTrustedApproval,
@@ -493,13 +552,14 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		AutoUpdate:          cfg.Agent.AutoUpdateCLI,
 		Preferences:         prefSvc,
 		System:              sysSvc,
+		Update:              updSvc,
+		Media:               mediaSvc,
 		Diagnostics:         diagSvc,
+		Studio:              studioSvc,
 		OnStatusChanged: func(info domainagent.ProviderInfo) {
 			c.hub.Publish(contracts.EventAgentStatusChanged, contracts.NewAgentProviderInfo(info))
 		},
-		OnChatEvent: func(evt domainagent.ChatEvent) {
-			c.hub.Publish(contracts.EventAgentChatEvent, contracts.NewAgentChatEvent(evt))
-		},
+		OnChatEvent: c.chatCoalescer.Emit,
 		OnLoginPrompt: func(p domainagent.LoginPrompt) {
 			c.hub.Publish(contracts.EventAgentLoginPrompt, contracts.NewAgentLoginPrompt(p))
 		},
@@ -514,9 +574,15 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 		return nil, err
 	}
 	prefSvc.SetWorkspaceRootValidator(validator)
+	if len(legacyStudioRoots) > 0 {
+		agentSvc.AddLegacyRoots(legacyStudioRoots...)
+	}
 	agentSvc.SetProviderLinks(sqlite.NewProviderRepository(c.db))
 	agentSvc.SetMediaInspector(&mediaInspectorAdapter{svc: mediaSvc})
 	c.agentSvc = agentSvc
+	studioSvc.SetFileGuard(workflowFileGuard(cfg.Mode, agentSvc))
+	c.background("media-gc", mediaSvc.RunGC)
+	c.background("studio-queue-worker", studioSvc.RunQueueWorker)
 	c.background("agent-provision-clis", agentSvc.ProvisionCLIs)
 	if cfg.Agent.RestoreConnection {
 		c.background("agent-restore-connection", agentSvc.RestoreConnection)
@@ -530,7 +596,7 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 			Service:            prefSvc,
 			LockTrustedFolders: cfg.Mode == config.ModeServer,
 		},
-		modules.Diagnostics{Service: diagSvc},
+		modules.Diagnostics{Service: diagSvc, LockHostAdmin: lockRemoteHost},
 		modules.Binaries{Service: binSvc, LockHostAdmin: lockRemoteHost},
 		modules.Workflow{Service: wfSvc, FileGuard: workflowFileGuard(cfg.Mode, agentSvc)},
 		modules.Agent{
@@ -539,8 +605,9 @@ func (c *Core) modules(ctx context.Context, o Options, ticketSigner *security.Ti
 			LockHostAdmin:      lockRemoteHost,
 			LockCustomizations: lockRemoteHost,
 		},
-		modules.Providers{Service: provSvc},
-		modules.Media{Service: mediaSvc},
+		modules.Providers{Service: provSvc, LockHostAdmin: lockRemoteHost},
+		modules.Media{Service: mediaSvc, FileGuard: workflowFileGuard(cfg.Mode, agentSvc)},
+		modules.Studio{Service: studioSvc, FileGuard: workflowFileGuard(cfg.Mode, agentSvc), LockHostAdmin: lockRemoteHost},
 	}, nil
 }
 
@@ -576,15 +643,32 @@ func (c *Core) WSURL() string { return c.srv.WSURL() }
 func (c *Core) Errors() <-chan error { return c.srv.Errors() }
 
 // Close drains sessions and in-flight actions (bounded by server.shutdown_timeout),
-// stops the HTTP listener, then closes storage — in that order, so no action ever
-// runs against a closed database.
+// stops the HTTP listener, waits for background workers and services to stop,
+// and closes storage last — so no handler or worker ever runs against a closed database.
 func (c *Core) Close() error {
 	if c.bgCancel != nil {
 		c.bgCancel()
-		// Bound background wait separately so a stalled startup task cannot exhaust the session drain timeout.
-		bgBudget := c.shutdown / 2
-		if bgBudget <= 0 {
-			bgBudget = c.shutdown
+	}
+	if c.chatCoalescer != nil {
+		c.chatCoalescer.Close()
+	}
+
+	var hubErr error
+	if c.hub != nil {
+		hubCtx, hubCancel := context.WithTimeout(context.Background(), c.shutdown)
+		hubErr = c.hub.Close(hubCtx)
+		hubCancel()
+	}
+
+	var srvErr error
+	if c.srv != nil {
+		srvErr = c.srv.Stop()
+	}
+
+	if c.bgCancel != nil {
+		bgBudget := c.shutdown
+		if bgBudget < 5*time.Second {
+			bgBudget = 5 * time.Second
 		}
 		bgCtx, bgCancel := context.WithTimeout(context.Background(), bgBudget)
 		done := make(chan struct{})
@@ -592,9 +676,13 @@ func (c *Core) Close() error {
 		select {
 		case <-done:
 		case <-bgCtx.Done():
+			if c.log != nil {
+				c.log.Warn("core: background workers did not finish within shutdown deadline", "timeout", bgBudget)
+			}
 		}
 		bgCancel()
 	}
+
 	if c.provSvc != nil {
 		c.provSvc.Close() // running key checks write to the database: finish them first
 	}
@@ -602,13 +690,15 @@ func (c *Core) Close() error {
 	if c.agentSvc != nil {
 		agentErr = c.agentSvc.Close()
 	}
-	hubCtx, hubCancel := context.WithTimeout(context.Background(), c.shutdown)
-	defer hubCancel()
+	var dbErr error
+	if c.db != nil {
+		dbErr = c.db.Close()
+	}
 	return errors.Join(
+		hubErr,
+		srvErr,
 		agentErr,
-		c.hub.Close(hubCtx),
-		c.srv.Stop(),
-		c.db.Close(),
+		dbErr,
 	)
 }
 
@@ -640,4 +730,154 @@ func (m *mediaInspectorAdapter) InspectAsset(ctx context.Context, assetID string
 		DurationSec:    item.DurationSec,
 		Metadata:       metaMap,
 	}, nil
+}
+
+type studioPreflightAdapter struct {
+	provSvc    *providersvc.Service
+	studioRepo *sqlite.StudioRepository
+}
+
+func (a *studioPreflightAdapter) CheckCapability(ctx context.Context, capability domainprovider.Capability, modelRef string) (string, string, error) {
+	if a.provSvc == nil {
+		return "", "", fmt.Errorf("provider service is unavailable")
+	}
+	purpose := domainprovider.PurposeImage
+	for _, spec := range domainprovider.PurposeSpecs() {
+		if spec.Capability == capability {
+			purpose = spec.Purpose
+			break
+		}
+	}
+	res, err := a.provSvc.ResolveModel(ctx, purpose, modelRef)
+	if err != nil {
+		return "", "", err
+	}
+	return res.Ref.ProviderID, res.Model.ModelID, nil
+}
+
+func (a *studioPreflightAdapter) EstimateUnitPriceUSD(ctx context.Context, providerID, modelID, capability, unit string) (float64, bool, error) {
+	if a.studioRepo == nil {
+		return domainstudio.PreflightSpecForCapability(capability).FallbackUnitPriceUSD, true, nil
+	}
+	entry, ok, err := a.studioRepo.ResolveUnitPrice(ctx, providerID, modelID, capability, unit)
+	if err != nil {
+		return 0, true, err
+	}
+	if !ok {
+		return domainstudio.PreflightSpecForCapability(capability).FallbackUnitPriceUSD, true, nil
+	}
+	wildcard := entry.ProviderID == "*" || entry.ModelID == "*"
+	return entry.UnitPriceUSD, wildcard, nil
+}
+
+func (a *studioPreflightAdapter) IsTextProviderReady(ctx context.Context) bool {
+	if a == nil || a.provSvc == nil {
+		return false
+	}
+	defaults, err := a.provSvc.Defaults(ctx)
+	if err != nil {
+		return false
+	}
+	for _, p := range defaults {
+		if p.Purpose == domainprovider.PurposeText {
+			return len(p.Candidates) > 0 || strings.TrimSpace(p.Effective.String()) != ""
+		}
+	}
+	return false
+}
+
+const chatCoalesceMaxBytes = 4096
+
+type chatEventCoalescer struct {
+	window time.Duration
+	emit   func(domainagent.ChatEvent)
+
+	mu      sync.Mutex
+	closed  bool
+	hasPend bool
+	pending domainagent.ChatEvent
+	timer   *time.Timer
+}
+
+func newChatEventCoalescer(window time.Duration, emit func(domainagent.ChatEvent)) *chatEventCoalescer {
+	return &chatEventCoalescer{window: window, emit: emit}
+}
+
+func isCoalescibleChatEvent(t domainagent.ChatEventType) bool {
+	return t == domainagent.ChatEventDelta ||
+		t == domainagent.ChatEventThought ||
+		t == domainagent.ChatEventSubagentDelta
+}
+
+func sameCoalesceBucket(a, b domainagent.ChatEvent) bool {
+	return a.Type == b.Type &&
+		a.ProviderID == b.ProviderID &&
+		a.MessageID == b.MessageID &&
+		a.SubagentID == b.SubagentID &&
+		a.SubagentName == b.SubagentName &&
+		a.SubagentProvider == b.SubagentProvider
+}
+
+func (c *chatEventCoalescer) Emit(evt domainagent.ChatEvent) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	if !isCoalescibleChatEvent(evt.Type) {
+		c.flushLocked()
+		c.emit(evt)
+		return
+	}
+	if c.hasPend {
+		if sameCoalesceBucket(c.pending, evt) {
+			c.pending.Text += evt.Text
+			if len(c.pending.Text) >= chatCoalesceMaxBytes {
+				c.flushLocked()
+			}
+			return
+		}
+		c.flushLocked()
+	}
+	c.pending = evt
+	c.hasPend = true
+	if c.timer == nil {
+		c.timer = time.AfterFunc(c.window, c.flushTimer)
+	} else {
+		c.timer.Reset(c.window)
+	}
+}
+
+func (c *chatEventCoalescer) flushTimer() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.closed {
+		c.flushLocked()
+	}
+}
+
+func (c *chatEventCoalescer) flushLocked() {
+	if c.timer != nil {
+		c.timer.Stop()
+	}
+	if !c.hasPend {
+		return
+	}
+	evt := c.pending
+	c.pending = domainagent.ChatEvent{}
+	c.hasPend = false
+	c.emit(evt)
+}
+
+func (c *chatEventCoalescer) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	c.flushLocked()
+	c.closed = true
+	if c.timer != nil {
+		c.timer.Stop()
+	}
 }

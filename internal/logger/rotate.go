@@ -106,6 +106,9 @@ func (w *RotatingWriter) Write(p []byte) (int, error) {
 			fmt.Fprintf(os.Stderr, "log rotation failed: %v\n", err)
 		}
 	}
+	if w.file == nil {
+		return 0, errors.New("logger: log file unavailable after rotation failure")
+	}
 	n, err := w.file.Write(p)
 	w.size += int64(n)
 	return n, err

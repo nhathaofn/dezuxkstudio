@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"maps"
 	"os"
 	"time"
@@ -8,6 +10,7 @@ import (
 	"app/internal/buildinfo"
 	"app/internal/config"
 	domainagent "app/internal/domain/agent"
+	providersvc "app/internal/service/provider"
 )
 
 // clientName is the ACP clientInfo name and the app name reported to agents.
@@ -23,20 +26,22 @@ const (
 
 // Limits tunes timeouts, caches and chat context size. Zero fields fall back to DefaultLimits.
 type Limits struct {
-	TurnTimeout            time.Duration
-	InitializeTimeout      time.Duration
-	VersionProbeTimeout    time.Duration
-	AuthProbeTimeout       time.Duration
-	LoginTimeout           time.Duration
-	ModelCatalogTimeout    time.Duration
-	MCPToolTimeout         time.Duration // max duration of one MCP tool call the CLI waits for (workflow runs)
-	MCPShutdownTimeout     time.Duration // graceful stop of the local MCP server
-	InterruptWait          time.Duration // how long a cancelled Codex turn waits for turn/completed
-	StatusCacheTTL         time.Duration
-	ApprovalTTL            time.Duration
-	MaxPendingApprovals    int
-	HistoryLimit           int
-	MaxConcurrentSubagents int
+	TurnTimeout              time.Duration
+	InitializeTimeout        time.Duration
+	VersionProbeTimeout      time.Duration
+	AuthProbeTimeout         time.Duration
+	LoginTimeout             time.Duration
+	ModelCatalogTimeout      time.Duration
+	MCPToolTimeout           time.Duration // max duration of one MCP tool call the CLI waits for (workflow runs)
+	MCPShutdownTimeout       time.Duration // graceful stop of the local MCP server
+	InterruptWait            time.Duration // how long a cancelled Codex turn waits for turn/completed
+	StatusCacheTTL           time.Duration
+	ApprovalTTL              time.Duration
+	CLISessionPersistTimeout time.Duration
+	MaxApprovalContinuations int
+	MaxPendingApprovals      int
+	HistoryLimit             int
+	MaxConcurrentSubagents   int
 }
 
 // LimitsFrom builds the service limits from the application config — the only place their
@@ -51,14 +56,16 @@ func LimitsFrom(c *config.Config) Limits {
 		LoginTimeout:        a.LoginTimeout,
 		ModelCatalogTimeout: a.ModelCatalogTimeout,
 		// An MCP tool call may run a whole workflow, which the hub bounds by the long action timeout.
-		MCPToolTimeout:         c.Realtime.LongActionTimeout,
-		MCPShutdownTimeout:     c.Server.ShutdownTimeout,
-		InterruptWait:          a.InterruptWait,
-		StatusCacheTTL:         a.StatusCacheTTL,
-		ApprovalTTL:            a.ApprovalTTL,
-		MaxPendingApprovals:    a.MaxPendingApprovals,
-		HistoryLimit:           a.HistoryLimit,
-		MaxConcurrentSubagents: a.MaxConcurrentSubagents,
+		MCPToolTimeout:           c.Realtime.LongActionTimeout,
+		MCPShutdownTimeout:       c.Server.ShutdownTimeout,
+		InterruptWait:            a.InterruptWait,
+		StatusCacheTTL:           a.StatusCacheTTL,
+		ApprovalTTL:              a.ApprovalTTL,
+		CLISessionPersistTimeout: a.CLISessionPersistTimeout,
+		MaxApprovalContinuations: a.MaxApprovalContinuations,
+		MaxPendingApprovals:      a.MaxPendingApprovals,
+		HistoryLimit:             a.HistoryLimit,
+		MaxConcurrentSubagents:   a.MaxConcurrentSubagents,
 	}
 }
 
@@ -79,6 +86,7 @@ func (l Limits) withDefaults() Limits {
 		{&l.InterruptWait, &d.InterruptWait},
 		{&l.StatusCacheTTL, &d.StatusCacheTTL},
 		{&l.ApprovalTTL, &d.ApprovalTTL},
+		{&l.CLISessionPersistTimeout, &d.CLISessionPersistTimeout},
 	}
 	for _, f := range durations {
 		if *f.v <= 0 {
@@ -86,6 +94,7 @@ func (l Limits) withDefaults() Limits {
 		}
 	}
 	ints := []struct{ v, def *int }{
+		{&l.MaxApprovalContinuations, &d.MaxApprovalContinuations},
 		{&l.HistoryLimit, &d.HistoryLimit},
 		{&l.MaxPendingApprovals, &d.MaxPendingApprovals},
 		{&l.MaxConcurrentSubagents, &d.MaxConcurrentSubagents},
@@ -108,6 +117,28 @@ func providerEnv(id domainagent.ProviderID, overrides map[string]string) []strin
 	}
 	maps.Copy(merged, overrides)
 	return isolatedEnv(os.Environ(), merged, strip...)
+}
+
+// envWithLinkedSecret injects link.EnvOverrides (when present and matching id) into overrides
+// without mutating caller maps, then builds the isolated environment via providerEnv.
+func envWithLinkedSecret(id domainagent.ProviderID, overrides map[string]string, link *providersvc.ResolvedLink) []string {
+	if link == nil || len(link.EnvOverrides) == 0 || (link.AgentProviderID != "" && link.AgentProviderID != string(id)) {
+		return providerEnv(id, overrides)
+	}
+	merged := maps.Clone(overrides)
+	if merged == nil {
+		merged = make(map[string]string, len(link.EnvOverrides))
+	}
+	maps.Copy(merged, link.EnvOverrides)
+	return providerEnv(id, merged)
+}
+
+func linkedSecretCacheKey(link *providersvc.ResolvedLink) string {
+	if link == nil {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(link.Secret))
+	return link.ProviderID + ":" + link.CredentialID + ":" + hex.EncodeToString(sum[:8])
 }
 
 // Tool result statuses sent in ChatEvent.Text/Error; the UI maps them to its own localized labels.

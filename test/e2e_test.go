@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -26,6 +27,8 @@ import (
 	"app/internal/config"
 	"app/internal/contracts"
 	"app/internal/core"
+	domainprovider "app/internal/domain/provider"
+	domainstudio "app/internal/domain/studio"
 	"app/internal/paths"
 	"app/internal/security"
 	"app/internal/service/agent"
@@ -37,6 +40,7 @@ type harness struct {
 	core  *core.Core
 	token string
 	cfg   *config.Config
+	paths paths.Paths
 }
 
 func startCore(t *testing.T, mutate func(*config.Config)) *harness {
@@ -79,7 +83,7 @@ func startCore(t *testing.T, mutate func(*config.Config)) *harness {
 			t.Errorf("close: %v", err)
 		}
 	})
-	return &harness{t: t, core: c, token: token, cfg: cfg}
+	return &harness{t: t, core: c, token: token, cfg: cfg, paths: p}
 }
 
 func (h *harness) httpURL(path string) string {
@@ -118,7 +122,7 @@ type frame struct {
 func (c *wsClient) call(action string, payload any) (frame, []frame) {
 	c.t.Helper()
 	c.seq++
-	id := action + "#" + string(rune('a'+c.seq))
+	id := fmt.Sprintf("%s#%d", action, c.seq)
 	raw, _ := json.Marshal(payload)
 	msg, _ := json.Marshal(contracts.ClientMessage{Type: contracts.MessageAction, ID: id, Action: action, Payload: raw})
 	if err := c.conn.Write(context.Background(), websocket.MessageText, msg); err != nil {
@@ -223,6 +227,7 @@ func createE2EWorkspaceRoot(t *testing.T, name string) string {
 	}
 	t.Cleanup(func() {
 		_ = os.RemoveAll(dir)
+		_ = os.Remove(repoTemp)
 	})
 	return dir
 }
@@ -1598,5 +1603,572 @@ func TestE2E_Tier4_Scenario_AgentWorkspaceContainment_And_SecurityIsolation(t *t
 	// 6. Root Deletion Guard: cannot delete workspace root
 	if _, err := policy.ValidateDelete(wsDir); err == nil {
 		t.Errorf("security violation: deleting workspace root must be blocked")
+	}
+}
+
+func createSizedPNG(t *testing.T, targetPath string, width, height int, c color.Color) []byte {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("create dir for sized png: %v", err)
+	}
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			img.Set(x, y, c)
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode sized png: %v", err)
+	}
+	data := buf.Bytes()
+	if err := os.WriteFile(targetPath, data, 0o644); err != nil {
+		t.Fatalf("write sized png: %v", err)
+	}
+	return data
+}
+
+// TestE2E_StudioPipeline_Phase1ToPhase3 verifies the full AI Film Studio pipeline end-to-end
+// over the real Core, SQLite database (migrations 018..022), Realtime WebSocket Hub, Workflow Engine,
+// and Agent MCP server:
+//  1. Phase 1: create project & episode, save script, upsert asset & shots, reorder shots, workspace retention.
+//  2. Phase 2: grid split -> versions list ("keyframe" & "video" + invalid target_kind rejection) -> version select,
+//     batch preflight & cost summary (gemini-aistudio / gemini-vertex Veo pricing from migration 022).
+//  3. Phase 3: timeline_get -> timeline_apply_ops -> expected_revision ERR_CONFLICT -> timeline_undo (rev 1 -> rev 0)
+//     -> timeline_redo (rev 0 -> rev 1) -> NLE export (.fcpxml & .otio) + MCP workspace_read_file parity.
+func TestE2E_StudioPipeline_Phase1ToPhase3(t *testing.T) {
+	h := startCore(t, func(c *config.Config) {
+		c.Providers.AutoCheck = false
+		c.Providers.CheckOnStartup = false
+	})
+	clientA, clientB := h.dial(), h.dial()
+
+	studioRoot := createE2EWorkspaceRoot(t, "StudioPipeline")
+	updResp, _ := clientA.call(contracts.ActionPreferencesUpdate, map[string]any{
+		"workspace_root":              studioRoot,
+		"onboarding_completed":        true,
+		"agent_skip_trusted_approval": true,
+	})
+	if !updResp.Success {
+		t.Fatalf("preferences:update failed: %+v", updResp.Error)
+	}
+	_ = clientB.waitForEvent(contracts.EventPreferencesUpdated, 5*time.Second)
+
+	// --- Phase 1: Project, Episode, Script, Asset Bible & Storyboard Shots ---
+	createProjResp, _ := clientA.call(contracts.ActionStudioProjectCreate, contracts.StudioProjectCreatePayload{
+		Title:               "Neon Horizon",
+		Genre:               domainstudio.GenreDrama,
+		ProductionMode:      domainstudio.ModeStoryboardI2V,
+		AspectRatio:         "16:9",
+		StylePrompt:         "Rain-soaked cyberpunk cinema",
+		AutoApproveBatches:  true,
+		InitialEpisodeTitle: "Episode 1: Arrival",
+	})
+	if !createProjResp.Success {
+		t.Fatalf("studio:project_create failed: %+v", createProjResp.Error)
+	}
+	var projDetail contracts.StudioProjectDetailResult
+	if err := json.Unmarshal(createProjResp.Data, &projDetail); err != nil {
+		t.Fatalf("unmarshal project detail: %v", err)
+	}
+	if projDetail.Project.ID == "" || projDetail.ActiveEpisode == nil {
+		t.Fatalf("expected project ID and starter active_episode, got %+v", projDetail)
+	}
+	projID := projDetail.Project.ID
+	ep1ID := projDetail.ActiveEpisode.Episode.ID
+
+	projEvt := clientB.waitForEvent(contracts.EventStudioProjectChanged, 5*time.Second)
+	if !strings.Contains(string(projEvt.Data), projID) {
+		t.Fatalf("expected studio:project_changed broadcast for %s, got %s", projID, projEvt.Data)
+	}
+
+	// Create a second episode and verify studio:project_get returns both episodes.
+	ep2Resp, _ := clientA.call(contracts.ActionStudioEpisodeCreate, contracts.StudioEpisodeCreatePayload{
+		ProjectID: projID,
+		Title:     "Episode 2: Echoes",
+	})
+	if !ep2Resp.Success {
+		t.Fatalf("studio:episode_create failed: %+v", ep2Resp.Error)
+	}
+	getProjResp, _ := clientA.call(contracts.ActionStudioProjectGet, contracts.StudioIDPayload{ID: projID})
+	if !getProjResp.Success {
+		t.Fatalf("studio:project_get failed: %+v", getProjResp.Error)
+	}
+	var fetchedProj contracts.StudioProjectDetailResult
+	if err := json.Unmarshal(getProjResp.Data, &fetchedProj); err != nil {
+		t.Fatalf("unmarshal studio:project_get: %v", err)
+	}
+	if len(fetchedProj.Episodes) != 2 {
+		t.Fatalf("expected 2 episodes on project, got %d", len(fetchedProj.Episodes))
+	}
+
+	// Save raw + normalized script for Episode 1 and verify disk sync.
+	rawText := "INT. ROOFTOP - NIGHT\nMinh looks out over the neon skyline."
+	normScript := &contracts.StudioNormalizedScript{
+		Title:       "Episode 1: Arrival",
+		Genre:       domainstudio.GenreDrama,
+		AspectRatio: "16:9",
+		Logline:     "Minh arrives above the neon city.",
+		Characters:  []string{"Minh"},
+		Scenes: []contracts.StudioScriptScene{
+			{
+				Code:      "S01",
+				Title:     "Skyline Arrival",
+				Location:  "Rooftop",
+				TimeOfDay: "Night",
+				Summary:   "Minh surveys the skyline.",
+				Beats: []contracts.StudioScriptBeat{
+					{
+						Code:        "B01",
+						Description: "Camera pushes toward Minh at the railing.",
+						DurationSec: 4,
+						AssetTags:   []string{"@Minh"},
+						Dialogues: []contracts.StudioDialogueLine{
+							{Speaker: "Minh", Emotion: "calm", Line: "We made it."},
+						},
+						Narrations: []contracts.StudioNarrationSegment{},
+					},
+				},
+			},
+		},
+	}
+	saveScriptResp, _ := clientA.call(contracts.ActionStudioEpisodeSaveScript, contracts.StudioEpisodeSaveScriptPayload{
+		EpisodeID:        ep1ID,
+		RawScript:        &rawText,
+		NormalizedScript: normScript,
+	})
+	if !saveScriptResp.Success {
+		t.Fatalf("studio:episode_save_script failed: %+v", saveScriptResp.Error)
+	}
+	var epDetail contracts.StudioEpisodeDetailResult
+	if err := json.Unmarshal(saveScriptResp.Data, &epDetail); err != nil {
+		t.Fatalf("unmarshal episode detail: %v", err)
+	}
+	if epDetail.RawScript != rawText || epDetail.NormalizedScript == nil || len(epDetail.NormalizedScript.Scenes) != 1 {
+		t.Fatalf("script round-trip mismatch: %+v", epDetail)
+	}
+
+	// Prepare workspace images for Asset Bible, Keyframe Grid Split, and Timeline Clip.
+	charSheetPath := filepath.Join(projDetail.Project.RootDir, "assets", "minh_sheet.png")
+	createSizedPNG(t, charSheetPath, 8, 8, color.RGBA{R: 40, G: 180, B: 240, A: 255})
+
+	keyframeGridPath := filepath.Join(projDetail.Project.RootDir, "episodes", "ep01", "media", "keyframes", "shot1_grid.png")
+	createSizedPNG(t, keyframeGridPath, 16, 16, color.RGBA{R: 220, G: 90, B: 40, A: 255})
+
+	shot2StillPath := filepath.Join(projDetail.Project.RootDir, "episodes", "ep01", "media", "keyframes", "shot2_still.png")
+	createSizedPNG(t, shot2StillPath, 16, 9, color.RGBA{R: 60, G: 200, B: 120, A: 255})
+
+	assetResp, _ := clientA.call(contracts.ActionStudioAssetUpsert, contracts.StudioAssetUpsertPayload{
+		ProjectID:   projID,
+		Kind:        domainstudio.AssetCharacter,
+		Name:        "Minh",
+		CodeTag:     "@Minh",
+		Description: "Cyberpunk courier",
+		Prompt:      "Young courier in rain-soaked trench coat",
+		PrimaryPath: charSheetPath,
+	})
+	if !assetResp.Success {
+		t.Fatalf("studio:asset_upsert failed: %+v", assetResp.Error)
+	}
+
+	dur4 := 4
+	imgPrompt1 := "Wide rooftop neon skyline with @Minh"
+	vidPrompt1 := "Slow dolly push toward @Minh"
+	shot1Resp, _ := clientA.call(contracts.ActionStudioShotUpsert, contracts.StudioShotUpsertPayload{
+		EpisodeID:    ep1ID,
+		SceneCode:    "S01",
+		Title:        "Skyline Wide",
+		ShotMode:     domainstudio.ShotModeGrid2x2,
+		DurationSec:  &dur4,
+		ImagePrompt:  &imgPrompt1,
+		VideoPrompt:  &vidPrompt1,
+		RefAssetTags: []string{"@Minh"},
+		KeyframePath: &keyframeGridPath,
+	})
+	if !shot1Resp.Success {
+		t.Fatalf("studio:shot_upsert #1 failed: %+v", shot1Resp.Error)
+	}
+	var shot1Out contracts.StudioShotUpsertResult
+	if err := json.Unmarshal(shot1Resp.Data, &shot1Out); err != nil {
+		t.Fatalf("unmarshal shot1: %v", err)
+	}
+
+	dur3 := 3
+	shot2Resp, _ := clientA.call(contracts.ActionStudioShotUpsert, contracts.StudioShotUpsertPayload{
+		EpisodeID:    ep1ID,
+		SceneCode:    "S01",
+		Title:        "Close-up Minh",
+		ShotMode:     domainstudio.ShotModeSingle,
+		DurationSec:  &dur3,
+		KeyframePath: &shot2StillPath,
+	})
+	if !shot2Resp.Success {
+		t.Fatalf("studio:shot_upsert #2 failed: %+v", shot2Resp.Error)
+	}
+	var shot2Out contracts.StudioShotUpsertResult
+	if err := json.Unmarshal(shot2Resp.Data, &shot2Out); err != nil {
+		t.Fatalf("unmarshal shot2: %v", err)
+	}
+
+	reorderResp, _ := clientA.call(contracts.ActionStudioShotReorder, contracts.StudioShotReorderPayload{
+		EpisodeID: ep1ID,
+		ShotIDs:   []string{shot2Out.Shot.ID, shot1Out.Shot.ID},
+	})
+	if !reorderResp.Success {
+		t.Fatalf("studio:shot_reorder failed: %+v", reorderResp.Error)
+	}
+
+	// --- Phase 2: Grid Split, Versions ("keyframe" & "video"), Batch Preflight & Veo Pricing (Migration 022) ---
+	gridResp, _ := clientA.call(contracts.ActionStudioGridSplit, contracts.StudioGridSplitPayload{
+		ProjectID:  projID,
+		EpisodeID:  ep1ID,
+		TargetKind: domainstudio.TargetKeyframe,
+		TargetID:   shot1Out.Shot.ID,
+		ImagePath:  keyframeGridPath,
+		Rows:       2,
+		Cols:       2,
+	})
+	if !gridResp.Success {
+		t.Fatalf("studio:grid_split failed: %+v", gridResp.Error)
+	}
+	var gridOut contracts.StudioGridSplitResult
+	if err := json.Unmarshal(gridResp.Data, &gridOut); err != nil {
+		t.Fatalf("unmarshal studio:grid_split: %v", err)
+	}
+	if len(gridOut.Panels) != 4 || len(gridOut.Versions) != 4 {
+		t.Fatalf("expected 4 split panels and 4 saved versions, got panels=%d versions=%d", len(gridOut.Panels), len(gridOut.Versions))
+	}
+
+	// Verify studio:versions_list for canonical "keyframe" and "video", plus rejection of invalid legacy "shot_video".
+	verKFResp, _ := clientA.call(contracts.ActionStudioVersionsList, contracts.StudioVersionsListPayload{
+		TargetKind: domainstudio.TargetKeyframe,
+		TargetID:   shot1Out.Shot.ID,
+	})
+	if !verKFResp.Success {
+		t.Fatalf("studio:versions_list(keyframe) failed: %+v", verKFResp.Error)
+	}
+	var verKF contracts.StudioVersionsListResult
+	if err := json.Unmarshal(verKFResp.Data, &verKF); err != nil {
+		t.Fatalf("unmarshal versions(keyframe): %v", err)
+	}
+	if len(verKF.Versions) != 4 {
+		t.Fatalf("expected 4 keyframe versions, got %d", len(verKF.Versions))
+	}
+
+	verVidResp, _ := clientA.call(contracts.ActionStudioVersionsList, contracts.StudioVersionsListPayload{
+		TargetKind: domainstudio.TargetVideo,
+		TargetID:   shot1Out.Shot.ID,
+	})
+	if !verVidResp.Success {
+		t.Fatalf("studio:versions_list(video) failed: %+v", verVidResp.Error)
+	}
+	if !strings.Contains(string(verVidResp.Data), `"versions":[]`) {
+		t.Fatalf("expected non-null empty JSON array for video versions, got %s", verVidResp.Data)
+	}
+
+	badVerResp, _ := clientA.call(contracts.ActionStudioVersionsList, map[string]any{
+		"target_kind": "shot_video",
+		"target_id":   shot1Out.Shot.ID,
+	})
+	if badVerResp.Success || badVerResp.Error == nil || badVerResp.Error.Code != "ERR_VALIDATION" {
+		t.Fatalf("expected invalid target_kind 'shot_video' to fail with ERR_VALIDATION, got %+v", badVerResp)
+	}
+
+	// Activate split panel version #1 on shot1 and confirm keyframe_path updates.
+	selVerResp, _ := clientA.call(contracts.ActionStudioVersionSelect, contracts.StudioVersionSelectPayload{
+		VersionID: verKF.Versions[0].ID,
+	})
+	if !selVerResp.Success {
+		t.Fatalf("studio:version_select failed: %+v", selVerResp.Error)
+	}
+	var selVerOut contracts.StudioVersionSelectResult
+	if err := json.Unmarshal(selVerResp.Data, &selVerOut); err != nil {
+		t.Fatalf("unmarshal studio:version_select: %v", err)
+	}
+	if !selVerOut.Version.IsSelected || selVerOut.Episode == nil {
+		t.Fatalf("expected selected version and refreshed episode detail, got %+v", selVerOut)
+	}
+
+	// Batch Preflight (unconfigured provider): verifies localized BlockerItems before credentials exist.
+	blockedPreflightResp, _ := clientA.call(contracts.ActionStudioBatchPreflight, contracts.StudioBatchPreflightPayload{
+		ProjectID:    projID,
+		EpisodeID:    ep1ID,
+		Stage:        "generate_videos",
+		Model:        "gemini-aistudio/veo-2.0-generate-001",
+		ItemCount:    2,
+		UnitsPerItem: 5,
+	})
+	if !blockedPreflightResp.Success {
+		t.Fatalf("studio:batch_preflight (blocked) failed: %+v", blockedPreflightResp.Error)
+	}
+	var blockedPreflight contracts.BatchPreflightOutput
+	if err := json.Unmarshal(blockedPreflightResp.Data, &blockedPreflight); err != nil {
+		t.Fatalf("unmarshal blocked preflight: %v", err)
+	}
+	if blockedPreflight.Ready || len(blockedPreflight.BlockerItems) == 0 || blockedPreflight.BlockerItems[0].MsgKey == "" {
+		t.Fatalf("expected Ready=false with localized BlockerItems, got %+v", blockedPreflight)
+	}
+
+	// Configure gemini-aistudio credential + video model via WS (AutoCheck=false: zero network calls),
+	// then verify Batch Preflight resolves migration 022's gemini-aistudio Veo rate ($0.15/sec => $1.50 total).
+	credResp, _ := clientA.call(contracts.ActionProvidersCreateCredential, contracts.CreateCredentialPayload{
+		ProviderID: domainprovider.IDGeminiAIStudio,
+		Credential: contracts.CredentialInput{
+			Name:    "E2E Gemini Key",
+			Secrets: map[string]string{domainprovider.FieldAPIKey: "AIzaSy-e2e-offline-key"},
+		},
+	})
+	if !credResp.Success {
+		t.Fatalf("providers:create_credential failed: %+v", credResp.Error)
+	}
+	setModelsResp, _ := clientA.call(contracts.ActionProvidersSetModels, contracts.SetModelsPayload{
+		OwnerID: domainprovider.IDGeminiAIStudio,
+		Models: []contracts.ProviderModel{
+			{
+				ModelID:     "veo-2.0-generate-001",
+				DisplayName: "Veo 2",
+				Capability:  domainprovider.CapabilityVideo,
+				Enabled:     true,
+				IsDefault:   true,
+				UserAdded:   true,
+			},
+		},
+	})
+	if !setModelsResp.Success {
+		t.Fatalf("providers:set_models failed: %+v", setModelsResp.Error)
+	}
+
+	preflightResp, _ := clientA.call(contracts.ActionStudioBatchPreflight, contracts.StudioBatchPreflightPayload{
+		ProjectID:    projID,
+		EpisodeID:    ep1ID,
+		Stage:        "generate_videos",
+		Model:        "gemini-aistudio/veo-2.0-generate-001",
+		ItemCount:    2,
+		UnitsPerItem: 5,
+	})
+	if !preflightResp.Success {
+		t.Fatalf("studio:batch_preflight failed: %+v", preflightResp.Error)
+	}
+	var preflight contracts.BatchPreflightOutput
+	if err := json.Unmarshal(preflightResp.Data, &preflight); err != nil {
+		t.Fatalf("unmarshal studio:batch_preflight: %v", err)
+	}
+	if !preflight.Ready || preflight.ProviderID != "gemini-aistudio" || preflight.UnitPriceUSD != 0.15 || preflight.EstimatedUSD != 1.5 {
+		t.Fatalf("expected Ready=true, gemini-aistudio Veo rate 0.15 USD/sec and total 1.50 USD, got %+v", preflight)
+	}
+
+	costResp, _ := clientA.call(contracts.ActionStudioCostSummary, contracts.StudioCostSummaryPayload{
+		ProjectID: projID,
+		EpisodeID: ep1ID,
+	})
+	if !costResp.Success {
+		t.Fatalf("studio:cost_summary failed: %+v", costResp.Error)
+	}
+	var costSum contracts.StudioCostSummaryResult
+	if err := json.Unmarshal(costResp.Data, &costSum); err != nil {
+		t.Fatalf("unmarshal studio:cost_summary: %v", err)
+	}
+	var sawAIStudioVeo, sawVertexVeo bool
+	for _, pr := range costSum.Pricing {
+		if pr.ProviderID == "gemini-aistudio" && pr.Capability == "video" && pr.UnitPriceUSD == 0.15 {
+			sawAIStudioVeo = true
+		}
+		if pr.ProviderID == "gemini-vertex" && pr.Capability == "video" && pr.UnitPriceUSD == 0.15 {
+			sawVertexVeo = true
+		}
+	}
+	if !sawAIStudioVeo || !sawVertexVeo {
+		t.Fatalf("expected migration 022 gemini-aistudio & gemini-vertex Veo pricing rows in catalog, got %+v", costSum.Pricing)
+	}
+
+	// --- Phase 3: Timeline Get -> Apply Ops -> Conflict -> Undo (rev 1 -> 0) -> Redo -> NLE Export (.fcpxml & .otio) ---
+	tlGetResp, _ := clientA.call(contracts.ActionStudioTimelineGet, contracts.StudioIDPayload{ID: ep1ID})
+	if !tlGetResp.Success {
+		t.Fatalf("studio:timeline_get failed: %+v", tlGetResp.Error)
+	}
+	var tl0 contracts.StudioTimelineResult
+	if err := json.Unmarshal(tlGetResp.Data, &tl0); err != nil {
+		t.Fatalf("unmarshal timeline rev 0: %v", err)
+	}
+	if tl0.Revision != 0 || tl0.CanUndo || tl0.CanRedo {
+		t.Fatalf("expected initial rev 0 (can_undo=false, can_redo=false), got %+v", tl0)
+	}
+	var videoTrackID string
+	for _, tr := range tl0.Timeline.Tracks {
+		if tr.Kind == domainstudio.TrackVideo {
+			videoTrackID = tr.ID
+			break
+		}
+	}
+	if videoTrackID == "" {
+		t.Fatalf("expected default video track in initial timeline, got %+v", tl0.Timeline.Tracks)
+	}
+
+	applyResp, _ := clientA.call(contracts.ActionStudioTimelineApplyOps, contracts.StudioTimelineApplyOpsPayload{
+		EpisodeID:        ep1ID,
+		ExpectedRevision: 0,
+		Summary:          "Add opening shot clip, subtitle, and marker",
+		Ops: []contracts.StudioTimelineOp{
+			{
+				Op:      domainstudio.OpAddClip,
+				TrackID: videoTrackID,
+				Clip: &contracts.StudioTimelineClip{
+					ID:              "clip_ep1_1",
+					ShotID:          shot1Out.Shot.ID,
+					Label:           "Skyline Wide",
+					FilePath:        shot2StillPath,
+					TimelineStartMs: 0,
+					SourceInMs:      0,
+					SourceOutMs:     3000,
+					Speed:           1.0,
+					Volume:          1.0,
+					TransitionIn:    domainstudio.TransitionNone,
+				},
+			},
+			{
+				Op: domainstudio.OpAddSubtitle,
+				Subtitle: &contracts.StudioSubtitleCue{
+					ID:      "sub_1",
+					StartMs: 200,
+					EndMs:   2600,
+					Speaker: "Minh",
+					Text:    "We made it.",
+				},
+			},
+			{
+				Op: domainstudio.OpAddMarker,
+				Marker: &contracts.StudioTimelineMarker{
+					ID:     "mk_1",
+					TimeMs: 1000,
+					Label:  "Beat 1",
+				},
+			},
+		},
+	})
+	if !applyResp.Success {
+		t.Fatalf("studio:timeline_apply_ops failed: %+v", applyResp.Error)
+	}
+	var tl1 contracts.StudioTimelineResult
+	if err := json.Unmarshal(applyResp.Data, &tl1); err != nil {
+		t.Fatalf("unmarshal timeline rev 1: %v", err)
+	}
+	if tl1.Revision != 1 || !tl1.CanUndo || tl1.CanRedo || tl1.DurationMs != 3000 {
+		t.Fatalf("expected rev 1 (can_undo=true, can_redo=false, duration=3000), got %+v", tl1)
+	}
+
+	// Stale expected_revision MUST be rejected with ERR_CONFLICT.
+	conflictResp, _ := clientA.call(contracts.ActionStudioTimelineApplyOps, contracts.StudioTimelineApplyOpsPayload{
+		EpisodeID:        ep1ID,
+		ExpectedRevision: 0,
+		Summary:          "Stale write",
+		Ops: []contracts.StudioTimelineOp{
+			{
+				Op:       domainstudio.OpRemoveMarker,
+				MarkerID: "mk_1",
+			},
+		},
+	})
+	if conflictResp.Success || conflictResp.Error == nil || conflictResp.Error.Code != "ERR_CONFLICT" {
+		t.Fatalf("expected ERR_CONFLICT on stale expected_revision=0, got %+v", conflictResp)
+	}
+
+	// Undo rev 1 -> rev 0 baseline.
+	undoResp, _ := clientA.call(contracts.ActionStudioTimelineUndo, contracts.StudioTimelineRevisionNavPayload{
+		EpisodeID:        ep1ID,
+		ExpectedRevision: 1,
+	})
+	if !undoResp.Success {
+		t.Fatalf("studio:timeline_undo (rev 1 -> 0) failed: %+v", undoResp.Error)
+	}
+	var tlUndo contracts.StudioTimelineResult
+	if err := json.Unmarshal(undoResp.Data, &tlUndo); err != nil {
+		t.Fatalf("unmarshal timeline undo: %v", err)
+	}
+	if tlUndo.Revision != 0 || tlUndo.CanUndo || !tlUndo.CanRedo || tlUndo.DurationMs != 0 {
+		t.Fatalf("expected undo to restore rev 0 (can_undo=false, can_redo=true, duration=0), got %+v", tlUndo)
+	}
+
+	// Redo rev 0 -> rev 1.
+	redoResp, _ := clientA.call(contracts.ActionStudioTimelineRedo, contracts.StudioTimelineRevisionNavPayload{
+		EpisodeID:        ep1ID,
+		ExpectedRevision: 0,
+	})
+	if !redoResp.Success {
+		t.Fatalf("studio:timeline_redo (rev 0 -> 1) failed: %+v", redoResp.Error)
+	}
+	var tlRedo contracts.StudioTimelineResult
+	if err := json.Unmarshal(redoResp.Data, &tlRedo); err != nil {
+		t.Fatalf("unmarshal timeline redo: %v", err)
+	}
+	if tlRedo.Revision != 1 || !tlRedo.CanUndo || tlRedo.CanRedo || tlRedo.DurationMs != 3000 || len(tlRedo.Timeline.Subtitles) != 1 {
+		t.Fatalf("expected redo to restore rev 1 state, got %+v", tlRedo)
+	}
+
+	// Export NLE drafts in both FCPXML (.fcpxml) and OpenTimelineIO (.otio) formats.
+	includeMedia := false
+	fcpxmlResp, _ := clientA.call(contracts.ActionStudioTimelineExportNLE, contracts.StudioTimelineExportNLEPayload{
+		EpisodeID:        ep1ID,
+		Format:           domainstudio.NLEFormatFCPXML,
+		ProjectName:      "Neon Horizon Ep01",
+		IncludeMediaCopy: &includeMedia,
+	})
+	if !fcpxmlResp.Success {
+		t.Fatalf("studio:timeline_export_nle(fcpxml) failed: %+v", fcpxmlResp.Error)
+	}
+	var fcpxmlOut contracts.ExportNLEDraftOutput
+	if err := json.Unmarshal(fcpxmlResp.Data, &fcpxmlOut); err != nil {
+		t.Fatalf("unmarshal fcpxml export: %v", err)
+	}
+	if filepath.Ext(fcpxmlOut.ExportPath) != ".fcpxml" {
+		t.Fatalf("expected .fcpxml export path, got %q", fcpxmlOut.ExportPath)
+	}
+	fcpxmlBytes, err := os.ReadFile(fcpxmlOut.ExportPath)
+	if err != nil || !strings.Contains(string(fcpxmlBytes), "<fcpxml") {
+		t.Fatalf("expected valid <fcpxml document at %q, err=%v", fcpxmlOut.ExportPath, err)
+	}
+
+	otioResp, _ := clientA.call(contracts.ActionStudioTimelineExportNLE, contracts.StudioTimelineExportNLEPayload{
+		EpisodeID:        ep1ID,
+		Format:           domainstudio.NLEFormatOTIO,
+		ProjectName:      "Neon Horizon Ep01",
+		IncludeMediaCopy: &includeMedia,
+	})
+	if !otioResp.Success {
+		t.Fatalf("studio:timeline_export_nle(otio) failed: %+v", otioResp.Error)
+	}
+	var otioOut contracts.ExportNLEDraftOutput
+	if err := json.Unmarshal(otioResp.Data, &otioOut); err != nil {
+		t.Fatalf("unmarshal otio export: %v", err)
+	}
+	if filepath.Ext(otioOut.ExportPath) != ".otio" {
+		t.Fatalf("expected .otio export path, got %q", otioOut.ExportPath)
+	}
+	otioBytes, err := os.ReadFile(otioOut.ExportPath)
+	if err != nil || !strings.Contains(string(otioBytes), "Timeline.1") {
+		t.Fatalf("expected valid OTIO JSON at %q, err=%v", otioOut.ExportPath, err)
+	}
+
+	// Verify Agent MCP workspace_read_file can inspect both exported .fcpxml and .otio drafts.
+	ctx := context.Background()
+	if _, err := h.core.Agent().EnsureActiveConversation(ctx, "codex", "Studio Export Check"); err != nil {
+		t.Fatalf("ensure active conversation: %v", err)
+	}
+	serverT, clientT := mcp.NewInMemoryTransports()
+	if _, err := h.core.Agent().BuildMCPServer().Connect(ctx, serverT, nil); err != nil {
+		t.Fatalf("connect mcp server: %v", err)
+	}
+	mcpClient, err := mcp.NewClient(&mcp.Implementation{Name: "e2e-studio-mcp"}, nil).Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatalf("connect mcp client: %v", err)
+	}
+	defer mcpClient.Close()
+
+	for _, exportedPath := range []string{fcpxmlOut.ExportPath, otioOut.ExportPath} {
+		readPayload, isReadErr := callE2EMCPTool(t, mcpClient, "workspace_read_file", map[string]any{
+			"path": exportedPath,
+		})
+		if isReadErr || readPayload["content"] == "" {
+			t.Fatalf("expected MCP workspace_read_file to read %q, got isErr=%v payload=%v", exportedPath, isReadErr, readPayload)
+		}
 	}
 }

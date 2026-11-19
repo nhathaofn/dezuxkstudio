@@ -110,7 +110,7 @@ func TestCorruptImageResilience_Batch(t *testing.T) {
 	}
 
 	eng := Default()
-	results := eng.ProcessBatch(context.Background(), items, 4)
+	results := eng.ProcessBatchProgress(context.Background(), items, 4, nil)
 
 	if len(results) != len(items) {
 		t.Fatalf("expected %d results, got %d", len(items), len(results))

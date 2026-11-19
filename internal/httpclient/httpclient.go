@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
+	"strings"
 	"syscall"
 	"time"
 
@@ -33,20 +36,38 @@ func New(c config.NetworkConfig) *http.Client {
 	}
 }
 
+var (
+	cgnatPrefix      = netip.MustParsePrefix("100.64.0.0/10")
+	ietfProtoPrefix  = netip.MustParsePrefix("192.0.0.0/24")
+	ipv6ULAPrefix    = netip.MustParsePrefix("fc00::/7")
+	sensitiveHeaders = []string{"Authorization", "X-Goog-Api-Key", "X-Api-Key", "Proxy-Authorization", "Cookie"}
+)
+
+func isUnsafeDialAddr(addr netip.Addr) bool {
+	if !addr.IsValid() {
+		return true
+	}
+	addr = addr.WithZone("").Unmap()
+	return addr.IsLinkLocalUnicast() ||
+		addr.IsLinkLocalMulticast() ||
+		addr.IsUnspecified() ||
+		addr.IsMulticast() ||
+		cgnatPrefix.Contains(addr) ||
+		ietfProtoPrefix.Contains(addr) ||
+		ipv6ULAPrefix.Contains(addr)
+}
+
 func rejectLinkLocalControl(_, address string, _ syscall.RawConn) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
 		return fmt.Errorf("httpclient: invalid dial address %q: %w", address, err)
 	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return nil
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return fmt.Errorf("httpclient: invalid dial IP %q: %w", host, err)
 	}
-	if v4 := ip.To4(); v4 != nil {
-		ip = v4
-	}
-	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
-		return fmt.Errorf("httpclient: blocked outbound connection to %s", ip)
+	if isUnsafeDialAddr(addr) {
+		return fmt.Errorf("httpclient: blocked outbound connection to %s", addr.WithZone("").Unmap())
 	}
 	return nil
 }
@@ -59,7 +80,30 @@ func WithTimeout(base *http.Client, timeout time.Duration) *http.Client {
 	return &c
 }
 
+func sameURLOrigin(a, b *url.URL) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
+}
+
+func isLocalOrPrivateRedirectHost(rawHost string) bool {
+	h := strings.TrimSuffix(strings.ToLower(rawHost), ".")
+	if h == "" {
+		return true
+	}
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return true
+	}
+	if addr, err := netip.ParseAddr(h); err == nil {
+		addr = addr.WithZone("").Unmap()
+		return addr.IsLoopback() || addr.IsPrivate() || isUnsafeDialAddr(addr)
+	}
+	return false
+}
+
 // WithRedirectGuard clones base and validates every redirect hop (capped at 10 hops).
+// Cross-origin redirects strip sensitive auth headers and block hops to loopback or private hosts.
 func WithRedirectGuard(base *http.Client, validateURL func(raw string) error) *http.Client {
 	if base == nil {
 		base = &http.Client{}
@@ -70,6 +114,14 @@ func WithRedirectGuard(base *http.Client, validateURL func(raw string) error) *h
 		if validateURL != nil {
 			if err := validateURL(req.URL.String()); err != nil {
 				return fmt.Errorf("blocked redirect target: %w", err)
+			}
+		}
+		if len(via) > 0 && !sameURLOrigin(req.URL, via[len(via)-1].URL) {
+			if isLocalOrPrivateRedirectHost(req.URL.Hostname()) {
+				return fmt.Errorf("blocked redirect target: cross-origin redirect to local or private host %q", req.URL.Hostname())
+			}
+			for _, hdr := range sensitiveHeaders {
+				req.Header.Del(hdr)
 			}
 		}
 		if prev != nil {

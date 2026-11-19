@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -461,5 +462,29 @@ func TestAgentForeignKeyEnforcementAndCascade(t *testing.T) {
 	defer rows.Close()
 	if rows.Next() {
 		t.Fatal("expected PRAGMA foreign_key_check to return zero violations")
+	}
+}
+
+func TestOpenHandlesSpecialCharactersInFilePath(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "studio #v1&mode=test.db")
+	db, err := Open(context.Background(), Options{
+		Path:          dbPath,
+		BackupDir:     filepath.Join(dir, "backups"),
+		BackupsToKeep: 1,
+		BusyTimeout:   time.Second,
+		Logger:        slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatalf("Open(%q) failed: %v", dbPath, err)
+	}
+	defer db.Close()
+
+	var one int
+	if err := db.read().QueryRow("SELECT 1").Scan(&one); err != nil || one != 1 {
+		t.Fatalf("expected reader SELECT 1 to succeed on encoded DSN, got %d err=%v", one, err)
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("expected sqlite file to exist at literal path %q (not truncated at ?/#): %v", dbPath, err)
 	}
 }

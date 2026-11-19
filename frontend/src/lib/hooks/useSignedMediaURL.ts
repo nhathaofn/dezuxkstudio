@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { appConfig } from "../../config/appConfig";
 import { signMediaURL } from "../rtClient/media";
 import type { ActionError } from "../rtClient/errors";
@@ -60,7 +60,11 @@ export class SignedMediaSession {
   private skewMs: number = appConfig.media.ticketRenewSkewMs;
   private disposed: boolean = false;
   private inFlightPromise: Promise<string | null> | null = null;
+  private inFlightKey: string | null = null;
+  private inFlightSeq: number = 0;
   private attachedMedia: HTMLMediaElement | null = null;
+  private pendingLoadedCleanup: (() => void) | null = null;
+  private mediaErrorRetries: number = 0;
 
   private recovery: {
     currentTime: number;
@@ -122,8 +126,14 @@ export class SignedMediaSession {
     this.skewMs = nextSkewMs;
     this.ttlSeconds = nextTtl;
 
+    if (changed) {
+      this.mediaErrorRetries = 0;
+      this.clearPendingLoadedListener();
+    }
+
     if (!trimmedId) {
       this.clearRenewTimer();
+      this.clearPendingLoadedListener();
       this.updateState({
         url: null,
         ticket: null,
@@ -139,6 +149,13 @@ export class SignedMediaSession {
     }
   }
 
+  private clearPendingLoadedListener() {
+    if (this.pendingLoadedCleanup !== null) {
+      this.pendingLoadedCleanup();
+      this.pendingLoadedCleanup = null;
+    }
+  }
+
   public clearRenewTimer() {
     if (this.renewTimer !== null) {
       clearTimeout(this.renewTimer);
@@ -151,28 +168,51 @@ export class SignedMediaSession {
     this.notify();
   }
 
+  /** React StrictMode remounts after simulated unmount: restore session from disposed state cleanly. */
+  public revive(): void {
+    if (!this.disposed) return;
+    this.disposed = false;
+    this.mediaErrorRetries = 0;
+    this.inFlightPromise = null;
+    this.inFlightKey = null;
+  }
+
   public async renew(): Promise<string | null> {
     if (this.disposed) return null;
-    if (!this.currentAssetId) {
+    const requestedId = this.currentAssetId;
+    const requestedPurpose = this.purpose;
+    const requestedTtl = this.ttlSeconds;
+    if (!requestedId) {
+      this.inFlightPromise = null;
+      this.inFlightKey = null;
       this.updateState({ url: null, ticket: null, expiresAt: null, loading: false, error: null });
       return null;
     }
 
-    if (this.inFlightPromise) {
+    const reqKey = `${requestedId}:${requestedPurpose}:${requestedTtl ?? ""}`;
+    if (this.inFlightPromise && this.inFlightKey === reqKey) {
       return this.inFlightPromise;
     }
 
     this.updateState({ loading: true, error: null });
 
-    const promise = (async () => {
+    const reqSeq = ++this.inFlightSeq;
+    const promise: Promise<string | null> = (async () => {
       try {
         const result = await signMediaURL({
-          asset_id: this.currentAssetId!,
-          purpose: this.purpose,
-          ttl_seconds: this.ttlSeconds,
+          asset_id: requestedId,
+          purpose: requestedPurpose,
+          ttl_seconds: requestedTtl,
         });
 
-        if (this.disposed) return null;
+        if (
+          this.disposed ||
+          this.currentAssetId !== requestedId ||
+          this.purpose !== requestedPurpose ||
+          this.ttlSeconds !== requestedTtl
+        ) {
+          return null;
+        }
 
         // Convert seconds to milliseconds if timestamp is Unix seconds (< 1e11)
         const expMs = result.expires_at < 1e11 ? result.expires_at * 1000 : result.expires_at;
@@ -189,9 +229,13 @@ export class SignedMediaSession {
         if (this.autoRenew) {
           this.clearRenewTimer();
           const now = Date.now();
-          const delayMs = Math.max(1000, expMs - now - this.skewMs);
+          const delayMs = Math.max(
+            appConfig.media.minTicketRenewDelayMs,
+            expMs - now - this.skewMs
+          );
           this.renewTimer = setTimeout(() => {
-            if (!this.disposed) {
+            if (!this.disposed && this.currentAssetId === requestedId) {
+              this.mediaErrorRetries = 0;
               void this.renew();
             }
           }, delayMs);
@@ -203,6 +247,7 @@ export class SignedMediaSession {
           this.recovery = null;
           const el = rec.mediaElement || this.attachedMedia;
           if (el) {
+            this.clearPendingLoadedListener();
             const restore = () => {
               try {
                 if (rec.currentTime > 0) {
@@ -220,7 +265,11 @@ export class SignedMediaSession {
               restore();
             } else if (typeof el.addEventListener === "function") {
               const onLoaded = () => {
+                this.pendingLoadedCleanup = null;
+                el.removeEventListener?.("loadedmetadata", onLoaded);
                 restore();
+              };
+              this.pendingLoadedCleanup = () => {
                 el.removeEventListener?.("loadedmetadata", onLoaded);
               };
               el.addEventListener("loadedmetadata", onLoaded);
@@ -230,22 +279,37 @@ export class SignedMediaSession {
 
         return result.url;
       } catch (err) {
-        if (this.disposed) return null;
+        if (
+          this.disposed ||
+          this.currentAssetId !== requestedId ||
+          this.purpose !== requestedPurpose ||
+          this.ttlSeconds !== requestedTtl
+        ) {
+          return null;
+        }
         const errObj = err instanceof Error ? err : new Error(String(err));
         this.updateState({ loading: false, error: errObj });
         return null;
       } finally {
-        this.inFlightPromise = null;
+        if (this.inFlightSeq === reqSeq) {
+          this.inFlightPromise = null;
+          this.inFlightKey = null;
+        }
       }
     })();
 
     this.inFlightPromise = promise;
+    this.inFlightKey = reqKey;
     return promise;
   }
 
   public handleMediaError(mediaElement?: HTMLElement | null): void {
+    if (this.mediaErrorRetries >= appConfig.media.maxMediaErrorRetries) {
+      return;
+    }
+    this.mediaErrorRetries += 1;
     const el = (mediaElement as HTMLMediaElement | null) || this.attachedMedia;
-    if (el) {
+    if (el && typeof el.currentTime === "number") {
       this.recovery = {
         currentTime: el.currentTime || 0,
         wasPlaying: !el.paused && !el.ended,
@@ -257,7 +321,10 @@ export class SignedMediaSession {
 
   public dispose(): void {
     this.disposed = true;
+    this.inFlightPromise = null;
+    this.inFlightKey = null;
     this.clearRenewTimer();
+    this.clearPendingLoadedListener();
     this.listeners.clear();
     this.attachedMedia = null;
     this.recovery = null;
@@ -290,10 +357,12 @@ export function useSignedMediaURL(
   });
 
   useEffect(() => {
+    session.revive();
     return session.subscribe(setState);
   }, [session]);
 
   useEffect(() => {
+    session.revive();
     session.configure(assetId, { purpose, autoRenew, skewMs, ttlSeconds });
   }, [session, assetId, purpose, autoRenew, skewMs, ttlSeconds]);
 
@@ -326,4 +395,85 @@ export function useSignedMediaURL(
     handleMediaError,
     mediaRef,
   };
+}
+
+export interface UseSignedMediaURLsResult {
+  urls: Record<string, string>;
+  handleAssetMediaError: (assetId?: string | null, mediaElement?: HTMLElement | null) => void;
+}
+
+/**
+ * Maintains SignedMediaSession instances for a dynamic set of asset IDs (e.g. multi-track timelines),
+ * providing proactive ticket renewal, bounded media error recovery, and deterministic unmount cleanup.
+ */
+export function useSignedMediaURLs(
+  assetIds: readonly string[],
+  purpose = "preview"
+): UseSignedMediaURLsResult {
+  const sessionsRef = useRef<Map<string, { session: SignedMediaSession; unsubscribe: () => void }>>(
+    new Map()
+  );
+  const [rawUrls, setRawUrls] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    const map = sessionsRef.current;
+    const wanted = new Set(assetIds.map((id) => id.trim()).filter(Boolean));
+
+    for (const [id, entry] of map.entries()) {
+      if (!wanted.has(id)) {
+        entry.unsubscribe();
+        entry.session.dispose();
+        map.delete(id);
+      }
+    }
+
+    for (const id of wanted) {
+      const existing = map.get(id);
+      if (existing) {
+        existing.session.configure(id, { purpose });
+        continue;
+      }
+      const session = new SignedMediaSession({ purpose });
+      session.configure(id, { purpose });
+      const unsubscribe = session.subscribe((s) => {
+        if (s.url) {
+          setRawUrls((prev) => (prev[id] === s.url ? prev : { ...prev, [id]: s.url! }));
+        }
+      });
+      map.set(id, { session, unsubscribe });
+    }
+  }, [assetIds, purpose]);
+
+  useEffect(() => {
+    const map = sessionsRef.current;
+    return () => {
+      for (const entry of map.values()) {
+        entry.unsubscribe();
+        entry.session.dispose();
+      }
+      map.clear();
+    };
+  }, []);
+
+  const urls = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const rawId of assetIds) {
+      const id = rawId.trim();
+      if (id && rawUrls[id]) {
+        out[id] = rawUrls[id];
+      }
+    }
+    return out;
+  }, [assetIds, rawUrls]);
+
+  const handleAssetMediaError = useCallback(
+    (assetId?: string | null, mediaElement?: HTMLElement | null) => {
+      const id = assetId?.trim();
+      if (!id) return;
+      sessionsRef.current.get(id)?.session.handleMediaError(mediaElement);
+    },
+    []
+  );
+
+  return { urls, handleAssetMediaError };
 }

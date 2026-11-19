@@ -62,6 +62,15 @@ func TestBinariesModule_SetPathGuard(t *testing.T) {
 			t.Fatalf("expected repo to remain unchanged, got %q", got)
 		}
 
+		hDl, ok := reg.Lookup(contracts.ActionBinariesDownload)
+		if !ok {
+			t.Fatalf("%s not registered", contracts.ActionBinariesDownload)
+		}
+		_, dlErr := hDl(context.Background(), &realtime.Request{}, []byte(`{"id":"ffmpeg"}`))
+		if !errors.As(dlErr, &ae) || ae.Code != apperr.CodeUnavailable || ae.Message != wantMsg {
+			t.Fatalf("expected ERR_UNAVAILABLE on binaries:download when locked, got %v", dlErr)
+		}
+
 		// Read-only binaries:probe stays available when LockHostAdmin is true.
 		hProbe, ok := reg.Lookup(contracts.ActionBinariesProbe)
 		if !ok {

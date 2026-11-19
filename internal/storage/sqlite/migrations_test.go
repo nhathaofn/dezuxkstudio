@@ -65,12 +65,30 @@ func TestMigrations(t *testing.T) {
 		}
 
 		// Ensure core tables exist
-		for _, tbl := range []string{"_schema_migrations", "app_metadata", "user_settings", "binary_configs", "agent_providers", "agent_chat_messages", "agent_allowed_dirs"} {
+		for _, tbl := range []string{"_schema_migrations", "app_metadata", "user_settings", "binary_configs", "agent_providers", "agent_chat_messages", "agent_allowed_dirs", "studio_projects", "studio_episodes", "studio_assets", "studio_shots", "studio_jobs", "studio_pricing_catalog", "studio_cost_ledger", "studio_media_versions", "studio_qc_reports", "studio_timelines", "studio_timeline_revisions"} {
 			var exists int
 			err := db.sql.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", tbl).Scan(&exists)
 			if err != nil || exists != 1 {
 				t.Errorf("expected core table %s to exist, exists=%d, err=%v", tbl, exists, err)
 			}
+		}
+
+		// Verify 022 Gemini Veo pricing catalog rows exist and foreign keys are clean.
+		for _, provID := range []string{"gemini-aistudio", "gemini-vertex"} {
+			var rate float64
+			if err := db.sql.QueryRow(
+				"SELECT unit_price_usd FROM studio_pricing_catalog WHERE provider_id = ? AND capability = 'video'", provID,
+			).Scan(&rate); err != nil || rate != 0.150 {
+				t.Errorf("expected %s video pricing 0.150, got %v err=%v", provID, rate, err)
+			}
+		}
+		fkRows, err := db.sql.Query("PRAGMA foreign_key_check")
+		if err != nil {
+			t.Fatalf("PRAGMA foreign_key_check failed: %v", err)
+		}
+		defer fkRows.Close()
+		if fkRows.Next() {
+			t.Fatal("expected PRAGMA foreign_key_check to return zero rows on fresh database")
 		}
 	})
 

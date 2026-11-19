@@ -3,13 +3,21 @@ package test
 import (
 	"context"
 	"encoding/json"
+	"image/color"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/coder/websocket"
 
 	"app/internal/config"
 	"app/internal/contracts"
 	domainprovider "app/internal/domain/provider"
+	domainstudio "app/internal/domain/studio"
 )
 
 const (
@@ -58,7 +66,7 @@ func assertValidationFrame(t *testing.T, action string, resp frame) {
 	}
 }
 
-func assertProvidersAccessible(t *testing.T, ws *wsClient) {
+func assertProvidersReadOnly(t *testing.T, ws *wsClient) contracts.ProvidersListResult {
 	t.Helper()
 
 	listRes, _ := ws.call(contracts.ActionProvidersList, contracts.Empty{})
@@ -77,6 +85,12 @@ func assertProvidersAccessible(t *testing.T, ws *wsClient) {
 	if !defRes.Success {
 		t.Fatalf("providers:defaults failed: %+v", defRes.Error)
 	}
+	return list
+}
+
+func assertProvidersAccessible(t *testing.T, ws *wsClient) {
+	t.Helper()
+	list := assertProvidersReadOnly(t, ws)
 
 	updRes, _ := ws.call(contracts.ActionProvidersUpdateSettings, contracts.UpdateSettingsPayload{
 		OwnerID:  list.Builtins[0].ID,
@@ -196,6 +210,9 @@ func TestServerModeAuthz_DefaultLocked(t *testing.T) {
 	if sysInfo.Mode != config.ModeServer {
 		t.Fatalf("expected mode %q, got %q", config.ModeServer, sysInfo.Mode)
 	}
+	if sysInfo.Paths != (contracts.PathsInfo{}) {
+		t.Fatalf("expected system:info host paths hidden in locked server mode, got %+v", sysInfo.Paths)
+	}
 
 	for _, readAction := range []string{
 		contracts.ActionBinariesList,
@@ -208,7 +225,45 @@ func TestServerModeAuthz_DefaultLocked(t *testing.T) {
 		}
 	}
 
-	assertProvidersAccessible(t, ws)
+	list := assertProvidersReadOnly(t, ws)
+
+	lockedHostAdmin := []struct {
+		action  string
+		payload any
+	}{
+		{contracts.ActionBinariesDownload, contracts.BinaryIDPayload{ID: "ffmpeg"}},
+		{contracts.ActionDiagnosticsExport, contracts.Empty{}},
+		{contracts.ActionSystemCheckUpdate, contracts.Empty{}},
+		{contracts.ActionStudioPricingUpsert, contracts.StudioPricingUpsertPayload{
+			ProviderID: "openai", ModelID: "gpt-4o", Capability: "text", Unit: "1k_tokens", UnitPriceUSD: 0.01,
+		}},
+		{contracts.ActionProvidersCreateCredential, contracts.CreateCredentialPayload{ProviderID: list.Builtins[0].ID}},
+		{contracts.ActionProvidersUpdateCredential, contracts.UpdateCredentialPayload{ID: "c1"}},
+		{contracts.ActionProvidersDeleteCredential, contracts.ProviderIDPayload{ID: "c1"}},
+		{contracts.ActionProvidersActivate, contracts.ProviderIDPayload{ID: "c1"}},
+		{contracts.ActionProvidersTestCredential, contracts.ProviderIDPayload{ID: "c1"}},
+		{contracts.ActionProvidersCreateCustom, contracts.CustomProviderInput{Name: "x"}},
+		{contracts.ActionProvidersUpdateCustom, contracts.UpdateCustomPayload{ID: "x"}},
+		{contracts.ActionProvidersDeleteCustom, contracts.ProviderIDPayload{ID: "x"}},
+		{contracts.ActionProvidersTestCustom, contracts.ProviderIDPayload{ID: "x"}},
+		{contracts.ActionProvidersDiscoverModels, contracts.DiscoverModelsPayload{CustomID: "x"}},
+		{contracts.ActionProvidersDiscoverBuiltin, contracts.ProviderIDPayload{ID: list.Builtins[0].ID}},
+		{contracts.ActionProvidersSetModels, contracts.SetModelsPayload{OwnerID: list.Builtins[0].ID}},
+		{contracts.ActionProvidersUpdateSettings, contracts.UpdateSettingsPayload{OwnerID: list.Builtins[0].ID, Settings: map[string]string{"request_gap_ms": "100"}}},
+		{contracts.ActionProvidersSetDefault, contracts.SetDefaultPayload{Purpose: "text", Model: "openai/gpt-4o"}},
+		{contracts.ActionAgentLogin, contracts.AgentLoginPayload{ID: "claude"}},
+		{contracts.ActionAgentLoginCode, contracts.AgentLoginCodePayload{ID: "codex", Code: "123"}},
+		{contracts.ActionAgentLogout, contracts.AgentProviderIDPayload{ID: "claude"}},
+		{contracts.ActionAgentConnect, contracts.AgentProviderIDPayload{ID: "claude"}},
+		{contracts.ActionAgentSetModel, contracts.AgentSetModelPayload{ID: "claude", Model: "sonnet"}},
+		{contracts.ActionAgentLinkProvider, contracts.AgentLinkProviderPayload{AgentProviderID: "claude", ProviderID: "anthropic", CredentialID: "c1"}},
+		{contracts.ActionAgentUnlinkProvider, contracts.AgentProviderIDPayload{ID: "claude"}},
+		{contracts.ActionAgentReloadCustomizations, contracts.Empty{}},
+	}
+	for _, tc := range lockedHostAdmin {
+		r, _ := ws.call(tc.action, tc.payload)
+		assertUnavailableFrame(t, tc.action, r, errHostAdminLocked)
+	}
 }
 
 func TestServerModeAuthz_AllowHostAdminEnabled(t *testing.T) {
@@ -639,5 +694,276 @@ func TestServerModeAuthz_PreferencesProtocolRejection(t *testing.T) {
 					tc.name, baseline, current)
 			}
 		})
+	}
+}
+
+func TestServerModeAuthz_StudioOpenExportFolderLockdown(t *testing.T) {
+	t.Run("DefaultLocked", func(t *testing.T) {
+		h := startServerCore(t, false)
+		ws := h.dial()
+
+		resp, _ := ws.call(contracts.ActionStudioOpenExportFolder, contracts.StudioOpenExportFolderPayload{
+			EpisodeID: "ep-any",
+		})
+		assertUnavailableFrame(t, contracts.ActionStudioOpenExportFolder, resp, errHostAdminLocked)
+	})
+
+	t.Run("AllowHostAdminEnabled", func(t *testing.T) {
+		h := startServerCore(t, true)
+		ws := h.dial()
+
+		projResp, _ := ws.call(contracts.ActionStudioProjectCreate, contracts.StudioProjectCreatePayload{
+			Title: "Server Admin Film",
+		})
+		if !projResp.Success {
+			t.Fatalf("studio:project_create failed: %+v", projResp.Error)
+		}
+		var detail contracts.StudioProjectDetailResult
+		if err := json.Unmarshal(projResp.Data, &detail); err != nil {
+			t.Fatalf("unmarshal project detail: %v", err)
+		}
+
+		openResp, _ := ws.call(contracts.ActionStudioOpenExportFolder, contracts.StudioOpenExportFolderPayload{
+			EpisodeID: detail.ActiveEpisode.Episode.ID,
+		})
+		if !openResp.Success {
+			t.Fatalf("studio:open_export_folder failed with AllowHostAdmin=true: %+v", openResp.Error)
+		}
+	})
+}
+
+func TestServerModeAuthz_StudioAndMediaFileGuards(t *testing.T) {
+	h := startServerCore(t, false)
+	ws := h.dial()
+
+	infoResp, _ := ws.call(contracts.ActionSystemInfo, contracts.Empty{})
+	if !infoResp.Success {
+		t.Fatalf("system:info failed: %+v", infoResp.Error)
+	}
+	var sysInfo wireSystemInfo
+	if err := json.Unmarshal(infoResp.Data, &sysInfo); err != nil {
+		t.Fatalf("unmarshal system:info: %v", err)
+	}
+
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	downloadByPath := func(rawPath string) int {
+		t.Helper()
+		q := url.Values{}
+		q.Set("path", rawPath)
+		req, err := http.NewRequest(http.MethodGet, h.httpURL("/api/media/download?"+q.Encode()), nil)
+		if err != nil {
+			t.Fatalf("new download request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+h.token)
+		res, err := httpClient.Do(req)
+		if err != nil {
+			t.Fatalf("do download request: %v", err)
+		}
+		defer res.Body.Close()
+		return res.StatusCode
+	}
+
+	// 1. media:register_input on untrusted file outside workspace MUST be rejected,
+	//    AND subsequent GET /api/media/download?path=... MUST still return 403 (no allowedRoots poisoning!).
+	outsideDir := createE2EWorkspaceRoot(t, "ServerUntrustedOutside")
+	outsidePNG := filepath.Join(outsideDir, "secret_capture.png")
+	createSizedPNG(t, outsidePNG, 4, 4, color.RGBA{R: 200, G: 20, B: 20, A: 255})
+
+	regOutsideResp, _ := ws.call(contracts.ActionMediaRegisterInput, contracts.MediaRegisterInputPayload{
+		FilePath:   outsidePNG,
+		Kind:       "image",
+		SourceNode: "untrusted_probe",
+	})
+	if regOutsideResp.Success || regOutsideResp.Error == nil || regOutsideResp.Error.Code != "ERR_UNAUTHORIZED" {
+		t.Fatalf("expected media:register_input outside workspace to fail with ERR_UNAUTHORIZED, got %+v", regOutsideResp)
+	}
+	if strings.Contains(regOutsideResp.Error.Message, outsideDir) {
+		t.Fatalf("error message leaked server host path %q: %q", outsideDir, regOutsideResp.Error.Message)
+	}
+	if code := downloadByPath(outsidePNG); code != http.StatusForbidden {
+		t.Fatalf("expected GET /api/media/download?path=<outside> to return 403 after rejected register_input, got %d", code)
+	}
+
+	// Positive control: registering & downloading a legitimate image inside MediaDir succeeds in --mode server.
+	tree := h.core.WorkspaceTree()
+	trustedMediaPNG := filepath.Join(tree.MediaDir, "images", "trusted_frame.png")
+	createSizedPNG(t, trustedMediaPNG, 4, 4, color.RGBA{R: 20, G: 180, B: 90, A: 255})
+	regTrustedResp, _ := ws.call(contracts.ActionMediaRegisterInput, contracts.MediaRegisterInputPayload{
+		FilePath:   trustedMediaPNG,
+		Kind:       "image",
+		SourceNode: "trusted_probe",
+	})
+	if !regTrustedResp.Success {
+		t.Fatalf("expected media:register_input inside MediaDir to succeed, got %+v", regTrustedResp.Error)
+	}
+	if code := downloadByPath(trustedMediaPNG); code != http.StatusOK {
+		t.Fatalf("expected GET /api/media/download?path=<MediaDir/images/...> to return 200, got %d", code)
+	}
+
+	// 2. GET /api/media/download?path=<workspace>/.env and internal app.db MUST return 403 Forbidden.
+	wsEnvPath := filepath.Join(tree.WorkspaceDir, ".env")
+	if err := os.WriteFile(wsEnvPath, []byte("OPENAI_API_KEY=sk-secret\n"), 0o600); err != nil {
+		t.Fatalf("write workspace .env: %v", err)
+	}
+	if code := downloadByPath(wsEnvPath); code != http.StatusForbidden {
+		t.Fatalf("security violation: GET /api/media/download?path=<workspace>/.env returned %d (expected 403)", code)
+	}
+	appDBPath := filepath.Join(h.paths.Data, "app.db")
+	if code := downloadByPath(appDBPath); code != http.StatusForbidden {
+		t.Fatalf("security violation: GET /api/media/download?path=<DataDir>/app.db returned %d (expected 403)", code)
+	}
+
+	// 3. Studio FileGuard in --mode server: create trusted project, reject path escapes & forbidden files,
+	//    and strip smuggled outside-workspace paths on studio:sync_workspace.
+	createProjResp, _ := ws.call(contracts.ActionStudioProjectCreate, contracts.StudioProjectCreatePayload{
+		Title: "Guarded Server Project",
+	})
+	if !createProjResp.Success {
+		t.Fatalf("studio:project_create in server mode failed: %+v", createProjResp.Error)
+	}
+	var projDetail contracts.StudioProjectDetailResult
+	if err := json.Unmarshal(createProjResp.Data, &projDetail); err != nil {
+		t.Fatalf("unmarshal project detail: %v", err)
+	}
+	projID := projDetail.Project.ID
+	epID := projDetail.ActiveEpisode.Episode.ID
+
+	// Reject untrusted PrimaryPath outside workspace on studio:asset_upsert.
+	badAssetResp, _ := ws.call(contracts.ActionStudioAssetUpsert, contracts.StudioAssetUpsertPayload{
+		ProjectID:   projID,
+		Kind:        domainstudio.AssetCharacter,
+		Name:        "Intruder",
+		PrimaryPath: outsidePNG,
+	})
+	if badAssetResp.Success || badAssetResp.Error == nil || badAssetResp.Error.Code != "ERR_UNAUTHORIZED" {
+		t.Fatalf("expected studio:asset_upsert with outside path to fail with ERR_UNAUTHORIZED, got %+v", badAssetResp)
+	}
+
+	// Reject forbidden .env inside workspace on studio:asset_upsert.
+	envAssetResp, _ := ws.call(contracts.ActionStudioAssetUpsert, contracts.StudioAssetUpsertPayload{
+		ProjectID:   projID,
+		Kind:        domainstudio.AssetProp,
+		Name:        "EnvLeak",
+		PrimaryPath: wsEnvPath,
+	})
+	if envAssetResp.Success || envAssetResp.Error == nil || envAssetResp.Error.Code != "ERR_UNAUTHORIZED" {
+		t.Fatalf("expected studio:asset_upsert with .env path to fail with ERR_UNAUTHORIZED, got %+v", envAssetResp)
+	}
+
+	// Reject path traversal outside workspace on studio:shot_upsert.
+	escapedShotPath := filepath.Join(projDetail.Project.RootDir, "..", "..", "..", "app.db")
+	badShotResp, _ := ws.call(contracts.ActionStudioShotUpsert, contracts.StudioShotUpsertPayload{
+		EpisodeID:    epID,
+		Title:        "Escaped Shot",
+		KeyframePath: &escapedShotPath,
+	})
+	if badShotResp.Success || badShotResp.Error == nil || badShotResp.Error.Code != "ERR_UNAUTHORIZED" {
+		t.Fatalf("expected studio:shot_upsert with traversal path to fail with ERR_UNAUTHORIZED, got %+v", badShotResp)
+	}
+
+	// Reject outside-workspace ImagePath on studio:grid_split.
+	badGridResp, _ := ws.call(contracts.ActionStudioGridSplit, contracts.StudioGridSplitPayload{
+		ProjectID: projID,
+		EpisodeID: epID,
+		ImagePath: outsidePNG,
+		Rows:      2,
+		Cols:      2,
+	})
+	if badGridResp.Success || badGridResp.Error == nil || badGridResp.Error.Code != "ERR_UNAUTHORIZED" {
+		t.Fatalf("expected studio:grid_split with outside image to fail with ERR_UNAUTHORIZED, got %+v", badGridResp)
+	}
+
+	// Smuggle untrusted root_dir + auto_approve_batches in project.json and outside-workspace/.env paths in asset_bible.json & shots.json.
+	origRootDir := projDetail.Project.RootDir
+	projJSONPath := filepath.Join(origRootDir, "project.json")
+	poisonedProj, _ := json.Marshal(map[string]any{
+		"title":                "Guarded Server Project",
+		"root_dir":             outsideDir,
+		"auto_approve_batches": true,
+	})
+	if err := os.WriteFile(projJSONPath, poisonedProj, 0o600); err != nil {
+		t.Fatalf("write poisoned project.json: %v", err)
+	}
+
+	biblePath := filepath.Join(origRootDir, "assets", "asset_bible.json")
+	poisonedBible, _ := json.Marshal(map[string]any{
+		"assets": []map[string]any{
+			{
+				"kind":         "character",
+				"name":         "SmuggledHero",
+				"code_tag":     "@SmuggledHero",
+				"primary_path": outsidePNG,
+			},
+		},
+	})
+	if err := os.WriteFile(biblePath, poisonedBible, 0o600); err != nil {
+		t.Fatalf("write poisoned asset_bible.json: %v", err)
+	}
+
+	shotsPath := filepath.Join(origRootDir, "episodes", "ep01", "storyboard", "shots.json")
+	poisonedShots, _ := json.Marshal(map[string]any{
+		"shots": []map[string]any{
+			{
+				"seq":           1,
+				"scene_code":    "S01",
+				"title":         "SmuggledShot",
+				"shot_mode":     "single",
+				"duration_sec":  4,
+				"keyframe_path": outsidePNG,
+				"video_path":    wsEnvPath,
+			},
+		},
+	})
+	if err := os.WriteFile(shotsPath, poisonedShots, 0o600); err != nil {
+		t.Fatalf("write poisoned shots.json: %v", err)
+	}
+
+	syncResp, _ := ws.call(contracts.ActionStudioSyncWorkspace, contracts.StudioSyncWorkspacePayload{
+		ProjectID: projID,
+	})
+	if !syncResp.Success {
+		t.Fatalf("studio:sync_workspace failed: %+v", syncResp.Error)
+	}
+
+	epAfterSyncResp, _ := ws.call(contracts.ActionStudioEpisodeGet, contracts.StudioIDPayload{ID: epID})
+	if !epAfterSyncResp.Success {
+		t.Fatalf("studio:episode_get after sync failed: %+v", epAfterSyncResp.Error)
+	}
+	var epAfterSync contracts.StudioEpisodeDetailResult
+	if err := json.Unmarshal(epAfterSyncResp.Data, &epAfterSync); err != nil {
+		t.Fatalf("unmarshal episode after sync: %v", err)
+	}
+	if filepath.Clean(epAfterSync.Project.RootDir) != filepath.Clean(origRootDir) {
+		t.Fatalf("security violation: smuggled root_dir overwrote project RootDir: %q != %q", epAfterSync.Project.RootDir, origRootDir)
+	}
+	if epAfterSync.Project.AutoApproveBatches {
+		t.Fatalf("security violation: smuggled auto_approve_batches=true overwrote project setting via sync_workspace")
+	}
+	for _, a := range epAfterSync.Assets {
+		if a.PrimaryPath != "" {
+			t.Fatalf("security violation: smuggled outside primary_path survived sync_workspace: %q", a.PrimaryPath)
+		}
+	}
+	for _, sh := range epAfterSync.Shots {
+		if sh.KeyframePath != "" || sh.VideoPath != "" {
+			t.Fatalf("security violation: smuggled shot media paths survived sync_workspace: keyframe=%q video=%q", sh.KeyframePath, sh.VideoPath)
+		}
+	}
+
+	// Verify traversal slug on studio:project_create cannot escape ProjectsDir.
+	travProjResp, _ := ws.call(contracts.ActionStudioProjectCreate, contracts.StudioProjectCreatePayload{
+		Title: "Traversal Attempt",
+		Slug:  "../../escaped_project",
+	})
+	if travProjResp.Success {
+		var travDetail contracts.StudioProjectDetailResult
+		if err := json.Unmarshal(travProjResp.Data, &travDetail); err != nil {
+			t.Fatalf("unmarshal traversal project: %v", err)
+		}
+		projectsRoot := filepath.Join(tree.WorkspaceDir, "projects")
+		rel, rerr := filepath.Rel(projectsRoot, travDetail.Project.RootDir)
+		if rerr != nil || strings.HasPrefix(rel, "..") {
+			t.Fatalf("security violation: project RootDir %q escaped ProjectsDir %q", travDetail.Project.RootDir, projectsRoot)
+		}
 	}
 }

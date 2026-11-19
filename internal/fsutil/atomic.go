@@ -46,7 +46,7 @@ func WriteAtomic(path string, perm os.FileMode, write func(w io.Writer) error) (
 	if err = os.Chmod(tmpName, perm); err != nil {
 		return fmt.Errorf("fsutil: chmod %s: %w", path, err)
 	}
-	if err = os.Rename(tmpName, path); err != nil {
+	if err = renameWithRetry(tmpName, path); err != nil {
 		return fmt.Errorf("fsutil: rename to %s: %w", path, err)
 	}
 	return nil

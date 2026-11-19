@@ -24,15 +24,16 @@ import (
 type Capability string
 
 const (
-	CapabilityLLM   Capability = "llm"
-	CapabilityImage Capability = "image"
-	CapabilityVideo Capability = "video"
-	CapabilityTTS   Capability = "tts"
+	CapabilityLLM     Capability = "llm"
+	CapabilityImage   Capability = "image"
+	CapabilityVideo   Capability = "video"
+	CapabilityTTS     Capability = "tts"
+	CapabilityLipSync Capability = "lipsync"
 )
 
 // Capabilities lists every capability in display order.
 func Capabilities() []Capability {
-	return []Capability{CapabilityLLM, CapabilityImage, CapabilityVideo, CapabilityTTS}
+	return []Capability{CapabilityLLM, CapabilityImage, CapabilityVideo, CapabilityTTS, CapabilityLipSync}
 }
 
 // FieldKind tells the UI how to render a credential field.
@@ -324,8 +325,10 @@ type Repository interface {
 
 	// Models and settings are keyed by owner id: a built-in provider id or a custom provider id.
 	ListModels(ctx context.Context, ownerID string) ([]Model, error)
+	ListAllModels(ctx context.Context) (map[string][]Model, error)
 	ReplaceModels(ctx context.Context, ownerID string, models []Model) error
 	GetSettings(ctx context.Context, ownerID string) (Settings, error)
+	ListAllSettings(ctx context.Context) (map[string]Settings, error)
 	UpdateSettings(ctx context.Context, ownerID string, set Settings, clear []string) error
 	// Defaults maps purposes to the user's default model ref ("" or missing = auto).
 	GetDefaults(ctx context.Context) (map[Purpose]string, error)

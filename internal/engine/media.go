@@ -3,7 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"mime"
-	"path"
+	"path/filepath"
 	"strings"
 )
 
@@ -34,7 +34,7 @@ var audioTypes = map[string]string{
 
 // RefFor describes a stored file from its path/name.
 func RefFor(localURL string, kind MediaKind) MediaRef {
-	ext := strings.ToLower(path.Ext(localURL))
+	ext := strings.ToLower(filepath.Ext(localURL))
 	mimeType := videoTypes[ext]
 	if mimeType == "" {
 		mimeType = audioTypes[ext]

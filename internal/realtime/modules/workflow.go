@@ -43,4 +43,9 @@ func (m Workflow) Register(r *realtime.Registry) {
 			}
 			return contracts.WorkflowRunGraphResult{Result: res}, nil
 		})
+
+	realtime.Handle(r, contracts.ActionWorkflowTemplates,
+		func(_ context.Context, _ *realtime.Request, _ contracts.Empty) (contracts.WorkflowTemplatesResult, error) {
+			return contracts.WorkflowTemplatesResult{Templates: m.Service.Templates()}, nil
+		})
 }

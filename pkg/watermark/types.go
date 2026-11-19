@@ -194,13 +194,20 @@ func (c *Config) applyDefaults() {
 
 // Engine encapsulates detection and removal execution with configurable rules.
 type Engine struct {
-	cfg Config
+	cfg            Config
+	limitsMu       sync.RWMutex
+	maxImagePixels int64
+	decodeSem      chan struct{}
 }
 
 // New creates an Engine instance with custom zero-hardcode configuration.
 func New(cfg Config) *Engine {
 	cfg.applyDefaults()
-	return &Engine{cfg: cfg}
+	return &Engine{
+		cfg:            cfg,
+		maxImagePixels: 100_000_000,
+		decodeSem:      defaultDecodeSem,
+	}
 }
 
 var (

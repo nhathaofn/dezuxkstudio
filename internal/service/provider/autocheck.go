@@ -129,7 +129,15 @@ func (s *Service) checkAndRefresh(ctx context.Context, id string) {
 			for _, d := range found {
 				add = append(add, d.AsModel())
 			}
-			if _, err := s.SetModels(ctx, id, domain.MergeDiscovered(rc.Provider.Models, add)); err != nil && ctx.Err() == nil {
+			unlock := s.lockOwner(id)
+			fresh, getErr := s.repo.GetCustom(ctx, id)
+			baseModels := rc.Provider.Models
+			if getErr == nil {
+				baseModels = fresh.Models
+			}
+			_, err := s.SetModels(ctx, id, domain.MergeDiscovered(baseModels, add))
+			unlock()
+			if err != nil && ctx.Err() == nil {
 				_ = s.repo.SetCustomHealth(ctx, id, modelsFailed(err))
 			}
 		}

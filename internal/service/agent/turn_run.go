@@ -190,9 +190,6 @@ func (s *Service) runTurn(ctx context.Context, t *turn, client Transport, sessio
 	}
 	s.mu.Lock()
 	primed := s.sessionPrimed
-	if s.connSeq.Load() == t.connToken {
-		s.sessionPrimed = true
-	}
 	s.mu.Unlock()
 	sessionKey := "acp:" + sessionID
 	var turnPrompt string
@@ -203,6 +200,11 @@ func (s *Service) runTurn(ctx context.Context, t *turn, client Transport, sessio
 	}
 	err := client.Prompt(ctx, sessionID, turnPrompt)
 	if err == nil {
+		s.mu.Lock()
+		if s.connSeq.Load() == t.connToken {
+			s.sessionPrimed = true
+		}
+		s.mu.Unlock()
 		s.rememberScreenContext(sessionKey, ui)
 	}
 	return err
@@ -256,10 +258,14 @@ func (s *Service) runCLITurn(ctx context.Context, drv turnDriver, t *turn, promp
 // service goes idle. It runs once per turn; later calls (e.g. the turn goroutine after a process exit
 // already ended it) do nothing.
 func (s *Service) endTurn(t *turn, err error) {
+	s.endTurnAtSeq(t, err, t.connToken)
+}
+
+func (s *Service) endTurnAtSeq(t *turn, err error, expectedSeq int64) {
 	t.endOnce.Do(func() {
 		// A turn whose connection was replaced (disconnect, reconnect) only stores what it produced: its
 		// last text and done/error must not reach a UI that may already be waiting for the next turn.
-		current := s.connSeq.Load() == t.connToken
+		current := s.connSeq.Load() == expectedSeq
 		s.flushGuard(t, current)
 		// A user cancel ends the turn normally: the partial reply is kept and nothing is reported as an error.
 		if errors.Is(err, errTurnCancelled) {
@@ -272,8 +278,12 @@ func (s *Service) endTurn(t *turn, err error) {
 			s.turn = nil
 			s.continuationDepth = 0
 		}
-		current = current && s.connSeq.Load() == t.connToken // a disconnect may have happened while storing
-		if err != nil && isAuthError(err) && current {
+		current = current && s.connSeq.Load() == expectedSeq // a disconnect may have happened while storing
+		isAuth := err != nil && isAuthError(err)
+		if err != nil {
+			err = s.redactTurnError(err)
+		}
+		if isAuth && current {
 			s.states[t.providerID] = domainagent.StateUnauthenticated
 			s.authStates[t.providerID] = domainagent.AuthUnauthenticated
 			s.lastErrors[t.providerID] = err
@@ -424,19 +434,33 @@ func (s *Service) flushGuard(t *turn, emit bool) {
 
 // triggerContinuationTurn executes an asynchronous continuation prompt in the conversation with incremented continuation depth.
 func (s *Service) triggerContinuationTurn(conversationID, feedback string, nextDepth int) {
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return
+	}
+	prevTurn := s.turn
+	s.turns.Add(1)
+	s.mu.Unlock()
+
 	safego.Go("agent.continuation", func() {
-		// Bounded wait if the previous turn is finishing its endTurn cleanup
-		for i := 0; i < 40; i++ {
-			s.mu.Lock()
-			busy := s.turn != nil
-			s.mu.Unlock()
-			if !busy {
-				break
+		defer s.turns.Done()
+		if prevTurn != nil {
+			waitDur := s.limits.InterruptWait
+			if waitDur <= 0 {
+				waitDur = 2 * time.Second
 			}
-			time.Sleep(50 * time.Millisecond)
+			select {
+			case <-prevTurn.done:
+			case <-time.After(waitDur):
+			}
 		}
 
 		s.mu.Lock()
+		if s.closing || s.turn != nil {
+			s.mu.Unlock()
+			return
+		}
 		s.continuationDepth = nextDepth
 		if conversationID != "" {
 			s.conversationID = conversationID

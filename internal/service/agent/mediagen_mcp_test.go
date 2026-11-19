@@ -57,7 +57,7 @@ func TestAgentMCPCanInvokeMediaGenNodes(t *testing.T) {
 		}
 	}
 
-	// Verify agent runs image without reference_images
+	// Verify paid generation nodes gate for approval by default (SkipTrustedApproval=false)
 	imgTxt, isErr := callMCPText(t, f, "workflow_run_node", map[string]any{
 		"type": mediagennodes.NodeTypeImage,
 		"input": map[string]any{
@@ -66,8 +66,22 @@ func TestAgentMCPCanInvokeMediaGenNodes(t *testing.T) {
 			"resolution":   "2K",
 		},
 	})
-	if isErr || f.wf.lastNode != mediagennodes.NodeTypeImage {
-		t.Fatalf("expected agent workflow_run_node(image) to succeed (isErr=%v lastNode=%s text=%s)", isErr, f.wf.lastNode, imgTxt)
+	if isErr || f.wf.lastNode != "" {
+		t.Fatalf("expected workflow_run_node(image) to gate for approval first (isErr=%v lastNode=%s text=%s)", isErr, f.wf.lastNode, imgTxt)
+	}
+	var gateResp map[string]any
+	if err := json.Unmarshal([]byte(imgTxt), &gateResp); err != nil {
+		t.Fatalf("unmarshal gate response: %v (%s)", err, imgTxt)
+	}
+	if gateResp["status"] != "needs_approval" {
+		t.Fatalf("expected needs_approval status, got %+v", gateResp)
+	}
+	appID, _ := gateResp["approval_id"].(string)
+	if err := f.svc.ResolveApproval(context.Background(), appID, true); err != nil {
+		t.Fatalf("ResolveApproval(image): %v", err)
+	}
+	if f.wf.lastNode != mediagennodes.NodeTypeImage {
+		t.Fatalf("expected workflow_run_node(image) to run after ResolveApproval, got lastNode=%s", f.wf.lastNode)
 	}
 	var imgPayload map[string]any
 	_ = json.Unmarshal(f.wf.lastInput, &imgPayload)
@@ -75,7 +89,9 @@ func TestAgentMCPCanInvokeMediaGenNodes(t *testing.T) {
 		t.Fatalf("unexpected merged image input: %+v", imgPayload)
 	}
 
-	// Verify agent runs video with prompt only
+	// Enable SkipTrustedApproval and verify prompt-only paid video/TTS nodes auto-approve in trusted MediaDir
+	f.svc.SetSkipTrustedApproval(true)
+
 	vidTxt, isErr := callMCPText(t, f, "workflow_run_node", map[string]any{
 		"type": mediagennodes.NodeTypeVideo,
 		"input": map[string]any{

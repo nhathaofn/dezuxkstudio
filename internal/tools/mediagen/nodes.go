@@ -2,10 +2,12 @@ package mediagen
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 
 	"app/internal/apperr"
+	"app/internal/config"
 	domainmedia "app/internal/domain/mediagen"
 	"app/internal/engine"
 )
@@ -92,6 +94,10 @@ func NewImageNode(opts Options) engine.Node {
 
 // NewVideoNode builds the tool.generate_video workflow node.
 func NewVideoNode(opts Options) engine.Node {
+	maxDur := opts.MaxVideoDurationSec
+	if maxDur <= 0 {
+		maxDur = config.ResolveStudioConfig(config.StudioConfig{}).MaxShotDurationSec
+	}
 	spec := engine.Spec{
 		Type:        NodeTypeVideo,
 		Provider:    "tool",
@@ -110,7 +116,7 @@ func NewVideoNode(opts Options) engine.Node {
 			{Name: "model", Label: "Model (empty = Auto default)", Kind: engine.ParamText},
 			{Name: "aspect_ratio", Label: "Aspect ratio", Kind: engine.ParamSelect, Default: domainmedia.DefaultVideoAspectRatio, Options: domainmedia.VideoAspectRatios()},
 			{Name: "resolution", Label: "Resolution", Kind: engine.ParamSelect, Default: domainmedia.DefaultVideoResolution, Options: domainmedia.VideoResolutions()},
-			{Name: "duration", Label: "Duration (seconds)", Kind: engine.ParamInteger, Min: 0, Max: 60, Default: "0"},
+			{Name: "duration", Label: "Duration (seconds)", Kind: engine.ParamInteger, Min: 0, Max: maxDur, Default: "0"},
 			{Name: "generate_audio", Label: "Generate native audio (when supported)", Kind: engine.ParamToggle, Default: "false"},
 			{Name: "seed", Label: "Seed", Kind: engine.ParamInteger, Min: 0, Max: 2147483647},
 			{Name: "output_dir", Label: "Output directory (empty = workspace media/videos folder)", Kind: engine.ParamText, Role: engine.ParamRoleOutputDir},
@@ -120,6 +126,9 @@ func NewVideoNode(opts Options) engine.Node {
 	return engine.Typed(spec, func(ctx context.Context, in VideoGenerateInput) (VideoGenerateOutput, error) {
 		if opts.Service == nil {
 			return VideoGenerateOutput{}, apperr.Unavailable("Media generation service is unavailable")
+		}
+		if in.Duration < 0 || in.Duration > maxDur {
+			return VideoGenerateOutput{}, apperr.Validation(fmt.Sprintf("duration must be between 0 and %d seconds", maxDur))
 		}
 		mediaDir := resolveMediaDir(opts)
 		startImg, err := checkSingleRef(ctx, mediaDir, in.StartImage.MediaRef)
@@ -139,6 +148,11 @@ func NewVideoNode(opts Options) engine.Node {
 			return VideoGenerateOutput{}, err
 		}
 
+		dur := in.Duration
+		if dur == 0 && opts.DefaultVideoDurationSec > 0 {
+			dur = opts.DefaultVideoDurationSec
+		}
+
 		res, err := opts.Service.GenerateVideo(ctx, domainmedia.VideoRequest{
 			ModelRef:        in.Model,
 			Prompt:          in.Prompt,
@@ -147,7 +161,7 @@ func NewVideoNode(opts Options) engine.Node {
 			ReferenceImages: refs,
 			AspectRatio:     in.AspectRatio,
 			Resolution:      in.Resolution,
-			DurationSec:     in.Duration,
+			DurationSec:     dur,
 			GenerateAudio:   in.GenerateAudio,
 			Seed:            in.Seed,
 			OutputDir:       outDir,
@@ -236,7 +250,7 @@ func checkSingleRef(ctx context.Context, mediaDir string, ref engine.MediaRef) (
 		return "", nil
 	}
 	resolved := engine.ResolveMediaPath(ref.LocalURL, mediaDir)
-	if resolved == "" {
+	if resolved == "" || !filepath.IsAbs(resolved) {
 		return "", apperr.Validation("Input path is outside the workspace media directory")
 	}
 	if err := engine.CheckFile(ctx, resolved, false); err != nil {
@@ -272,9 +286,12 @@ func checkOutputDir(ctx context.Context, mediaDir, rawDir, sub string) (string, 
 		target = filepath.Join(mediaDir, sub)
 	} else {
 		target = engine.ResolveMediaPath(trimmed, mediaDir)
-		if target == "" {
+		if target == "" || !filepath.IsAbs(target) {
 			return "", apperr.Validation("Output directory is outside the workspace media directory")
 		}
+	}
+	if target != "" && !filepath.IsAbs(target) {
+		return "", apperr.Validation("Output directory must be an absolute path")
 	}
 	if err := engine.CheckFile(ctx, target, true); err != nil {
 		return "", err

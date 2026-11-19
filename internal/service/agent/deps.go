@@ -45,7 +45,86 @@ type SystemInspector interface {
 	Info() contracts.SystemInfo
 }
 
+// UpdateChecker checks for newer official DezuxkStudio releases.
+type UpdateChecker interface {
+	Check(ctx context.Context) (contracts.UpdateInfo, error)
+}
+
+// MediaManager exposes registered media library listing, deletion, and input registration to MCP tools.
+type MediaManager interface {
+	List(ctx context.Context, p contracts.MediaListPayload) (contracts.MediaListResult, error)
+	Delete(ctx context.Context, id string, deleteFile bool) error
+	RegisterInput(ctx context.Context, p contracts.MediaRegisterInputPayload) (contracts.MediaAssetItem, error)
+}
+
 // DiagnosticsExporter exposes diagnostic bundle export to DezuxkStudio's MCP server.
 type DiagnosticsExporter interface {
 	Export(ctx context.Context) (contracts.DiagnosticsBundle, error)
+}
+
+// StudioManager exposes AI film studio projects, episodes, assets, shots, workspace sync, and stage execution.
+type StudioManager interface {
+	ListProjects(ctx context.Context) (contracts.StudioProjectListResult, error)
+	CreateProject(ctx context.Context, p contracts.StudioProjectCreatePayload) (contracts.StudioProjectDetailResult, error)
+	GetProject(ctx context.Context, idOrSlug string) (contracts.StudioProjectDetailResult, error)
+	CreateEpisode(ctx context.Context, p contracts.StudioEpisodeCreatePayload) (contracts.StudioEpisodeDetailResult, error)
+	GetEpisode(ctx context.Context, episodeID string) (contracts.StudioEpisodeDetailResult, error)
+	SaveScript(ctx context.Context, p contracts.StudioEpisodeSaveScriptPayload) (contracts.StudioEpisodeDetailResult, error)
+	UpsertAsset(ctx context.Context, p contracts.StudioAssetUpsertPayload) (contracts.StudioAssetUpsertResult, error)
+	UpsertShot(ctx context.Context, p contracts.StudioShotUpsertPayload) (contracts.StudioShotUpsertResult, error)
+	SyncWorkspace(ctx context.Context, projectID string) (*contracts.StudioProjectDetailResult, error)
+	RunStage(ctx context.Context, p contracts.StudioEpisodeRunStagePayload) (contracts.StudioRunStageResult, error)
+}
+
+// StudioPhase2Manager exposes durable queue, billing ledger, media versions, and QC controls.
+type StudioPhase2Manager interface {
+	EnqueueBatch(ctx context.Context, p contracts.StudioQueueEnqueuePayload) (contracts.StudioQueueEnqueueResult, error)
+	ListJobs(ctx context.Context, p contracts.StudioQueueListPayload) (contracts.StudioQueueListResult, error)
+	ControlQueue(ctx context.Context, p contracts.StudioQueueControlPayload) (contracts.StudioQueueControlResult, error)
+	GetCostSummary(ctx context.Context, p contracts.StudioCostSummaryPayload) (contracts.StudioCostSummaryResult, error)
+	ListVersions(ctx context.Context, p contracts.StudioVersionsListPayload) (contracts.StudioVersionsListResult, error)
+	SelectVersion(ctx context.Context, p contracts.StudioVersionSelectPayload) (contracts.StudioVersionSelectResult, error)
+	RunQCReview(ctx context.Context, p contracts.StudioQCReviewPayload) (contracts.StudioQCReport, error)
+	RunBatchPreflight(ctx context.Context, p contracts.StudioBatchPreflightPayload) (contracts.BatchPreflightOutput, error)
+}
+
+// StudioPhase3Manager exposes multi-track EditTimeline read and revision-checked mutations to MCP tools.
+type StudioPhase3Manager interface {
+	GetTimeline(ctx context.Context, episodeID string) (contracts.StudioTimelineResult, error)
+	ApplyTimelineOps(ctx context.Context, p contracts.StudioTimelineApplyOpsPayload) (contracts.StudioTimelineResult, error)
+	UndoTimeline(ctx context.Context, p contracts.StudioTimelineRevisionNavPayload) (contracts.StudioTimelineResult, error)
+	RedoTimeline(ctx context.Context, p contracts.StudioTimelineRevisionNavPayload) (contracts.StudioTimelineResult, error)
+}
+
+// StudioExtendedManager exposes full UI-parity Studio operations (project updates, shot reorder,
+// pricing catalog updates, grid split, mask edit, continuity frame extraction, timeline assemble/peaks/render/NLE export).
+type StudioExtendedManager interface {
+	ProjectsDir() string
+	UpdateProject(ctx context.Context, p contracts.StudioProjectUpdatePayload) (contracts.StudioProjectDetailResult, error)
+	DeleteProject(ctx context.Context, p contracts.StudioProjectDeletePayload) error
+	ReorderShots(ctx context.Context, p contracts.StudioShotReorderPayload) (contracts.StudioShotListResult, error)
+	UpsertPricing(ctx context.Context, p contracts.StudioPricingUpsertPayload) (contracts.StudioPricingEntry, error)
+	SplitGrid(ctx context.Context, p contracts.StudioGridSplitPayload) (contracts.StudioGridSplitResult, error)
+	ApplyMaskEdit(ctx context.Context, p contracts.StudioMaskEditPayload) (contracts.StudioMaskEditResult, error)
+	ExtractLastFrame(ctx context.Context, p contracts.StudioExtractLastFramePayload) (contracts.StudioExtractLastFrameResult, error)
+	AutoAssembleTimeline(ctx context.Context, p contracts.StudioTimelineAutoAssemblePayload) (contracts.StudioTimelineResult, error)
+	ComputeMediaPeaksThumbs(ctx context.Context, p contracts.StudioMediaPeaksThumbsPayload) (contracts.MediaPeaksThumbsOutput, error)
+	RenderTimeline(ctx context.Context, p contracts.StudioTimelineRenderPayload) (contracts.StudioTimelineRenderResult, error)
+	ExportNLEDraft(ctx context.Context, p contracts.StudioTimelineExportNLEPayload) (contracts.ExportNLEDraftOutput, error)
+}
+
+// StudioTier123Manager exposes agent-ergonomic workflow planning, batch refactoring,
+// contact-sheet visual inspection, and queue wait operations.
+type StudioTier123Manager interface {
+	GetWorkflowPlan(ctx context.Context, episodeID string) (contracts.StudioWorkflowPlanResult, error)
+	BatchUpsertShots(ctx context.Context, p contracts.StudioShotsBatchUpsertPayload) (contracts.StudioShotListResult, error)
+	RenameAsset(ctx context.Context, p contracts.StudioAssetRenamePayload) (contracts.StudioAssetRefactorResult, error)
+	MergeAssets(ctx context.Context, p contracts.StudioAssetMergePayload) (contracts.StudioAssetRefactorResult, error)
+	InspectShots(ctx context.Context, p contracts.StudioInspectShotsPayload) (contracts.StudioInspectShotsResult, error)
+	WaitForQueue(ctx context.Context, p contracts.StudioQueueWaitPayload) (contracts.StudioQueueWaitResult, error)
+}
+
+// WorkflowTemplateLister optionally lists canonical workflow templates built into WorkflowService.
+type WorkflowTemplateLister interface {
+	Templates() []contracts.WorkflowTemplate
 }

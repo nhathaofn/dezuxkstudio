@@ -52,6 +52,47 @@ func (ps profileSecrets) prepareClaudeProfile(profileRoot string) (map[string]st
 	return envMap, nil
 }
 
+func (ps profileSecrets) prepareClaudeSubProfile(parentRoot, subRoot string, useLinkedSecret bool) (map[string]string, func(), error) {
+	if parentRoot == "" || subRoot == "" {
+		return nil, func() {}, fmt.Errorf("agent: claude parent and subagent profile roots are required")
+	}
+	for _, dir := range []string{subRoot, filepath.Join(subRoot, "projects")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, func() {}, fmt.Errorf("agent: create claude subagent dir %s: %w", dir, err)
+		}
+	}
+	cleanup := func() { _ = os.RemoveAll(subRoot) }
+	envMap := map[string]string{
+		"CLAUDE_CONFIG_DIR": subRoot,
+	}
+	if useLinkedSecret {
+		return envMap, cleanup, nil
+	}
+	if apiKey := ps.loadClaudeAPIKey(parentRoot); apiKey != "" {
+		envMap["ANTHROPIC_API_KEY"] = apiKey
+		return envMap, cleanup, nil
+	}
+	// Copy file-based OAuth state when present; if OAuth lives only in OS keyring keyed by parentRoot,
+	// keep CLAUDE_CONFIG_DIR on parentRoot while still isolating the subagent's MCP config file in subRoot.
+	copiedCreds := false
+	for _, name := range []string{".credentials.json", ".claude.json"} {
+		src := filepath.Join(parentRoot, name)
+		if info, err := os.Lstat(src); err == nil && info.Mode().IsRegular() {
+			if err := copyFileIfRegular(src, filepath.Join(subRoot, name)); err != nil {
+				cleanup()
+				return nil, func() {}, fmt.Errorf("agent: copy claude %s: %w", name, err)
+			}
+			if name == ".credentials.json" {
+				copiedCreds = true
+			}
+		}
+	}
+	if !copiedCreds {
+		envMap["CLAUDE_CONFIG_DIR"] = parentRoot
+	}
+	return envMap, cleanup, nil
+}
+
 func (ps profileSecrets) claudeIsolatedEnv(profileRoot string) ([]string, error) {
 	envMap, err := ps.prepareClaudeProfile(profileRoot)
 	if err != nil {
@@ -565,7 +606,7 @@ func extractClaudeAnyText(content any) string {
 }
 
 func (s *Service) runClaudeTurn(ctx context.Context, executable, profileRoot, workspaceDir, mcpURL, mcpToken, messageID, prompt string) error {
-	env, err := s.secrets.claudeIsolatedEnv(profileRoot)
+	envMap, err := s.secrets.prepareClaudeProfile(profileRoot)
 	if err != nil {
 		return err
 	}
@@ -574,6 +615,7 @@ func (s *Service) runClaudeTurn(ctx context.Context, executable, profileRoot, wo
 		return err
 	}
 	defer cleanup()
+	env := envWithLinkedSecret(domainagent.ProviderClaude, envMap, s.activeLinkedSecret())
 	env = append(env, claudeMCPTimeoutEnv(s.limits.MCPToolTimeout)...)
 
 	args := buildClaudeArgs(mcpCfgPath, s.systemPrompt(ctx, domainagent.ProviderClaude), s.developerMode)

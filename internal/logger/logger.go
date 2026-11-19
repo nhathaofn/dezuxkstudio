@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -103,11 +104,41 @@ func ParseLevel(s string) (slog.Level, error) {
 // sensitiveKeys are attribute-name fragments whose values are never written to logs.
 var sensitiveKeys = []string{"token", "secret", "password", "authorization", "api_key", "apikey", "cookie"}
 
+var (
+	reBearerSecret = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{4,}`)
+	rePrefixedKey  = regexp.MustCompile(`\b(?:sk-(?:ant-|proj-)?[A-Za-z0-9_-]{8,}|AIza[0-9A-Za-z_-]{20,})\b`)
+	reJSONSecret   = regexp.MustCompile(`(?i)("(?:api_key|apiKey|private_key|client_secret|access_token|refresh_token|auth_token|token|secret|password)"\s*:\s*")((?:[^"\\]|\\.)*)(")`)
+	reQuerySecret  = regexp.MustCompile(`(?i)([?&](?:key|api_key|token|ticket|access_token)=)([^&\s"']+)`)
+	reHeaderSecret = regexp.MustCompile(`(?i)\b(x-goog-api-key|x-api-key)\s*([:=])\s*([^\s,;]+)`)
+)
+
+// RedactString masks embedded secrets, API keys, bearer tokens, JSON credentials,
+// and signed ticket/key query parameters from arbitrary log or crash strings.
+func RedactString(s string) string {
+	if s == "" {
+		return ""
+	}
+	s = reBearerSecret.ReplaceAllString(s, "Bearer [REDACTED]")
+	s = rePrefixedKey.ReplaceAllString(s, "[REDACTED]")
+	s = reJSONSecret.ReplaceAllString(s, "${1}[REDACTED]${3}")
+	s = reQuerySecret.ReplaceAllString(s, "${1}[REDACTED]")
+	s = reHeaderSecret.ReplaceAllString(s, "${1}${2}[REDACTED]")
+	return s
+}
+
 func redact(_ []string, a slog.Attr) slog.Attr {
 	key := strings.ToLower(a.Key)
 	for _, s := range sensitiveKeys {
 		if strings.Contains(key, s) {
 			return slog.String(a.Key, "[REDACTED]")
+		}
+	}
+	switch a.Value.Kind() {
+	case slog.KindString:
+		return slog.String(a.Key, RedactString(a.Value.String()))
+	case slog.KindAny:
+		if err, ok := a.Value.Any().(error); ok && err != nil {
+			return slog.String(a.Key, RedactString(err.Error()))
 		}
 	}
 	return a

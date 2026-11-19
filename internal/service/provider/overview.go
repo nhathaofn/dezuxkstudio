@@ -348,7 +348,15 @@ func (s *Service) DiscoverModelsFor(ctx context.Context, ownerID string) (any, e
 		for _, d := range found {
 			add = append(add, d.AsModel())
 		}
-		if models, err = s.SetModels(ctx, ownerID, domain.MergeDiscovered(p.Models, add)); err != nil {
+		unlock := s.lockOwner(ownerID)
+		fresh, getErr := s.repo.GetCustom(ctx, ownerID)
+		baseModels := p.Models
+		if getErr == nil {
+			baseModels = fresh.Models
+		}
+		models, err = s.SetModels(ctx, ownerID, domain.MergeDiscovered(baseModels, add))
+		unlock()
+		if err != nil {
 			return nil, err
 		}
 	}

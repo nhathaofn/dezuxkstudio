@@ -37,34 +37,28 @@ export interface VirtualRangeResult<T> {
   sizes: number[];
 }
 
-/**
- * Pure calculation function for virtualized windowing.
- * Computes prefix-sum offsets, total height, and visible item slice with overscan.
- */
-export function computeVirtualRange<T>(options: VirtualRangeOptions<T>): VirtualRangeResult<T> {
-  const { items, itemHeight, scrollTop, viewportHeight, overscan } = options;
+export interface VirtualLayout {
+  totalHeight: number;
+  offsets: number[];
+  sizes: number[];
+  isDynamic: boolean;
+}
+
+/** Precomputes prefix-sum offsets and sizes separately from scroll state so scroll is O(log N). */
+export function computeVirtualLayout<T>(
+  items: readonly T[],
+  itemHeight?: number | ((index: number, item: T) => number)
+): VirtualLayout {
   const count = items.length;
-
   if (count === 0) {
-    return {
-      totalHeight: 0,
-      startIndex: 0,
-      endIndex: -1,
-      visibleItems: [],
-      offsets: [],
-      sizes: [],
-    };
+    return { totalHeight: 0, offsets: [], sizes: [], isDynamic: false };
   }
-
-  const overscanCount = typeof overscan === "number" && overscan >= 0 ? overscan : DEFAULT_OVERSCAN;
-
-  let offsets: number[];
-  let sizes: number[];
+  const isDynamic = typeof itemHeight === "function";
+  const offsets = new Array<number>(count);
+  const sizes = new Array<number>(count);
   let totalHeight: number;
 
-  if (typeof itemHeight === "function") {
-    offsets = new Array(count);
-    sizes = new Array(count);
+  if (isDynamic) {
     let runningOffset = 0;
     for (let i = 0; i < count; i++) {
       const sz = Math.max(1, Math.round(itemHeight(i, items[i])));
@@ -78,8 +72,6 @@ export function computeVirtualRange<T>(options: VirtualRangeOptions<T>): Virtual
       typeof itemHeight === "number" && itemHeight > 0
         ? Math.round(itemHeight)
         : DEFAULT_ITEM_HEIGHT;
-    offsets = new Array(count);
-    sizes = new Array(count);
     for (let i = 0; i < count; i++) {
       offsets[i] = i * fixedHeight;
       sizes[i] = fixedHeight;
@@ -87,18 +79,31 @@ export function computeVirtualRange<T>(options: VirtualRangeOptions<T>): Virtual
     totalHeight = count * fixedHeight;
   }
 
-  // When viewport height is unknown (e.g. node SSR or unmeasured initial paint),
-  // render the initial window so static markup contains preview rows.
+  return { totalHeight, offsets, sizes, isDynamic };
+}
+
+/** Binary-searches a precomputed layout for the visible slice at scrollTop. */
+export function sliceVirtualRange<T>(
+  items: readonly T[],
+  layout: VirtualLayout,
+  scrollTop: number,
+  viewportHeight: number,
+  overscan?: number
+): VirtualRangeResult<T> {
+  const count = items.length;
+  const { totalHeight, offsets, sizes, isDynamic } = layout;
+
+  if (count === 0) {
+    return { totalHeight: 0, startIndex: 0, endIndex: -1, visibleItems: [], offsets, sizes };
+  }
+
+  const overscanCount = typeof overscan === "number" && overscan >= 0 ? overscan : DEFAULT_OVERSCAN;
+
   if (viewportHeight <= 0) {
     const initialRenderLimit = Math.min(count - 1, Math.max(0, overscanCount * 2 + 10));
     const visibleItems: VirtualItem<T>[] = [];
     for (let i = 0; i <= initialRenderLimit; i++) {
-      visibleItems.push({
-        item: items[i],
-        index: i,
-        offset: offsets[i],
-        size: sizes[i],
-      });
+      visibleItems.push({ item: items[i], index: i, offset: offsets[i], size: sizes[i] });
     }
     return {
       totalHeight,
@@ -116,8 +121,7 @@ export function computeVirtualRange<T>(options: VirtualRangeOptions<T>): Virtual
   let rawStart = 0;
   let rawEnd = count - 1;
 
-  if (typeof itemHeight === "function") {
-    // Binary search for first item whose bottom boundary (offset + size) exceeds scrollTop
+  if (isDynamic) {
     let low = 0;
     let high = count - 1;
     while (low <= high) {
@@ -129,8 +133,6 @@ export function computeVirtualRange<T>(options: VirtualRangeOptions<T>): Virtual
         low = mid + 1;
       }
     }
-
-    // Binary search for last item whose top offset is less than viewportBottom
     low = 0;
     high = count - 1;
     while (low <= high) {
@@ -143,10 +145,7 @@ export function computeVirtualRange<T>(options: VirtualRangeOptions<T>): Virtual
       }
     }
   } else {
-    const fixedHeight =
-      typeof itemHeight === "number" && itemHeight > 0
-        ? Math.round(itemHeight)
-        : DEFAULT_ITEM_HEIGHT;
+    const fixedHeight = sizes[0] ?? DEFAULT_ITEM_HEIGHT;
     rawStart = Math.floor(clampedScrollTop / fixedHeight);
     rawEnd = Math.floor(viewportBottom / fixedHeight);
   }
@@ -156,22 +155,20 @@ export function computeVirtualRange<T>(options: VirtualRangeOptions<T>): Virtual
 
   const visibleItems: VirtualItem<T>[] = [];
   for (let i = startIndex; i <= endIndex; i++) {
-    visibleItems.push({
-      item: items[i],
-      index: i,
-      offset: offsets[i],
-      size: sizes[i],
-    });
+    visibleItems.push({ item: items[i], index: i, offset: offsets[i], size: sizes[i] });
   }
 
-  return {
-    totalHeight,
-    startIndex,
-    endIndex,
-    visibleItems,
-    offsets,
-    sizes,
-  };
+  return { totalHeight, startIndex, endIndex, visibleItems, offsets, sizes };
+}
+
+/**
+ * Pure calculation function for virtualized windowing.
+ * Computes prefix-sum offsets, total height, and visible item slice with overscan.
+ */
+export function computeVirtualRange<T>(options: VirtualRangeOptions<T>): VirtualRangeResult<T> {
+  const { items, itemHeight, scrollTop, viewportHeight, overscan } = options;
+  const layout = computeVirtualLayout(items, itemHeight);
+  return sliceVirtualRange(items, layout, scrollTop, viewportHeight, overscan);
 }
 
 export interface VirtualListHandle {
@@ -220,6 +217,8 @@ export interface VirtualListProps<T> {
   emptyPlaceholder?: React.ReactNode;
   /** Callback fired whenever the container is scrolled. */
   onScroll?: (scrollTop: number, event: React.UIEvent<HTMLDivElement>) => void;
+  /** Enables automatic ResizeObserver measurement for variable/wrapped row heights. */
+  variableHeight?: boolean;
   /** Accessibility role attribute. Defaults to "feed". */
   role?: string;
   /** Accessibility label. */
@@ -245,6 +244,7 @@ function VirtualListInner<T>(
     getItemKey,
     emptyPlaceholder,
     onScroll,
+    variableHeight = false,
     role = "feed",
     ariaLabel,
   } = props;
@@ -252,11 +252,53 @@ function VirtualListInner<T>(
   const effectiveItemHeight = itemHeight ?? estimateSize ?? DEFAULT_ITEM_HEIGHT;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const scrollRafRef = useRef<number | null>(null);
+  const pendingScrollTopRef = useRef<number>(0);
+  const rowObserverRef = useRef<ResizeObserver | null>(null);
+  const [measuredHeights, setMeasuredHeights] = useState<Map<string | number, number>>(
+    () => new Map()
+  );
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState<number>(() => {
     if (typeof height === "number" && height > 0) return height;
     return 0;
   });
+
+  useEffect(() => {
+    if (!variableHeight || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      setMeasuredHeights((prev) => {
+        let next: Map<string | number, number> | null = null;
+        for (const entry of entries) {
+          const el = entry.target as HTMLElement;
+          const rawKey = el.dataset.virtualMeasureKey;
+          if (!rawKey) continue;
+          const measured = Math.ceil(
+            entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height
+          );
+          const cur = (next ?? prev).get(rawKey);
+          if (measured > 0 && cur !== measured) {
+            if (!next) next = new Map(prev);
+            next.set(rawKey, measured);
+          }
+        }
+        return next ?? prev;
+      });
+    });
+    rowObserverRef.current = observer;
+    return () => {
+      observer.disconnect();
+      rowObserverRef.current = null;
+    };
+  }, [variableHeight]);
+
+  const attachRowMeasure = useCallback(
+    (el: HTMLDivElement | null) => {
+      if (!variableHeight || !el || !rowObserverRef.current) return;
+      rowObserverRef.current.observe(el);
+    },
+    [variableHeight]
+  );
 
   // Track viewport height changes on mount and resize
   useEffect(() => {
@@ -289,22 +331,47 @@ function VirtualListInner<T>(
     return () => window.removeEventListener("resize", measure);
   }, [height]);
 
+  useEffect(() => {
+    return () => {
+      if (scrollRafRef.current !== null && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+      }
+    };
+  }, []);
+
+  const layout = useMemo(() => {
+    if (!variableHeight) {
+      return computeVirtualLayout(items, effectiveItemHeight);
+    }
+    const baseFn =
+      typeof effectiveItemHeight === "function" ? effectiveItemHeight : () => effectiveItemHeight;
+    const heightResolver = (index: number, item: T) => {
+      const key = String(getItemKey ? getItemKey(item, index) : index);
+      return measuredHeights.get(key) ?? baseFn(index, item);
+    };
+    return computeVirtualLayout(items, heightResolver);
+  }, [items, effectiveItemHeight, variableHeight, getItemKey, measuredHeights]);
+
   const virtualRange = useMemo(() => {
-    return computeVirtualRange({
-      items,
-      itemHeight: effectiveItemHeight,
-      scrollTop,
-      viewportHeight,
-      overscan,
-    });
-  }, [items, effectiveItemHeight, scrollTop, viewportHeight, overscan]);
+    return sliceVirtualRange(items, layout, scrollTop, viewportHeight, overscan);
+  }, [items, layout, scrollTop, viewportHeight, overscan]);
 
   const handleScroll = useCallback(
     (e: React.UIEvent<HTMLDivElement>) => {
-      const currentScrollTop = e.currentTarget.scrollTop;
-      setScrollTop(currentScrollTop);
+      pendingScrollTopRef.current = e.currentTarget.scrollTop;
       if (onScroll) {
-        onScroll(currentScrollTop, e);
+        onScroll(pendingScrollTopRef.current, e);
+      }
+      if (typeof requestAnimationFrame === "function") {
+        if (scrollRafRef.current === null) {
+          scrollRafRef.current = requestAnimationFrame(() => {
+            scrollRafRef.current = null;
+            setScrollTop(pendingScrollTopRef.current);
+          });
+        }
+      } else {
+        setScrollTop(pendingScrollTopRef.current);
       }
     },
     [onScroll]
@@ -409,13 +476,15 @@ function VirtualListInner<T>(
           return (
             <div
               key={itemKey}
+              ref={variableHeight ? attachRowMeasure : undefined}
               data-virtual-index={index}
+              data-virtual-measure-key={variableHeight ? String(itemKey) : undefined}
               style={{
                 position: "absolute",
                 top: 0,
                 left: 0,
                 width: "100%",
-                height: `${size}px`,
+                ...(variableHeight ? { minHeight: `${size}px` } : { height: `${size}px` }),
                 transform: `translateY(${offset}px)`,
                 boxSizing: "border-box",
               }}

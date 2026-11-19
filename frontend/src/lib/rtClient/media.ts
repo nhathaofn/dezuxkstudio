@@ -131,18 +131,19 @@ export async function downloadMediaBlob(
 export async function saveMediaToDevice(
   path: string,
   preferredName?: string,
-  endpoint?: Endpoint | null
+  endpoint?: Endpoint | null,
+  assetId?: string
 ): Promise<void> {
-  const { blob, filename } = await downloadMediaBlob(path, endpoint);
+  const { blob, filename } = await downloadMediaBlob(path, endpoint, assetId);
   const objectUrl = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = objectUrl;
-  link.download = preferredName || filename || "image.png";
+  link.download = preferredName?.trim() || filename?.trim() || mediaBasename(path) || "download";
   link.rel = "noopener";
   document.body.appendChild(link);
   link.click();
   link.remove();
-  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  setTimeout(() => URL.revokeObjectURL(objectUrl), appConfig.media.objectUrlRevokeDelayMs);
 }
 
 function parseDispositionFilename(header: string | null): string | null {

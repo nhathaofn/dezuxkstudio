@@ -23,12 +23,24 @@ func (s *Service) GenerateImage(ctx context.Context, req domainmedia.ImageReques
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
-	releaseLeases := s.leaseInputs(norm.ReferenceImages...)
+	leasePaths := append([]string(nil), norm.ReferenceImages...)
+	if norm.MaskPath != "" {
+		leasePaths = append(leasePaths, norm.MaskPath)
+	}
+	releaseLeases := s.leaseInputs(leasePaths...)
 	defer releaseLeases()
 
 	refs, err := s.readReferenceImages(norm.ReferenceImages)
 	if err != nil {
 		return domainmedia.Result{}, err
+	}
+	var mask *localImageData
+	if norm.MaskPath != "" {
+		m, err := s.readReferenceImage(norm.MaskPath)
+		if err != nil {
+			return domainmedia.Result{}, err
+		}
+		mask = &m
 	}
 
 	target, limits, err := s.resolveTarget(ctx, domainprovider.PurposeImage, norm.ModelRef)
@@ -36,13 +48,13 @@ func (s *Service) GenerateImage(ctx context.Context, req domainmedia.ImageReques
 		return domainmedia.Result{}, err
 	}
 
-	release, err := s.acquireLimit(ctx, target, domainprovider.CapabilityImage, limits)
+	limCtx, release, err := s.acquireLimit(ctx, target, domainprovider.CapabilityImage, limits)
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
 	defer release()
 
-	callCtx, cleanup := s.prepareJobContext(ctx, false)
+	callCtx, cleanup := s.prepareJobContext(limCtx, false)
 	defer cleanup()
 
 	progress.Report(callCtx, progress.Update{
@@ -54,29 +66,44 @@ func (s *Service) GenerateImage(ctx context.Context, req domainmedia.ImageReques
 	var data []byte
 	var mimeType string
 
+	// Multimodal edit models take the mask as the trailing visual guide alongside explicit edit scope text.
+	guidedReq, guidedRefs := applyMaskGuidance(norm, refs, mask)
+
 	switch target.protocol {
 	case "openai-images", "openai-images-generations", "openai-images-edits":
-		data, mimeType, err = s.genOpenAIImages(callCtx, target, norm, refs)
+		data, mimeType, err = s.genOpenAIImages(callCtx, target, norm, refs, mask)
 	case "openai-chat-image":
-		data, mimeType, err = s.genOpenAIChatImage(callCtx, target, norm, refs)
+		data, mimeType, err = s.genOpenAIChatImage(callCtx, target, guidedReq, guidedRefs)
 	case "openrouter-images":
-		data, mimeType, err = s.genOpenRouterImages(callCtx, target, norm, refs)
+		data, mimeType, err = s.genOpenRouterImages(callCtx, target, guidedReq, guidedRefs)
 	case "gemini-aistudio-image", "gemini-vertex-image":
-		data, mimeType, err = s.genGeminiImage(callCtx, target, norm, refs)
+		if mask != nil && strings.HasPrefix(strings.ToLower(geminiModelName(target.modelID)), "imagen-") {
+			return domainmedia.Result{}, apperr.Validation("Imagen models do not support mask editing via predict endpoint").
+				WithMsg("errors.mediagen.mask_not_supported", nil)
+		}
+		data, mimeType, err = s.genGeminiImage(callCtx, target, guidedReq, guidedRefs)
 	case "ark-image":
-		data, mimeType, err = s.genArkImage(callCtx, target, norm, refs)
+		data, mimeType, err = s.genArkImage(callCtx, target, guidedReq, guidedRefs)
 	case "dashscope-image":
-		data, mimeType, err = s.genDashScopeImage(callCtx, target, norm, refs)
+		data, mimeType, err = s.genDashScopeImage(callCtx, target, guidedReq, guidedRefs)
 	case "minimax-image":
+		if mask != nil {
+			return domainmedia.Result{}, apperr.Validation("MiniMax image generation does not support mask editing").
+				WithMsg("errors.mediagen.mask_not_supported", nil)
+		}
 		data, mimeType, err = s.genMiniMaxImage(callCtx, target, norm, refs)
 	case "kling-image":
+		if mask != nil {
+			return domainmedia.Result{}, apperr.Validation("Kling image generation does not support mask editing").
+				WithMsg("errors.mediagen.mask_not_supported", nil)
+		}
 		data, mimeType, err = s.genKlingImage(callCtx, target, norm, refs)
 	case "vidu-image":
-		data, mimeType, err = s.genViduImage(callCtx, target, norm, refs)
+		data, mimeType, err = s.genViduImage(callCtx, target, guidedReq, guidedRefs)
 	case "grok-image":
-		data, mimeType, err = s.genGrokImage(callCtx, target, norm, refs)
+		data, mimeType, err = s.genGrokImage(callCtx, target, guidedReq, guidedRefs)
 	case "agnes-image":
-		data, mimeType, err = s.genAgnesImage(callCtx, target, norm, refs)
+		data, mimeType, err = s.genAgnesImage(callCtx, target, guidedReq, guidedRefs)
 	default:
 		return domainmedia.Result{}, apperr.Validation("Unsupported image protocol: " + target.protocol)
 	}
@@ -84,16 +111,39 @@ func (s *Service) GenerateImage(ctx context.Context, req domainmedia.ImageReques
 		return domainmedia.Result{}, err
 	}
 
-	res, err := s.saveOutput(domainmedia.KindImage, norm.OutputDir, "img", mimeType, ".png", data, target)
+	res, err := s.saveOutput(ctx, domainmedia.KindImage, norm.OutputDir, "img", mimeType, ".png", data, target)
 	if err != nil {
 		return domainmedia.Result{}, err
 	}
+	op := "generate_image"
+	if mask != nil {
+		op = "mask_edit"
+	}
+	s.emitUsage(ctx, domainmedia.UsageEvent{
+		ProviderID:  target.ownerID,
+		ModelID:     target.modelID,
+		Capability:  string(domainprovider.CapabilityImage),
+		Operation:   op,
+		OutputUnits: 1,
+		Unit:        "image",
+	})
 	progress.Report(callCtx, progress.Update{
 		Percent: 100,
 		Message: "Image ready",
 		Key:     "mediagen.progress.done",
 	})
 	return res, nil
+}
+
+func applyMaskGuidance(req domainmedia.ImageRequest, refs []localImageData, mask *localImageData) (domainmedia.ImageRequest, []localImageData) {
+	if mask == nil {
+		return req, refs
+	}
+	out := make([]localImageData, len(refs)+1)
+	copy(out, refs)
+	out[len(refs)] = *mask
+	req.Prompt = "[Inpaint instruction: Edit ONLY the masked region highlighted in the final mask image while preserving all unmasked pixels identically.]\n" + req.Prompt
+	return req, out
 }
 
 type openAIImageResp struct {
@@ -103,7 +153,7 @@ type openAIImageResp struct {
 	} `json:"data"`
 }
 
-func (s *Service) genOpenAIImages(ctx context.Context, t targetSpec, req domainmedia.ImageRequest, refs []localImageData) ([]byte, string, error) {
+func (s *Service) genOpenAIImages(ctx context.Context, t targetSpec, req domainmedia.ImageRequest, refs []localImageData, mask *localImageData) ([]byte, string, error) {
 	base := domainprovider.EnsureOpenAIBase(t.baseURL)
 	headers := map[string]string{"Authorization": "Bearer " + t.apiKey}
 	size := domainmedia.OpenAIImageSize(req.AspectRatio, req.Resolution)
@@ -112,8 +162,8 @@ func (s *Service) genOpenAIImages(ctx context.Context, t targetSpec, req domainm
 		return nil, "", apperr.Validation("The selected image edit endpoint requires at least one reference image").
 			WithMsg("errors.mediagen.reference_required", nil)
 	}
-	if t.protocol == "openai-images-generations" && len(refs) > 0 {
-		return nil, "", apperr.Validation("The selected image generation endpoint does not accept reference images").
+	if t.protocol == "openai-images-generations" && (len(refs) > 0 || mask != nil) {
+		return nil, "", apperr.Validation("The selected image generation endpoint does not accept reference or mask images").
 			WithMsg("errors.mediagen.reference_not_supported", nil)
 	}
 
@@ -134,9 +184,15 @@ func (s *Service) genOpenAIImages(ctx context.Context, t targetSpec, req domainm
 			fieldName = "image[]"
 		}
 		err := s.doMultipart(ctx, base+"/images/edits", headers, func(mw *multipart.Writer) error {
-			_ = mw.WriteField("model", t.modelID)
-			_ = mw.WriteField("prompt", req.Prompt)
-			_ = mw.WriteField("size", size)
+			if err := writeMultipartField(mw, "model", t.modelID); err != nil {
+				return err
+			}
+			if err := writeMultipartField(mw, "prompt", req.Prompt); err != nil {
+				return err
+			}
+			if err := writeMultipartField(mw, "size", size); err != nil {
+				return err
+			}
 			for i, ref := range refs {
 				h := make(textproto.MIMEHeader)
 				h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="ref_%d%s"`, fieldName, i, domainmedia.ExtForMime(ref.MimeType, ".png")))
@@ -146,6 +202,18 @@ func (s *Service) genOpenAIImages(ctx context.Context, t targetSpec, req domainm
 					return apperr.Internal(err)
 				}
 				if _, err := part.Write(ref.Raw); err != nil {
+					return apperr.Internal(err)
+				}
+			}
+			if mask != nil {
+				h := make(textproto.MIMEHeader)
+				h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="mask"; filename="mask%s"`, domainmedia.ExtForMime(mask.MimeType, ".png")))
+				h.Set("Content-Type", mask.MimeType)
+				part, err := mw.CreatePart(h)
+				if err != nil {
+					return apperr.Internal(err)
+				}
+				if _, err := part.Write(mask.Raw); err != nil {
 					return apperr.Internal(err)
 				}
 			}
@@ -280,7 +348,7 @@ func (s *Service) genGeminiImage(ctx context.Context, t targetSpec, req domainme
 		}
 		host := strings.TrimRight(t.baseURL, "/")
 		if host == "" {
-			host = "https://aiplatform.googleapis.com"
+			host = domainprovider.VertexAIBaseURL
 		}
 		headers["Authorization"] = "Bearer " + tok
 		action := "generateContent"
@@ -468,7 +536,7 @@ func (s *Service) genDashScopeImage(ctx context.Context, t targetSpec, req domai
 		}
 	}
 	if resp.Message != "" {
-		return nil, "", apperr.Unavailable("DashScope: " + resp.Message)
+		return nil, "", providerUnavailableErr("DashScope image failed", resp.Message)
 	}
 	return nil, "", apperr.Unavailable("DashScope returned no generated image URL")
 }
@@ -511,7 +579,7 @@ func (s *Service) genMiniMaxImage(ctx context.Context, t targetSpec, req domainm
 		return nil, "", err
 	}
 	if resp.BaseResp.StatusCode != 0 {
-		return nil, "", apperr.Unavailable(fmt.Sprintf("MiniMax (%d): %s", resp.BaseResp.StatusCode, resp.BaseResp.StatusMsg))
+		return nil, "", providerUnavailableErr(fmt.Sprintf("MiniMax (%d)", resp.BaseResp.StatusCode), resp.BaseResp.StatusMsg)
 	}
 	var b64, urlStr string
 	if len(resp.Data.ImageBase64) > 0 {
@@ -552,7 +620,7 @@ func (s *Service) genKlingImage(ctx context.Context, t targetSpec, req domainmed
 		return nil, "", err
 	}
 	if submitResp.Code != 0 && submitResp.Data.TaskID == "" {
-		return nil, "", apperr.Unavailable("Kling submit error: " + submitResp.Message)
+		return nil, "", providerUnavailableErr("Kling submit error", submitResp.Message)
 	}
 	taskID := submitResp.Data.TaskID
 	if taskID == "" {
@@ -560,7 +628,7 @@ func (s *Service) genKlingImage(ctx context.Context, t targetSpec, req domainmed
 	}
 
 	var resultURL string
-	err = s.pollUntil(ctx, "mediagen.progress.polling", "Waiting for Kling image…", func() (bool, error) {
+	err = s.pollUntil(ctx, "mediagen.progress.polling", "Waiting for Kling image…", map[string]string{"provider": t.providerName}, func() (bool, error) {
 		var st struct {
 			Data struct {
 				TaskStatus    string `json:"task_status"`
@@ -583,7 +651,7 @@ func (s *Service) genKlingImage(ctx context.Context, t targetSpec, req domainmed
 			resultURL = st.Data.TaskResult.Images[0].URL
 			return true, nil
 		case "failed":
-			return true, apperr.Unavailable("Kling image failed: " + st.Data.TaskStatusMsg)
+			return true, providerUnavailableErr("Kling image failed", st.Data.TaskStatusMsg)
 		default:
 			return false, nil
 		}
@@ -628,7 +696,7 @@ func (s *Service) genViduImage(ctx context.Context, t targetSpec, req domainmedi
 	}
 
 	var resultURL string
-	err := s.pollUntil(ctx, "mediagen.progress.polling", "Waiting for Vidu image…", func() (bool, error) {
+	err := s.pollUntil(ctx, "mediagen.progress.polling", "Waiting for Vidu image…", map[string]string{"provider": t.providerName}, func() (bool, error) {
 		var st struct {
 			State     string `json:"state"`
 			ErrCode   string `json:"err_code"`
@@ -647,7 +715,7 @@ func (s *Service) genViduImage(ctx context.Context, t targetSpec, req domainmedi
 			resultURL = st.Creations[0].URL
 			return true, nil
 		case "failed":
-			return true, apperr.Unavailable("Vidu image failed: " + st.ErrCode)
+			return true, providerUnavailableErr("Vidu image failed", st.ErrCode)
 		default:
 			return false, nil
 		}

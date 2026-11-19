@@ -14,9 +14,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"app/internal/buildinfo"
 	domainagent "app/internal/domain/agent"
+	"app/internal/paths"
 	"app/internal/safego"
 	"app/internal/secrets"
+	providersvc "app/internal/service/provider"
 )
 
 // Transport abstracts an active ACP connection so unit tests can inject fake pipes.
@@ -48,6 +51,7 @@ type Options struct {
 	MaxApprovalContinuations int                // max chained continuation turns after approval
 	DataDir                  string
 	WorkspaceDir             string
+	ProjectsDir              string
 	MediaDir                 string
 	StagingDir               string
 	ProfilesDir              string
@@ -66,7 +70,10 @@ type Options struct {
 	AutoUpdate               bool        // move managed copies to newer official releases
 	Preferences              PreferencesManager
 	System                   SystemInspector
+	Update                   UpdateChecker
+	Media                    MediaManager
 	Diagnostics              DiagnosticsExporter
+	Studio                   StudioManager
 	OnStatusChanged          func(domainagent.ProviderInfo)
 	OnChatEvent              func(domainagent.ChatEvent)
 	OnApprovalsChanged       func([]domainagent.ApprovalRequest)
@@ -84,31 +91,39 @@ type Service struct {
 	// statusRevision numbers the status snapshots (ProviderInfo.Revision); it only ever grows.
 	statusRevision atomic.Int64
 
-	repo                    domainagent.Repository
-	dataDir                 string
-	workspaceDir            string
-	mediaDir                string
-	stagingDir              string
-	dirsMu                  sync.RWMutex
-	skipApproval            atomic.Bool
-	profilesDir             string
-	customizationsDir       string
-	developerMode           bool
-	appVersion              string
-	limits                  Limits
-	log                     *slog.Logger
-	workflow                WorkflowRunner
-	binaries                BinariesManager
-	managed                 ManagedCLIs
-	autoInstall             bool
-	autoUpdate              bool
-	provisioning            map[domainagent.ProviderID]provisionState
-	onLoginPrompt           func(domainagent.LoginPrompt)
-	loginMu                 sync.Mutex
-	logins                  map[domainagent.ProviderID]*loginSession
-	preferences             PreferencesManager
-	system                  SystemInspector
-	diagnostics             DiagnosticsExporter
+	repo              domainagent.Repository
+	dataDir           string
+	workspaceDir      string
+	mediaDir          string
+	stagingDir        string
+	dirsMu            sync.RWMutex
+	skipApproval      atomic.Bool
+	profilesDir       string
+	customizationsDir string
+	developerMode     bool
+	appVersion        string
+	limits            Limits
+	log               *slog.Logger
+	workflow          WorkflowRunner
+	binaries          BinariesManager
+	managed           ManagedCLIs
+	autoInstall       bool
+	autoUpdate        bool
+	provisioning      map[domainagent.ProviderID]provisionState
+	onLoginPrompt     func(domainagent.LoginPrompt)
+	loginMu           sync.Mutex
+	logins            map[domainagent.ProviderID]*loginSession
+	preferences       PreferencesManager
+	system            SystemInspector
+	update            UpdateChecker
+	media             MediaManager
+	diagnostics       DiagnosticsExporter
+	studio            StudioManager
+
+	linksMu                 sync.RWMutex
+	providerLinks           ProviderLinkStore
+	mediaInspector          MediaAssetInspector
+	activeLinked            *providersvc.ResolvedLink
 	onStatusChanged         func(domainagent.ProviderInfo)
 	onChatEvent             func(domainagent.ChatEvent)
 	onApprovalsChanged      func([]domainagent.ApprovalRequest)
@@ -174,7 +189,7 @@ func New(o Options) (*Service, error) {
 	}
 	version := strings.TrimSpace(o.AppVersion)
 	if version == "" {
-		version = "0.0.0-dev"
+		version = buildinfo.Version
 	}
 	limits := o.Limits.withDefaults()
 	secretStore := o.Secrets
@@ -183,7 +198,7 @@ func New(o Options) (*Service, error) {
 	}
 	allowedDirs, err := o.Repo.ListAllowedDirs(context.Background())
 	if err != nil {
-		o.Logger.Warn("agent: failed to load allowed dirs", "error", err)
+		o.Logger.WarnContext(context.Background(), "agent: failed to load allowed dirs", "error", err)
 	}
 	custDir := strings.TrimSpace(o.CustomizationsDir)
 	if custDir == "" && strings.TrimSpace(o.DataDir) != "" {
@@ -193,7 +208,7 @@ func New(o Options) (*Service, error) {
 	if custDir != "" {
 		custMgr = newCustomizationManager(custDir)
 		if syncErr := custMgr.EnsureSynced(); syncErr != nil {
-			o.Logger.Warn("agent: failed to sync customizations", "error", syncErr)
+			o.Logger.WarnContext(context.Background(), "agent: failed to sync customizations", "error", syncErr)
 		}
 	}
 	var appRepo ApprovalRepository
@@ -204,7 +219,7 @@ func New(o Options) (*Service, error) {
 	}
 	maxContinuations := o.MaxApprovalContinuations
 	if maxContinuations <= 0 {
-		maxContinuations = 5
+		maxContinuations = limits.MaxApprovalContinuations
 	}
 	s := &Service{
 		repo:                     o.Repo,
@@ -230,7 +245,10 @@ func New(o Options) (*Service, error) {
 		logins:                   make(map[domainagent.ProviderID]*loginSession),
 		preferences:              o.Preferences,
 		system:                   o.System,
+		update:                   o.Update,
+		media:                    o.Media,
 		diagnostics:              o.Diagnostics,
+		studio:                   o.Studio,
 		onStatusChanged:          o.OnStatusChanged,
 		onChatEvent:              o.OnChatEvent,
 		onApprovalsChanged:       o.OnApprovalsChanged,
@@ -292,11 +310,15 @@ func New(o Options) (*Service, error) {
 	if o.StagingDir != "" {
 		s.policy.SetWorkspaceDirs(o.WorkspaceDir, o.MediaDir, o.StagingDir)
 	}
+	if o.ProjectsDir != "" {
+		s.policy.SetProjectsDir(o.ProjectsDir)
+	}
 	if s.approvalRepo != nil {
 		if recErr := s.approvalRepo.RecoverAmbiguousApprovals(context.Background()); recErr != nil {
-			s.log.Warn("agent: failed to recover ambiguous approvals", "error", recErr)
+			s.log.WarnContext(context.Background(), "agent: failed to recover ambiguous approvals", "error", recErr)
 		}
 	}
+	cleanupStaleAgentArtifacts(s.profilesDir)
 	return s, nil
 }
 
@@ -341,6 +363,16 @@ func (s *Service) SetWorkspaceDirs(workspaceDir, mediaDir string) {
 	s.closeCodexAppServer()
 }
 
+// SetProjectsDir updates the studio projects root directory on the access policy.
+func (s *Service) SetProjectsDir(projectsDir string) {
+	s.policy.SetProjectsDir(projectsDir)
+}
+
+// AddLegacyRoots retains previous built-in studio/media roots on the access policy across workspace switches.
+func (s *Service) AddLegacyRoots(dirs ...string) {
+	s.policy.AddLegacyRoots(dirs...)
+}
+
 // SetSkipTrustedApproval updates whether destructive file operations in trusted directories can be auto-approved.
 func (s *Service) SetSkipTrustedApproval(skip bool) {
 	s.skipApproval.Store(skip)
@@ -371,14 +403,38 @@ func (s *Service) Close() error {
 	for _, id := range domainagent.AllProviderIDs() {
 		s.driver(id).release()
 	}
+	cleanupStaleAgentArtifacts(s.profilesDir)
+	s.approvals.clear()
+	s.linksMu.Lock()
+	s.providerLinks = nil
+	s.mediaInspector = nil
+	s.activeLinked = nil
+	s.linksMu.Unlock()
 	s.mu.Lock()
-	tmp := s.tempWorkspace
 	s.tempWorkspace = ""
 	s.mu.Unlock()
-	if tmp != "" {
-		_ = os.RemoveAll(tmp)
-	}
 	return err
+}
+
+func cleanupStaleAgentArtifacts(profilesDir string) {
+	profilesDir = strings.TrimSpace(profilesDir)
+	if profilesDir == "" {
+		return
+	}
+	for _, pid := range domainagent.AllProviderIDs() {
+		pRoot := filepath.Join(profilesDir, string(pid))
+		_ = os.RemoveAll(filepath.Join(pRoot, "subagents"))
+		if pid == domainagent.ProviderClaude {
+			if matches, err := filepath.Glob(filepath.Join(pRoot, "claude-mcp-*.json")); err == nil {
+				for _, m := range matches {
+					_ = os.Remove(m)
+				}
+			}
+		}
+		if pid == domainagent.ProviderAntigravity {
+			cleanupAgyProfileToken(pRoot)
+		}
+	}
 }
 
 // waitTurns waits (bounded by the shutdown timeout) for cancelled turns to store what they produced, so
@@ -389,7 +445,7 @@ func (s *Service) waitTurns() {
 	select {
 	case <-done:
 	case <-time.After(s.limits.MCPShutdownTimeout):
-		s.log.Warn("agent: turns still running at shutdown")
+		s.log.WarnContext(context.Background(), "agent: turns still running at shutdown")
 	}
 }
 
@@ -426,7 +482,6 @@ func (s *Service) ensureMCPServer() (*localMCPServer, error) {
 func (s *Service) ensureWorkspaceDir() (string, error) {
 	ws := s.getWorkspaceDir()
 	if ws == "" {
-		// Created once and reused for every turn (stable cwd for resumed sessions); removed on Close.
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if s.tempWorkspace != "" {
@@ -434,9 +489,17 @@ func (s *Service) ensureWorkspaceDir() (string, error) {
 				return s.tempWorkspace, nil
 			}
 		}
-		dir, err := os.MkdirTemp("", "dezuxk-agent-*")
-		if err != nil {
-			return "", fmt.Errorf("agent: create temp workspace: %w", err)
+		dataDir := strings.TrimSpace(s.dataDir)
+		if dataDir == "" {
+			resolved, err := paths.Resolve(buildinfo.AppID, paths.Overrides{})
+			if err != nil {
+				return "", fmt.Errorf("agent: resolve fallback data dir: %w", err)
+			}
+			dataDir = resolved.Data
+		}
+		dir := (paths.Paths{Data: dataDir}).AgentWorkspace()
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return "", fmt.Errorf("agent: create fallback agent workspace: %w", err)
 		}
 		s.tempWorkspace = dir
 		return dir, nil

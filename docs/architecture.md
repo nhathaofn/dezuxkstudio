@@ -15,7 +15,7 @@ The `internal/contracts` package serves as the **Single Source of Truth** for al
 
 ```mermaid
 flowchart TD
-    subgraph Frontend["1. Frontend (React 19 + TypeScript + Zustand)"]
+    subgraph Frontend["1. Frontend (React 18 + TypeScript + Zustand)"]
         UI["UI Views & Components<br/>(MainLayout, AgentDrawer, WatermarkView...)"]
         Stores["Zustand State Stores<br/>(useAgentStore, useAgentDrawerStore,<br/>useAgentCustomizationsStore, useWatermarkStore...)"]
         RTClient["rtClient (WebSocket Client)"]
@@ -28,14 +28,15 @@ flowchart TD
 
     subgraph TransportLayer["3. Transport & Adapters"]
         RTHub["realtime.Hub (WebSocket JSON-RPC Engine)"]
-        Modules["realtime/modules/*<br/>(system, binaries, agent, workflow, mediagen...)<br/>*Thin adapters: validate DTO, dispatch to Service*"]
+        Modules["realtime/modules/*<br/>(system, binaries, agent, studio, media, workflow...)<br/>*Thin adapters: validate DTO, dispatch to Service*"]
         RTHub --> Modules
     end
 
     subgraph ServiceLayer["4. Core Use-Cases (Service Layer)"]
         SvcAgent["service/agent<br/>(Agent turn orchestrator, approvals, CLI manager)"]
+        SvcStudio["service/studio<br/>(ArcReel 5-stage film studio, queue & timeline)"]
         SvcWorkflow["service/workflow<br/>(Node & DAG graph orchestrator)"]
-        SvcMediaGen["service/mediagen<br/>(Async image, video & TTS generation jobs)"]
+        SvcMedia["service/media & service/mediagen<br/>(Asset library, signed URLs, async generation)"]
         SvcProvider["service/provider<br/>(AI provider credentials, models & quotas)"]
         SvcSystem["service/system<br/>(Diagnostics, system info & folder openers)"]
         SvcBinaries["service/binaries<br/>(External tool prober & downloader)"]
@@ -48,7 +49,7 @@ flowchart TD
     end
 
     subgraph InfrastructureLayer["6. Infrastructure & Drivers"]
-        SQLite["internal/storage/sqlite<br/>(SQLite repository, migrations 001-014, ON DELETE CASCADE)"]
+        SQLite["internal/storage/sqlite<br/>(SQLite repository, migrations 001-023, ON DELETE CASCADE & Studio Phase 1-3)"]
         MCP["internal/service/agent/mcp_server<br/>(In-process Model Context Protocol server)"]
         HTTPClient["internal/httpclient<br/>(WithRedirectGuard, private IP / SSRF filtering)"]
         ToolsImpl["internal/tools/*<br/>(watermark, mediagen, provider nodes)"]
@@ -67,15 +68,16 @@ flowchart TD
     EngineSubstrate --> ToolsImpl
     ToolsImpl --> CLIs
     SvcProvider --> HTTPClient
-    SvcMediaGen --> HTTPClient
+    SvcMedia --> HTTPClient
+    SvcStudio --> SvcWorkflow
     ServiceLayer --> SQLite
 ```
 
 ### Architectural Invariants:
-1. **Zero Circular Dependencies**: Enforced by static AST analysis (`cycles.mjs` on frontend, `go list` on backend). Cycle count is strictly `0`.
+1. **Zero Circular Dependencies**: Enforced by TypeScript/ESLint/Vite bundling on frontend and Go's compiler (`go list`) on backend. Cycle count is strictly `0`.
 2. **Contracts Decoupling**: `internal/contracts` must never import implementation packages (`internal/tools/*`, `internal/service/*`). Node DTOs live in `internal/contracts/nodes_dto.go` and are aliased by tool packages.
 3. **No Direct Storage in Services**: Services depend strictly on `domain.Repository` interfaces, never directly on `*sqlite.DB`.
-4. **Configuration Centralization**: Every limit and tunable is defined in `internal/config/config.go` with defaults declared exclusively in `config.Default()`.
+4. **Configuration Centralization**: Every limit and tunable is declared in `internal/config/types.go` & `fields.go` with defaults exclusively in `internal/config/defaults.go` (`config.Default()`).
 
 ---
 
@@ -143,7 +145,7 @@ flowchart TD
 
     subgraph CustomizationLifecycle["Customization Engine (customizations.go)"]
         Builtin["Embedded Defaults<br/>(profile/customizations/...)"]
-        DiskDir["User Customizations Directory<br/>(%APPDATA%/DezuxkStudio/agent_customizations/)<br/>- skills/&lt;name&gt;/SKILL.md<br/>- subagents/&lt;name&gt;.md"]
+        DiskDir["User Customizations Directory<br/>(%LOCALAPPDATA%/DezuxkStudio/data/agent-customizations/)<br/>- skills/&lt;name&gt;/SKILL.md<br/>- subagents/&lt;name&gt;.md"]
         Manifest[".manifest.json<br/>(Tracks SHA-256 hashes & state: active/modified/deleted)"]
         
         Builtin -->|Materialized on startup| DiskDir
@@ -174,7 +176,7 @@ flowchart TD
 4. **Tier 4 (Customizations Catalog)**: Dynamically injects `<available_skills>` and `<available_subagents>` parsed from Markdown files on disk. The agent inspects `description` fields to autonomously decide which skill to invoke.
 
 ### Customization Hot-Reloading:
-- Custom skills and subagents reside as Markdown files with YAML frontmatter in `%APPDATA%/DezuxkStudio/agent_customizations/`.
+- Custom skills and subagents reside as Markdown files with YAML frontmatter in `%LOCALAPPDATA%\DezuxkStudio\data\agent-customizations\`.
 - Users can add, modify, or restore skills via the UI (`useAgentCustomizationsStore`) or directly edit files on disk.
 - Calling `agent:reload_customizations` refreshes the prompt catalog in memory immediately without restarting the application or rebuilding binaries.
 
@@ -224,11 +226,10 @@ flowchart LR
 ### Server Mode (`--mode server`):
 When running as a headless core server, DezuxkStudio enforces strict security boundaries:
 - **`server.allow_host_admin` (Default: `false`)**: 
-  - Remote clients cannot mutate host paths (`binaries:set_path`, `agent:set_path`).
-  - Remote clients cannot trigger OS folder openers (`system:open_folder`).
-  - Remote clients cannot create or edit host-level skills or subagents (`agent:save_skill`, `agent:delete_skill`).
+  - Remote clients cannot mutate host paths (`binaries:set_path`, `agent:set_path`), download binaries (`binaries:download`), export diagnostics (`diagnostics:export`), check updates (`system:check_update`), or upsert pricing (`studio:pricing_upsert`).
+  - Remote clients cannot trigger OS folder openers (`system:open_folder`, `studio:open_export_folder`), view host paths in `system:info`, mutate/probe providers (`providers:*` except read-only `providers:list` and `providers:defaults`), or administer agent connections/auth/links/customizations (`agent:{login,login_code,logout,connect,set_model,link_provider,unlink_provider,reload_customizations}`, `agent:{save,delete,restore}_{skill,subagent}`).
   - Attempted mutations immediately return `ERR_UNAVAILABLE`.
-  - In contrast, AI generation and chat (`providers:*`, `agent:send_prompt`) remain fully accessible to authorized remote clients holding valid bearer tokens.
+  - In contrast, read-only provider metadata (`providers:list`, `providers:defaults`), Studio project/timeline/queue workflows, and chat execution (`agent:send_prompt`) remain accessible to authorized remote clients holding valid bearer tokens.
 
 ### Outbound HTTP & SSRF Protection:
 - All outbound requests (media downloads, webhook polls, provider API queries) pass through `internal/httpclient`.
@@ -246,7 +247,7 @@ When running as a headless core server, DezuxkStudio enforces strict security bo
 5. **Done**: Both UI workflows and Agent MCP tools immediately gain access to the new capability.
 
 ### Recipe B: Adding a New Custom Agent Skill
-1. **Create Skill Folder**: Inside `%APPDATA%/DezuxkStudio/agent_customizations/skills/<skill-name>/`, create `SKILL.md`.
+1. **Create Skill Folder**: Inside `%LOCALAPPDATA%\DezuxkStudio\data\agent-customizations\skills\<skill-name>\`, create `SKILL.md`.
 2. **Write YAML Frontmatter**:
    ```yaml
    ---

@@ -15,9 +15,52 @@ const cssFiles = (dir) =>
     return p.endsWith(".css") ? [p] : [];
   });
 
+/**
+ * Strips `url(...)` payloads cleanly (respecting single/double quotes and parentheses inside
+ * inline data URIs such as SVG data URLs) so semicolons or `#hex` fragments inside URLs never
+ * break declaration splitting or trigger false-positive colour literal violations.
+ */
+function stripCssUrls(input) {
+  let out = "";
+  let i = 0;
+  while (i < input.length) {
+    if (
+      (input[i] === "u" || input[i] === "U") &&
+      input.slice(i, i + 4).toLowerCase() === "url("
+    ) {
+      let depth = 1;
+      let quote = "";
+      let j = i + 4;
+      while (j < input.length && depth > 0) {
+        const ch = input[j];
+        if (quote) {
+          if (ch === "\\" && j + 1 < input.length) {
+            j += 2;
+            continue;
+          }
+          if (ch === quote) quote = "";
+        } else if (ch === "'" || ch === '"') {
+          quote = ch;
+        } else if (ch === "(") {
+          depth++;
+        } else if (ch === ")") {
+          depth--;
+        }
+        j++;
+      }
+      out += "url()";
+      i = j;
+      continue;
+    }
+    out += input[i];
+    i++;
+  }
+  return out;
+}
+
 const files = cssFiles(src).map((p) => ({
   file: relative(src, p).replaceAll("\\", "/"),
-  text: readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, ""),
+  text: stripCssUrls(readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "")),
 }));
 
 const declarations = (list) =>
@@ -67,7 +110,7 @@ report(
 );
 report(
   "colour literal outside tokens.css (use a token)",
-  nonToken.filter(({ d }) => /#[0-9a-fA-F]{3,8}\b|\b(rgb|hsl)a?\(/.test(d) && !/^background-image\s*:/.test(d))
+  nonToken.filter(({ d }) => /#[0-9a-fA-F]{3,8}\b|\b(?:rgb|hsl|oklch|lab|lch)a?\(/.test(d))
 );
 report(
   "scrollbar styling belongs in styles/scrollbar.css",

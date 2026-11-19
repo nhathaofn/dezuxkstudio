@@ -137,6 +137,8 @@ func firstErr(errs ...error) error {
 	return nil
 }
 
+const maxAgentArchiveFileBytes = 512 << 20
+
 // untarGz unpacks a .tar.gz into dir, refusing any entry that would land outside it.
 func untarGz(archive, dir string) error {
 	f, err := os.Open(archive)
@@ -182,7 +184,11 @@ func untarGz(archive, dir string) error {
 			if err != nil {
 				return err
 			}
-			_, cpErr := io.Copy(out, tr)
+			lr := io.LimitReader(tr, maxAgentArchiveFileBytes+1)
+			n, cpErr := io.Copy(out, lr)
+			if cpErr == nil && n > maxAgentArchiveFileBytes {
+				cpErr = fmt.Errorf("archive entry %q exceeds size limit", hdr.Name)
+			}
 			if cerr := out.Close(); cpErr == nil {
 				cpErr = cerr
 			}

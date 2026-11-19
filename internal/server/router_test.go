@@ -220,3 +220,26 @@ func TestRouterDynamicMediaDirAndStagingDir(t *testing.T) {
 		t.Fatalf("download from dynamic mediaDir2 failed: %d", rec2.Code)
 	}
 }
+
+func TestRouterMediaUploadRateLimit(t *testing.T) {
+	lim := newIPRateLimiter(1, 2)
+	mw := rateLimitMiddleware(lim)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, PathMediaUpload, nil)
+		req.RemoteAddr = "127.0.0.1:12345"
+		rec := httptest.NewRecorder()
+		mw.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d expected 200, got %d", i, rec.Code)
+		}
+	}
+	req3 := httptest.NewRequest(http.MethodPost, PathMediaUpload, nil)
+	req3.RemoteAddr = "127.0.0.1:12345"
+	rec3 := httptest.NewRecorder()
+	mw.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusTooManyRequests {
+		t.Fatalf("3rd request expected 429 Too Many Requests, got %d", rec3.Code)
+	}
+}

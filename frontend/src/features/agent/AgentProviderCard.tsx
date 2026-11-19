@@ -14,18 +14,15 @@ import {
   Search,
   XCircle,
 } from "lucide-react";
-import type {
-  ActionName,
-  AgentAuthState,
-  AgentConnectionState,
-  AgentProviderInfo,
+import {
+  type AgentAuthState,
+  type AgentConnectionState,
+  type AgentProviderInfo,
 } from "../../contracts/generated";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { getBridge, isDesktop } from "../../lib/bridge";
 import { translateServerMessage, useT, type MessageKey } from "../../lib/i18n";
-import { rtClient } from "../../lib/rtClient";
-import { safeStorage } from "../../lib/storage";
 import { useProvidersStore } from "../providers/useProvidersStore";
 import { LoginPromptDialog } from "./LoginPromptDialog";
 import { useAgentStore } from "./useAgentStore";
@@ -213,13 +210,16 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
   const disconnect = useAgentStore((s) => s.disconnect);
   const busyAction = useAgentStore((s) => s.busyAction);
   const loginPrompt = useAgentStore((s) => s.loginPrompts[provider.id]);
+  const providerLink = useAgentStore((s) => s.providerLinks[provider.id]);
+  const linkProvider = useAgentStore((s) => s.linkProvider);
+  const unlinkProvider = useAgentStore((s) => s.unlinkProvider);
 
   const rawBuiltins = useProvidersStore((s) => s.data?.builtins);
   const builtins = useMemo(() => rawBuiltins ?? [], [rawBuiltins]);
 
-  const [linkedCredKey, setLinkedCredKey] = useState<string>(
-    () => safeStorage.get(`agent_provider_link:${provider.id}`) || ""
-  );
+  const linkedCredKey = providerLink
+    ? `${providerLink.provider_id}:${providerLink.credential_id}`
+    : "";
 
   const compatibleCreds = useMemo(() => {
     if (!provider.compatible_providers || provider.compatible_providers.length === 0) {
@@ -248,29 +248,24 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
   }, [builtins, provider.compatible_providers]);
 
   const activeBillingSource = useMemo(() => {
-    if (!linkedCredKey) return "OAuth / Subscription";
+    if (!linkedCredKey) return t("agent.connections.oauthDefault");
     const found = compatibleCreds.find(
       (c) => `${c.providerId}:${c.credentialId}` === linkedCredKey
     );
-    return found ? `Linked API Key: ${found.credentialName}` : "OAuth / Subscription";
-  }, [linkedCredKey, compatibleCreds]);
+    return found
+      ? t("agent.connections.linkedApiKeyOption", {
+          provider: found.providerName,
+          credential: found.credentialName,
+        })
+      : t("agent.connections.oauthDefault");
+  }, [linkedCredKey, compatibleCreds, t]);
 
   const handleSelectLinkedCred = (val: string) => {
-    setLinkedCredKey(val);
-    if (val) {
-      safeStorage.set(`agent_provider_link:${provider.id}`, val);
-    } else {
-      safeStorage.remove(`agent_provider_link:${provider.id}`);
-    }
     const [targetProviderId, credId] = val.split(":");
     if (targetProviderId && credId) {
-      void rtClient
-        .request("agent:set_provider_link" as ActionName, {
-          agent_provider_id: provider.id,
-          provider_id: targetProviderId,
-          credential_id: credId,
-        })
-        .catch(() => {});
+      void linkProvider(provider.id, targetProviderId, credId).catch(() => {});
+    } else {
+      void unlinkProvider(provider.id).catch(() => {});
     }
   };
 
@@ -415,9 +410,7 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
           </>
         )}
 
-        <span className="agent-provider-meta__label">
-          {t("agent.connections.billing" as MessageKey) || "Billing"}:
-        </span>
+        <span className="agent-provider-meta__label">{t("agent.connections.billing")}:</span>
         <span className="agent-provider-meta__val" style={{ fontWeight: "var(--weight-semibold)" }}>
           {activeBillingSource}
         </span>
@@ -437,7 +430,7 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
             className="agent-provider-meta__label"
             htmlFor={`agent-credential-link-${provider.id}`}
           >
-            {t("agent.connections.linkedCredential" as MessageKey) || "Credential Link"}:
+            {t("agent.connections.linkedCredential")}:
           </label>
           <select
             id={`agent-credential-link-${provider.id}`}
@@ -445,18 +438,18 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
             value={linkedCredKey}
             onChange={(e) => handleSelectLinkedCred(e.target.value)}
             disabled={disabled || probing || busyAction}
-            aria-label="Linked API Credential"
+            aria-label={t("agent.connections.linkedCredAriaLabel")}
           >
-            <option value="">
-              {t("agent.connections.oauthDefault" as MessageKey) ||
-                "OAuth / Subscription (Default)"}
-            </option>
+            <option value="">{t("agent.connections.oauthDefault")}</option>
             {compatibleCreds.map((c) => (
               <option
                 key={`${c.providerId}:${c.credentialId}`}
                 value={`${c.providerId}:${c.credentialId}`}
               >
-                Linked API Key: {c.providerName} — {c.credentialName}
+                {t("agent.connections.linkedApiKeyOption", {
+                  provider: c.providerName,
+                  credential: c.credentialName,
+                })}
               </option>
             ))}
           </select>
@@ -478,7 +471,7 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
           }}
         >
           <span style={{ color: "var(--text-secondary)" }}>
-            {t("agent.connections.activeSource" as MessageKey) || "Active Connection & Billing"}:
+            {t("agent.connections.activeSource")}:
           </span>
           <Badge>{activeBillingSource}</Badge>
         </div>
@@ -502,6 +495,8 @@ export const AgentProviderCard: React.FC<AgentProviderCardProps> = ({
             className="binary-path-input"
             value={apiKeyDraft}
             onChange={(e) => setApiKeyDraft(e.target.value)}
+            autoComplete="new-password"
+            spellCheck={false}
             placeholder={
               provider.id === "antigravity"
                 ? t("agent.connections.geminiApiKeyPlaceholder")

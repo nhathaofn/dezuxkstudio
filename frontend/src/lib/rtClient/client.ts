@@ -13,7 +13,7 @@ import { ConnectionManager, type ConnectionStatus } from "./connection";
 import type { Endpoint } from "./endpoint";
 import { ActionError, ClientErrorCodes } from "./errors";
 import { PendingRequests } from "./pending";
-import type { ServerFrame } from "./protocol";
+import { parseActionProgress, type ServerFrame } from "./protocol";
 
 export interface RequestOptions {
   /** Aborting sends a cancel frame; the server cancels the action's context. */
@@ -148,8 +148,14 @@ export class RealtimeClient {
       this.pending.complete(frame);
       return;
     }
-    if (frame.event === Events.ACTION_PROGRESS && frame.ref_id) {
-      this.pending.progress(frame.ref_id, frame.data as ActionProgress);
+    if (frame.event === Events.ACTION_PROGRESS) {
+      const progress = parseActionProgress(frame.data);
+      if (!progress) return;
+      if (frame.ref_id) {
+        this.pending.progress(frame.ref_id, progress);
+      }
+      this.listeners.get(frame.event)?.forEach((l) => l(progress));
+      return;
     }
     this.listeners.get(frame.event)?.forEach((l) => l(frame.data));
   }

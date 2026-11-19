@@ -99,11 +99,14 @@ func startCodexAppServer(key, executable string, args, env []string, workDir str
 	if err != nil {
 		return nil, err
 	}
-	if err := cmd.Start(); err != nil {
+	if err := proc.Start(cmd); err != nil {
 		return nil, err
 	}
 	c := newCodexAppServerConn(key, stdin, stdout, stderr, func() { proc.KillTree(cmd) })
-	safego.Go("agent.codex.appserver.wait", func() { c.markExited(waitErr(cmd)) })
+	safego.Go("agent.codex.appserver.wait", func() {
+		defer proc.Release(cmd)
+		c.markExited(waitErr(cmd))
+	})
 	return c, nil
 }
 
@@ -294,7 +297,8 @@ func (s *Service) ensureCodexAppServer(ctx context.Context, executable, profileR
 	// The base instructions are fixed when the process starts, so a changed prompt (interface
 	// language, installed features) starts a new process.
 	instructions := s.systemPrompt(ctx, domainagent.ProviderCodex)
-	key := strings.Join([]string{executable, profileRoot, mcpURL, mcpToken, instructions}, "|")
+	linked := s.activeLinkedSecret()
+	key := strings.Join([]string{executable, profileRoot, mcpURL, mcpToken, instructions, linkedSecretCacheKey(linked)}, "|")
 	s.mu.Lock()
 	srv := s.codexServer
 	if srv != nil && srv.key == key && srv.alive() {
@@ -320,7 +324,7 @@ func (s *Service) ensureCodexAppServer(ctx context.Context, executable, profileR
 		return nil, err
 	}
 	args := append([]string{"app-server"}, codexPolicyArgsForMode(mcpURL, baseFile, s.limits.MCPToolTimeout, s.developerMode)...)
-	srv, err = s.spawnCodexAppServer(key, executable, args, providerEnv(domainagent.ProviderCodex, envMap), workspaceDir)
+	srv, err = s.spawnCodexAppServer(key, executable, args, envWithLinkedSecret(domainagent.ProviderCodex, envMap, linked), workspaceDir)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr

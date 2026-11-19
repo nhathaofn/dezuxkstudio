@@ -3,6 +3,7 @@ package secrets
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -28,10 +29,14 @@ const (
 	BackendEncryptedFile Backend = "encrypted_file"
 	// BackendMemory: process memory only; secrets are lost on restart.
 	BackendMemory Backend = "memory"
+	// BackendError: persistent fallback store on disk failed to open/decrypt; refusing silent memory fallback.
+	BackendError Backend = "error"
 )
 
 // Backends lists every backend.
-func Backends() []Backend { return []Backend{BackendKeyring, BackendEncryptedFile, BackendMemory} }
+func Backends() []Backend {
+	return []Backend{BackendKeyring, BackendEncryptedFile, BackendMemory, BackendError}
+}
 
 // MasterKeyEnv optionally supplies the key that encrypts the fallback secrets file. When unset, a random
 // key is generated once and kept in a 0600 file next to the secrets file.
@@ -64,7 +69,14 @@ func BackendOf(store Store) Backend {
 type Durable struct {
 	store   Store
 	backend Backend
+	err     error
 }
+
+type errorStore struct{ err error }
+
+func (e *errorStore) Get(Key) (string, error) { return "", e.err }
+func (e *errorStore) Set(Key, string) error   { return e.err }
+func (e *errorStore) Delete(Key) error        { return e.err }
 
 // Dir is the folder of the encrypted-file fallback inside the app data dir.
 func Dir(dataDir string) string { return filepath.Join(dataDir, "secrets") }
@@ -76,17 +88,25 @@ func NewDurableStore(service, dir string) *Durable {
 }
 
 func newDurable(primary Store, dir string) *Durable {
-	file, fileErr := NewEncryptedFile(dir)
 	if probe(primary) == nil {
-		if fileErr == nil {
-			migrate(file, primary)
+		// Probe primary keyring before touching disk; only open the encrypted file if one already exists to migrate.
+		if dir != "" {
+			if _, statErr := os.Stat(filepath.Join(dir, encryptedFileName)); statErr == nil {
+				if file, fileErr := NewEncryptedFile(dir); fileErr == nil {
+					migrate(file, primary)
+				}
+			}
 		}
 		return &Durable{store: primary, backend: BackendKeyring}
 	}
+	if dir == "" {
+		return &Durable{store: NewMemory(), backend: BackendMemory}
+	}
+	file, fileErr := NewEncryptedFile(dir)
 	if fileErr == nil {
 		return &Durable{store: file, backend: BackendEncryptedFile}
 	}
-	return &Durable{store: NewMemory(), backend: BackendMemory}
+	return &Durable{store: &errorStore{err: fileErr}, backend: BackendError, err: fileErr}
 }
 
 func probe(s Store) error {
@@ -118,9 +138,15 @@ func migrate(from *EncryptedFile, to Store) {
 }
 
 func (d *Durable) Backend() Backend                { return d.backend }
+func (d *Durable) Err() error                      { return d.err }
 func (d *Durable) Get(key Key) (string, error)     { return d.store.Get(key) }
 func (d *Durable) Set(key Key, value string) error { return d.store.Set(key, value) }
 func (d *Durable) Delete(key Key) error            { return d.store.Delete(key) }
+
+const (
+	pbkdf2Iterations = 210_000
+	pbkdf2SaltBytes  = 16
+)
 
 // EncryptedFile stores all secrets in one AES-256-GCM encrypted JSON file. It is weaker than the OS
 // keyring (the key sits next to the data unless MasterKeyEnv is set) and is only used as a fallback.
@@ -128,13 +154,27 @@ type EncryptedFile struct {
 	mu   sync.Mutex
 	path string
 	aead cipher.AEAD
+	salt []byte
 	data map[Key]string
 }
 
 type encryptedEnvelope struct {
 	Version    int    `json:"version"`
+	Salt       string `json:"salt,omitempty"`
 	Nonce      string `json:"nonce"`
 	Ciphertext string `json:"ciphertext"`
+}
+
+func newGCM(key []byte) (cipher.AEAD, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("secrets: cipher: %w", err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("secrets: gcm: %w", err)
+	}
+	return aead, nil
 }
 
 // NewEncryptedFile opens (or prepares) the encrypted secrets file in dir.
@@ -145,19 +185,35 @@ func NewEncryptedFile(dir string) (*EncryptedFile, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("secrets: prepare dir: %w", err)
 	}
+
+	f := &EncryptedFile{
+		path: filepath.Join(dir, encryptedFileName),
+		data: map[Key]string{},
+	}
+
+	envMaster := strings.TrimSpace(os.Getenv(MasterKeyEnv))
+	if envMaster != "" {
+		needsWrite, err := f.loadWithEnvPassphrase(envMaster)
+		if err != nil {
+			return nil, err
+		}
+		if needsWrite {
+			if err := f.save(); err != nil {
+				return nil, err
+			}
+		}
+		return f, nil
+	}
+
 	key, err := masterKey(dir)
 	if err != nil {
 		return nil, err
 	}
-	block, err := aes.NewCipher(key)
+	aead, err := newGCM(key)
 	if err != nil {
-		return nil, fmt.Errorf("secrets: cipher: %w", err)
+		return nil, err
 	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("secrets: gcm: %w", err)
-	}
-	f := &EncryptedFile{path: filepath.Join(dir, encryptedFileName), aead: aead}
+	f.aead = aead
 	if err := f.load(); err != nil {
 		return nil, err
 	}
@@ -168,13 +224,82 @@ func NewEncryptedFile(dir string) (*EncryptedFile, error) {
 	return f, nil
 }
 
+func (f *EncryptedFile) loadWithEnvPassphrase(passphrase string) (needsSave bool, err error) {
+	raw, err := os.ReadFile(f.path)
+	if errors.Is(err, os.ErrNotExist) {
+		salt := make([]byte, pbkdf2SaltBytes)
+		if _, rerr := rand.Read(salt); rerr != nil {
+			return false, fmt.Errorf("secrets: generate salt: %w", rerr)
+		}
+		key, kerr := pbkdf2.Key(sha256.New, passphrase, salt, pbkdf2Iterations, 32)
+		if kerr != nil {
+			return false, fmt.Errorf("secrets: derive key: %w", kerr)
+		}
+		aead, aerr := newGCM(key)
+		if aerr != nil {
+			return false, aerr
+		}
+		f.salt = salt
+		f.aead = aead
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("secrets: read store: %w", err)
+	}
+	var env encryptedEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return false, errors.New("secrets: encrypted store is damaged")
+	}
+	var key []byte
+	migrating := false
+	if env.Salt != "" {
+		salt, decErr := base64.StdEncoding.DecodeString(env.Salt)
+		if decErr != nil || len(salt) != pbkdf2SaltBytes {
+			return false, errors.New("secrets: encrypted store is damaged")
+		}
+		derived, kerr := pbkdf2.Key(sha256.New, passphrase, salt, pbkdf2Iterations, 32)
+		if kerr != nil {
+			return false, fmt.Errorf("secrets: derive key: %w", kerr)
+		}
+		key = derived
+		f.salt = salt
+	} else {
+		// Legacy unsalted SHA-256 envelope: decrypt then upgrade to salted PBKDF2.
+		sum := sha256.Sum256([]byte(passphrase))
+		key = sum[:]
+		migrating = true
+	}
+	aead, err := newGCM(key)
+	if err != nil {
+		return false, err
+	}
+	f.aead = aead
+	if err := f.decryptEnvelope(env); err != nil {
+		return false, err
+	}
+	if migrating {
+		newSalt := make([]byte, pbkdf2SaltBytes)
+		if _, rerr := rand.Read(newSalt); rerr != nil {
+			return false, fmt.Errorf("secrets: generate salt: %w", rerr)
+		}
+		newKey, kerr := pbkdf2.Key(sha256.New, passphrase, newSalt, pbkdf2Iterations, 32)
+		if kerr != nil {
+			return false, fmt.Errorf("secrets: derive key: %w", kerr)
+		}
+		newAEAD, aerr := newGCM(newKey)
+		if aerr != nil {
+			return false, aerr
+		}
+		f.salt = newSalt
+		f.aead = newAEAD
+		return true, nil
+	}
+	return false, nil
+}
+
 const masterKeyDPAPIPrefix = "dpapi:"
 
 func masterKey(dir string) ([]byte, error) {
-	if v := strings.TrimSpace(os.Getenv(MasterKeyEnv)); v != "" {
-		sum := sha256.Sum256([]byte(v))
-		return sum[:], nil
-	}
 	path := filepath.Join(dir, masterKeyFileName)
 	if raw, err := os.ReadFile(path); err == nil {
 		text := strings.TrimSpace(string(raw))
@@ -239,6 +364,10 @@ func (f *EncryptedFile) load() error {
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return errors.New("secrets: encrypted store is damaged")
 	}
+	return f.decryptEnvelope(env)
+}
+
+func (f *EncryptedFile) decryptEnvelope(env encryptedEnvelope) error {
 	nonce, err1 := base64.StdEncoding.DecodeString(env.Nonce)
 	ct, err2 := base64.StdEncoding.DecodeString(env.Ciphertext)
 	if err1 != nil || err2 != nil || len(nonce) != f.aead.NonceSize() {
@@ -271,6 +400,10 @@ func (f *EncryptedFile) save() error {
 		Version:    1,
 		Nonce:      base64.StdEncoding.EncodeToString(nonce),
 		Ciphertext: base64.StdEncoding.EncodeToString(f.aead.Seal(nil, nonce, plain, nil)),
+	}
+	if len(f.salt) > 0 {
+		env.Version = 2
+		env.Salt = base64.StdEncoding.EncodeToString(f.salt)
 	}
 	raw, err := json.Marshal(env)
 	if err != nil {

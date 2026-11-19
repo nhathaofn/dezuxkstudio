@@ -4,6 +4,7 @@ import { useFlash } from "../../lib/hooks/useFlash";
 import { ArrowLeft, Loader2, MessageSquare, Trash2 } from "lucide-react";
 import type { AgentConversation } from "../../contracts/generated";
 import { Button } from "../../components/ui/Button";
+import { VirtualList } from "../../components/ui/VirtualList";
 import { useT } from "../../lib/i18n";
 import { usePreferencesStore } from "../preferences/usePreferencesStore";
 import { useAgentDrawerStore } from "./useAgentDrawerStore";
@@ -108,11 +109,16 @@ export const AgentHistoryList: React.FC = () => {
           <p className="agent-empty-state__desc">{t("agent.history.empty")}</p>
         </div>
       ) : (
-        <ul className="agent-history__list">
-          {conversations.map((c) => (
-            <HistoryItem key={c.id} conv={c} current={c.id === conversationId} disabled={sending} />
-          ))}
-        </ul>
+        <VirtualList<AgentConversation>
+          items={conversations}
+          estimateSize={56}
+          height="100%"
+          className="agent-history__list"
+          getItemKey={(c) => c.id}
+          renderItem={(c) => (
+            <HistoryItem conv={c} current={c.id === conversationId} disabled={sending} />
+          )}
+        />
       )}
     </div>
   );

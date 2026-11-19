@@ -2,14 +2,12 @@ package media
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -17,8 +15,10 @@ import (
 	"app/internal/apperr"
 	"app/internal/config"
 	"app/internal/contracts"
+	domainmedia "app/internal/domain/media"
+	"app/internal/engine"
+	"app/internal/fsutil"
 	"app/internal/security"
-	"app/internal/storage/sqlite"
 )
 
 // RegisterAssetParams contains input parameters for registering a media asset.
@@ -37,16 +37,7 @@ type RegisterAssetParams struct {
 }
 
 // Repository defines the storage contract required by media.Service.
-type Repository interface {
-	RegisterAsset(ctx context.Context, asset sqlite.MediaAssetRecord) (*sqlite.MediaAssetRecord, error)
-	GetAsset(ctx context.Context, id string) (*sqlite.MediaAssetRecord, error)
-	GetAssetByPath(ctx context.Context, filePath string) (*sqlite.MediaAssetRecord, error)
-	ListAssets(ctx context.Context, filter sqlite.MediaListFilter) ([]sqlite.MediaAssetRecord, int, error)
-	DeleteAsset(ctx context.Context, id string) error
-	PruneMissingAssets(ctx context.Context, missingIDs []string) (int64, error)
-	PruneExpiredAssets(ctx context.Context, olderThan time.Time, maxItems int) (int64, error)
-	UpdateLastVerified(ctx context.Context, id string, verifiedAt int64) error
-}
+type Repository = domainmedia.Repository
 
 // Options configures Service construction.
 type Options struct {
@@ -75,22 +66,17 @@ type Service struct {
 	mu           sync.RWMutex
 }
 
+var allowedInputMediaExts = map[string]bool{
+	".png": true, ".jpg": true, ".jpeg": true, ".webp": true, ".gif": true, ".bmp": true,
+	".tif": true, ".tiff": true, ".heic": true, ".heif": true, ".avif": true,
+	".mp4": true, ".m4v": true, ".mov": true, ".webm": true, ".mkv": true, ".avi": true,
+	".wmv": true, ".flv": true, ".mpg": true, ".mpeg": true, ".3gp": true,
+	".mp3": true, ".wav": true, ".m4a": true, ".aac": true, ".flac": true, ".ogg": true, ".opus": true, ".wma": true,
+}
+
 // New constructs a new media Service.
 func New(opts Options) *Service {
-	cfg := opts.Config
-	def := config.Default(config.ModeDesktop).Media
-	if cfg.LibraryMaxItems <= 0 {
-		cfg.LibraryMaxItems = def.LibraryMaxItems
-	}
-	if cfg.LibraryRetention <= 0 {
-		cfg.LibraryRetention = def.LibraryRetention
-	}
-	if cfg.TicketTTL <= 0 {
-		cfg.TicketTTL = def.TicketTTL
-	}
-	if cfg.RegisteredRootsMax <= 0 {
-		cfg.RegisteredRootsMax = def.RegisteredRootsMax
-	}
+	cfg := config.ResolveMediaConfig(opts.Config)
 
 	log := opts.Logger
 	if log == nil {
@@ -263,29 +249,45 @@ func (s *Service) getMediaDir() string {
 }
 
 // isRootAuthorized checks if realRoot is an authorized registered root or subdirectory of one.
+// Fails closed when no allowedRoots are configured.
 func (s *Service) isRootAuthorized(realRoot string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if len(s.allowedRoots) == 0 {
-		return true // If no roots configured, allow root itself
+		return false
 	}
 
 	for _, allowed := range s.allowedRoots {
-		if isSubpath(allowed, realRoot) {
+		if fsutil.IsSubpath(allowed, realRoot, false) {
 			return true
 		}
 	}
 	return false
 }
 
+// matchingAuthorizedRoot returns the most specific authorized root containing realTarget, or "" if none.
+func (s *Service) matchingAuthorizedRoot(realTarget string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	best := ""
+	for _, allowed := range s.allowedRoots {
+		if fsutil.IsSubpath(allowed, realTarget, false) && len(allowed) > len(best) {
+			best = allowed
+		}
+	}
+	return best
+}
+
 // IsPathAuthorized reports whether target file or directory is inside any authorized root.
+// Fails closed when no allowedRoots are configured.
 func (s *Service) IsPathAuthorized(target string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if len(s.allowedRoots) == 0 {
-		return true
+		return false
 	}
 
 	cleanTarget := filepath.Clean(target)
@@ -295,7 +297,7 @@ func (s *Service) IsPathAuthorized(target string) bool {
 	}
 
 	for _, allowed := range s.allowedRoots {
-		if isSubpath(allowed, cleanTarget) {
+		if fsutil.IsSubpath(allowed, cleanTarget, false) {
 			return true
 		}
 	}
@@ -327,15 +329,15 @@ func (s *Service) RegisterAsset(ctx context.Context, req RegisterAssetParams) (*
 	}
 
 	if !s.isRootAuthorized(realRoot) {
-		return nil, apperr.New(apperr.CodeUnauthorized, fmt.Sprintf("registered root %q is not authorized", realRoot))
+		return nil, apperr.New(apperr.CodeUnauthorized, "registered root is not authorized")
 	}
 
 	fi, err := os.Stat(realTarget)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, apperr.NotFound(fmt.Sprintf("media file does not exist: %v", err))
+			return nil, apperr.Wrap(apperr.CodeNotFound, "media file does not exist", err)
 		}
-		return nil, apperr.Wrap(apperr.CodeValidation, "cannot read media file info", err)
+		return nil, apperr.Wrap(apperr.CodeValidation, "cannot read media file metadata", err)
 	}
 	if !fi.Mode().IsRegular() {
 		return nil, apperr.Validation("media file is not a regular file")
@@ -361,7 +363,7 @@ func (s *Service) RegisterAsset(ctx context.Context, req RegisterAssetParams) (*
 		sourceNode = "user_input"
 	}
 
-	record := sqlite.MediaAssetRecord{
+	record := domainmedia.AssetRecord{
 		ID:             req.ID,
 		Kind:           kind,
 		SourceNode:     sourceNode,
@@ -391,19 +393,69 @@ func (s *Service) RegisterAsset(ctx context.Context, req RegisterAssetParams) (*
 }
 
 // RegisterInput registers an existing local media file as an asset (media:register_input action).
+// In guarded server mode (engine.HasFileGuard), FileGuard is enforced first and new roots are never added.
+// In local desktop mode, user-selected regular media files outside mediaDir register their parent directory safely.
 func (s *Service) RegisterInput(ctx context.Context, p contracts.MediaRegisterInputPayload) (contracts.MediaAssetItem, error) {
 	if err := p.Validate(); err != nil {
 		return contracts.MediaAssetItem{}, err
 	}
-	root := s.getMediaDir()
-	if root == "" {
-		root = filepath.Dir(p.FilePath)
+	rawPath := strings.TrimSpace(p.FilePath)
+	if strings.ContainsRune(rawPath, 0) {
+		return contracts.MediaAssetItem{}, apperr.Validation("invalid media file path")
 	}
-	// Temporarily allow this file's folder as root if inside workspace
-	s.AddAllowedRoot(filepath.Dir(p.FilePath))
+	if err := engine.CheckFile(ctx, rawPath, false); err != nil {
+		return contracts.MediaAssetItem{}, apperr.From(err)
+	}
+
+	candidate := rawPath
+	if !filepath.IsAbs(candidate) {
+		baseRoot := s.getMediaDir()
+		if baseRoot == "" {
+			return contracts.MediaAssetItem{}, apperr.Validation("relative media file path requires configured media directory")
+		}
+		candidate = filepath.Join(baseRoot, filepath.FromSlash(candidate))
+	}
+	candidate = filepath.Clean(candidate)
+
+	realFile, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return contracts.MediaAssetItem{}, apperr.Wrap(apperr.CodeNotFound, "media file does not exist", err)
+		}
+		return contracts.MediaAssetItem{}, apperr.Wrap(apperr.CodeValidation, "invalid media file path", err)
+	}
+	if err := engine.CheckFile(ctx, realFile, false); err != nil {
+		return contracts.MediaAssetItem{}, apperr.From(err)
+	}
+
+	fi, err := os.Stat(realFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return contracts.MediaAssetItem{}, apperr.Wrap(apperr.CodeNotFound, "media file does not exist", err)
+		}
+		return contracts.MediaAssetItem{}, apperr.Wrap(apperr.CodeValidation, "cannot read media file metadata", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return contracts.MediaAssetItem{}, apperr.Validation("media file is not a regular file")
+	}
+
+	ext := strings.ToLower(filepath.Ext(realFile))
+	if !allowedInputMediaExts[ext] {
+		return contracts.MediaAssetItem{}, apperr.Validation("unsupported media file extension")
+	}
+
+	root := s.matchingAuthorizedRoot(realFile)
+	if root == "" {
+		if engine.HasFileGuard(ctx) {
+			return contracts.MediaAssetItem{}, apperr.New(apperr.CodeUnauthorized, "media file is outside authorized roots")
+		}
+		realDir := filepath.Dir(realFile)
+		s.AddAllowedRoot(realDir)
+		root = realDir
+	}
 
 	item, err := s.RegisterAsset(ctx, RegisterAssetParams{
-		FilePath:       p.FilePath,
+		FilePath:       realFile,
 		Kind:           p.Kind,
 		SourceNode:     p.SourceNode,
 		RegisteredRoot: root,
@@ -414,22 +466,14 @@ func (s *Service) RegisterInput(ctx context.Context, p contracts.MediaRegisterIn
 	return *item, nil
 }
 
-// List returns a paginated list of media assets matching filter, and performs auto-pruning.
+// List returns a paginated list of media assets matching filter.
+// Expiration and missing-file pruning run asynchronously in RunGC / PruneNow rather than on read queries.
 func (s *Service) List(ctx context.Context, filter contracts.MediaListPayload) (contracts.MediaListResult, error) {
 	if s.repo == nil {
 		return contracts.MediaListResult{Assets: []contracts.MediaAssetItem{}}, nil
 	}
 
-	// Auto-prune expired assets if exceeding library max items or retention
-	if s.cfg.LibraryMaxItems > 0 || s.cfg.LibraryRetention > 0 {
-		olderThan := time.Time{}
-		if s.cfg.LibraryRetention > 0 {
-			olderThan = time.Now().Add(-s.cfg.LibraryRetention)
-		}
-		_, _ = s.repo.PruneExpiredAssets(ctx, olderThan, s.cfg.LibraryMaxItems)
-	}
-
-	records, total, err := s.repo.ListAssets(ctx, sqlite.MediaListFilter{
+	records, total, err := s.repo.ListAssets(ctx, domainmedia.ListFilter{
 		Kind:   filter.Kind,
 		Limit:  filter.Limit,
 		Offset: filter.Offset,
@@ -437,26 +481,6 @@ func (s *Service) List(ctx context.Context, filter contracts.MediaListPayload) (
 	})
 	if err != nil {
 		return contracts.MediaListResult{}, apperr.Wrap(apperr.CodeInternal, "failed to list media assets", err)
-	}
-
-	// Auto-prune missing files on listing
-	var missingIDs []string
-	validRecords := make([]sqlite.MediaAssetRecord, 0, len(records))
-	for _, rec := range records {
-		if _, err := os.Stat(rec.FilePath); os.IsNotExist(err) {
-			missingIDs = append(missingIDs, rec.ID)
-		} else {
-			validRecords = append(validRecords, rec)
-		}
-	}
-
-	if len(missingIDs) > 0 {
-		_, _ = s.repo.PruneMissingAssets(ctx, missingIDs)
-		total -= len(missingIDs)
-		if total < 0 {
-			total = 0
-		}
-		records = validRecords
 	}
 
 	assets := make([]contracts.MediaAssetItem, len(records))
@@ -470,7 +494,61 @@ func (s *Service) List(ctx context.Context, filter contracts.MediaListPayload) (
 	}, nil
 }
 
+// RunGC periodically prunes expired and missing media asset records until ctx is cancelled.
+func (s *Service) RunGC(ctx context.Context) {
+	s.PruneNow(ctx)
+	ticker := time.NewTicker(15 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.PruneNow(ctx)
+		}
+	}
+}
+
+// PruneNow removes expired library entries and missing on-disk backing files in bounded batches.
+func (s *Service) PruneNow(ctx context.Context) {
+	if s.repo == nil || ctx.Err() != nil {
+		return
+	}
+	if s.cfg.LibraryMaxItems > 0 || s.cfg.LibraryRetention > 0 {
+		olderThan := time.Time{}
+		if s.cfg.LibraryRetention > 0 {
+			olderThan = time.Now().Add(-s.cfg.LibraryRetention)
+		}
+		_, _ = s.repo.PruneExpiredAssets(ctx, olderThan, s.cfg.LibraryMaxItems)
+	}
+	const batchSize = 200
+	var missingIDs []string
+	for offset := 0; ; offset += batchSize {
+		if ctx.Err() != nil {
+			return
+		}
+		records, total, err := s.repo.ListAssets(ctx, domainmedia.ListFilter{Limit: batchSize, Offset: offset})
+		if err != nil || len(records) == 0 {
+			break
+		}
+		for _, rec := range records {
+			if _, statErr := os.Stat(rec.FilePath); os.IsNotExist(statErr) {
+				missingIDs = append(missingIDs, rec.ID)
+			}
+		}
+		if offset+len(records) >= total {
+			break
+		}
+	}
+	if len(missingIDs) > 0 {
+		if n, err := s.repo.PruneMissingAssets(ctx, missingIDs); err == nil && n > 0 && s.onChanged != nil {
+			s.onChanged()
+		}
+	}
+}
+
 // Delete removes an asset from the library, optionally removing the backing file.
+// Validates paths and guards first, deletes the database record, then removes the backing file.
 func (s *Service) Delete(ctx context.Context, id string, deleteFile bool) error {
 	if s.repo == nil {
 		return apperr.Unavailable("media repository is unavailable")
@@ -481,22 +559,31 @@ func (s *Service) Delete(ctx context.Context, id string, deleteFile bool) error 
 		return apperr.Wrap(apperr.CodeInternal, "failed to get asset for deletion", err)
 	}
 	if asset == nil {
-		return apperr.NotFound(fmt.Sprintf("media asset %q not found", id))
+		return apperr.NotFound("media asset not found").WithDetails(map[string]any{"id": id})
 	}
 
+	var realTarget string
 	if deleteFile {
-		realTarget, realRoot, err := evalSubpath(asset.FilePath, asset.RegisteredRoot)
+		target, realRoot, err := evalSubpath(asset.FilePath, asset.RegisteredRoot)
 		if err != nil {
-			return apperr.New(apperr.CodeUnauthorized, fmt.Sprintf("cannot safely delete backing file: %v", err))
+			return apperr.Wrap(apperr.CodeUnauthorized, "cannot safely delete backing file", err)
 		}
 		if !s.isRootAuthorized(realRoot) {
 			return apperr.New(apperr.CodeUnauthorized, "cannot delete backing file: root is not authorized")
 		}
-		_ = os.Remove(realTarget)
+		if err := engine.CheckFile(ctx, target, true); err != nil {
+			return apperr.From(err)
+		}
+		realTarget = target
 	}
 
 	if err := s.repo.DeleteAsset(ctx, id); err != nil {
 		return apperr.Wrap(apperr.CodeInternal, "failed to delete media asset record", err)
+	}
+	if deleteFile && realTarget != "" {
+		if err := os.Remove(realTarget); err != nil && !os.IsNotExist(err) {
+			return apperr.Wrap(apperr.CodeUnavailable, "failed to remove media file from disk", err)
+		}
 	}
 
 	if s.onChanged != nil {
@@ -505,7 +592,7 @@ func (s *Service) Delete(ctx context.Context, id string, deleteFile bool) error 
 	return nil
 }
 
-// SignAssetURL issues a signed scoped streaming/download URL for assetID.
+// SignAssetURL issues a signed scoped streaming/download URL for assetID, capping TTL at configured TicketTTL.
 func (s *Service) SignAssetURL(ctx context.Context, p contracts.MediaSignURLPayload) (contracts.MediaSignedURLResult, error) {
 	if err := p.Validate(); err != nil {
 		return contracts.MediaSignedURLResult{}, err
@@ -522,7 +609,7 @@ func (s *Service) SignAssetURL(ctx context.Context, p contracts.MediaSignURLPayl
 		return contracts.MediaSignedURLResult{}, apperr.Wrap(apperr.CodeInternal, "failed to get asset", err)
 	}
 	if asset == nil {
-		return contracts.MediaSignedURLResult{}, apperr.NotFound(fmt.Sprintf("media asset %q not found", p.AssetID))
+		return contracts.MediaSignedURLResult{}, apperr.NotFound("media asset not found").WithDetails(map[string]any{"id": p.AssetID})
 	}
 
 	purpose := p.Purpose
@@ -532,7 +619,10 @@ func (s *Service) SignAssetURL(ctx context.Context, p contracts.MediaSignURLPayl
 
 	ttl := s.cfg.TicketTTL
 	if p.TTLSeconds > 0 {
-		ttl = time.Duration(p.TTLSeconds) * time.Second
+		requested := time.Duration(p.TTLSeconds) * time.Second
+		if requested < ttl {
+			ttl = requested
+		}
 	}
 
 	ticket, err := s.signer.SignTicket(p.AssetID, purpose, ttl)
@@ -541,11 +631,9 @@ func (s *Service) SignAssetURL(ctx context.Context, p contracts.MediaSignURLPayl
 	}
 
 	expiresAt := time.Now().Add(ttl).Unix()
-	urlStr := fmt.Sprintf("/api/media/download?asset_id=%s&ticket=%s&purpose=%s",
-		url.QueryEscape(p.AssetID),
-		url.QueryEscape(ticket),
-		url.QueryEscape(purpose),
-	)
+	urlStr := "/api/media/download?asset_id=" + url.QueryEscape(p.AssetID) +
+		"&ticket=" + url.QueryEscape(ticket) +
+		"&purpose=" + url.QueryEscape(purpose)
 
 	return contracts.MediaSignedURLResult{
 		AssetID:   p.AssetID,
@@ -554,18 +642,6 @@ func (s *Service) SignAssetURL(ctx context.Context, p contracts.MediaSignURLPayl
 		ExpiresAt: expiresAt,
 		Purpose:   purpose,
 	}, nil
-}
-
-// SignURL issues a signed URL string using default TicketTTL.
-func (s *Service) SignURL(ctx context.Context, assetID, purpose string) (string, error) {
-	res, err := s.SignAssetURL(ctx, contracts.MediaSignURLPayload{
-		AssetID: assetID,
-		Purpose: purpose,
-	})
-	if err != nil {
-		return "", err
-	}
-	return res.URL, nil
 }
 
 // ResolveAssetFile resolves the real on-disk file path, verifies that it strictly resides
@@ -580,7 +656,7 @@ func (s *Service) ResolveAssetFile(ctx context.Context, assetID string) (filePat
 		return "", "", time.Time{}, 0, apperr.Wrap(apperr.CodeInternal, "failed to get asset", err)
 	}
 	if asset == nil {
-		return "", "", time.Time{}, 0, apperr.NotFound(fmt.Sprintf("media asset %q not found", assetID))
+		return "", "", time.Time{}, 0, apperr.NotFound("media asset not found").WithDetails(map[string]any{"id": assetID})
 	}
 
 	realTarget, realRoot, err := evalSubpath(asset.FilePath, asset.RegisteredRoot)
@@ -595,9 +671,9 @@ func (s *Service) ResolveAssetFile(ctx context.Context, assetID string) (filePat
 	fi, err := os.Stat(realTarget)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", "", time.Time{}, 0, apperr.NotFound("media asset file missing on disk")
+			return "", "", time.Time{}, 0, apperr.Wrap(apperr.CodeNotFound, "media asset file missing on disk", err)
 		}
-		return "", "", time.Time{}, 0, apperr.Wrap(apperr.CodeValidation, "failed to stat media file", err)
+		return "", "", time.Time{}, 0, apperr.Wrap(apperr.CodeValidation, "failed to read media file metadata", err)
 	}
 	if !fi.Mode().IsRegular() {
 		return "", "", time.Time{}, 0, apperr.Validation("resolved path is not a regular file")
@@ -619,7 +695,7 @@ func (s *Service) ResolveAsset(ctx context.Context, assetID string) (filePath st
 		return "", "", apperr.Wrap(apperr.CodeInternal, "failed to get asset", err)
 	}
 	if asset == nil {
-		return "", "", apperr.NotFound(fmt.Sprintf("media asset %q not found", assetID))
+		return "", "", apperr.NotFound("media asset not found").WithDetails(map[string]any{"id": assetID})
 	}
 	return asset.FilePath, asset.RegisteredRoot, nil
 }
@@ -634,18 +710,18 @@ func (s *Service) GetAsset(ctx context.Context, id string) (*contracts.MediaAsse
 		return nil, apperr.Wrap(apperr.CodeInternal, "failed to get asset", err)
 	}
 	if asset == nil {
-		return nil, apperr.NotFound(fmt.Sprintf("media asset %q not found", id))
+		return nil, apperr.NotFound("media asset not found").WithDetails(map[string]any{"id": id})
 	}
 	item := toContract(*asset)
 	return &item, nil
 }
 
-// evalSubpath evaluates symlinks and asserts realTarget is inside realRoot.
+// evalSubpath evaluates symlinks and asserts realTarget is inside realRoot without leaking host paths in user messages.
 func evalSubpath(targetPath, rootPath string) (realTarget, realRoot string, err error) {
 	cleanRoot := filepath.Clean(rootPath)
 	realRoot, err = filepath.EvalSymlinks(cleanRoot)
 	if err != nil {
-		return "", "", apperr.New(apperr.CodeUnauthorized, fmt.Sprintf("cannot resolve registered root %q: %v", cleanRoot, err))
+		return "", "", apperr.Wrap(apperr.CodeUnauthorized, "cannot resolve registered root", err)
 	}
 
 	cleanTarget := targetPath
@@ -657,35 +733,17 @@ func evalSubpath(targetPath, rootPath string) (realTarget, realRoot string, err 
 	realTarget, err = filepath.EvalSymlinks(cleanTarget)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", "", apperr.NotFound(fmt.Sprintf("media file does not exist: %v", err))
+			return "", "", apperr.Wrap(apperr.CodeNotFound, "media file does not exist", err)
 		}
-		return "", "", apperr.Validation(fmt.Sprintf("invalid media path: %v", err))
+		return "", "", apperr.Wrap(apperr.CodeValidation, "invalid media path", err)
 	}
 
-	if !isSubpath(realRoot, realTarget) {
+	resolvedTarget, resolvedRoot, resErr := fsutil.ResolveSubpath(realRoot, realTarget, false)
+	if resErr != nil {
 		return "", "", apperr.New(apperr.CodeUnauthorized, "path escapes registered root boundary")
 	}
 
-	return realTarget, realRoot, nil
-}
-
-// isSubpath reports whether target is strictly inside or equal to root directory.
-func isSubpath(root, target string) bool {
-	r := filepath.Clean(root)
-	t := filepath.Clean(target)
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
-		r = strings.ToLower(r)
-		t = strings.ToLower(t)
-	}
-
-	rel, err := filepath.Rel(r, t)
-	if err != nil {
-		return false
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return false
-	}
-	return true
+	return resolvedTarget, resolvedRoot, nil
 }
 
 func detectMimeType(filePath string) string {
@@ -727,6 +785,14 @@ func detectMimeType(filePath string) string {
 		return "audio/flac"
 	case ".ogg":
 		return "audio/ogg"
+	case ".zip":
+		return "application/zip"
+	case ".fcpxml":
+		return "application/xml"
+	case ".otio", ".json":
+		return "application/json"
+	case ".srt", ".ass":
+		return "text/plain"
 	}
 	return "application/octet-stream"
 }
@@ -745,7 +811,7 @@ func inferKindFromMime(mime string) string {
 	return "image"
 }
 
-func toContract(r sqlite.MediaAssetRecord) contracts.MediaAssetItem {
+func toContract(r domainmedia.AssetRecord) contracts.MediaAssetItem {
 	return contracts.MediaAssetItem{
 		ID:             r.ID,
 		Kind:           r.Kind,

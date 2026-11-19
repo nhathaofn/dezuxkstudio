@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"image/color"
 	"image/draw"
 	"image/jpeg"
 	"image/png"
@@ -37,31 +38,19 @@ func putROIBuffer(buf *[]byte) {
 	roiPool.Put(buf)
 }
 
-var fullFramePool = sync.Pool{
-	New: func() any {
-		b := make([]byte, 0)
-		return &b
-	},
+type patchedImage struct {
+	base      image.Image
+	patch     *image.RGBA
+	patchRect image.Rectangle
 }
 
-func acquireFullFrameRGBA(rect image.Rectangle) (*image.RGBA, func()) {
-	need := rect.Dx() * rect.Dy() * 4
-	bufPtr := fullFramePool.Get().(*[]byte)
-	if cap(*bufPtr) < need {
-		*bufPtr = make([]byte, need)
-	} else {
-		*bufPtr = (*bufPtr)[:need]
+func (p *patchedImage) ColorModel() color.Model { return p.base.ColorModel() }
+func (p *patchedImage) Bounds() image.Rectangle { return p.base.Bounds() }
+func (p *patchedImage) At(x, y int) color.Color {
+	if image.Pt(x, y).In(p.patchRect) {
+		return p.patch.RGBAAt(x, y)
 	}
-	rgba := &image.RGBA{
-		Pix:    *bufPtr,
-		Stride: rect.Dx() * 4,
-		Rect:   rect,
-	}
-	return rgba, func() {
-		if cap(*bufPtr) <= 150*1024*1024 {
-			fullFramePool.Put(bufPtr)
-		}
-	}
+	return p.base.At(x, y)
 }
 
 // writePatch writes the reconstructed patch from roi to workingImg at patchRect.
@@ -88,7 +77,11 @@ func writePatch(dst image.Image, roi *image.RGBA, patchRect image.Rectangle) {
 // unblending, contour smoothing, and bilateral denoising within that ROI, and writes
 // the patch directly back onto workingImg. It avoids full-image cloning.
 func (e *Engine) reconstructROI(workingImg image.Image, match matchResult) {
-	bounds := workingImg.Bounds()
+	e.reconstructROIInto(workingImg, workingImg, match)
+}
+
+func (e *Engine) reconstructROIInto(srcImg, dstImg image.Image, match matchResult) {
+	bounds := srcImg.Bounds()
 	sz := match.size
 	wmX, wmY := match.x, match.y
 	if wmX < bounds.Min.X || wmY < bounds.Min.Y || wmX+sz > bounds.Max.X || wmY+sz > bounds.Max.Y {
@@ -107,7 +100,7 @@ func (e *Engine) reconstructROI(workingImg image.Image, match matchResult) {
 		Stride: roi.Dx() * 4,
 		Rect:   roi,
 	}
-	draw.Draw(roiRGBA, roi, workingImg, roi.Min, draw.Src)
+	draw.Draw(roiRGBA, roi, srcImg, roi.Min, draw.Src)
 
 	alpha := match.template.Alpha
 	gain := match.gain
@@ -137,9 +130,9 @@ func (e *Engine) reconstructROI(workingImg image.Image, match matchResult) {
 	// Step 3: Denoise inside ROI
 	e.denoiseInsideROI(roiRGBA, match, gain)
 
-	// Step 4: Write reconstruction patch directly onto working buffer
+	// Step 4: Write reconstruction patch directly onto destination buffer
 	patchRect := image.Rect(wmX, wmY, wmX+sz, wmY+sz).Intersect(bounds)
-	writePatch(workingImg, roiRGBA, patchRect)
+	writePatch(dstImg, roiRGBA, patchRect)
 }
 
 func (e *Engine) reconstructWatermark(rgba *image.RGBA, match matchResult) {
@@ -304,10 +297,6 @@ func medianSlice(v []uint8) uint8 {
 	return v[len(v)/2]
 }
 
-func median(v [25]uint8) uint8 {
-	return medianSlice(v[:])
-}
-
 // SniffFormat inspects magic bytes to identify JPEG, PNG, or WebP format.
 func SniffFormat(data []byte) ImageFormat {
 	if len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
@@ -401,32 +390,32 @@ func (e *Engine) removeInternal(ctx context.Context, data []byte) ([]byte, bool,
 	}
 
 	match := e.findWatermarkContext(ctx, img)
-	if !match.found {
-		return data, false, inFormat, Info{}, match.score, match.gain, nil
-	}
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
 			return nil, false, inFormat, Info{}, 0, 0, err
 		}
 	}
+	if !match.found {
+		return data, false, inFormat, Info{}, match.score, match.gain, nil
+	}
 
 	var workingImg image.Image = img
-	var releaseFullFrame func()
 	switch img.(type) {
 	case *image.RGBA, *image.NRGBA:
-		// Working buffer is the decoded image itself - zero full-frame allocations!
+		// Working buffer is the decoded image itself - zero full-frame allocations.
+		e.reconstructROI(workingImg, match)
 	default:
-		// Format like YCbCr requires RGBA conversion; use pooled frame buffer
-		rgba, rel := acquireFullFrameRGBA(img.Bounds())
-		releaseFullFrame = rel
-		draw.Draw(rgba, img.Bounds(), img, img.Bounds().Min, draw.Src)
-		workingImg = rgba
+		// Formats like YCbCr only convert and store the small watermark patch instead of cloning the full frame.
+		bounds := img.Bounds()
+		patchRect := image.Rect(match.x, match.y, match.x+match.size, match.y+match.size).Intersect(bounds)
+		patch := image.NewRGBA(patchRect)
+		e.reconstructROIInto(img, patch, match)
+		workingImg = &patchedImage{
+			base:      img,
+			patch:     patch,
+			patchRect: patchRect,
+		}
 	}
-	if releaseFullFrame != nil {
-		defer releaseFullFrame()
-	}
-
-	e.reconstructROI(workingImg, match)
 
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {

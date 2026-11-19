@@ -1,4 +1,4 @@
-import { AudioLines, Image, LayoutGrid, MessageSquare, Video } from "lucide-react";
+import { AudioLines, Image, LayoutGrid, MessageSquare, Speech, Video } from "lucide-react";
 import type { ProviderCapability } from "../../contracts/generated";
 
 export function CapabilityIcon({
@@ -8,8 +8,13 @@ export function CapabilityIcon({
   value: "all" | ProviderCapability;
   size?: number;
 }) {
-  const Icon = { all: LayoutGrid, llm: MessageSquare, image: Image, video: Video, tts: AudioLines }[
-    value
-  ];
+  const Icon = {
+    all: LayoutGrid,
+    llm: MessageSquare,
+    image: Image,
+    video: Video,
+    tts: AudioLines,
+    lipsync: Speech,
+  }[value];
   return <Icon size={size} aria-hidden="true" />;
 }

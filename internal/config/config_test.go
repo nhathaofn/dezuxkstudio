@@ -516,11 +516,19 @@ func TestPhase3WaveAConfigFieldsAndAccessors(t *testing.T) {
 	if zeroCfg.WatermarkMaxWorkers() != 4 ||
 		zeroCfg.WatermarkMaxImagePixels() != 100_000_000 ||
 		zeroCfg.WatermarkDecodeConcurrency() != 2 ||
-		zeroCfg.BinariesDownloadRetryMax() != 0 ||
+		!zeroCfg.BinariesDownloadResume() ||
+		zeroCfg.BinariesDownloadRetryMax() != 3 ||
 		zeroCfg.BinariesDownloadRetryDelay() != 1*time.Second ||
 		zeroCfg.MediaStagingTTL() != 24*time.Hour ||
 		zeroCfg.MediaStagingGCInterval() != 1*time.Hour {
 		t.Error("zeroCfg accessors failed to return safe fallback defaults")
+	}
+
+	explicitZeroRetries := Default(ModeDesktop)
+	explicitZeroRetries.Binaries.DownloadRetryMax = 0
+	explicitZeroRetries.Binaries.DownloadResume = false
+	if explicitZeroRetries.BinariesDownloadRetryMax() != 0 || explicitZeroRetries.BinariesDownloadResume() {
+		t.Error("configured explicit zero retries or false resume must be preserved")
 	}
 
 	// 4. Layer parsing (flags, env, file)
@@ -572,5 +580,450 @@ func TestPhase3WaveAConfigFieldsAndAccessors(t *testing.T) {
 	}
 	if c.Media.StagingGCInterval != 30*time.Minute {
 		t.Errorf("Media.StagingGCInterval = %v, want 30m (env)", c.Media.StagingGCInterval)
+	}
+}
+
+func TestStudioAndTextMediaGenConfig(t *testing.T) {
+	def := Default(ModeDesktop)
+	if def.MediaGen.TextTimeout != 120*time.Second {
+		t.Fatalf("MediaGen.TextTimeout = %v, want 120s", def.MediaGen.TextTimeout)
+	}
+	if def.MediaGen.TextMaxTokens != 8192 {
+		t.Fatalf("MediaGen.TextMaxTokens = %d, want 8192", def.MediaGen.TextMaxTokens)
+	}
+	if def.MediaGen.TextTemperature != 0.4 {
+		t.Fatalf("MediaGen.TextTemperature = %v, want 0.4", def.MediaGen.TextTemperature)
+	}
+	if def.Studio.DefaultFPS != 24 || def.Studio.DefaultResolution != "1920x1080" ||
+		def.Studio.FFmpegPreset != "medium" || def.Studio.FFmpegCRF != 20 ||
+		def.Studio.FFmpegTimeout != 15*time.Minute || def.Studio.FFprobeTimeout != 30*time.Second ||
+		def.Studio.MaxConcurrentBatch != 4 || def.Studio.QueueWorkers != 2 ||
+		def.Studio.QueuePollInterval != 2*time.Second || def.Studio.QueueMaxAttempts != 3 ||
+		def.Studio.ExportMaxZipBytes != 512<<20 || def.Studio.ExportLoudnormLUFS != -14.0 ||
+		def.Studio.ExportSubtitleFontSize != 24 || def.Studio.TimelineThumbIntervalSec != 2.0 ||
+		def.Studio.TimelinePeakBins != 120 {
+		t.Fatalf("unexpected default Studio config: %+v", def.Studio)
+	}
+
+	dir := t.TempDir()
+	writeFile(t, dir, FileName, `{
+		"mediagen": {"text_timeout": "90s", "text_max_tokens": 4096, "text_temperature": 0.25},
+		"studio": {"default_fps": 30, "default_resolution": "1280x720", "ffmpeg_preset": "fast", "ffmpeg_crf": 18, "ffmpeg_timeout": "10m", "ffprobe_timeout": "20s", "max_concurrent_batch": 6, "queue_workers": 3, "queue_poll_interval": "5s", "queue_max_attempts": 5, "export_max_zip_bytes": 104857600, "export_loudnorm_lufs": -16.0, "export_subtitle_font_size": 28, "timeline_thumb_interval_sec": 1.5, "timeline_peak_bins": 180}
+	}`)
+	res, err := Load(Source{
+		Mode:      ModeDesktop,
+		ConfigDir: dir,
+		EnvPrefix: "T_",
+		LookupEnv: env(map[string]string{
+			"T_MEDIAGEN_TEXT_TEMPERATURE": "0.7",
+			"T_STUDIO_DEFAULT_FPS":        "60",
+			"T_STUDIO_QUEUE_WORKERS":      "4",
+		}),
+		Args: []string{"--studio-ffmpeg-crf=22"},
+	})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if res.Config.MediaGen.TextTimeout != 90*time.Second || res.Config.MediaGen.TextMaxTokens != 4096 || res.Config.MediaGen.TextTemperature != 0.7 {
+		t.Fatalf("unexpected loaded MediaGen text config: %+v", res.Config.MediaGen)
+	}
+	if res.Config.Studio.DefaultFPS != 60 || res.Config.Studio.FFmpegCRF != 22 || res.Config.Studio.DefaultResolution != "1280x720" ||
+		res.Config.Studio.MaxConcurrentBatch != 6 || res.Config.Studio.QueueWorkers != 4 ||
+		res.Config.Studio.QueuePollInterval != 5*time.Second || res.Config.Studio.QueueMaxAttempts != 5 ||
+		res.Config.Studio.ExportMaxZipBytes != 104857600 || res.Config.Studio.ExportLoudnormLUFS != -16.0 ||
+		res.Config.Studio.ExportSubtitleFontSize != 28 || res.Config.Studio.TimelineThumbIntervalSec != 1.5 ||
+		res.Config.Studio.TimelinePeakBins != 180 {
+		t.Fatalf("unexpected loaded Studio config: %+v", res.Config.Studio)
+	}
+
+	for name, mutate := range map[string]func(*Config){
+		"zero text_timeout":            func(c *Config) { c.MediaGen.TextTimeout = 0 },
+		"zero text_max_tokens":         func(c *Config) { c.MediaGen.TextMaxTokens = 0 },
+		"bad text_temperature":         func(c *Config) { c.MediaGen.TextTemperature = 2.5 },
+		"negative text_temp":           func(c *Config) { c.MediaGen.TextTemperature = -0.1 },
+		"zero studio fps":              func(c *Config) { c.Studio.DefaultFPS = 0 },
+		"bad studio resolution":        func(c *Config) { c.Studio.DefaultResolution = "1080p" },
+		"empty studio preset":          func(c *Config) { c.Studio.FFmpegPreset = " " },
+		"bad studio crf":               func(c *Config) { c.Studio.FFmpegCRF = 52 },
+		"zero studio ffmpeg":           func(c *Config) { c.Studio.FFmpegTimeout = 0 },
+		"zero studio ffprobe":          func(c *Config) { c.Studio.FFprobeTimeout = 0 },
+		"zero max_concurrent":          func(c *Config) { c.Studio.MaxConcurrentBatch = 0 },
+		"zero queue_workers":           func(c *Config) { c.Studio.QueueWorkers = 0 },
+		"zero queue_poll_intvl":        func(c *Config) { c.Studio.QueuePollInterval = 0 },
+		"zero queue_max_attempt":       func(c *Config) { c.Studio.QueueMaxAttempts = 0 },
+		"zero export_max_zip":          func(c *Config) { c.Studio.ExportMaxZipBytes = 0 },
+		"bad export_loudnorm":          func(c *Config) { c.Studio.ExportLoudnormLUFS = -2.0 },
+		"bad export_subtitle_font":     func(c *Config) { c.Studio.ExportSubtitleFontSize = 4 },
+		"zero timeline_thumb_interval": func(c *Config) { c.Studio.TimelineThumbIntervalSec = 0 },
+		"bad timeline_peak_bins":       func(c *Config) { c.Studio.TimelinePeakBins = 8 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := Default(ModeDesktop)
+			mutate(c)
+			if err := c.Validate(); err == nil {
+				t.Fatalf("%s: expected validation error", name)
+			}
+		})
+	}
+}
+
+func TestStudioAndMediaGenZeroHardcodeTunables(t *testing.T) {
+	def := Default(ModeDesktop)
+	if def.MediaGen.RetryMax != 3 ||
+		def.MediaGen.RetryInitialDelay != 100*time.Millisecond ||
+		def.MediaGen.RetryMaxDelay != 2*time.Second ||
+		def.MediaGen.RetryBackoffFactor != 2.0 ||
+		def.MediaGen.LimiterPollInterval != 250*time.Millisecond ||
+		def.MediaGen.TTSDefaultVoiceOpenAI != "alloy" ||
+		def.MediaGen.TTSDefaultVoiceGemini != "Kore" ||
+		def.MediaGen.TTSDefaultVoiceDashScope != "Cherry" ||
+		def.MediaGen.TTSDefaultVoiceMiniMax != "male-qn-qingse" {
+		t.Fatalf("unexpected default MediaGen retry/voice config: %+v", def.MediaGen)
+	}
+	if def.Studio.FFmpegVideoCodec != "libx264" ||
+		def.Studio.FFmpegPixelFormat != "yuv420p" ||
+		def.Studio.FFmpegAudioCodec != "aac" ||
+		def.Studio.FFmpegAudioSampleRate != 48000 ||
+		def.Studio.FFmpegAudioBitrate != "192k" ||
+		def.Studio.MaxVideoDimension != 16384 ||
+		def.Studio.DefaultShotDurationSec != 5 ||
+		def.Studio.MaxShotDurationSec != 60 ||
+		def.Studio.GridSplitMaxCount != 8 ||
+		def.Studio.ExtractFrameEOFOffsetSec != 0.1 ||
+		def.Studio.ExtractFrameEndPadSec != 0.05 ||
+		def.Studio.ExtractFrameLastPadSec != 0.08 ||
+		def.Studio.SilenceDetectNoiseDB != "-45dB" ||
+		def.Studio.SilenceDetectMinSec != 0.4 ||
+		def.Studio.QCSilenceWarnRatio != 0.90 ||
+		def.Studio.QueuePollLeaseMin != 15*time.Second ||
+		def.Studio.QueuePollBackoffMax != 60*time.Second ||
+		def.Studio.TimelineDefaultTransitionMs != 400 ||
+		def.Studio.TimelineDefaultBGMVolume != 0.22 ||
+		def.Studio.TimelineAudioDuckThreshold != 0.05 ||
+		def.Studio.TimelineAudioDuckOrigVol != 0.35 ||
+		def.Studio.TimelineThumbHeight != 90 ||
+		def.Studio.TimelineMaxStripThumbs != 60 ||
+		def.Studio.TimelineWaveSampleRate != 8000 ||
+		def.Studio.TimelineWaveBlockSamples != 80 ||
+		def.Studio.TimelineRevisionLimit != 30 {
+		t.Fatalf("unexpected default Studio tunables: %+v", def.Studio)
+	}
+
+	dir := t.TempDir()
+	writeFile(t, dir, FileName, `{
+		"mediagen": {
+			"retry_max": 4,
+			"retry_initial_delay": "200ms",
+			"retry_max_delay": "5s",
+			"retry_backoff_factor": 2.5,
+			"limiter_poll_interval": "150ms",
+			"tts_default_voice_openai": "nova",
+			"tts_default_voice_gemini": "Aoede"
+		},
+		"studio": {
+			"ffmpeg_video_codec": "libx265",
+			"ffmpeg_audio_sample_rate": 44100,
+			"max_video_dimension": 4096,
+			"grid_split_max_count": 12,
+			"timeline_wave_sample_rate": 16000,
+			"timeline_wave_block_samples": 160
+		}
+	}`)
+	res, err := Load(Source{
+		Mode:      ModeDesktop,
+		ConfigDir: dir,
+		EnvPrefix: "T_",
+		LookupEnv: env(map[string]string{
+			"T_MEDIAGEN_RETRY_MAX":         "5",
+			"T_STUDIO_MAX_VIDEO_DIMENSION": "8192",
+		}),
+		Args: []string{"--studio-grid-split-max-count=10", "--mediagen-tts-default-voice-minimax=custom-voice"},
+	})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if res.Config.MediaGen.RetryMax != 5 ||
+		res.Config.MediaGen.RetryBackoffFactor != 2.5 ||
+		res.Config.MediaGen.TTSDefaultVoiceOpenAI != "nova" ||
+		res.Config.MediaGen.TTSDefaultVoiceGemini != "Aoede" ||
+		res.Config.MediaGen.TTSDefaultVoiceMiniMax != "custom-voice" {
+		t.Fatalf("unexpected overridden MediaGen config: %+v", res.Config.MediaGen)
+	}
+	if res.Config.Studio.FFmpegVideoCodec != "libx265" ||
+		res.Config.Studio.FFmpegAudioSampleRate != 44100 ||
+		res.Config.Studio.MaxVideoDimension != 8192 ||
+		res.Config.Studio.GridSplitMaxCount != 10 ||
+		res.Config.Studio.TimelineWaveSampleRate != 16000 ||
+		res.Config.Studio.TimelineWaveBlockSamples != 160 {
+		t.Fatalf("unexpected overridden Studio config: %+v", res.Config.Studio)
+	}
+
+	// ResolveStudioConfig preserves explicit lossless FFmpegCRF == 0 when FFmpegPreset is configured,
+	// and falls back to default FFmpegCRF when FFmpegPreset is empty (unconfigured struct).
+	lossless := ResolveStudioConfig(StudioConfig{FFmpegPreset: "veryslow", FFmpegCRF: 0})
+	if lossless.FFmpegCRF != 0 || lossless.FFmpegPreset != "veryslow" {
+		t.Fatalf("expected explicit CRF=0 with preset preserved, got CRF=%d preset=%q", lossless.FFmpegCRF, lossless.FFmpegPreset)
+	}
+	unsetStudio := ResolveStudioConfig(StudioConfig{})
+	if unsetStudio.FFmpegCRF != def.Studio.FFmpegCRF || unsetStudio.QueueWorkers != def.Studio.QueueWorkers {
+		t.Fatalf("expected zero StudioConfig to resolve defaults, got %+v", unsetStudio)
+	}
+
+	// ResolveMediaGenConfig preserves explicit deterministic TextTemperature == 0 when text fields are configured.
+	detText := ResolveMediaGenConfig(MediaGenConfig{TextMaxTokens: 1024, TextTemperature: 0})
+	if detText.TextTemperature != 0 || detText.TextMaxTokens != 1024 {
+		t.Fatalf("expected explicit TextTemperature=0 preserved, got temp=%v tokens=%d", detText.TextTemperature, detText.TextMaxTokens)
+	}
+	unsetMG := ResolveMediaGenConfig(MediaGenConfig{})
+	if unsetMG.TextTemperature != def.MediaGen.TextTemperature || unsetMG.RetryMax != def.MediaGen.RetryMax {
+		t.Fatalf("expected zero MediaGenConfig to resolve defaults, got %+v", unsetMG)
+	}
+
+	validZeroCRF := Default(ModeDesktop)
+	validZeroCRF.Studio.FFmpegCRF = 0
+	if err := validZeroCRF.Validate(); err != nil {
+		t.Fatalf("expected FFmpegCRF=0 to validate cleanly, got %v", err)
+	}
+
+	for name, mutate := range map[string]func(*Config){
+		"empty ffmpeg_video_codec":          func(c *Config) { c.Studio.FFmpegVideoCodec = " " },
+		"negative ffmpeg_crf":               func(c *Config) { c.Studio.FFmpegCRF = -1 },
+		"zero max_video_dimension":          func(c *Config) { c.Studio.MaxVideoDimension = 0 },
+		"max_shot < default_shot":           func(c *Config) { c.Studio.DefaultShotDurationSec = 30; c.Studio.MaxShotDurationSec = 10 },
+		"grid_split_max_count out of range": func(c *Config) { c.Studio.GridSplitMaxCount = 33 },
+		"backoff_max < poll_interval": func(c *Config) {
+			c.Studio.QueuePollInterval = 10 * time.Second
+			c.Studio.QueuePollBackoffMax = 5 * time.Second
+		},
+		"retry_backoff_factor <= 1": func(c *Config) { c.MediaGen.RetryBackoffFactor = 1.0 },
+		"retry_max_delay < initial_delay": func(c *Config) {
+			c.MediaGen.RetryInitialDelay = 3 * time.Second
+			c.MediaGen.RetryMaxDelay = 1 * time.Second
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := Default(ModeDesktop)
+			mutate(c)
+			if err := c.Validate(); err == nil {
+				t.Fatalf("%s: expected validation error", name)
+			}
+		})
+	}
+}
+
+func TestCentralizedWave1TunablesAndValidation(t *testing.T) {
+	def := Default(ModeDesktop)
+	if def.Studio.PreflightMaxItems != 500 ||
+		def.Studio.PreflightLargeBatchWarnCount != 10 ||
+		def.Studio.ExtractFrameDefaultCount != 4 ||
+		def.Studio.ExtractFrameMaxCount != 24 ||
+		def.Studio.MaxMaskBytes != 8<<20 ||
+		def.Studio.ExportSubtitleFontFamily != "Arial" ||
+		def.Studio.DefaultListLimit != 200 ||
+		def.Studio.QCSampleFrameDefault != 3 ||
+		def.Studio.QCSampleFrameMax != 6 ||
+		def.Studio.QCMaxReferenceImages != 2 ||
+		def.Studio.LipSyncMaxFaceIndex != 8 ||
+		def.Studio.GridSplitMaxMarginPx != 512 ||
+		def.Studio.GridSplitMaxGutterPx != 256 ||
+		def.Studio.AudioOverflowToleranceSec != 0.15 {
+		t.Fatalf("unexpected Studio Wave 1 defaults: %+v", def.Studio)
+	}
+	if def.Watermark.VideoDefaultWidth != 160 ||
+		def.Watermark.VideoDefaultHeight != 64 ||
+		def.Watermark.VideoDefaultCropPx != 64 {
+		t.Fatalf("unexpected Watermark Wave 1 defaults: %+v", def.Watermark)
+	}
+	if def.MediaGen.OAuthRefreshSkew != 2*time.Minute ||
+		def.MediaGen.OAuthFallbackTTL != 30*time.Minute {
+		t.Fatalf("unexpected MediaGen OAuth defaults: %+v", def.MediaGen)
+	}
+
+	// ResolveMediaConfig and ResolveWatermarkConfig populate zero structs from Default(ModeDesktop).
+	resMedia := ResolveMediaConfig(MediaConfig{})
+	if resMedia != def.Media {
+		t.Fatalf("ResolveMediaConfig(zero) = %+v, want %+v", resMedia, def.Media)
+	}
+	resWM := ResolveWatermarkConfig(WatermarkConfig{})
+	if resWM != def.Watermark {
+		t.Fatalf("ResolveWatermarkConfig(zero) = %+v, want %+v", resWM, def.Watermark)
+	}
+	var nilCfg *Config
+	if nilCfg.WatermarkOrDefault() != def.Watermark || nilCfg.MediaOrDefault() != def.Media {
+		t.Fatal("nil config *OrDefault() mismatch")
+	}
+
+	// ResolveStudioConfig preserves explicit 0 on transition_ms, bgm_volume, and duck_orig_vol when configured.
+	zeroTimelineKnobs := ResolveStudioConfig(StudioConfig{
+		DefaultFPS:                  24,
+		TimelineDefaultTransitionMs: 0,
+		TimelineDefaultBGMVolume:    0,
+		TimelineAudioDuckOrigVol:    0,
+		AudioOverflowToleranceSec:   0,
+	})
+	if zeroTimelineKnobs.TimelineDefaultTransitionMs != 0 ||
+		zeroTimelineKnobs.TimelineDefaultBGMVolume != 0 ||
+		zeroTimelineKnobs.TimelineAudioDuckOrigVol != 0 ||
+		zeroTimelineKnobs.AudioOverflowToleranceSec != 0 {
+		t.Fatalf("expected explicit 0 timeline/audio knobs preserved, got %+v", zeroTimelineKnobs)
+	}
+
+	// Layered file -> env -> flag overrides for new tunables.
+	dir := t.TempDir()
+	writeFile(t, dir, FileName, `{
+		"mediagen": {"oauth_refresh_skew": "90s", "oauth_fallback_ttl": "45m"},
+		"watermark": {"video_default_width": 200, "video_default_height": 80, "video_default_crop_px": 48},
+		"studio": {
+			"preflight_max_items": 300,
+			"preflight_large_batch_warn_count": 15,
+			"extract_frame_default_count": 5,
+			"extract_frame_max_count": 20,
+			"max_mask_bytes": 4194304,
+			"export_subtitle_font_family": "Noto Sans",
+			"default_list_limit": 150,
+			"qc_sample_frame_default": 2,
+			"qc_sample_frame_max": 5,
+			"qc_max_reference_images": 4,
+			"lipsync_max_face_index": 6,
+			"grid_split_max_margin_px": 256,
+			"grid_split_max_gutter_px": 128,
+			"audio_overflow_tolerance_sec": 0.25
+		}
+	}`)
+	loaded, err := Load(Source{
+		Mode:      ModeDesktop,
+		ConfigDir: dir,
+		EnvPrefix: "T_",
+		LookupEnv: env(map[string]string{
+			"T_STUDIO_DEFAULT_LIST_LIMIT":     "250",
+			"T_WATERMARK_VIDEO_DEFAULT_WIDTH": "240",
+		}),
+		Args: []string{"--studio-export-subtitle-font-family=Roboto", "--mediagen-oauth-refresh-skew=3m"},
+	})
+	if err != nil {
+		t.Fatalf("Load Wave 1 tunables failed: %v", err)
+	}
+	if loaded.Config.Studio.DefaultListLimit != 250 ||
+		loaded.Config.Studio.ExportSubtitleFontFamily != "Roboto" ||
+		loaded.Config.Watermark.VideoDefaultWidth != 240 ||
+		loaded.Config.MediaGen.OAuthRefreshSkew != 3*time.Minute {
+		t.Fatalf("unexpected layered Wave 1 overrides: studio=%+v wm=%+v mg=%+v",
+			loaded.Config.Studio, loaded.Config.Watermark, loaded.Config.MediaGen)
+	}
+
+	for name, mutate := range map[string]func(*Config){
+		"media library_max_items <= 0":       func(c *Config) { c.Media.LibraryMaxItems = 0 },
+		"media ticket_ttl <= 0":              func(c *Config) { c.Media.TicketTTL = 0 },
+		"media renew_skew >= ticket_ttl":     func(c *Config) { c.Media.TicketRenewSkew = c.Media.TicketTTL },
+		"media registered_roots_max <= 0":    func(c *Config) { c.Media.RegisteredRootsMax = 0 },
+		"media staging_ttl <= 0":             func(c *Config) { c.Media.StagingTTL = 0 },
+		"media staging_gc_interval <= 0":     func(c *Config) { c.Media.StagingGCInterval = 0 },
+		"watermark max_workers <= 0":         func(c *Config) { c.Watermark.MaxWorkers = 0 },
+		"watermark max_image_pixels <= 0":    func(c *Config) { c.Watermark.MaxImagePixels = 0 },
+		"watermark decode_concurrency <= 0":  func(c *Config) { c.Watermark.DecodeConcurrency = 0 },
+		"watermark video_default_width < 2":  func(c *Config) { c.Watermark.VideoDefaultWidth = 1 },
+		"watermark video_default_height < 2": func(c *Config) { c.Watermark.VideoDefaultHeight = 1 },
+		"watermark video_default_crop < 1":   func(c *Config) { c.Watermark.VideoDefaultCropPx = 0 },
+		"binaries download_retry_max < 0":    func(c *Config) { c.Binaries.DownloadRetryMax = -1 },
+		"binaries download_retry_delay <= 0": func(c *Config) { c.Binaries.DownloadRetryDelay = 0 },
+		"agent max_approval_cont <= 0":       func(c *Config) { c.Agent.MaxApprovalContinuations = 0 },
+		"blank tts_default_voice_openai":     func(c *Config) { c.MediaGen.TTSDefaultVoiceOpenAI = " " },
+		"blank tts_default_voice_gemini":     func(c *Config) { c.MediaGen.TTSDefaultVoiceGemini = "" },
+		"video_poll >= video_timeout": func(c *Config) {
+			c.MediaGen.VideoPollInterval = 5 * time.Minute
+			c.MediaGen.VideoTimeout = 5 * time.Minute
+		},
+		"oauth_skew >= oauth_ttl": func(c *Config) {
+			c.MediaGen.OAuthRefreshSkew = 30 * time.Minute
+			c.MediaGen.OAuthFallbackTTL = 30 * time.Minute
+		},
+		"idle_conns_per_host > idle_conns": func(c *Config) {
+			c.Network.MaxIdleConns = 5
+			c.Network.MaxIdleConnsPerHost = 10
+		},
+		"studio default_fps > 120":     func(c *Config) { c.Studio.DefaultFPS = 240 },
+		"invalid studio ffmpeg_preset": func(c *Config) { c.Studio.FFmpegPreset = "turbo" },
+		"lease_min < poll_interval": func(c *Config) {
+			c.Studio.QueuePollInterval = 10 * time.Second
+			c.Studio.QueuePollLeaseMin = 5 * time.Second
+		},
+		"thumb_height < 32":                 func(c *Config) { c.Studio.TimelineThumbHeight = 16 },
+		"thumb_height > 360":                func(c *Config) { c.Studio.TimelineThumbHeight = 400 },
+		"extract_default > extract_max":     func(c *Config) { c.Studio.ExtractFrameDefaultCount = 10; c.Studio.ExtractFrameMaxCount = 5 },
+		"qc_sample_default > qc_sample_max": func(c *Config) { c.Studio.QCSampleFrameDefault = 8; c.Studio.QCSampleFrameMax = 4 },
+		"preflight_warn > preflight_max":    func(c *Config) { c.Studio.PreflightLargeBatchWarnCount = 600; c.Studio.PreflightMaxItems = 500 },
+		"max_mask_bytes <= 0":               func(c *Config) { c.Studio.MaxMaskBytes = 0 },
+		"empty subtitle_font_family":        func(c *Config) { c.Studio.ExportSubtitleFontFamily = "  " },
+		"negative overflow_tolerance":       func(c *Config) { c.Studio.AudioOverflowToleranceSec = -0.1 },
+		"nul byte in workspace_dir":         func(c *Config) { c.Agent.WorkspaceDir = "D:\\ws\x00bad" },
+		"nul byte in storage.data_dir":      func(c *Config) { c.Storage.DataDir = "D:\\data\x00bad" },
+		"wildcard origin anon server":       func(c *Config) { c.Mode = ModeServer; c.Server.AuthToken = ""; c.Server.AllowedOrigins = []string{"*"} },
+		"remote url semicolon injection":    func(c *Config) { c.Mode = ModeClient; c.Client.RemoteURL = "wss://example.com;script-src/ws" },
+		"remote url comma injection":        func(c *Config) { c.Mode = ModeClient; c.Client.RemoteURL = "wss://example.com,evil.com/ws" },
+		"remote url space injection":        func(c *Config) { c.Mode = ModeClient; c.Client.RemoteURL = "wss://example.com%20evil/ws" },
+		"negative mediagen retry_max":       func(c *Config) { c.MediaGen.RetryMax = -1 },
+		"zero server read_timeout":          func(c *Config) { c.Server.ReadTimeout = 0 },
+		"zero server write_timeout":         func(c *Config) { c.Server.WriteTimeout = 0 },
+		"zero cli_session_persist_timeout":  func(c *Config) { c.Agent.CLISessionPersistTimeout = 0 },
+		"zero studio queue_max_poll_errors": func(c *Config) { c.Studio.QueueMaxPollErrors = 0 },
+		"zero studio queue_max_poll_age":    func(c *Config) { c.Studio.QueueMaxPollAge = 0 },
+		"zero long_script_chunk_chars":      func(c *Config) { c.Studio.LongScriptChunkChars = 0 },
+		"zero max_batch_shots_upsert":       func(c *Config) { c.Studio.MaxBatchShotsUpsert = 0 },
+		"bad contact_sheet_jpeg_quality":    func(c *Config) { c.Studio.ContactSheetJPEGQuality = 101 },
+		"small contact_sheet_max_edge_px":   func(c *Config) { c.Studio.ContactSheetMaxEdgePx = 32 },
+		"bad signal_scene_cut_thresh":       func(c *Config) { c.Studio.SignalSceneCutThresh = 1.0 },
+		"bad signal_black_pixel_thresh":     func(c *Config) { c.Studio.SignalBlackPixelThresh = 1.2 },
+		"empty signal_freeze_noise_db":      func(c *Config) { c.Studio.SignalFreezeNoiseDB = "  " },
+		"bad timeline_overrun_policy":       func(c *Config) { c.Studio.TimelineOverrunPolicy = "drop" },
+		"low timeline_max_speed_fit_ratio":  func(c *Config) { c.Studio.TimelineMaxSpeedFitRatio = 0.8 },
+		"queue_wait_poll > max_duration":    func(c *Config) { c.Studio.QueueWaitPollInterval = c.Studio.QueueWaitMaxDuration + time.Second },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := Default(ModeDesktop)
+			mutate(c)
+			if err := c.Validate(); err == nil {
+				t.Fatalf("%s: expected validation error", name)
+			}
+		})
+	}
+}
+
+func TestConfigPlantingBlockedAndExplicitZeroPreserved(t *testing.T) {
+	otherDir := t.TempDir()
+	writeFile(t, otherDir, FileName, `{"server":{"allow_host_admin":true,"port":9999}}`)
+	cfgDir := t.TempDir()
+
+	res, err := Load(Source{
+		Mode:      ModeDesktop,
+		ConfigDir: cfgDir,
+	})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if res.File != "" || res.Config.Server.AllowHostAdmin || res.Config.Server.Port == 9999 {
+		t.Fatalf("unexpected config auto-loaded: file=%q cfg=%+v", res.File, res.Config.Server)
+	}
+
+	// Explicit --config still loads portable config intentionally.
+	explicitRes, err := Load(Source{
+		Mode:      ModeDesktop,
+		ConfigDir: cfgDir,
+		Args:      []string{"--config", filepath.Join(otherDir, FileName)},
+	})
+	if err != nil {
+		t.Fatalf("explicit --config failed: %v", err)
+	}
+	if !explicitRes.Config.Server.AllowHostAdmin || explicitRes.Config.Server.Port != 9999 {
+		t.Fatalf("explicit --config should load target file, got %+v", explicitRes.Config.Server)
+	}
+
+	// Explicit zeros on partial structs must not be silently overwritten by heuristics.
+	zeroRetry := ResolveMediaGenConfig(MediaGenConfig{RequestTimeout: 5 * time.Second, RetryMax: 0, TextTemperature: 0})
+	if zeroRetry.RetryMax != 0 || zeroRetry.TextTemperature != 0 {
+		t.Fatalf("expected explicit 0 RetryMax and TextTemperature preserved, got RetryMax=%d Temp=%v", zeroRetry.RetryMax, zeroRetry.TextTemperature)
+	}
+	zeroCRFNoPreset := ResolveStudioConfig(StudioConfig{DefaultFPS: 30, FFmpegCRF: 0})
+	if zeroCRFNoPreset.FFmpegCRF != 0 {
+		t.Fatalf("expected explicit 0 FFmpegCRF preserved without FFmpegPreset, got %d", zeroCRFNoPreset.FFmpegCRF)
 	}
 }

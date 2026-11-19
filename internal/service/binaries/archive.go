@@ -46,8 +46,15 @@ func extractFileFromZip(zipPath, targetEntry, targetPath string) error {
 	}
 	defer rc.Close()
 
+	const maxBinaryArchiveEntryBytes = 512 << 20
 	return fsutil.WriteAtomic(targetPath, 0755, func(w io.Writer) error {
-		_, err := io.Copy(w, rc)
-		return err
+		n, err := io.Copy(w, io.LimitReader(rc, maxBinaryArchiveEntryBytes+1))
+		if err != nil {
+			return err
+		}
+		if n > maxBinaryArchiveEntryBytes {
+			return fmt.Errorf("archive entry %q exceeds size limit (%d bytes)", targetEntry, maxBinaryArchiveEntryBytes)
+		}
+		return nil
 	})
 }

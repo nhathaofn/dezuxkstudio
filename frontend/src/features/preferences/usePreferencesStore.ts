@@ -58,8 +58,10 @@ interface PreferencesState {
   loaded: boolean;
   /** True while a local change has not been saved to the core yet. */
   dirty: boolean;
+  /** Pending local field changes made offline that have not been pushed to the core yet. */
+  dirtyPatch: PreferencesPatch | null;
   error: ActionError | null;
-  /** Syncs with the core after (re)connecting: pushes unsaved local changes, else pulls. */
+  /** Syncs with the core after (re)connecting: always pulls latest server prefs, then applies dirtyPatch if any. */
   load: () => Promise<void>;
   /** Applies the change immediately in the UI, then persists it when connected. */
   update: (patch: PreferencesPatch) => Promise<void>;
@@ -78,6 +80,7 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => {
       set({
         prefs: saved,
         dirty: false,
+        dirtyPatch: null,
         error: null,
       });
       return saved;
@@ -92,37 +95,33 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => {
     prefs,
     loaded: false,
     dirty: false,
+    dirtyPatch: null,
     error: null,
 
     load: async () => {
-      if (get().dirty) {
-        const {
-          theme,
-          language,
-          workspace_root,
-          onboarding_completed,
-          agent_skip_trusted_approval,
-        } = get().prefs;
-        try {
-          await persist({
-            theme,
-            language,
-            workspace_root,
-            onboarding_completed,
-            agent_skip_trusted_approval,
-          });
-          set({ loaded: true });
-        } catch (err) {
-          set({ loaded: true, error: toActionError(err) });
-        }
-        return;
-      }
       try {
-        const p = await rtClient.request(Actions.PREFERENCES_GET, {});
-        commit(p);
+        const serverPrefs = await rtClient.request(Actions.PREFERENCES_GET, {});
+        const pending = get().dirtyPatch;
+        if (pending && Object.keys(pending).length > 0) {
+          const mergedPatch: PreferencesPatch = {};
+          for (const key of Object.keys(pending) as (keyof PreferencesPatch)[]) {
+            const val = pending[key];
+            if (val !== undefined && serverPrefs[key] !== val) {
+              (mergedPatch as Record<string, unknown>)[key] = val;
+            }
+          }
+          if (Object.keys(mergedPatch).length > 0) {
+            await persist(mergedPatch);
+            set({ loaded: true });
+            return;
+          }
+        }
+        commit(serverPrefs);
         set({
-          prefs: p,
+          prefs: serverPrefs,
           loaded: true,
+          dirty: false,
+          dirtyPatch: null,
           error: null,
         });
       } catch (err) {
@@ -133,6 +132,8 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => {
     update: async (patch) => {
       const prevPrefs = get().prefs;
       const prevRoot = prevPrefs.workspace_root ?? "";
+      const prevDirty = get().dirty;
+      const prevDirtyPatch = get().dirtyPatch;
       const isConnected = rtClient.getStatus() === "connected";
 
       // If connected, defer setting onboarding_completed in the store until persist()
@@ -150,9 +151,11 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => {
         ...optimisticPatch,
       };
       commit(next as Preferences);
+      const nextPatch = isConnected ? prevDirtyPatch : { ...(prevDirtyPatch ?? {}), ...patch };
       set({
         prefs: next,
-        dirty: true,
+        dirty: !isConnected || prevDirty,
+        dirtyPatch: nextPatch,
         error: null,
       });
 
@@ -163,7 +166,8 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => {
           commit(prevPrefs as Preferences);
           set({
             prefs: prevPrefs,
-            dirty: false,
+            dirty: prevDirty,
+            dirtyPatch: prevDirtyPatch,
             error: toActionError(err),
           });
           throw err;
@@ -182,6 +186,7 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => {
       set({
         prefs: p,
         dirty: false,
+        dirtyPatch: null,
         error: null,
       });
       if (p.workspace_root !== prevRoot) {

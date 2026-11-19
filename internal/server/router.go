@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"app/internal/engine"
 	"app/internal/realtime"
 	"app/internal/security"
 	"app/internal/server/handlers"
@@ -41,6 +42,7 @@ type RouterOptions struct {
 	MaxUploadBytes        int64
 	TicketSigner          *security.TicketSigner
 	AssetResolver         handlers.AssetResolver
+	FileGuard             engine.FileGuard
 	Logger                *slog.Logger
 }
 
@@ -53,7 +55,7 @@ func NewRouter(o RouterOptions) http.Handler {
 	mux.Handle("GET "+PathHealth, handlers.Health(o.Version, o.StartedAt, o.Hub.ClientCount))
 	mux.Handle(PathRuntimeConfig, cors(handlers.RuntimeConfig(o.Mode, o.Version, o.Timeouts, o.WSURL)))
 
-	if o.EnableBroadcast {
+	if o.EnableBroadcast && o.AuthToken != "" {
 		mux.Handle(PathBroadcast, cors(
 			middleware.RequireToken(o.AuthToken)(
 				middleware.RequireJSON(
@@ -71,8 +73,9 @@ func NewRouter(o RouterOptions) http.Handler {
 	}
 
 	if stagingDir != "" {
+		uploadLimiter := rateLimitMiddleware(newIPRateLimiter(5, 20))
 		auth := middleware.RequireAuth(o.AuthToken, o.AllowAnonymous)
-		mux.Handle(PathMediaUpload, cors(auth(handlers.MediaUpload(stagingDir, o.MaxUploadBytes))))
+		mux.Handle(PathMediaUpload, cors(uploadLimiter(auth(handlers.MediaUpload(stagingDir, o.MaxUploadBytes)))))
 	}
 	if mediaDirGetter != nil || o.MediaDir != "" {
 		opts := []handlers.MediaDownloadOption{
@@ -82,6 +85,9 @@ func NewRouter(o RouterOptions) http.Handler {
 		}
 		if mediaDirGetter != nil {
 			opts = append(opts, handlers.WithMediaDirFunc(mediaDirGetter))
+		}
+		if o.FileGuard != nil {
+			opts = append(opts, handlers.WithFileGuard(o.FileGuard))
 		}
 		mux.Handle(PathMediaDownload, cors(handlers.MediaDownload(
 			o.MediaDir,

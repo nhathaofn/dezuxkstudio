@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import {
   Actions,
-  Events,
   type ActionProgress,
   type BinaryID,
   type BinaryInfo,
@@ -14,22 +13,26 @@ interface BinariesState {
   loading: boolean;
   error: ActionError | null;
   activeProgress: Record<string, ActionProgress | null>;
+  abortControllers: Record<string, AbortController>;
   fetchBinaries: () => Promise<void>;
   probe: (id: BinaryID) => Promise<void>;
   download: (
     id: BinaryID,
-    signal: AbortSignal,
-    onProgress: (p: ActionProgress) => void
+    signal?: AbortSignal,
+    onProgress?: (p: ActionProgress) => void
   ) => Promise<void>;
+  cancelDownload: (id: BinaryID) => void;
   setCustomPath: (id: BinaryID, customPath: string) => Promise<void>;
   setProgress: (id: BinaryID, progress: ActionProgress | null) => void;
+  receiveBinaryProgress: (bp: BinaryProgress) => void;
 }
 
-export const useBinariesStore = create<BinariesState>((set) => ({
+export const useBinariesStore = create<BinariesState>((set, get) => ({
   binaries: [],
   loading: false,
   error: null,
   activeProgress: {},
+  abortControllers: {},
 
   fetchBinaries: async () => {
     set({ loading: true, error: null });
@@ -58,29 +61,80 @@ export const useBinariesStore = create<BinariesState>((set) => ({
     }));
   },
 
-  download: async (id: BinaryID, signal: AbortSignal, onProgress: (p: ActionProgress) => void) => {
+  receiveBinaryProgress: (bp: BinaryProgress) => {
+    if (!bp?.id) return;
+    get().setProgress(bp.id, {
+      percent: bp.percent,
+      message: "",
+      resumed_from_bytes: bp.resumed_from_bytes,
+      is_resume: bp.is_resume,
+      binary_progress: bp,
+    });
+  },
+
+  cancelDownload: (id: BinaryID) => {
+    const controller = get().abortControllers[id];
+    if (controller) {
+      controller.abort();
+    }
+    set((s) => {
+      const nextControllers = { ...s.abortControllers };
+      delete nextControllers[id];
+      return {
+        abortControllers: nextControllers,
+        activeProgress: { ...s.activeProgress, [id]: null },
+      };
+    });
+  },
+
+  download: async (
+    id: BinaryID,
+    externalSignal?: AbortSignal,
+    onProgress?: (p: ActionProgress) => void
+  ) => {
+    get().abortControllers[id]?.abort();
+    const controller = new AbortController();
+    const onExternalAbort = () => controller.abort();
+    if (externalSignal) {
+      if (externalSignal.aborted) controller.abort();
+      else externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+    }
+
+    set((s) => ({
+      abortControllers: { ...s.abortControllers, [id]: controller },
+      error: null,
+    }));
+
     try {
       const handleProgress = (p: ActionProgress) => {
         set((s) => ({
           activeProgress: { ...s.activeProgress, [id]: p },
         }));
-        onProgress(p);
+        onProgress?.(p);
       };
       const updated = await rtClient.request(
         Actions.BINARIES_DOWNLOAD,
         { id },
-        { signal, onProgress: handleProgress }
+        { signal: controller.signal, onProgress: handleProgress }
       );
       set((s) => ({
         binaries: s.binaries.map((b) => (b.id === id ? updated : b)),
-        activeProgress: { ...s.activeProgress, [id]: null },
       }));
     } catch (err) {
-      set((s) => ({
-        error: toActionError(err),
-        activeProgress: { ...s.activeProgress, [id]: null },
-      }));
+      set({ error: toActionError(err) });
       throw err;
+    } finally {
+      externalSignal?.removeEventListener("abort", onExternalAbort);
+      set((s) => {
+        const nextControllers = { ...s.abortControllers };
+        if (nextControllers[id] === controller) {
+          delete nextControllers[id];
+        }
+        return {
+          abortControllers: nextControllers,
+          activeProgress: { ...s.activeProgress, [id]: null },
+        };
+      });
     }
   },
 
@@ -99,18 +153,3 @@ export const useBinariesStore = create<BinariesState>((set) => ({
     }
   },
 }));
-
-// Listen to realtime EventBinariesProgress broadcasts if available
-if (typeof window !== "undefined" && rtClient && typeof rtClient.on === "function") {
-  rtClient.on(Events.BINARIES_PROGRESS, (bp: BinaryProgress) => {
-    if (bp?.id) {
-      useBinariesStore.getState().setProgress(bp.id, {
-        percent: bp.percent,
-        message: "",
-        resumed_from_bytes: bp.resumed_from_bytes,
-        is_resume: bp.is_resume,
-        binary_progress: bp,
-      });
-    }
-  });
-}

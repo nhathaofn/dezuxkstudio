@@ -15,21 +15,16 @@ import (
 	"sync/atomic"
 
 	domainagent "app/internal/domain/agent"
+	"app/internal/logger"
 	"app/internal/proc"
 	"app/internal/safego"
 )
 
-var (
-	// Real bearer tokens are long; requiring 8+ characters keeps prose like "bearer or basic" readable.
-	reAuthBearer = regexp.MustCompile(`(?i)(bearer\s+)[a-z0-9._~+/=-]{8,}`)
-	reSKKey      = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{8,}\b`)
-	reTokenParam = regexp.MustCompile(`(?i)((?:api[_ -]?key|token)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)`)
-)
+var reTokenParam = regexp.MustCompile(`(?i)((?:api[_ -]?key|token)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)`)
 
-// redactSecrets strips obvious credentials from subprocess stderr before logging.
+// redactSecrets strips obvious credentials, API keys, and tokens from subprocess output before logging.
 func redactSecrets(text string) string {
-	text = reAuthBearer.ReplaceAllString(text, "$1[REDACTED]")
-	text = reSKKey.ReplaceAllString(text, "[REDACTED]")
+	text = logger.RedactString(text)
 	text = reTokenParam.ReplaceAllString(text, "$1[REDACTED]")
 	return text
 }
@@ -332,6 +327,22 @@ func (c *ACPClient) Close() error {
 	return nil
 }
 
+// Alive reports whether the ACP transport and underlying process are still active.
+func (c *ACPClient) Alive() bool {
+	if c == nil {
+		return false
+	}
+	select {
+	case <-c.doneCh:
+		return false
+	default:
+		c.closeMu.Lock()
+		closed := c.closed
+		c.closeMu.Unlock()
+		return !closed
+	}
+}
+
 func (c *ACPClient) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	idNum := c.nextID.Add(1)
 	idRaw, _ := json.Marshal(idNum)
@@ -406,27 +417,24 @@ func (c *ACPClient) writeJSON(v any) error {
 }
 
 func (c *ACPClient) readStdout() {
-	reader := bufio.NewReaderSize(c.stdout, 64*1024)
-	for {
-		line, err := reader.ReadString('\n')
-		if trimmed := strings.TrimSpace(line); trimmed != "" {
+	sc := bufio.NewScanner(c.stdout)
+	sc.Buffer(make([]byte, 64*1024), cliStdoutLineMax)
+	for sc.Scan() {
+		if trimmed := strings.TrimSpace(sc.Text()); trimmed != "" {
 			c.handleLine(trimmed)
 		}
-		if err != nil {
-			return
-		}
+	}
+	if err := sc.Err(); err != nil && !errors.Is(err, io.EOF) && c.log != nil {
+		c.log.Debug("acp stdout stopped", "error", err)
 	}
 }
 
 func (c *ACPClient) readStderr() {
-	reader := bufio.NewReaderSize(c.stderr, 16*1024)
-	for {
-		line, err := reader.ReadString('\n')
-		if trimmed := strings.TrimSpace(line); trimmed != "" {
+	sc := bufio.NewScanner(c.stderr)
+	sc.Buffer(make([]byte, 4096), cliStderrLineMax)
+	for sc.Scan() {
+		if trimmed := strings.TrimSpace(sc.Text()); trimmed != "" {
 			c.log.Debug("acp stderr", "line", redactSecrets(trimmed))
-		}
-		if err != nil {
-			return
 		}
 	}
 }

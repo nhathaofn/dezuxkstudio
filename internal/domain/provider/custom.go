@@ -2,6 +2,7 @@ package provider
 
 import (
 	"net"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strings"
@@ -42,6 +43,7 @@ const (
 	EndpointOpenAITTS               Endpoint = "openai-tts"
 	EndpointGeminiVideo             Endpoint = "gemini-video"
 	EndpointGeminiTTS               Endpoint = "gemini-tts"
+	EndpointLipSync                 Endpoint = "lipsync"
 )
 
 // EndpointSpec describes a custom-provider endpoint.
@@ -72,6 +74,7 @@ func Endpoints() []EndpointSpec {
 		{EndpointOpenAITTS, CapabilityTTS, "POST", "/audio/speech", o},
 		{EndpointGeminiVideo, CapabilityVideo, "POST", "/models/{model}:predictLongRunning", []DiscoveryFormat{DiscoveryGemini}},
 		{EndpointGeminiTTS, CapabilityTTS, "POST", "/models/{model}:generateContent", []DiscoveryFormat{DiscoveryGemini}},
+		{EndpointLipSync, CapabilityLipSync, "POST", "/videos/lipsync", o},
 	}
 }
 
@@ -167,8 +170,8 @@ func validateURL(raw string, allowQueryOrFragment bool) error {
 	if h == "" {
 		return bad("errors.provider.base_url_scheme", "Base URL must be an http(s) URL")
 	}
-	if ip := net.ParseIP(h); ip != nil && IsUnsafeOutboundIP(ip) {
-		return bad("errors.provider.base_url_link_local", "Base URL points at a link-local address")
+	if addr, err := netip.ParseAddr(h); err == nil && IsUnsafeOutboundAddr(addr) {
+		return bad("errors.provider.base_url_link_local", "Base URL points at an unsafe internal or link-local address")
 	}
 	if h == "metadata.google.internal" || h == "metadata" || strings.HasSuffix(h, ".internal") {
 		return bad("errors.provider.base_url_metadata", "Base URL points at a cloud metadata service")
@@ -176,14 +179,37 @@ func validateURL(raw string, allowQueryOrFragment bool) error {
 	return nil
 }
 
-// IsUnsafeOutboundIP reports whether ip is a link-local, unspecified, or multicast address that
-// must never be contacted via SSRF or DNS rebinding (e.g. cloud metadata 169.254.169.254).
+var (
+	outboundCGNATPrefix     = netip.MustParsePrefix("100.64.0.0/10")
+	outboundIETFProtoPrefix = netip.MustParsePrefix("192.0.0.0/24")
+	outboundIPv6ULAPrefix   = netip.MustParsePrefix("fc00::/7")
+)
+
+// IsUnsafeOutboundAddr reports whether addr is link-local, unspecified, multicast, CGNAT,
+// IPv6 ULA, or IETF protocol-reserved (e.g. cloud metadata 169.254.169.254, fd00:ec2::254, 100.100.100.200).
+func IsUnsafeOutboundAddr(addr netip.Addr) bool {
+	if !addr.IsValid() {
+		return true
+	}
+	addr = addr.WithZone("").Unmap()
+	return addr.IsLinkLocalUnicast() ||
+		addr.IsLinkLocalMulticast() ||
+		addr.IsUnspecified() ||
+		addr.IsMulticast() ||
+		outboundCGNATPrefix.Contains(addr) ||
+		outboundIETFProtoPrefix.Contains(addr) ||
+		outboundIPv6ULAPrefix.Contains(addr)
+}
+
+// IsUnsafeOutboundIP reports whether ip is a link-local, unspecified, multicast, CGNAT,
+// or IPv6 ULA address that must never be contacted via SSRF or DNS rebinding.
 func IsUnsafeOutboundIP(ip net.IP) bool {
 	if ip == nil {
 		return true
 	}
-	if v4 := ip.To4(); v4 != nil {
-		ip = v4
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return true
 	}
-	return ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
+	return IsUnsafeOutboundAddr(addr)
 }

@@ -348,14 +348,27 @@ func (s *Service) expandMediaPath(raw string, portType engine.PortType, recursiv
 		if err != nil {
 			return nil // unreadable entries are skipped, like the OS file picker would
 		}
-		if d.IsDir() {
-			if path != resolved && (!recursive || !s.policy.VisibleInListing(path, true)) {
+		if d.Type()&fs.ModeSymlink != 0 {
+			if d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if portAccepts(portType, ClassifyFile(path)) && s.policy.VisibleInListing(path, false) {
-			files = append(files, path)
+		resolvedEntry, resErr := s.policy.Resolve(path)
+		if resErr != nil {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if path != resolved && (!recursive || !s.policy.VisibleInListing(resolvedEntry, true)) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if portAccepts(portType, ClassifyFile(resolvedEntry)) && s.policy.VisibleInListing(resolvedEntry, false) {
+			files = append(files, resolvedEntry)
 			if len(files) > maxNodeInputFiles {
 				return fs.SkipAll
 			}

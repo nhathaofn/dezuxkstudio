@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"app/internal/apperr"
+	"app/internal/config"
 	"app/internal/engine"
 	"app/internal/tools/watermark"
 
@@ -308,13 +310,28 @@ func TestDestructiveAndOutsideActionsRequireTrustOrApproval(t *testing.T) {
 		t.Fatalf("untrusted file must remain untouched, got %q err=%v", string(raw), err)
 	}
 
-	// Inside workspace/media/trusted folders, file operations execute directly; move requires overwrite=true
-	// when the destination already exists, without prompting for file approval.
+	// Inside workspace/media/trusted folders, move without overwrite fails if dst exists;
+	// delete and overwrite-move queue user approval unless SkipTrustedApproval is enabled.
 	wsFile := filepath.Join(f.ws, "tmp.txt")
 	mustWrite(t, wsFile, "x")
-	if payload, isErr := f.call(t, "workspace_delete_file", map[string]any{"path": wsFile}); isErr || payload["ok"] != true {
-		t.Fatalf("expected direct delete inside workspace, got %v", payload)
+	payload, isErr = f.call(t, "workspace_delete_file", map[string]any{"path": wsFile})
+	if isErr || payload["status"] != "needs_approval" {
+		t.Fatalf("expected delete inside workspace to require approval, got isErr=%v payload=%v", isErr, payload)
 	}
+	delReqID, _ := payload["approval_id"].(string)
+	if delReqID == "" {
+		t.Fatalf("missing approval_id for workspace_delete_file: %v", payload)
+	}
+	if _, err := os.Stat(wsFile); err != nil {
+		t.Fatalf("file must remain intact before approval: %v", err)
+	}
+	if err := f.svc.ResolveApproval(context.Background(), delReqID, true); err != nil {
+		t.Fatalf("ResolveApproval delete: %v", err)
+	}
+	if _, err := os.Stat(wsFile); !os.IsNotExist(err) {
+		t.Fatalf("expected file deleted after approval, stat err=%v", err)
+	}
+
 	moveSrc := filepath.Join(f.ws, "src.txt")
 	moveDst := filepath.Join(f.ws, "dst.txt")
 	mustWrite(t, moveSrc, "new")
@@ -327,8 +344,12 @@ func TestDestructiveAndOutsideActionsRequireTrustOrApproval(t *testing.T) {
 	payload, isErr = f.call(t, "workspace_move_file", map[string]any{
 		"source": moveSrc, "destination": moveDst, "overwrite": true,
 	})
-	if isErr || payload["ok"] != true {
-		t.Fatalf("expected overwriting move inside workspace to succeed directly, got isErr=%v payload=%v", isErr, payload)
+	if isErr || payload["status"] != "needs_approval" {
+		t.Fatalf("expected overwriting move inside workspace to require approval, got isErr=%v payload=%v", isErr, payload)
+	}
+	moveReqID, _ := payload["approval_id"].(string)
+	if err := f.svc.ResolveApproval(context.Background(), moveReqID, true); err != nil {
+		t.Fatalf("ResolveApproval move: %v", err)
 	}
 	if raw, err := os.ReadFile(moveDst); err != nil || string(raw) != "new" {
 		t.Fatalf("expected destination to be replaced with %q, got %q err=%v", "new", string(raw), err)
@@ -873,5 +894,83 @@ func TestAddProtectedDirsBlocksCandidateAndResolve(t *testing.T) {
 	}
 	if _, err := p.ValidateWorkspaceRootCandidate(filepath.Join(extConfig, "nested")); err == nil {
 		t.Fatal("expected ValidateWorkspaceRootCandidate to reject path inside external config dir")
+	}
+}
+
+func TestAccessPolicySecretsNLEFormatsProjectsDirAndSafeGuardErrors(t *testing.T) {
+	base := t.TempDir()
+	dataDir := filepath.Join(base, "data")
+	secretsDir := filepath.Join(dataDir, "secrets")
+	legacyStudioWS := filepath.Join(dataDir, "studio", "workspace")
+	legacyProjects := filepath.Join(legacyStudioWS, "projects")
+	wsDir := filepath.Join(base, "custom", "workspace")
+	projectsDir := filepath.Join(wsDir, "projects")
+	mediaDir := filepath.Join(base, "custom", "media")
+
+	for _, d := range []string{secretsDir, legacyProjects, projectsDir, mediaDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite(t, filepath.Join(secretsDir, "secrets.enc"), "cipher")
+	mustWrite(t, filepath.Join(secretsDir, "master.key"), "key")
+	mustWrite(t, filepath.Join(wsDir, "secrets.enc"), "cipher")
+	mustWrite(t, filepath.Join(wsDir, ".env"), "API_KEY=secret")
+	mustWrite(t, filepath.Join(wsDir, "timeline.otio"), `{"OTIO_SCHEMA":"Timeline.1"}`)
+	mustWrite(t, filepath.Join(wsDir, "timeline.fcpxml"), `<fcpxml version="1.10"/>`)
+	mustWrite(t, filepath.Join(legacyProjects, "first-film", "project.json"), `{"title":"First Film"}`)
+
+	p := NewAccessPolicy(dataDir, wsDir, mediaDir, "", nil)
+	p.SetProjectsDir(projectsDir)
+
+	// 1. NLE text formats (.otio, .fcpxml) are first-class text files.
+	for _, nle := range []string{filepath.Join(wsDir, "timeline.otio"), filepath.Join(wsDir, "timeline.fcpxml")} {
+		if _, err := p.ValidateRead(nle); err != nil {
+			t.Fatalf("expected NLE format %s readable: %v", nle, err)
+		}
+		if _, err := p.ValidateWrite(nle); err != nil {
+			t.Fatalf("expected NLE format %s writable: %v", nle, err)
+		}
+		if err := p.CheckTrustedFile(nle, true); err != nil {
+			t.Fatalf("expected CheckTrustedFile allowed on %s: %v", nle, err)
+		}
+	}
+
+	// 2. Legacy <Data>/studio/workspace/projects seeded automatically on startup remains trusted.
+	if err := p.CheckTrustedFile(filepath.Join(legacyProjects, "first-film", "project.json"), true); err != nil {
+		t.Fatalf("expected legacy studio project file trusted: %v", err)
+	}
+
+	// 3. ValidateDelete guards projectsDir directly.
+	if _, err := p.ValidateDelete(projectsDir); err == nil {
+		t.Fatal("expected ValidateDelete to block deleting projectsDir")
+	}
+
+	// 4. Secrets folder, .enc, master.key, and .env are blocked in BOTH assistant and developer modes,
+	// and CheckTrustedFile returns CodeUnauthorized without leaking server host paths.
+	for _, dev := range []bool{false, true} {
+		p.SetDeveloperMode(dev)
+		for _, bad := range []string{
+			filepath.Join(secretsDir, "secrets.enc"),
+			filepath.Join(secretsDir, "master.key"),
+			filepath.Join(wsDir, "secrets.enc"),
+			filepath.Join(wsDir, ".env"),
+		} {
+			err := p.CheckTrustedFile(bad, false)
+			if !apperr.IsCode(err, apperr.CodeUnauthorized) {
+				t.Fatalf("dev=%v: expected CodeUnauthorized for %s, got %v", dev, bad, err)
+			}
+			if strings.Contains(err.Error(), base) {
+				t.Fatalf("CheckTrustedFile leaked host directory %q in error: %v", base, err)
+			}
+		}
+	}
+
+	// 5. LimitsFrom wires MaxApprovalContinuations from Config.
+	cfg := config.Default(config.ModeDesktop)
+	cfg.Agent.MaxApprovalContinuations = 9
+	lim := LimitsFrom(cfg)
+	if lim.MaxApprovalContinuations != 9 {
+		t.Fatalf("LimitsFrom MaxApprovalContinuations = %d, want 9", lim.MaxApprovalContinuations)
 	}
 }

@@ -2,7 +2,9 @@ package mediagen
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"math"
 	"net/url"
 	"slices"
 	"strconv"
@@ -12,9 +14,14 @@ import (
 )
 
 const (
+	// maxVideoDurationSec is the baseline protocol ceiling for single-clip video generation when no StudioConfig bound is supplied.
 	maxVideoDurationSec = 60
-	minTTSSpeed         = 0.25
-	maxTTSSpeed         = 4.0
+	// minTTSSpeed and maxTTSSpeed match the widest provider speech synthesis rate envelope (OpenAI 0.25x..4.0x).
+	minTTSSpeed = 0.25
+	maxTTSSpeed = 4.0
+	// minPixelDimension and maxPixelDimension bound explicit WxH image/video dimensions against degenerate or OOM-inducing sizes.
+	minPixelDimension = 64
+	maxPixelDimension = 16384
 )
 
 func validationErr(key, msg string, params map[string]any) error {
@@ -25,6 +32,7 @@ func validationErr(key, msg string, params map[string]any) error {
 func NormalizeImageRequest(req ImageRequest) (ImageRequest, error) {
 	req.ModelRef = strings.TrimSpace(req.ModelRef)
 	req.Prompt = strings.TrimSpace(req.Prompt)
+	req.MaskPath = strings.TrimSpace(req.MaskPath)
 	req.AspectRatio = strings.TrimSpace(req.AspectRatio)
 	req.Resolution = strings.TrimSpace(req.Resolution)
 	req.OutputDir = strings.TrimSpace(req.OutputDir)
@@ -32,6 +40,9 @@ func NormalizeImageRequest(req ImageRequest) (ImageRequest, error) {
 
 	if req.Prompt == "" {
 		return req, validationErr("errors.mediagen.prompt_required", "Prompt is required", nil)
+	}
+	if req.MaskPath != "" && len(req.ReferenceImages) == 0 {
+		return req, validationErr("errors.mediagen.mask_requires_image", "A base reference image is required when mask_path is provided", nil)
 	}
 	if req.AspectRatio == "" {
 		req.AspectRatio = DefaultImageAspectRatio
@@ -60,6 +71,20 @@ func NormalizeImageRequest(req ImageRequest) (ImageRequest, error) {
 
 // NormalizeVideoRequest validates and applies defaults to a video generation request.
 func NormalizeVideoRequest(req VideoRequest) (VideoRequest, error) {
+	return NormalizeVideoRequestWithLimits(req, maxVideoDurationSec, DefaultVideoDurationSec)
+}
+
+// NormalizeVideoRequestWithLimits validates a video request using caller-configured max and default duration bounds.
+func NormalizeVideoRequestWithLimits(req VideoRequest, maxDurationSec, defaultDurationSec int) (VideoRequest, error) {
+	if maxDurationSec < 1 {
+		maxDurationSec = maxVideoDurationSec
+	}
+	if defaultDurationSec < 1 {
+		defaultDurationSec = DefaultVideoDurationSec
+	}
+	if defaultDurationSec > maxDurationSec {
+		defaultDurationSec = maxDurationSec
+	}
 	req.ModelRef = strings.TrimSpace(req.ModelRef)
 	req.Prompt = strings.TrimSpace(req.Prompt)
 	req.StartImage = strings.TrimSpace(req.StartImage)
@@ -85,9 +110,9 @@ func NormalizeVideoRequest(req VideoRequest) (VideoRequest, error) {
 	}
 
 	if req.DurationSec == 0 {
-		req.DurationSec = DefaultVideoDurationSec
-	} else if req.DurationSec < 1 || req.DurationSec > maxVideoDurationSec {
-		return req, validationErr("errors.mediagen.invalid_duration", fmt.Sprintf("Duration must be between 1 and %d seconds", maxVideoDurationSec), map[string]any{"max": maxVideoDurationSec})
+		req.DurationSec = defaultDurationSec
+	} else if req.DurationSec < 1 || req.DurationSec > maxDurationSec {
+		return req, validationErr("errors.mediagen.invalid_duration", fmt.Sprintf("Duration must be between 1 and %d seconds", maxDurationSec), map[string]any{"max": maxDurationSec})
 	}
 
 	if req.Seed != nil && *req.Seed < 0 {
@@ -121,6 +146,42 @@ func NormalizeTTSRequest(req TTSRequest) (TTSRequest, error) {
 	return req, nil
 }
 
+// NormalizeTextRequest validates and normalizes an LLM text generation request.
+func NormalizeTextRequest(req TextRequest) (TextRequest, error) {
+	req.ModelRef = strings.TrimSpace(req.ModelRef)
+	req.SystemPrompt = strings.TrimSpace(req.SystemPrompt)
+	req.UserPrompt = strings.TrimSpace(req.UserPrompt)
+	req.JSONSchemaName = strings.TrimSpace(req.JSONSchemaName)
+	req.ImageInputs = trimNonEmpty(req.ImageInputs)
+
+	if req.UserPrompt == "" {
+		return req, validationErr("errors.mediagen.prompt_required", "Prompt is required", nil)
+	}
+	if len(req.JSONSchema) > 0 {
+		trimmed := strings.TrimSpace(string(req.JSONSchema))
+		if trimmed == "" || trimmed == "null" {
+			req.JSONSchema = nil
+		} else if !json.Valid([]byte(trimmed)) {
+			return req, validationErr("errors.mediagen.invalid_json_schema", "JSON schema must be valid JSON", nil)
+		} else {
+			req.JSONSchema = json.RawMessage(trimmed)
+			if req.JSONSchemaName == "" {
+				req.JSONSchemaName = "structured_output"
+			}
+		}
+	}
+	if req.Temperature != nil {
+		t := *req.Temperature
+		if math.IsNaN(t) || math.IsInf(t, 0) || t < 0 || t > 2 {
+			return req, validationErr("errors.mediagen.invalid_temperature", "Temperature must be between 0 and 2", nil)
+		}
+	}
+	if req.MaxTokens < 0 {
+		return req, validationErr("errors.mediagen.invalid_max_tokens", "max_tokens must be zero or positive", nil)
+	}
+	return req, nil
+}
+
 func trimNonEmpty(items []string) []string {
 	if len(items) == 0 {
 		return nil
@@ -136,6 +197,14 @@ func trimNonEmpty(items []string) []string {
 
 // ParseWxH parses pixel dimension strings such as "1024x1024" or "1280*720".
 func ParseWxH(s string) (w, h int, ok bool) {
+	return ParseWxHWithMax(s, maxPixelDimension)
+}
+
+// ParseWxHWithMax parses pixel dimension strings bounded by [minPixelDimension, maxDim].
+func ParseWxHWithMax(s string, maxDim int) (w, h int, ok bool) {
+	if maxDim < minPixelDimension {
+		maxDim = maxPixelDimension
+	}
 	s = strings.ToLower(strings.TrimSpace(s))
 	sep := "x"
 	if strings.Contains(s, "*") {
@@ -147,7 +216,7 @@ func ParseWxH(s string) (w, h int, ok bool) {
 	}
 	wi, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
 	hi, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
-	if err1 != nil || err2 != nil || wi < 64 || hi < 64 || wi > 16384 || hi > 16384 {
+	if err1 != nil || err2 != nil || wi < minPixelDimension || hi < minPixelDimension || wi > maxDim || hi > maxDim {
 		return 0, 0, false
 	}
 	return wi, hi, true

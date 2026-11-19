@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"app/internal/contracts"
+	"app/internal/engine"
 	"app/internal/realtime"
 	mediasvc "app/internal/service/media"
 )
@@ -11,6 +12,8 @@ import (
 // Media exposes media:* realtime actions.
 type Media struct {
 	Service *mediasvc.Service
+	// FileGuard, when set (headless server mode), constrains local file registration and deletion.
+	FileGuard engine.FileGuard
 }
 
 func (Media) Name() string { return "media" }
@@ -23,10 +26,7 @@ func (m Media) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionMediaDelete,
 		func(ctx context.Context, _ *realtime.Request, p contracts.MediaDeletePayload) (contracts.Empty, error) {
-			if err := p.Validate(); err != nil {
-				return contracts.Empty{}, err
-			}
-			if err := m.Service.Delete(ctx, p.ID, p.DeleteFile); err != nil {
+			if err := m.Service.Delete(engine.WithFileGuard(ctx, m.FileGuard), p.ID, p.DeleteFile); err != nil {
 				return contracts.Empty{}, err
 			}
 			return contracts.Empty{}, nil
@@ -39,6 +39,6 @@ func (m Media) Register(r *realtime.Registry) {
 
 	realtime.Handle(r, contracts.ActionMediaRegisterInput,
 		func(ctx context.Context, _ *realtime.Request, p contracts.MediaRegisterInputPayload) (contracts.MediaAssetItem, error) {
-			return m.Service.RegisterInput(ctx, p)
+			return m.Service.RegisterInput(engine.WithFileGuard(ctx, m.FileGuard), p)
 		})
 }

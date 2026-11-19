@@ -87,7 +87,15 @@ export const AgentDrawer: React.FC = () => {
   };
 
   const [resizing, setResizing] = useState(false);
+  const cleanupResizeRef = useRef<(() => void) | null>(null);
   const historyOpen = activeTab === "chat" && chatView === "history";
+
+  useEffect(() => {
+    return () => {
+      cleanupResizeRef.current?.();
+      cleanupResizeRef.current = null;
+    };
+  }, []);
 
   if (!panelOpen) return null;
 
@@ -95,6 +103,7 @@ export const AgentDrawer: React.FC = () => {
 
   const startResize = (e: React.PointerEvent<HTMLButtonElement>) => {
     e.preventDefault();
+    cleanupResizeRef.current?.();
     const startX = e.clientX;
     const startWidth = panelWidth;
     let latestWidth = startWidth;
@@ -103,16 +112,20 @@ export const AgentDrawer: React.FC = () => {
       latestWidth = startWidth + (startX - moveEvt.clientX);
       setPanelWidth(latestWidth, false);
     };
-    const onUp = () => {
+    const cleanup = () => {
       setPanelWidth(latestWidth, true);
       setResizing(false);
       window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointerup", cleanup);
+      window.removeEventListener("pointercancel", cleanup);
+      cleanupResizeRef.current = null;
     };
 
+    cleanupResizeRef.current = cleanup;
     setResizing(true);
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointerup", cleanup);
+    window.addEventListener("pointercancel", cleanup);
   };
 
   const handleAddFolder = async () => {

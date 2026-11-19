@@ -10,6 +10,7 @@ import (
 	"io"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +28,39 @@ type LineParser interface {
 	ParseLine(line string) (percent float64, message string, ok bool)
 }
 
+const (
+	// defaultMaxStdoutBytes caps retained stdout in RunResult to prevent OOM on chatty CLIs.
+	defaultMaxStdoutBytes = 16 << 20
+	// defaultMaxStderrBytes caps retained stderr in RunResult.
+	defaultMaxStderrBytes = 2 << 20
+)
+
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (c *cappedBuffer) WriteLine(line string) {
+	if c.limit <= 0 || c.truncated {
+		return
+	}
+	need := len(line) + 1
+	if c.buf.Len()+need > c.limit {
+		avail := c.limit - c.buf.Len()
+		if avail > 0 && avail < len(line) {
+			c.buf.WriteString(line[:avail])
+		}
+		c.buf.WriteString("\n...[truncated]\n")
+		c.truncated = true
+		return
+	}
+	c.buf.WriteString(line)
+	c.buf.WriteByte('\n')
+}
+
+func (c *cappedBuffer) String() string { return c.buf.String() }
+
 // RunOptions configures process execution.
 type RunOptions struct {
 	Dir            string
@@ -35,7 +69,9 @@ type RunOptions struct {
 	OnStderrLine   func(line string)
 	ProgressParser LineParser
 	// OnProgress overrides where parsed progress goes; nil sends it to ctx's progress sink.
-	OnProgress ProgressCallback
+	OnProgress     ProgressCallback
+	MaxStdoutBytes int
+	MaxStderrBytes int
 }
 
 // RunResult holds the output and exit status of a command execution.
@@ -74,14 +110,24 @@ func RunWithOptions(ctx context.Context, executable string, args []string, opts 
 		return nil, fmt.Errorf("runner: stderr pipe: %w", err)
 	}
 
-	if err := cmd.Start(); err != nil {
+	if err := proc.Start(cmd); err != nil {
 		return nil, fmt.Errorf("runner: start %s: %w", executable, err)
 	}
+	defer proc.Release(cmd)
 
-	var stdoutBuf, stderrBuf bytes.Buffer
+	maxOut := opts.MaxStdoutBytes
+	if maxOut <= 0 {
+		maxOut = defaultMaxStdoutBytes
+	}
+	maxErr := opts.MaxStderrBytes
+	if maxErr <= 0 {
+		maxErr = defaultMaxStderrBytes
+	}
+	stdoutBuf := cappedBuffer{limit: maxOut}
+	stderrBuf := cappedBuffer{limit: maxErr}
 	var wg sync.WaitGroup
 
-	readLines := func(r io.Reader, buf *bytes.Buffer, onLine func(string), checkProgress bool) error {
+	readLines := func(r io.Reader, buf *cappedBuffer, onLine func(string), checkProgress bool) error {
 		defer func() {
 			_, _ = io.Copy(io.Discard, r)
 		}()
@@ -92,8 +138,7 @@ func RunWithOptions(ctx context.Context, executable string, args []string, opts 
 		scanner.Split(scanLinesOrCarriageReturn)
 		for scanner.Scan() {
 			line := scanner.Text()
-			buf.WriteString(line)
-			buf.WriteByte('\n')
+			buf.WriteLine(line)
 
 			if onLine != nil {
 				onLine(line)
@@ -247,4 +292,77 @@ func (p *YtDlpProgressParser) ParseLine(line string) (float64, string, bool) {
 	speed := matches[3]
 	msg := fmt.Sprintf("%s / %s at %s", matches[1]+"%", size, speed)
 	return pct, msg, true
+}
+
+const (
+	// ffmpegPipeMicrosecondsPerSec converts FFmpeg `-progress` out_time_us microsecond counters to seconds.
+	ffmpegPipeMicrosecondsPerSec = 1_000_000.0
+	// ffmpegPipeDefaultUnknownPct reports non-zero activity when total clip duration metadata is unavailable.
+	ffmpegPipeDefaultUnknownPct = 10.0
+	// ffmpegPipeMinPct and ffmpegPipeMaxPct keep mid-encode progress bounded inside (0, 100) before finalization.
+	ffmpegPipeMinPct = 5.0
+	ffmpegPipeMaxPct = 98.0
+)
+
+// FFmpegPipeProgressParser parses FFmpeg `-progress pipe:1` key=value lines (`out_time_us` / `out_time_ms`).
+type FFmpegPipeProgressParser struct {
+	TotalDurationUs int64
+	MessagePrefix   string
+	FallbackPercent float64
+	OnTime          func(percent, seconds float64, message string)
+}
+
+// ParseLine implements LineParser for FFmpeg `-progress pipe:1` output.
+func (p *FFmpegPipeProgressParser) ParseLine(line string) (float64, string, bool) {
+	k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+	if !ok || (k != "out_time_us" && k != "out_time_ms") {
+		return 0, "", false
+	}
+	us, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	if err != nil || us < 0 {
+		return 0, "", false
+	}
+	pct := p.FallbackPercent
+	if pct <= 0 {
+		pct = ffmpegPipeDefaultUnknownPct
+	}
+	if p.TotalDurationUs > 0 {
+		pct = float64(us) / float64(p.TotalDurationUs) * 100.0
+		if pct < ffmpegPipeMinPct {
+			pct = ffmpegPipeMinPct
+		}
+		if pct > ffmpegPipeMaxPct {
+			pct = ffmpegPipeMaxPct
+		}
+	}
+	sec := float64(us) / ffmpegPipeMicrosecondsPerSec
+	prefix := strings.TrimSpace(p.MessagePrefix)
+	if prefix == "" {
+		prefix = "Processing media"
+	}
+	msg := fmt.Sprintf("%s (%.1fs)…", prefix, sec)
+	if p.OnTime != nil {
+		p.OnTime(pct, sec, msg)
+		return pct, msg, false
+	}
+	return pct, msg, true
+}
+
+// FFmpegPipeProgressOptions builds RunOptions that stream FFmpeg `-progress pipe:1` updates to progress.Report
+// with localized `Key` and `Params{"sec": "<elapsed>"}`.
+func FFmpegPipeProgressOptions(ctx context.Context, totalDurationUs int64, key, messagePrefix string) RunOptions {
+	return RunOptions{
+		ProgressParser: &FFmpegPipeProgressParser{
+			TotalDurationUs: totalDurationUs,
+			MessagePrefix:   messagePrefix,
+			OnTime: func(pct, sec float64, msg string) {
+				progress.Report(ctx, progress.Update{
+					Percent: pct,
+					Message: msg,
+					Key:     key,
+					Params:  map[string]string{"sec": fmt.Sprintf("%.1f", sec)},
+				})
+			},
+		},
+	}
 }

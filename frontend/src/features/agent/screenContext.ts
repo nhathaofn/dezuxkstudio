@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { create } from "zustand";
-import type { AgentUIContextPayload } from "../../contracts/generated";
+import type { AgentUIContextPayload, ProviderDefaultsResult } from "../../contracts/generated";
 import { safeStorage } from "../../lib/storage";
 import { useProvidersStore } from "../providers/useProvidersStore";
 import { useAgentDrawerStore } from "./useAgentDrawerStore";
@@ -67,6 +67,42 @@ export function askAgentAboutMediaAsset(params: AskAgentAssetParams): void {
     : promptAddition;
 
   useAgentStore.getState().setPrompt(nextPrompt);
+}
+
+export type StudioDelegatedStage = "script_normalize" | "extract_assets" | "author_shots";
+
+export interface DelegateStudioStageParams {
+  projectId: string;
+  episodeId: string;
+  stage: StudioDelegatedStage;
+  prompt: string;
+}
+
+/**
+ * Returns true if an explicit text model override is set or Settings -> Providers has a usable
+ * PurposeText candidate/effective model configured.
+ */
+export function isTextProviderConfigured(
+  defaults: ProviderDefaultsResult | null,
+  modelOverride?: string
+): boolean {
+  if (modelOverride && modelOverride.trim() !== "") return true;
+  const textPurpose = defaults?.purposes.find((p) => p.purpose === "text");
+  return Boolean(
+    textPurpose && (textPurpose.candidates.length > 0 || textPurpose.effective.trim() !== "")
+  );
+}
+
+/**
+ * Fallback helper when no PurposeText provider is configured:
+ * opens the Agent Drawer chat tab and pre-fills the composer prompt for user inspection (never auto-sends).
+ */
+export function delegateStudioStageToAgent(params: DelegateStudioStageParams): void {
+  const drawer = useAgentDrawerStore.getState();
+  drawer.openPanel();
+  drawer.setActiveTab("chat");
+  drawer.setChatView("chat");
+  useAgentStore.getState().setPrompt(params.prompt);
 }
 
 /** Returns the active billing source display string for an external agent provider. */

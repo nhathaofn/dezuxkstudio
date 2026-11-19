@@ -18,6 +18,18 @@ type WorkspaceTree struct {
 	TTSDir       string
 	WatermarkDir string
 	WorkspaceDir string
+	ProjectsDir  string
+}
+
+func cleanAbsPath(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(trimmed); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(trimmed)
 }
 
 // ResolveWorkspaceTree calculates all creative workspace directories based on customRoot
@@ -25,11 +37,10 @@ type WorkspaceTree struct {
 // If customRoot is empty or whitespace, it falls back to appPaths.DefaultStudioRoot().
 func ResolveWorkspaceTree(appPaths Paths, customRoot, agentWorkspaceOverride string) WorkspaceTree {
 	var root string
-	trimmedRoot := strings.TrimSpace(customRoot)
-	if trimmedRoot == "" {
-		root = appPaths.DefaultStudioRoot()
+	if absRoot := cleanAbsPath(customRoot); absRoot != "" {
+		root = absRoot
 	} else {
-		root = filepath.Clean(trimmedRoot)
+		root = cleanAbsPath(appPaths.DefaultStudioRoot())
 	}
 
 	mediaDir := filepath.Join(root, "media")
@@ -39,12 +50,13 @@ func ResolveWorkspaceTree(appPaths Paths, customRoot, agentWorkspaceOverride str
 	watermarkDir := filepath.Join(mediaDir, "watermark")
 
 	var workspaceDir string
-	trimmedOverride := strings.TrimSpace(agentWorkspaceOverride)
-	if trimmedOverride != "" {
-		workspaceDir = filepath.Clean(trimmedOverride)
+	if absOverride := cleanAbsPath(agentWorkspaceOverride); absOverride != "" {
+		workspaceDir = absOverride
 	} else {
 		workspaceDir = filepath.Join(root, "workspace")
 	}
+
+	projectsDir := filepath.Join(workspaceDir, "projects")
 
 	return WorkspaceTree{
 		Root:         root,
@@ -54,10 +66,11 @@ func ResolveWorkspaceTree(appPaths Paths, customRoot, agentWorkspaceOverride str
 		TTSDir:       ttsDir,
 		WatermarkDir: watermarkDir,
 		WorkspaceDir: workspaceDir,
+		ProjectsDir:  projectsDir,
 	}
 }
 
-// Ensure creates all 7 directories in the workspace tree with 0o755 permissions.
+// Ensure creates all 8 directories in the workspace tree with 0o755 permissions.
 func (t WorkspaceTree) Ensure() error {
 	dirs := []string{
 		t.Root,
@@ -67,6 +80,7 @@ func (t WorkspaceTree) Ensure() error {
 		t.TTSDir,
 		t.WatermarkDir,
 		t.WorkspaceDir,
+		t.ProjectsDir,
 	}
 	for _, dir := range dirs {
 		if dir == "" {

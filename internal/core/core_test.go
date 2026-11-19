@@ -12,8 +12,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -803,5 +805,335 @@ func TestCore_DefaultStudioMediaRetentionAcrossRestart_And_TempDirRejected(t *te
 	}
 	if !bytes.Equal(gotBytes, imgBytes) {
 		t.Fatalf("downloaded asset bytes mismatch after restart")
+	}
+}
+
+func TestCore_StudioWorkspaceRootHotReloadAndWorkflowGuard(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	p := paths.Paths{
+		Config: filepath.Join(tmp, "config"),
+		Data:   filepath.Join(tmp, "data"),
+		Logs:   filepath.Join(tmp, "logs"),
+	}
+	if err := p.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default(config.ModeDesktop)
+	cfg.Providers.CheckOnStartup = false
+	cfg.Providers.AutoCheck = false
+	token, _ := security.NewToken()
+
+	c, err := core.New(ctx, core.Options{
+		Config:        cfg,
+		Paths:         p,
+		Logger:        slog.New(slog.DiscardHandler),
+		AuthToken:     token,
+		OpenDirectory: func(string) error { return nil },
+		HTTPClient:    http.DefaultClient,
+	})
+	if err != nil {
+		t.Fatalf("core.New: %v", err)
+	}
+	if err := c.Start(); err != nil {
+		t.Fatalf("core.Start: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	initProjectsDir := c.WorkspaceTree().ProjectsDir
+	if initProjectsDir == "" || c.Studio().ProjectsDir() != initProjectsDir {
+		t.Fatalf("expected initial ProjectsDir=%q matching studioSvc=%q", initProjectsDir, c.Studio().ProjectsDir())
+	}
+
+	ws, call := dialCoreWS(t, c.WSURL(), token)
+	defer ws.CloseNow()
+
+	// Create initial project in default ProjectsDir
+	r1, err := call(contracts.ActionStudioProjectCreate, map[string]any{"title": "First Film"})
+	if err != nil || !r1.Success {
+		t.Fatalf("studio:project_create #1 failed: err=%v resp=%+v", err, r1.Error)
+	}
+	var detail1 contracts.StudioProjectDetailResult
+	if err := json.Unmarshal(r1.Data, &detail1); err != nil {
+		t.Fatal(err)
+	}
+	firstFilmArtifact := filepath.Join(detail1.Project.RootDir, "episodes", "ep01", "script", "normalized_script.json")
+
+	// Switch WorkspaceRoot via preferences:update
+	newRoot := createTestWorkspace(t, "studio_hot_reload")
+	upd, err := call(contracts.ActionPreferencesUpdate, map[string]any{
+		"workspace_root":       newRoot,
+		"onboarding_completed": true,
+	})
+	if err != nil || !upd.Success {
+		t.Fatalf("preferences:update failed: err=%v resp=%+v", err, upd.Error)
+	}
+
+	wantNewProjectsDir := filepath.Join(newRoot, "workspace", "projects")
+	if !strings.EqualFold(filepath.Clean(c.Studio().ProjectsDir()), filepath.Clean(wantNewProjectsDir)) {
+		t.Fatalf("expected hot-reloaded ProjectsDir=%q, got %q", wantNewProjectsDir, c.Studio().ProjectsDir())
+	}
+
+	// "First Film" in the previous default <Data>/studio/workspace/projects must remain trusted & editable after hot-reload
+	if err := c.Agent().CheckTrustedFile(firstFilmArtifact, true); err != nil {
+		t.Fatalf("CheckTrustedFile should retain access to First Film artifact %q after hot-reload: %v", firstFilmArtifact, err)
+	}
+	saveFirst, err := call(contracts.ActionStudioEpisodeSaveScript, map[string]any{
+		"episode_id": detail1.ActiveEpisode.Episode.ID,
+		"raw_script": "Cảnh mở đầu giữ nguyên sau khi đổi thư mục gốc.",
+	})
+	if err != nil || !saveFirst.Success {
+		t.Fatalf("First Film episode_save_script after hot-reload failed: err=%v resp=%+v", err, saveFirst.Error)
+	}
+
+	// New project should be created inside the updated ProjectsDir
+	r2, err := call(contracts.ActionStudioProjectCreate, map[string]any{"title": "Second Film"})
+	if err != nil || !r2.Success {
+		t.Fatalf("studio:project_create #2 failed: err=%v resp=%+v", err, r2.Error)
+	}
+	var detail2 contracts.StudioProjectDetailResult
+	if err := json.Unmarshal(r2.Data, &detail2); err != nil {
+		t.Fatal(err)
+	}
+	expectedPrefix := filepath.Clean(wantNewProjectsDir)
+	if !strings.HasPrefix(strings.ToLower(filepath.Clean(detail2.Project.RootDir)), strings.ToLower(expectedPrefix)) {
+		t.Fatalf("expected new project RootDir inside %q, got %q", expectedPrefix, detail2.Project.RootDir)
+	}
+
+	// Workflow FileGuard (CheckTrustedFile) must permit files in new ProjectsDir & reject untrusted external dirs
+	newScriptArtifact := filepath.Join(detail2.Project.RootDir, "episodes", "ep01", "script", "normalized_script.json")
+	if err := c.Agent().CheckTrustedFile(newScriptArtifact, true); err != nil {
+		t.Fatalf("CheckTrustedFile should permit new ProjectsDir path %q, got %v", newScriptArtifact, err)
+	}
+	untrustedDir := t.TempDir()
+	outsideFile := filepath.Join(untrustedDir, "evil.json")
+	if err := c.Agent().CheckTrustedFile(outsideFile, true); err == nil {
+		t.Fatalf("CheckTrustedFile should reject untrusted path %q", outsideFile)
+	}
+
+	// Restart Core with same Paths/DB and verify "First Film" remains trusted and accessible
+	ws.CloseNow()
+	if err := c.Close(); err != nil {
+		t.Fatalf("core.Close #1: %v", err)
+	}
+
+	token2, _ := security.NewToken()
+	c2, err := core.New(ctx, core.Options{
+		Config:        cfg,
+		Paths:         p,
+		Logger:        slog.New(slog.DiscardHandler),
+		AuthToken:     token2,
+		OpenDirectory: func(string) error { return nil },
+		HTTPClient:    http.DefaultClient,
+	})
+	if err != nil {
+		t.Fatalf("core.New #2: %v", err)
+	}
+	if err := c2.Start(); err != nil {
+		t.Fatalf("core.Start #2: %v", err)
+	}
+	defer func() { _ = c2.Close() }()
+
+	if err := c2.Agent().CheckTrustedFile(firstFilmArtifact, true); err != nil {
+		t.Fatalf("CheckTrustedFile should permit First Film artifact %q after restart: %v", firstFilmArtifact, err)
+	}
+	ws2, call2 := dialCoreWS(t, c2.WSURL(), token2)
+	defer ws2.CloseNow()
+	getFirst, err := call2(contracts.ActionStudioProjectGet, map[string]any{"id": detail1.Project.ID})
+	if err != nil || !getFirst.Success {
+		t.Fatalf("studio:project_get First Film after restart failed: err=%v resp=%+v", err, getFirst.Error)
+	}
+}
+
+func TestCore_ServerModeBlocksMediaRegisterInputRootPoisoningAndDownload(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	p := paths.Paths{
+		Config: filepath.Join(tmp, "config"),
+		Data:   filepath.Join(tmp, "data"),
+		Logs:   filepath.Join(tmp, "logs"),
+	}
+	if err := p.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default(config.ModeServer)
+	cfg.Server.Host = "127.0.0.1"
+	cfg.Server.Port = 0
+	cfg.Providers.CheckOnStartup = false
+	cfg.Providers.AutoCheck = false
+	token, _ := security.NewToken()
+
+	c, err := core.New(ctx, core.Options{
+		Config:        cfg,
+		Paths:         p,
+		Logger:        slog.New(slog.DiscardHandler),
+		AuthToken:     token,
+		OpenDirectory: func(string) error { return nil },
+		HTTPClient:    http.DefaultClient,
+	})
+	if err != nil {
+		t.Fatalf("core.New server: %v", err)
+	}
+	if err := c.Start(); err != nil {
+		t.Fatalf("core.Start server: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	ws, call := dialCoreWS(t, c.WSURL(), token)
+	defer ws.CloseNow()
+
+	outsideDir := t.TempDir()
+	outsideImg := filepath.Join(outsideDir, "host_secret.png")
+	if err := os.WriteFile(outsideImg, []byte("secret-png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Remote client attempts media:register_input on untrusted host path -> MUST fail with ERR_UNAUTHORIZED
+	regResp, err := call(contracts.ActionMediaRegisterInput, map[string]any{
+		"file_path": outsideImg,
+	})
+	if err != nil {
+		t.Fatalf("media:register_input transport err: %v", err)
+	}
+	if regResp.Success || regResp.Error == nil || regResp.Error.Code != "ERR_UNAUTHORIZED" {
+		t.Fatalf("expected ERR_UNAUTHORIZED on server media:register_input, got success=%v err=%+v", regResp.Success, regResp.Error)
+	}
+
+	// 2. Subsequent GET /api/media/download?path=<outsideImg> MUST be 403 Forbidden (allowedRoots was NOT poisoned)
+	httpBase := "http" + c.WSURL()[len("ws"):len(c.WSURL())-len("/ws")]
+	dlReq, _ := http.NewRequest(http.MethodGet, httpBase+"/api/media/download?path="+url.QueryEscape(outsideImg), nil)
+	dlReq.Header.Set("Authorization", "Bearer "+token)
+	dlResp, err := (&http.Client{Timeout: 5 * time.Second}).Do(dlReq)
+	if err != nil {
+		t.Fatalf("download request failed: %v", err)
+	}
+	_ = dlResp.Body.Close()
+	if dlResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for outside path download in server mode, got %d", dlResp.StatusCode)
+	}
+
+	// 3. Even inside MediaDir, secret/non-media files (.env, secrets.enc) cannot be downloaded via ?path=
+	mediaSecret := filepath.Join(c.WorkspaceTree().MediaDir, "secrets.enc")
+	if err := os.WriteFile(mediaSecret, []byte("encrypted-keys"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secReq, _ := http.NewRequest(http.MethodGet, httpBase+"/api/media/download?path=secrets.enc", nil)
+	secReq.Header.Set("Authorization", "Bearer "+token)
+	secResp, err := (&http.Client{Timeout: 5 * time.Second}).Do(secReq)
+	if err != nil {
+		t.Fatalf("download secrets.enc request failed: %v", err)
+	}
+	_ = secResp.Body.Close()
+	if secResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for secrets.enc inside mediaDir, got %d", secResp.StatusCode)
+	}
+}
+
+func TestCore_TicketSecretIndependentOfAuthTokenAndLoggerWired(t *testing.T) {
+	newCore := func(t *testing.T, logBuf *bytes.Buffer, token string) *core.Core {
+		t.Helper()
+		tmp := t.TempDir()
+		p, err := paths.Resolve("core_test", paths.Overrides{DataDir: filepath.Join(tmp, "data"), LogDir: filepath.Join(tmp, "logs")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.Config = filepath.Join(tmp, "config")
+		if err := p.Ensure(); err != nil {
+			t.Fatal(err)
+		}
+		cfg := config.Default(config.ModeServer)
+		cfg.Agent.AutoInstallCLI, cfg.Agent.AutoUpdateCLI = false, false
+		cfg.Providers.CheckOnStartup = false
+		cfg.Server.Host = "127.0.0.1"
+		cfg.Server.Port = 0
+		cfg.Log.Level = "debug"
+
+		var lg *slog.Logger
+		if logBuf != nil {
+			lg = slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		} else {
+			lg = slog.New(slog.DiscardHandler)
+		}
+
+		c, err := core.New(context.Background(), core.Options{
+			Config:        cfg,
+			Paths:         p,
+			Logger:        lg,
+			AuthToken:     token,
+			OpenDirectory: func(string) error { return nil },
+			HTTPClient:    http.DefaultClient,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Start(); err != nil {
+			_ = c.Close()
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		return c
+	}
+
+	const sharedToken = "identical-server-auth-token"
+	var logBuf bytes.Buffer
+	c1 := newCore(t, &logBuf, sharedToken)
+	c2 := newCore(t, nil, sharedToken)
+
+	// Register a media file in c1 and sign a URL.
+	samplePath := filepath.Join(c1.WorkspaceTree().MediaDir, "sample.png")
+	if err := os.WriteFile(samplePath, generateTestPNG(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws1, call1 := dialCoreWS(t, c1.WSURL(), sharedToken)
+	defer ws1.CloseNow()
+
+	regResp, err := call1(contracts.ActionMediaRegisterInput, map[string]any{"file_path": samplePath})
+	if err != nil || !regResp.Success {
+		t.Fatalf("register_input failed: err=%v resp=%+v", err, regResp)
+	}
+	var regData contracts.MediaAssetItem
+	if err := json.Unmarshal(regResp.Data, &regData); err != nil {
+		t.Fatal(err)
+	}
+	signResp, err := call1(contracts.ActionMediaSignURL, map[string]any{"asset_id": regData.ID, "purpose": "preview"})
+	if err != nil || !signResp.Success {
+		t.Fatalf("sign_url failed: err=%v resp=%+v", err, signResp)
+	}
+	var signData struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(signResp.Data, &signData); err != nil {
+		t.Fatal(err)
+	}
+	u1, err := url.Parse(signData.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket := u1.Query().Get("ticket")
+	if ticket == "" {
+		t.Fatalf("missing ticket in signed URL: %s", signData.URL)
+	}
+
+	// Ticket signed by c1 must NOT validate on c2 even with the exact same AuthToken.
+	httpBase2 := "http" + c2.WSURL()[len("ws"):len(c2.WSURL())-len("/ws")]
+	resp2, err := (&http.Client{Timeout: 5 * time.Second}).Get(httpBase2 + "/api/media/download?ticket=" + url.QueryEscape(ticket))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp2.Body.Close()
+	if resp2.StatusCode == http.StatusOK {
+		t.Fatalf("ticket from c1 must not be accepted by c2 with identical AuthToken")
+	}
+
+	// RequestLogger must be wired on c1 HTTP router.
+	httpBase1 := "http" + c1.WSURL()[len("ws"):len(c1.WSURL())-len("/ws")]
+	healthResp, err := (&http.Client{Timeout: 5 * time.Second}).Get(httpBase1 + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = healthResp.Body.Close()
+	if !strings.Contains(logBuf.String(), "/health") {
+		t.Fatalf("expected RequestLogger to log /health, got logs: %s", logBuf.String())
 	}
 }

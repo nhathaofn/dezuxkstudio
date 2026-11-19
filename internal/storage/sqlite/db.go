@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,6 +17,31 @@ import (
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
 )
+
+func sqliteFileDSN(rawPath string, readOnly bool, busyTimeoutMs int64) string {
+	slashed := filepath.ToSlash(filepath.Clean(rawPath))
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+	u := url.URL{Scheme: "file", Path: slashed}
+	q := url.Values{}
+	q.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeoutMs))
+	q.Add("_pragma", "foreign_keys(1)")
+	if readOnly {
+		q.Add("_pragma", "query_only(1)")
+	} else {
+		q.Add("_pragma", "journal_mode(WAL)")
+	}
+	q.Add("_pragma", "synchronous(NORMAL)")
+	u.RawQuery = q.Encode()
+	// SQLite URI filenames require authority `file://` (making `file:///...`). Go's url.URL.String()
+	// omits `//` when Host is empty, which breaks SQLite URI parsing on Windows drive paths.
+	dsn := u.String()
+	if strings.HasPrefix(dsn, "file:/") && !strings.HasPrefix(dsn, "file:///") {
+		dsn = "file://" + strings.TrimPrefix(dsn, "file:")
+	}
+	return dsn
+}
 
 // Options configures Open.
 type Options struct {
@@ -50,8 +76,7 @@ func Open(ctx context.Context, o Options) (*DB, error) {
 		}
 	}
 
-	dsn := fmt.Sprintf("%s?_pragma=busy_timeout(%d)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
-		o.Path, o.BusyTimeout.Milliseconds())
+	dsn := sqliteFileDSN(o.Path, false, o.BusyTimeout.Milliseconds())
 	if mem {
 		dsn = o.Path
 	}
@@ -76,8 +101,7 @@ func Open(ctx context.Context, o Options) (*DB, error) {
 	}
 
 	if !mem {
-		readDSN := fmt.Sprintf("%s?_pragma=busy_timeout(%d)&_pragma=foreign_keys(1)&_pragma=query_only(1)&_pragma=synchronous(NORMAL)",
-			o.Path, o.BusyTimeout.Milliseconds())
+		readDSN := sqliteFileDSN(o.Path, true, o.BusyTimeout.Milliseconds())
 		reader, err := sql.Open("sqlite", readDSN)
 		if err != nil {
 			_ = raw.Close()

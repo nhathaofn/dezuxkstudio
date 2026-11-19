@@ -14,6 +14,12 @@ export type WatermarkInput = NodeMap[typeof WATERMARK_NODE]["input"];
 export type WatermarkNodeResult = NodeMap[typeof WATERMARK_NODE]["output"];
 export type WatermarkItemResult = NonNullable<WatermarkNodeResult["results"]>[number];
 
+export const VIDEO_WATERMARK_NODE = NodeTypes.VIDEO_WATERMARK_REMOVE;
+export type VideoWatermarkInput = NodeMap[typeof VIDEO_WATERMARK_NODE]["input"];
+export type VideoWatermarkNodeResult = NodeMap[typeof VIDEO_WATERMARK_NODE]["output"];
+
+export type WatermarkMediaKind = "image" | "video";
+
 function safeRevokeObjectURL(url: string | null | undefined): void {
   if (!url) return;
   if (typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
@@ -26,10 +32,24 @@ function safeRevokeObjectURL(url: string | null | undefined): void {
 }
 
 interface WatermarkState {
+  mediaKind: WatermarkMediaKind;
   inputPath: string;
   inputPaths: string[];
   /** Browser/client File objects staged via HTTP upload when processed. */
   queuedFiles: File[];
+  /** Parallel objectUrls keys aligned with queuedFiles indices to handle duplicate names safely. */
+  queuedObjectKeys: string[];
+  /** Video watermark input path & optional browser queued file. */
+  videoInputPath: string;
+  queuedVideoFile: File | null;
+  videoMode: string | null;
+  videoX: number | null;
+  videoY: number | null;
+  videoWidth: number | null;
+  videoHeight: number | null;
+  videoCropEdge: string | null;
+  videoCropPx: number | null;
+  videoResult: VideoWatermarkNodeResult | null;
   /** Maps file identifiers to ephemeral ObjectURLs for fast local preview. */
   objectUrls: Record<string, string>;
   /** Maps uploaded server staging paths back to original client filenames for display. */
@@ -57,7 +77,7 @@ interface WatermarkState {
   setInputPath: (path: string) => void;
   setInputPaths: (paths: string[]) => void;
   setQueuedFiles: (files: File[]) => void;
-  removeQueuedFile: (fileName: string) => void;
+  removeQueuedFile: (target: number | string) => void;
   createTrackedObjectURL: (key: string, blob: Blob | File) => string;
   revokeTrackedObjectURL: (keyOrUrl: string) => void;
   revokeAllObjectURLs: () => void;
@@ -67,6 +87,17 @@ interface WatermarkState {
   setPreserveTree: (preserveTree: boolean) => void;
   setWorkers: (workers: number) => void;
   setCorner: (corner: string) => void;
+  setMediaKind: (kind: WatermarkMediaKind) => void;
+  setVideoInputPath: (path: string) => void;
+  setQueuedVideoFile: (file: File | null) => void;
+  setVideoMode: (mode: string) => void;
+  setVideoX: (x: number | null) => void;
+  setVideoY: (y: number | null) => void;
+  setVideoWidth: (w: number | null) => void;
+  setVideoHeight: (h: number | null) => void;
+  setVideoCropEdge: (edge: string) => void;
+  setVideoCropPx: (px: number | null) => void;
+  removeVideoWatermark: () => Promise<void>;
   setComparisonItem: (item: { beforeUrl: string; afterUrl: string; title: string } | null) => void;
   setComparisonZoom: (zoom: number | ((prev: number) => number)) => void;
   setComparisonPan: (
@@ -81,9 +112,21 @@ interface WatermarkState {
 }
 
 export const useWatermarkStore = create<WatermarkState>((set, get) => ({
+  mediaKind: "image",
   inputPath: "",
   inputPaths: [],
   queuedFiles: [],
+  queuedObjectKeys: [],
+  videoInputPath: "",
+  queuedVideoFile: null,
+  videoMode: null,
+  videoX: null,
+  videoY: null,
+  videoWidth: null,
+  videoHeight: null,
+  videoCropEdge: null,
+  videoCropPx: null,
+  videoResult: null,
   objectUrls: {},
   remoteNameMap: {},
   inPlace: false,
@@ -168,6 +211,7 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
       inputPath,
       inputPaths: inputPath ? [inputPath] : [],
       queuedFiles: [],
+      queuedObjectKeys: [],
       objectUrls: {},
       remoteNameMap: {},
       error: null,
@@ -181,6 +225,7 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
       inputPaths,
       inputPath: inputPaths[0] || "",
       queuedFiles: [],
+      queuedObjectKeys: [],
       objectUrls: {},
       remoteNameMap: {},
       error: null,
@@ -191,11 +236,16 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
   setQueuedFiles: (queuedFiles) => {
     get().revokeAllObjectURLs();
     const newObjectUrls: Record<string, string> = {};
-    if (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") {
-      for (const file of queuedFiles) {
+    const queuedObjectKeys: string[] = [];
+    for (let idx = 0; idx < queuedFiles.length; idx++) {
+      const file = queuedFiles[idx];
+      const key = !Object.prototype.hasOwnProperty.call(newObjectUrls, file.name)
+        ? file.name
+        : `${idx}:${file.name}`;
+      queuedObjectKeys.push(key);
+      if (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") {
         try {
-          const url = URL.createObjectURL(file);
-          newObjectUrls[file.name] = url;
+          newObjectUrls[key] = URL.createObjectURL(file);
         } catch {
           // Ignored in test/node environments
         }
@@ -203,6 +253,7 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
     }
     set({
       queuedFiles,
+      queuedObjectKeys,
       inputPaths: queuedFiles.map((f) => f.name),
       inputPath: queuedFiles[0]?.name || "",
       objectUrls: newObjectUrls,
@@ -212,17 +263,41 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
     });
   },
 
-  removeQueuedFile: (fileName: string) => {
-    const { queuedFiles, objectUrls } = get();
-    const url = objectUrls[fileName];
-    if (url) {
-      safeRevokeObjectURL(url);
+  removeQueuedFile: (target: number | string) => {
+    const { queuedFiles, queuedObjectKeys, objectUrls } = get();
+    const removeIndices = new Set<number>();
+    if (typeof target === "number") {
+      if (target >= 0 && target < queuedFiles.length) {
+        removeIndices.add(target);
+      }
+    } else {
+      queuedFiles.forEach((f, idx) => {
+        if (f.name === target) removeIndices.add(idx);
+      });
     }
+    if (removeIndices.size === 0) return;
+
     const nextUrls = { ...objectUrls };
-    delete nextUrls[fileName];
-    const nextFiles = queuedFiles.filter((f) => f.name !== fileName);
+    const nextFiles: File[] = [];
+    const nextKeys: string[] = [];
+    for (let idx = 0; idx < queuedFiles.length; idx++) {
+      const key = queuedObjectKeys[idx] ?? queuedFiles[idx].name;
+      if (removeIndices.has(idx)) {
+        const url = nextUrls[key];
+        if (url) safeRevokeObjectURL(url);
+        delete nextUrls[key];
+      } else {
+        nextFiles.push(queuedFiles[idx]);
+        nextKeys.push(key);
+      }
+    }
+    if (typeof target === "string" && nextUrls[target]) {
+      safeRevokeObjectURL(nextUrls[target]);
+      delete nextUrls[target];
+    }
     set({
       queuedFiles: nextFiles,
+      queuedObjectKeys: nextKeys,
       inputPaths: nextFiles.map((f) => f.name),
       inputPath: nextFiles[0]?.name || "",
       objectUrls: nextUrls,
@@ -235,6 +310,32 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
   setPreserveTree: (preserveTree) => set({ preserveTree }),
   setWorkers: (workers) => set({ workers }),
   setCorner: (corner) => set({ corner }),
+  setMediaKind: (mediaKind) => set({ mediaKind, error: null }),
+  setVideoInputPath: (videoInputPath) => {
+    get().revokeTrackedObjectURL("video:queued");
+    set({ videoInputPath, queuedVideoFile: null, videoResult: null, error: null });
+  },
+  setQueuedVideoFile: (queuedVideoFile) => {
+    if (queuedVideoFile) {
+      get().createTrackedObjectURL("video:queued", queuedVideoFile);
+      set({
+        queuedVideoFile,
+        videoInputPath: queuedVideoFile.name,
+        videoResult: null,
+        error: null,
+      });
+    } else {
+      get().revokeTrackedObjectURL("video:queued");
+      set({ queuedVideoFile: null, videoInputPath: "", videoResult: null, error: null });
+    }
+  },
+  setVideoMode: (videoMode) => set({ videoMode }),
+  setVideoX: (videoX) => set({ videoX }),
+  setVideoY: (videoY) => set({ videoY }),
+  setVideoWidth: (videoWidth) => set({ videoWidth }),
+  setVideoHeight: (videoHeight) => set({ videoHeight }),
+  setVideoCropEdge: (videoCropEdge) => set({ videoCropEdge }),
+  setVideoCropPx: (videoCropPx) => set({ videoCropPx }),
   setComparisonItem: (comparisonItem) => {
     const prev = get().comparisonItem;
     if (prev) {
@@ -339,6 +440,62 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
     }
   },
 
+  removeVideoWatermark: async () => {
+    const {
+      videoInputPath,
+      queuedVideoFile,
+      outputDir,
+      videoMode,
+      videoX,
+      videoY,
+      videoWidth,
+      videoHeight,
+      videoCropEdge,
+      videoCropPx,
+    } = get();
+    if (!videoInputPath && !queuedVideoFile) return;
+    set({ loading: true, progress: null, error: null, videoResult: null });
+    try {
+      let target = videoInputPath;
+      let uploading = false;
+      if (queuedVideoFile) {
+        uploading = true;
+        set({
+          progress: {
+            percent: 5,
+            message: "Uploading video...",
+            msg_key: "watermark.video.uploading",
+            msg_params: {},
+          },
+        });
+        const staged = await uploadMediaFile(queuedVideoFile);
+        target = staged.path;
+        set((s) => ({
+          remoteNameMap: { ...s.remoteNameMap, [staged.path]: queuedVideoFile.name },
+        }));
+      }
+      const input: VideoWatermarkInput = {
+        video_path: { localUrl: target, kind: "video" },
+        ...(videoMode ? { mode: videoMode } : {}),
+        ...(videoX !== null ? { x: videoX } : {}),
+        ...(videoY !== null ? { y: videoY } : {}),
+        ...(videoWidth !== null ? { width: videoWidth } : {}),
+        ...(videoHeight !== null ? { height: videoHeight } : {}),
+        ...(videoCropEdge ? { crop_edge: videoCropEdge } : {}),
+        ...(videoCropPx !== null ? { crop_px: videoCropPx } : {}),
+        ...(!uploading && outputDir.trim() ? { output_dir: outputDir.trim() } : {}),
+      };
+      const res = await rtClient.request(
+        Actions.WORKFLOW_RUN_NODE,
+        { type: VIDEO_WATERMARK_NODE, input },
+        { onProgress: (p) => !p.heartbeat && set({ progress: p }) }
+      );
+      set({ videoResult: res.output as VideoWatermarkNodeResult, loading: false, progress: null });
+    } catch (err) {
+      set({ error: toActionError(err), loading: false, progress: null });
+    }
+  },
+
   downloadOutput: async (path, preferredName) => {
     set({ downloadingPath: path, error: null });
     try {
@@ -361,6 +518,10 @@ export const useWatermarkStore = create<WatermarkState>((set, get) => ({
       inputPath: "",
       inputPaths: [],
       queuedFiles: [],
+      queuedObjectKeys: [],
+      videoInputPath: "",
+      queuedVideoFile: null,
+      videoResult: null,
       objectUrls: {},
       remoteNameMap: {},
       downloadingPath: null,

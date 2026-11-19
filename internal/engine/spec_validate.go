@@ -1,8 +1,11 @@
 package engine
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -101,4 +104,52 @@ func ValidateSpec(s Spec) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// ValidateNodeInput enforces declared Spec.Params integer bounds and select options before running a node.
+func ValidateNodeInput(spec Spec, input json.RawMessage) error {
+	trimmed := bytes.TrimSpace(input)
+	if len(trimmed) == 0 || trimmed[0] != '{' || len(spec.Params) == 0 {
+		return nil
+	}
+	var params map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &params); err != nil {
+		return nil
+	}
+	for _, p := range spec.Params {
+		rawVal, ok := params[p.Name]
+		if !ok {
+			continue
+		}
+		vTrim := bytes.TrimSpace(rawVal)
+		if len(vTrim) == 0 || bytes.Equal(vTrim, []byte("null")) {
+			continue
+		}
+		switch p.Kind {
+		case ParamInteger:
+			var num float64
+			if err := json.Unmarshal(vTrim, &num); err != nil || math.Trunc(num) != num {
+				return Invalid(fmt.Sprintf("Parameter %q must be an integer.", p.Name))
+			}
+			val := int(num)
+			if val < p.Min || (p.Max != 0 && val > p.Max) {
+				if p.Max != 0 {
+					return Invalid(fmt.Sprintf("Parameter %q must be between %d and %d.", p.Name, p.Min, p.Max))
+				}
+				return Invalid(fmt.Sprintf("Parameter %q must be >= %d.", p.Name, p.Min))
+			}
+		case ParamSelect:
+			var sel string
+			if err := json.Unmarshal(vTrim, &sel); err != nil {
+				return Invalid(fmt.Sprintf("Parameter %q must be a string option.", p.Name))
+			}
+			if strings.TrimSpace(sel) == "" || len(p.Options) == 0 {
+				continue
+			}
+			if !slices.ContainsFunc(p.Options, func(o string) bool { return strings.EqualFold(o, sel) }) {
+				return Invalid(fmt.Sprintf("Parameter %q value %q is not a supported option.", p.Name, sel))
+			}
+		}
+	}
+	return nil
 }

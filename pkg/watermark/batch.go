@@ -7,20 +7,15 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 
 	"app/internal/fsutil"
 	"app/internal/safego"
 )
 
-// ProcessBatch processes a slice of BatchItems concurrently using a thread-safe worker pool.
-// Output ordering is guaranteed to match the input slice index.
-func (e *Engine) ProcessBatch(ctx context.Context, items []BatchItem, workers int) []BatchResult {
-	return e.ProcessBatchProgress(ctx, items, workers, nil)
-}
-
-// ProcessBatchProgress is ProcessBatch that calls onDone(done, total) after each item (from any
-// worker goroutine; calls are serialised). Callers use it to report progress on long batches.
+// ProcessBatchProgress processes a slice of BatchItems concurrently and invokes onDone(done, total) after each item.
 func (e *Engine) ProcessBatchProgress(ctx context.Context, items []BatchItem, workers int, onDone func(done, total int)) []BatchResult {
 	if len(items) == 0 {
 		return nil
@@ -154,11 +149,6 @@ func (e *Engine) ProcessStream(ctx context.Context, in <-chan BatchItem, workers
 	return outCh
 }
 
-// RemoveBatch processes multiple images concurrently using default settings.
-func RemoveBatch(ctx context.Context, items []BatchItem, workers int) []BatchResult {
-	return Default().ProcessBatch(ctx, items, workers)
-}
-
 // WriteAtomicContext writes image data to path atomically using fsutil.WriteAtomic with context awareness.
 func WriteAtomicContext(ctx context.Context, path string, data []byte, perm os.FileMode) error {
 	if ctx != nil && ctx.Err() != nil {
@@ -192,9 +182,6 @@ func NewProvenanceStore() *ProvenanceStore {
 		records: make(map[string]TaskParams),
 	}
 }
-
-// DefaultProvenance is the package-level shared provenance store.
-var DefaultProvenance = NewProvenanceStore()
 
 // Record associates outPath with the TaskParams that produced it.
 func (s *ProvenanceStore) Record(outPath string, params TaskParams) {
@@ -248,7 +235,12 @@ func (p TaskParams) Matches(other TaskParams) bool {
 	if p.InputPath == "" || other.InputPath == "" {
 		return false
 	}
-	if filepath.Clean(p.InputPath) != filepath.Clean(other.InputPath) {
+	cleanA, cleanB := filepath.Clean(p.InputPath), filepath.Clean(other.InputPath)
+	if runtime.GOOS == "windows" {
+		if !strings.EqualFold(cleanA, cleanB) {
+			return false
+		}
+	} else if cleanA != cleanB {
 		return false
 	}
 	if p.Corner != other.Corner {
@@ -270,10 +262,6 @@ func (p TaskParams) Matches(other TaskParams) bool {
 // applying collision avoidance (_nowm, _nowm_1, etc.) or recognizing an idempotent re-run.
 // It returns (resolvedPath, isIdempotent).
 func ResolveOutputPath(destDir, baseName, suffix, ext string, params TaskParams, store *ProvenanceStore) (string, bool) {
-	if store == nil {
-		store = DefaultProvenance
-	}
-
 	// First candidate
 	candidate := filepath.Join(destDir, baseName+suffix+ext)
 	fi, err := os.Stat(candidate)
@@ -283,7 +271,7 @@ func ResolveOutputPath(destDir, baseName, suffix, ext string, params TaskParams,
 	}
 
 	// Candidate exists: check if it's an idempotent re-run of the exact same task
-	if fi.Size() > 0 && store.IsIdempotent(candidate, params) {
+	if fi.Size() > 0 && store != nil && store.IsIdempotent(candidate, params) {
 		return candidate, true
 	}
 
@@ -300,25 +288,46 @@ func ResolveOutputPath(destDir, baseName, suffix, ext string, params TaskParams,
 		if nErr != nil {
 			return nextCandidate, false
 		}
-		if nfi.Size() > 0 && store.IsIdempotent(nextCandidate, params) {
+		if nfi.Size() > 0 && store != nil && store.IsIdempotent(nextCandidate, params) {
 			return nextCandidate, true
 		}
 	}
 }
 
-// CopyFileAtomicContext copies source file data to destPath atomically via WriteAtomicContext.
+// CopyFileAtomicContext streams source file data to destPath atomically via fsutil.WriteAtomic with context awareness.
 func CopyFileAtomicContext(ctx context.Context, srcPath, destPath string, perm os.FileMode) error {
 	if ctx != nil && ctx.Err() != nil {
 		return ctx.Err()
 	}
-	data, err := os.ReadFile(srcPath)
+	src, err := os.Open(srcPath)
 	if err != nil {
-		return fmt.Errorf("read source file: %w", err)
+		return fmt.Errorf("open source file: %w", err)
 	}
-	if ctx != nil && ctx.Err() != nil {
-		return ctx.Err()
-	}
-	if err := WriteAtomicContext(ctx, destPath, data, perm); err != nil {
+	defer src.Close()
+
+	if err := fsutil.WriteAtomic(destPath, perm, func(w io.Writer) error {
+		if ctx != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		buf := make([]byte, 32*1024)
+		for {
+			if ctx != nil && ctx.Err() != nil {
+				return ctx.Err()
+			}
+			n, rErr := src.Read(buf)
+			if n > 0 {
+				if _, wErr := w.Write(buf[:n]); wErr != nil {
+					return wErr
+				}
+			}
+			if rErr == io.EOF {
+				return nil
+			}
+			if rErr != nil {
+				return rErr
+			}
+		}
+	}); err != nil {
 		return fmt.Errorf("write destination file: %w", err)
 	}
 	return nil

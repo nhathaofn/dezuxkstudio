@@ -339,6 +339,7 @@ func (s *Service) buildInfoLocked(spec domainagent.ProviderSpec, resolved string
 		}
 	}
 	s.fillModelInfo(&info)
+	info.CompatibleProviders = s.CompatibleProviders(spec.ID)
 	info.Revision = s.statusRevision.Add(1)
 	return info
 }

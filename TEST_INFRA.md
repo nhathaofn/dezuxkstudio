@@ -18,7 +18,7 @@ DezuxkStudio employs a unified, multi-tiered, opaque-box automated test infrastr
   - Verification of `internal/engine` DAG validation, cycle detection, duplicate node IDs, and English error formatting.
 
 ### 1.2 Frontend Test Infrastructure (TypeScript / Vitest)
-- **Framework**: Vitest v5 with JSDOM / Node environment and `@testing-library` / Zustand stores.
+- **Framework**: Vitest v5 defaulting to `node` (configured in `frontend/vite.config.ts`), with per-file `// @vitest-environment jsdom` + `@testing-library/react` DOM test suites (`*.dom.test.tsx`) and Zustand store harnesses.
 - **Audit & Store Harness** (`frontend/src/lib/i18n/`, `frontend/src/features/binaries/`):
   - `localization_audit.test.ts`: Automated dictionary parity auditing, placeholder symmetry analysis, Vietnamese diacritic integrity check on English catalogs, and `describeError` integration.
   - `useBinariesStore.test.ts`: Zustand state store verification for binary actions (`fetchBinaries`, `probe`, `setCustomPath`, `download`), signal abortion, and progress callbacks.
