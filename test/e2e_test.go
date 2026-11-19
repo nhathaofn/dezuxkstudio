@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -121,7 +122,7 @@ type frame struct {
 func (c *wsClient) call(action string, payload any) (frame, []frame) {
 	c.t.Helper()
 	c.seq++
-	id := action + "#" + string(rune('a'+c.seq))
+	id := fmt.Sprintf("%s#%d", action, c.seq)
 	raw, _ := json.Marshal(payload)
 	msg, _ := json.Marshal(contracts.ClientMessage{Type: contracts.MessageAction, ID: id, Action: action, Payload: raw})
 	if err := c.conn.Write(context.Background(), websocket.MessageText, msg); err != nil {
@@ -226,6 +227,7 @@ func createE2EWorkspaceRoot(t *testing.T, name string) string {
 	}
 	t.Cleanup(func() {
 		_ = os.RemoveAll(dir)
+		_ = os.Remove(repoTemp)
 	})
 	return dir
 }

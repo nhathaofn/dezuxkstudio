@@ -142,7 +142,10 @@ func TestStudioModule_RegisterDispatchAndFileGuard(t *testing.T) {
 
 	guardCalled = false
 	hRun, _ := reg.Lookup(contracts.ActionStudioEpisodeRunStage)
-	_, err = hRun(context.Background(), &realtime.Request{}, []byte(`{"episode_id":"`+epID+`","stage":"script_normalize"}`))
+	if _, err = hRun(context.Background(), &realtime.Request{}, []byte(`{"episode_id":"`+epID+`","stage":"script_normalize"}`)); !apperr.IsCode(err, apperr.CodeValidation) {
+		t.Fatalf("expected ERR_VALIDATION approval gate on unapproved script_normalize, got %v", err)
+	}
+	_, err = hRun(context.Background(), &realtime.Request{}, []byte(`{"episode_id":"`+epID+`","stage":"script_normalize","approved":true}`))
 	if !guardCalled {
 		t.Fatal("expected FileGuard to be invoked during studio:episode_run_stage")
 	}

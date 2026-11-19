@@ -146,7 +146,7 @@ func (s *Service) Download(ctx context.Context, id domainbinaries.BinaryID) (dom
 		return domainbinaries.BinaryInfo{}, ctx.Err()
 	}
 
-	spec, ok := domainbinaries.Registry[id]
+	spec, ok := s.spec(id)
 	if !ok {
 		return domainbinaries.BinaryInfo{}, apperr.Validation(fmt.Sprintf("unknown binary %q", id))
 	}

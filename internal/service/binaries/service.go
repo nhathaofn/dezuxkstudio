@@ -41,6 +41,7 @@ type Service struct {
 	cfg          *config.Config
 	retryMax     *int
 	retryDelay   *time.Duration
+	manifest     map[domainbinaries.BinaryID]domainbinaries.BinarySpec
 }
 
 // DefaultProbeTimeout is the config default (binaries.probe_timeout), for standalone use.
@@ -97,6 +98,31 @@ func WithRetry(maxRetries int, delay time.Duration) Option {
 		s.retryMax = &maxRetries
 		s.retryDelay = &delay
 	}
+}
+
+// WithManifest injects an isolated binary specification map for this service instance,
+// avoiding global domainbinaries.Registry mutations in concurrent tests.
+func WithManifest(m map[domainbinaries.BinaryID]domainbinaries.BinarySpec) Option {
+	return func(s *Service) {
+		if len(m) == 0 {
+			return
+		}
+		cp := make(map[domainbinaries.BinaryID]domainbinaries.BinarySpec, len(m))
+		for k, v := range m {
+			cp[k] = v
+		}
+		s.manifest = cp
+	}
+}
+
+func (s *Service) spec(id domainbinaries.BinaryID) (domainbinaries.BinarySpec, bool) {
+	if s.manifest != nil {
+		if sp, ok := s.manifest[id]; ok {
+			return sp, true
+		}
+	}
+	sp, ok := domainbinaries.Registry[id]
+	return sp, ok
 }
 
 func (s *Service) emitProgress(p contracts.BinaryProgress) {
@@ -172,7 +198,7 @@ func (s *Service) List(ctx context.Context) ([]domainbinaries.BinaryInfo, error)
 			info, err := s.Probe(ctx, binID)
 			if err != nil {
 				s.logger.WarnContext(ctx, "failed to probe binary", "id", binID, "error", err)
-				spec := domainbinaries.Registry[binID]
+				spec, _ := s.spec(binID)
 				_, canDownload := spec.CurrentDownloadSpec()
 				info = domainbinaries.BinaryInfo{
 					ID:          binID,
@@ -209,7 +235,7 @@ func (s *Service) SetCustomPath(ctx context.Context, id domainbinaries.BinaryID,
 
 // Resolve identifies the executable location and source for a binary.
 func (s *Service) Resolve(ctx context.Context, id domainbinaries.BinaryID) (resolvedPath string, source domainbinaries.Source, customPath string, err error) {
-	spec, ok := domainbinaries.Registry[id]
+	spec, ok := s.spec(id)
 	if !ok {
 		return "", domainbinaries.SourceNone, "", apperr.Validation(fmt.Sprintf("unknown binary %q", id))
 	}
@@ -244,7 +270,7 @@ func (s *Service) Resolve(ctx context.Context, id domainbinaries.BinaryID) (reso
 
 // Probe executes the binary with probe arguments to detect version and verify execution.
 func (s *Service) Probe(ctx context.Context, id domainbinaries.BinaryID) (domainbinaries.BinaryInfo, error) {
-	spec, ok := domainbinaries.Registry[id]
+	spec, ok := s.spec(id)
 	if !ok {
 		return domainbinaries.BinaryInfo{}, apperr.Validation(fmt.Sprintf("unknown binary %q", id))
 	}
