@@ -707,19 +707,24 @@ func ffmpegXfadeName(t domainstudio.TransitionType) string {
 	}
 }
 
+// escapeFFmpegFilterPath applies FFmpeg's two-level filtergraph escaping:
+// first for the filter option parser (\, :, '), then for the filtergraph parser (\, ', [, ], ,, ;, space).
 func escapeFFmpegFilterPath(p string) string {
 	slashed := filepath.ToSlash(p)
-	replacer := strings.NewReplacer(
+	optEscaped := strings.NewReplacer(
 		`\`, `\\`,
 		`:`, `\:`,
+		`'`, `\'`,
+	).Replace(slashed)
+	return strings.NewReplacer(
+		`\`, `\\`,
 		`'`, `\'`,
 		`[`, `\[`,
 		`]`, `\]`,
 		`,`, `\,`,
 		`;`, `\;`,
 		` `, `\ `,
-	)
-	return replacer.Replace(slashed)
+	).Replace(optEscaped)
 }
 
 func formatSRT(cues []domainstudio.SubtitleCue) string {

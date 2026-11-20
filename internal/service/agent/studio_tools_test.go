@@ -721,4 +721,39 @@ func TestStudioSecurityGatesPostRestartApprovalsAndSubagentManifests(t *testing.
 	if _, statErr := os.Stat(projRoot); !os.IsNotExist(statErr) {
 		t.Fatalf("expected deleted project directory %s to be removed, statErr=%v", projRoot, statErr)
 	}
+
+	// Standalone/headless MCP invocation with empty conversationID must auto-create a backing
+	// conversation row instead of failing SQLite agent_approvals FK constraint (787).
+	svcNoConv := newAgentSvc()
+	defer func() { _ = svcNoConv.Close() }()
+	svcNoConv.mu.Lock()
+	svcNoConv.conversationID = ""
+	svcNoConv.mu.Unlock()
+	sT2, cT2 := mcp.NewInMemoryTransports()
+	if _, err := svcNoConv.buildMCPServer().Connect(ctx, sT2, nil); err != nil {
+		t.Fatal(err)
+	}
+	cs2, err := mcp.NewClient(&mcp.Implementation{Name: "headless-test"}, nil).Connect(ctx, cT2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cs2.Close() }()
+	createdHeadless := callMCPJSON(t, cs2, "studio_project_create", map[string]any{
+		"title": "Headless Approval Film",
+	})
+	headlessProjID := createdHeadless["project"].(map[string]any)["id"].(string)
+	headlessOut := callMCPJSON(t, cs2, "studio_project_delete", map[string]any{
+		"id":           headlessProjID,
+		"delete_files": true,
+	})
+	if headlessOut["status"] != "needs_approval" {
+		t.Fatalf("expected standalone MCP call to return needs_approval without FK error, got %+v", headlessOut)
+	}
+	appID, _ := headlessOut["approval_id"].(string)
+	if appID == "" {
+		t.Fatalf("expected non-empty approval_id from standalone MCP call, got %+v", headlessOut)
+	}
+	if err := svcNoConv.ResolveApproval(ctx, appID, true); err != nil {
+		t.Fatalf("ResolveApproval on headless MCP approval failed: %v", err)
+	}
 }

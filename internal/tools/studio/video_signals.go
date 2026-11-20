@@ -23,7 +23,7 @@ import (
 
 const (
 	// signalsSchemaVersion invalidates stale cached signal sidecar JSONs when signal extraction changes.
-	signalsSchemaVersion = 1
+	signalsSchemaVersion = 2
 )
 
 var (
@@ -37,6 +37,7 @@ var (
 
 type cachedVideoSignalsFile struct {
 	SchemaVersion int                    `json:"schema_version"`
+	Filter        string                 `json:"filter,omitempty"`
 	FileSize      int64                  `json:"file_size"`
 	MTimeUnixNano int64                  `json:"mtime_unix_nano"`
 	Signals       contracts.VideoSignals `json:"signals"`
@@ -44,12 +45,20 @@ type cachedVideoSignalsFile struct {
 
 func analyzeVideoSignals(ctx context.Context, opts Options, vidPath, cacheDir string) (contracts.VideoSignals, error) {
 	cfg := withStudioDefaults(opts.StudioConfig)
+	vf := fmt.Sprintf(
+		"blackdetect=d=%.3f:pix_th=%.3f,freezedetect=n=%s:d=%.3f,select='gt(scene,%.3f)',metadata=print:file=-",
+		cfg.SignalBlackMinSec,
+		cfg.SignalBlackPixelThresh,
+		cfg.SignalFreezeNoiseDB,
+		cfg.SignalFreezeMinSec,
+		cfg.SignalSceneCutThresh,
+	)
 	st, statErr := os.Stat(vidPath)
 	var cachePath string
 	if cacheDir != "" && statErr == nil {
 		stem := strings.TrimSuffix(filepath.Base(vidPath), filepath.Ext(vidPath))
 		cachePath = filepath.Join(cacheDir, stem+"_signals.json")
-		if cached, ok := readCachedSignals(ctx, cachePath, st.Size(), st.ModTime().UnixNano()); ok {
+		if cached, ok := readCachedSignals(ctx, cachePath, vf, st.Size(), st.ModTime().UnixNano()); ok {
 			cached.Cached = true
 			return cached, nil
 		}
@@ -75,14 +84,6 @@ func analyzeVideoSignals(ctx context.Context, opts Options, vidPath, cacheDir st
 		return contracts.VideoSignals{}, err
 	}
 
-	vf := fmt.Sprintf(
-		"blackdetect=d=%.3f:pix_th=%.3f,freezedetect=n=%s:d=%.3f,select='gt(scene,%.3f)',metadata=print:file=-",
-		cfg.SignalBlackMinSec,
-		cfg.SignalBlackPixelThresh,
-		cfg.SignalFreezeNoiseDB,
-		cfg.SignalFreezeMinSec,
-		cfg.SignalSceneCutThresh,
-	)
 	args := []string{
 		"-hide_banner",
 		"-nostats",
@@ -112,13 +113,13 @@ func analyzeVideoSignals(ctx context.Context, opts Options, vidPath, cacheDir st
 
 	if cachePath != "" && statErr == nil {
 		if cerr := checkStudioFile(ctx, cachePath, true); cerr == nil {
-			_ = writeCachedSignals(cachePath, st.Size(), st.ModTime().UnixNano(), signals)
+			_ = writeCachedSignals(cachePath, vf, st.Size(), st.ModTime().UnixNano(), signals)
 		}
 	}
 	return signals, nil
 }
 
-func readCachedSignals(ctx context.Context, cachePath string, size, mtimeNano int64) (contracts.VideoSignals, bool) {
+func readCachedSignals(ctx context.Context, cachePath, filter string, size, mtimeNano int64) (contracts.VideoSignals, bool) {
 	if err := checkStudioFile(ctx, cachePath, false); err != nil {
 		return contracts.VideoSignals{}, false
 	}
@@ -130,7 +131,7 @@ func readCachedSignals(ctx context.Context, cachePath string, size, mtimeNano in
 	if json.Unmarshal(b, &parsed) != nil {
 		return contracts.VideoSignals{}, false
 	}
-	if parsed.SchemaVersion != signalsSchemaVersion || parsed.FileSize != size || parsed.MTimeUnixNano != mtimeNano {
+	if parsed.SchemaVersion != signalsSchemaVersion || parsed.Filter != filter || parsed.FileSize != size || parsed.MTimeUnixNano != mtimeNano {
 		return contracts.VideoSignals{}, false
 	}
 	if parsed.Signals.Blacks == nil {
@@ -145,13 +146,14 @@ func readCachedSignals(ctx context.Context, cachePath string, size, mtimeNano in
 	return parsed.Signals, true
 }
 
-func writeCachedSignals(cachePath string, size, mtimeNano int64, sig contracts.VideoSignals) error {
+func writeCachedSignals(cachePath, filter string, size, mtimeNano int64, sig contracts.VideoSignals) error {
 	if err := os.MkdirAll(filepath.Dir(cachePath), 0o750); err != nil {
 		return err
 	}
 	sig.Cached = false
 	payload := cachedVideoSignalsFile{
 		SchemaVersion: signalsSchemaVersion,
+		Filter:        filter,
 		FileSize:      size,
 		MTimeUnixNano: mtimeNano,
 		Signals:       sig,

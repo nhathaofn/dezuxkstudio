@@ -984,6 +984,27 @@ func (s *Service) queueApprovalRecord(ctx context.Context, tool, nodeType string
 	depth := s.continuationDepth
 	s.mu.Unlock()
 
+	now := time.Now()
+	if strings.TrimSpace(convID) == "" && s.repo != nil {
+		newConvID := uuid.NewString()
+		conv := domainagent.Conversation{
+			ID:         newConvID,
+			ProviderID: pid,
+			Title:      title,
+			CreatedAt:  now.UnixMilli(),
+			UpdatedAt:  now.UnixMilli(),
+		}
+		if err := s.repo.SaveConversation(ctx, conv); err != nil {
+			return domainagent.ApprovalRequest{}, fmt.Errorf("agent: failed to ensure conversation for approval: %w", err)
+		}
+		s.mu.Lock()
+		if strings.TrimSpace(s.conversationID) == "" {
+			s.conversationID = newConvID
+		}
+		convID = s.conversationID
+		s.mu.Unlock()
+	}
+
 	persistedInput := s.redactApprovalInput(ctx, tool, nodeType, rawInput)
 	canonJSON, err := CanonicalJSON(persistedInput)
 	if err != nil {
@@ -991,7 +1012,6 @@ func (s *Service) queueApprovalRecord(ctx context.Context, tool, nodeType string
 	}
 	inputHash := CalculateInputHash(canonJSON)
 	appID := uuid.NewString()
-	now := time.Now()
 
 	req := domainagent.ApprovalRequest{
 		ID:         appID,

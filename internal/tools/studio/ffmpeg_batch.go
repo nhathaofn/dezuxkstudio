@@ -189,10 +189,7 @@ func runRenderTimelinePass(
 		runOpts := runner.FFmpegPipeProgressOptions(ctx, int64(expectedDurSec*microsecondsPerSecond), "studio.progress.render_timeline", "Rendering timeline")
 		res, err := runner.RunWithOptions(runCtx, ffmpegExe, directArgs, runOpts)
 		if err != nil || res == nil || res.ExitCode != 0 {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return ioUnavailableErr("FFmpeg timeline render failed", err)
+			return ffmpegFailureErr(ctx, "FFmpeg timeline render failed", res, err)
 		}
 		return nil
 	}
@@ -297,10 +294,7 @@ func runRenderTimelinePass(
 			res, err := runner.RunWithOptions(runCtx, ffmpegExe, segArgs, runOpts)
 			cancelRun()
 			if err != nil || res == nil || res.ExitCode != 0 {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				return ioUnavailableErr("FFmpeg timeline batched video segment failed", err)
+				return ffmpegFailureErr(ctx, "FFmpeg timeline batched video segment failed", res, err)
 			}
 			start = end
 		}
@@ -366,10 +360,7 @@ func runRenderTimelinePass(
 		res, err := runner.RunWithOptions(runCtx, ffmpegExe, aArgs, runOpts)
 		cancelRun()
 		if err != nil || res == nil || res.ExitCode != 0 {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return ioUnavailableErr("FFmpeg timeline batched audio mix failed", err)
+			return ffmpegFailureErr(ctx, "FFmpeg timeline batched audio mix failed", res, err)
 		}
 		start = end
 	}
@@ -436,10 +427,7 @@ func runRenderTimelinePass(
 	runOpts := runner.FFmpegPipeProgressOptions(ctx, int64(expectedDurSec*microsecondsPerSecond), "studio.progress.render_timeline", "Finalizing timeline render")
 	res, err := runner.RunWithOptions(runCtx, ffmpegExe, finalArgs, runOpts)
 	if err != nil || res == nil || res.ExitCode != 0 {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return ioUnavailableErr("FFmpeg batched timeline finalize failed", err)
+		return ffmpegFailureErr(ctx, "FFmpeg batched timeline finalize failed", res, err)
 	}
 	return nil
 }
