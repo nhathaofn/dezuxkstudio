@@ -25,7 +25,11 @@ func (s *Service) runQueuedWorkflowNode(ctx, runCtx context.Context, j domainstu
 	}
 	rawOut, err := s.wf.RunNode(runCtx, nodeType, inBytes)
 	if err != nil {
-		if s.isJobCanceledOrPaused(ctx, j.ID) || ctx.Err() != nil {
+		if ctx.Err() != nil {
+			s.releaseInterruptedJobClaim(ctx, j)
+			return false
+		}
+		if s.isJobCanceledOrPaused(ctx, j.ID) {
 			return false
 		}
 		s.handleSubmitError(ctx, j, err)
@@ -68,7 +72,11 @@ func (s *Service) executeQueuedJob(ctx context.Context, j domainstudio.Job) {
 		}
 		tok, err := s.videoMedia.SubmitVideoJob(runCtx, req)
 		if err != nil {
-			if s.isJobCanceledOrPaused(ctx, j.ID) || ctx.Err() != nil {
+			if ctx.Err() != nil {
+				s.releaseInterruptedJobClaim(ctx, j)
+				return
+			}
+			if s.isJobCanceledOrPaused(ctx, j.ID) {
 				return
 			}
 			s.handleSubmitError(ctx, j, err)
@@ -441,6 +449,32 @@ func (s *Service) isJobCanceledOrPaused(ctx context.Context, jobID string) bool 
 		return false
 	}
 	return cur.Status == domainstudio.JobCanceled || cur.Status == domainstudio.JobPaused
+}
+
+// releaseInterruptedJobClaim restores a JobSubmitted claim to JobQueued on graceful worker
+// shutdown before provider submission completed, so restarts do not burn retry attempts.
+func (s *Service) releaseInterruptedJobClaim(ctx context.Context, j domainstudio.Job) {
+	if s.repo == nil || strings.TrimSpace(j.ID) == "" || ctx.Err() == nil {
+		return
+	}
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	cur, err := s.repo.GetJob(releaseCtx, j.ID)
+	if err != nil {
+		return
+	}
+	if cur.Status != domainstudio.JobSubmitted || strings.TrimSpace(cur.ProviderJobID) != "" {
+		return
+	}
+	cur.Status = domainstudio.JobQueued
+	if cur.Attempts > 0 {
+		cur.Attempts--
+	}
+	cur.NextPollAt = time.Now().UnixMilli()
+	cur.ErrorText = "Worker stopped cleanly before job submission completed; re-queued"
+	if _, uerr := s.repo.UpdateJob(releaseCtx, cur); uerr != nil {
+		s.log.WarnContext(releaseCtx, "studio: failed to release interrupted job claim", "job_id", j.ID, "error", uerr)
+	}
 }
 
 func resolveShotVoiceConfig(sh domainstudio.Shot, overrideModel, defaultModel, overrideVoice string, voiceBySpeaker map[string]domainstudio.AssetEntry) (modelRef, voiceID string) {

@@ -879,7 +879,7 @@ func TestStudioToolsHardeningFixes(t *testing.T) {
 	if !strings.Contains(argsJoined, "setsar=1,zoompan=") {
 		t.Fatalf("expected zoompan directly after setsar=1, got:\n%s", argsJoined)
 	}
-	if !strings.Contains(argsJoined, `ass=filename=C\:/sub\ dir/my\'sub\[1\].ass`) {
+	if !strings.Contains(argsJoined, `ass=filename=C\\:/sub\ dir/my\\\'sub\[1\].ass`) {
 		t.Fatalf("unexpected ass=filename escaping, got:\n%s", argsJoined)
 	}
 

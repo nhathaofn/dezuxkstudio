@@ -258,6 +258,7 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 
 		var cursorMs int64
 		var prevClipDurMs int64
+		var prevSpeechEndMs int64
 
 		totalReady := len(ready)
 		for idx, sh := range ready {
@@ -342,32 +343,39 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 				KenBurnsPreset:  domainstudio.KenBurnsNone,
 			})
 
+			videoEndMs := startMs + vidDurMs
+			speechStartMs := startMs
+			if overrunPolicy != domainstudio.OverrunWarn && prevSpeechEndMs > speechStartMs {
+				// Keep sequential TTS clips non-overlapping across visual crossfades.
+				speechStartMs = prevSpeechEndMs
+			}
 			speechSpanMs := vidDurMs
-			shotCursorEndMs := startMs + vidDurMs
+			shotCursorEndMs := videoEndMs
 			nextPrevClipDurMs := vidDurMs
 			if audPath != "" && audDurMs > 0 {
+				availVidMs := max(int64(1), videoEndMs-speechStartMs)
 				speechSpeed := 1.0
 				speechSpanMs = audDurMs
-				if audDurMs > vidDurMs+tolMs {
+				if audDurMs > availVidMs+tolMs {
 					switch overrunPolicy {
 					case domainstudio.OverrunSpeedFit:
-						neededRatio := float64(audDurMs) / float64(vidDurMs)
+						neededRatio := float64(audDurMs) / float64(availVidMs)
 						speechSpeed = math.Round(math.Min(maxSpeedFit, neededRatio)*1000) / 1000
 						speechSpanMs = int64(math.Round(float64(audDurMs) / speechSpeed))
-						if speechSpanMs <= vidDurMs+tolMs {
+						if speechSpanMs <= availVidMs+tolMs {
 							resolvedIssues = append(resolvedIssues, contracts.TimelineAssembleIssue{
 								Code:       "narration_overrun",
 								ShotID:     sh.ID,
 								ClipID:     fmt.Sprintf("aud-%d", idx+1),
 								TrackID:    speechTrack.ID,
-								OverflowMs: audDurMs - vidDurMs,
+								OverflowMs: audDurMs - availVidMs,
 								Policy:     string(overrunPolicy),
 								Resolved:   true,
-								Message:    fmt.Sprintf("Speed-fitted speech clip to %.2fx to fit %dms video", speechSpeed, vidDurMs),
+								Message:    fmt.Sprintf("Speed-fitted speech clip to %.2fx to fit %dms video window", speechSpeed, availVidMs),
 							})
 						}
 					case domainstudio.OverrunFreezeLastFrame:
-						holdMs := audDurMs - vidDurMs
+						holdMs := (speechStartMs + audDurMs) - videoEndMs
 						holdExtracted := false
 						if ffmpegExe != "" && !mediautil.IsSupportedImageExt(vidPath) {
 							if holdPath, herr := extractHoldLastFrame(ctx, opts, ffmpegExe, vidPath, in.ProjectDir, clipID); herr == nil && holdPath != "" {
@@ -376,7 +384,7 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 									ShotID:          sh.ID,
 									Label:           label + " Hold",
 									FilePath:        holdPath,
-									TimelineStartMs: startMs + vidDurMs,
+									TimelineStartMs: videoEndMs,
 									SourceInMs:      0,
 									SourceOutMs:     holdMs,
 									Speed:           1.0,
@@ -390,14 +398,14 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 							}
 						}
 						if !holdExtracted && mediautil.IsSupportedImageExt(vidPath) {
-							videoTrack.Clips[len(videoTrack.Clips)-1].SourceOutMs = audDurMs
-							nextPrevClipDurMs = audDurMs
+							videoTrack.Clips[len(videoTrack.Clips)-1].SourceOutMs = (speechStartMs - startMs) + audDurMs
+							nextPrevClipDurMs = videoTrack.Clips[len(videoTrack.Clips)-1].SourceOutMs
 							holdExtracted = true
 						}
 						if !holdExtracted {
 							assemblyWarnings = append(assemblyWarnings, fmt.Sprintf("freeze_last_frame hold extension flagged for shot %s (%dms) without FFmpeg frame extraction", sh.ID, holdMs))
 						}
-						shotCursorEndMs = startMs + audDurMs
+						shotCursorEndMs = speechStartMs + audDurMs
 						resolvedIssues = append(resolvedIssues, contracts.TimelineAssembleIssue{
 							Code:       "narration_overrun",
 							ShotID:     sh.ID,
@@ -416,7 +424,7 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 					AssetID:         sh.AudioAssetID,
 					Label:           label + " Audio",
 					FilePath:        audPath,
-					TimelineStartMs: startMs,
+					TimelineStartMs: speechStartMs,
 					SourceInMs:      0,
 					SourceOutMs:     audDurMs,
 					Speed:           speechSpeed,
@@ -424,9 +432,16 @@ func NewTimelineAutoAssembleNode(opts Options) engine.Node {
 					TransitionIn:    domainstudio.TransitionNone,
 					TransitionMs:    0,
 				})
+				if speechEndMs := speechStartMs + speechSpanMs; speechEndMs > prevSpeechEndMs {
+					prevSpeechEndMs = speechEndMs
+				}
 			}
 
-			cues := buildSubtitleCuesForShot(sh, startMs, max(shotCursorEndMs-startMs, speechSpanMs), idx+1)
+			subStartMs := startMs
+			if audPath != "" && audDurMs > 0 {
+				subStartMs = speechStartMs
+			}
+			cues := buildSubtitleCuesForShot(sh, subStartMs, max(shotCursorEndMs-subStartMs, speechSpanMs), idx+1)
 			tl.Subtitles = append(tl.Subtitles, cues...)
 
 			cursorMs = shotCursorEndMs

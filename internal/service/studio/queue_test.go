@@ -944,3 +944,72 @@ func TestStudioQueuePollLimitsRetryApprovalAndAllJobKinds(t *testing.T) {
 		}
 	}
 }
+
+type cancelOnRunWorkflow struct {
+	cancelFn context.CancelFunc
+}
+
+func (w *cancelOnRunWorkflow) RunNode(ctx context.Context, _ string, _ json.RawMessage) (any, error) {
+	w.cancelFn()
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestQueueWorkerGracefulShutdownPreservesRetryBudget(t *testing.T) {
+	tmp := t.TempDir()
+	bg := context.Background()
+	db, err := sqlite.Open(bg, sqlite.Options{
+		Path:          filepath.Join(tmp, "app.db"),
+		BackupDir:     filepath.Join(tmp, "backups"),
+		BackupsToKeep: 1,
+		BusyTimeout:   time.Second,
+		Logger:        slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	repo := sqlite.NewStudioRepository(db)
+	workerCtx, workerCancel := context.WithCancel(bg)
+	wf := &cancelOnRunWorkflow{cancelFn: workerCancel}
+	svc := studiosvc.New(studiosvc.Options{
+		Repo:         repo,
+		Workflow:     wf,
+		StudioConfig: config.Default(config.ModeDesktop).Studio,
+		ProjectsDir:  filepath.Join(tmp, "projects"),
+		Logger:       slog.New(slog.DiscardHandler),
+	})
+
+	created, err := svc.CreateProject(bg, contracts.StudioProjectCreatePayload{Title: "Shutdown Film", AutoApproveBatches: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	epID := created.ActiveEpisode.Episode.ID
+	job, err := repo.CreateJob(bg, domainstudio.Job{
+		ProjectID:      created.Project.ID,
+		EpisodeID:      epID,
+		JobKind:        domainstudio.JobTTS,
+		IdempotencyKey: "shutdown-tts-1",
+		Status:         domainstudio.JobQueued,
+		MaxAttempts:    3,
+		RequestJSON:    `{"input":{"text":"hello"}}`,
+		NextPollAt:     time.Now().UnixMilli() - 1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_ = svc.StepQueueOnce(workerCtx)
+
+	got, err := repo.GetJob(bg, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domainstudio.JobQueued {
+		t.Fatalf("expected graceful shutdown to restore JobQueued, got %s", got.Status)
+	}
+	if got.Attempts != 0 {
+		t.Fatalf("expected graceful shutdown to preserve retry budget (Attempts=0), got %d", got.Attempts)
+	}
+}

@@ -95,6 +95,25 @@ func (s *Service) GenerateText(ctx context.Context, req domainmedia.TextRequest)
 	if len(norm.JSONSchema) > 0 {
 		cleaned := sanitizeJSONPayload(text)
 		if !json.Valid([]byte(cleaned)) {
+			head := cleaned
+			if len(head) > 240 {
+				head = head[:240]
+			}
+			tail := cleaned
+			if len(tail) > 240 {
+				tail = tail[len(tail)-240:]
+			}
+			if s.log != nil {
+				s.log.WarnContext(ctx, "mediagen: LLM returned invalid JSON output",
+					"provider", target.providerName,
+					"model", target.modelID,
+					"protocol", target.protocol,
+					"output_tokens", out.outputTokens,
+					"len", len(cleaned),
+					"head", head,
+					"tail", tail,
+				)
+			}
 			return domainmedia.TextResult{}, apperr.Unavailable("LLM returned invalid JSON output")
 		}
 		if err := verifyRequiredSchemaKeys([]byte(cleaned), schemaObj); err != nil {

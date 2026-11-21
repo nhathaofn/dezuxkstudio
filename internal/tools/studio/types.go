@@ -20,6 +20,7 @@ import (
 	"app/internal/engine"
 	"app/internal/fsutil"
 	"app/internal/paths"
+	"app/internal/runner"
 	"app/internal/service/media"
 	"app/internal/tools/mediautil"
 )
@@ -226,6 +227,24 @@ func ioUnavailableErr(msg string, cause error) error {
 		return cause
 	}
 	return apperr.Wrap(apperr.CodeUnavailable, msg, cause).WithMsg("errors.studio.io_failed", nil)
+}
+
+func ffmpegFailureErr(ctx context.Context, msg string, res *runner.RunResult, cause error) error {
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	detail := msg
+	if res != nil {
+		trimmed := strings.TrimSpace(res.Stderr)
+		if trimmed != "" {
+			const maxStderrTail = 600
+			if len(trimmed) > maxStderrTail {
+				trimmed = "…" + trimmed[len(trimmed)-maxStderrTail:]
+			}
+			detail = fmt.Sprintf("%s (%s)", msg, strings.ReplaceAll(trimmed, "\r\n", " "))
+		}
+	}
+	return ioUnavailableErr(detail, cause)
 }
 
 func resolveProjectDir(ctx context.Context, opts Options, rawDir string) (string, error) {

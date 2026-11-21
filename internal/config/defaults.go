@@ -173,7 +173,7 @@ func Default(mode Mode) *Config {
 			ContactSheetMaxEdgePx:        2000,
 			ContactSheetJPEGQuality:      85,
 			SignalBlackMinSec:            0.1,
-			SignalBlackPixelThresh:       0.98,
+			SignalBlackPixelThresh:       0.10,
 			SignalFreezeMinSec:           0.5,
 			SignalFreezeNoiseDB:          "-60dB",
 			SignalSceneCutThresh:         0.4,

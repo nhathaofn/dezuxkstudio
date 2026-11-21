@@ -90,16 +90,21 @@ func TestComposeContactSheetJPEGAndCaching(t *testing.T) {
 	}
 	st, _ := os.Stat(vidPath)
 	cachePath := filepath.Join(tmp, "shot_01_signals.json")
-	if err := writeCachedSignals(cachePath, st.Size(), st.ModTime().UnixNano(), contracts.VideoSignals{
+	filterA := "blackdetect=d=0.100:pix_th=0.100"
+	filterB := "blackdetect=d=0.100:pix_th=0.980"
+	if err := writeCachedSignals(cachePath, filterA, st.Size(), st.ModTime().UnixNano(), contracts.VideoSignals{
 		DurationSec: 4.0,
 		Cuts:        []contracts.VideoSignalCut{{TimeSec: 2.0}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got, ok := readCachedSignals(context.Background(), cachePath, st.Size(), st.ModTime().UnixNano()); !ok || len(got.Cuts) != 1 {
+	if got, ok := readCachedSignals(context.Background(), cachePath, filterA, st.Size(), st.ModTime().UnixNano()); !ok || len(got.Cuts) != 1 {
 		t.Fatalf("expected cache hit, got ok=%v sig=%+v", ok, got)
 	}
-	if _, ok := readCachedSignals(context.Background(), cachePath, st.Size()+10, st.ModTime().UnixNano()); ok {
+	if _, ok := readCachedSignals(context.Background(), cachePath, filterB, st.Size(), st.ModTime().UnixNano()); ok {
+		t.Fatal("expected cache miss when filter changes")
+	}
+	if _, ok := readCachedSignals(context.Background(), cachePath, filterA, st.Size()+10, st.ModTime().UnixNano()); ok {
 		t.Fatal("expected cache miss when file size changes")
 	}
 }
@@ -284,6 +289,29 @@ func TestTimelineAutoAssembleOverrunPolicies(t *testing.T) {
 	}
 	if tlFreeze.Tracks[0].Clips[2].TimelineStartMs != 5200 {
 		t.Fatalf("expected s2 pushed to 5200ms after hold, got %d", tlFreeze.Tracks[0].Clips[2].TimelineStartMs)
+	}
+
+	// 4. Policy: freeze_last_frame with active xfade transition (400ms) keeps speech non-overlapping
+	transMs := int64(400)
+	resFreezeXfade, err := node.Run(context.Background(), mustMarshalJSON(t, map[string]any{
+		"shots_json":     string(shotsBytes),
+		"overrun_policy": "freeze_last_frame",
+		"transition_ms":  transMs,
+		"project_dir":    tmp,
+	}))
+	if err != nil {
+		t.Fatalf("freeze_last_frame with transition failed: %v", err)
+	}
+	outXfade := resFreezeXfade.(contracts.TimelineAutoAssembleOutput)
+	for _, iss := range outXfade.Issues {
+		if iss.Code == "narration_source_collision" {
+			t.Fatalf("unexpected speech collision with transition+freeze: %+v", iss)
+		}
+	}
+	var tlXfade domainstudio.EditTimeline
+	_ = json.Unmarshal([]byte(outXfade.TimelineJSON), &tlXfade)
+	if len(tlXfade.Tracks[1].Clips) != 2 || tlXfade.Tracks[1].Clips[1].TimelineStartMs != 5200 {
+		t.Fatalf("expected aud2 delayed past aud1 end (5200ms), got %+v", tlXfade.Tracks[1].Clips)
 	}
 }
 
